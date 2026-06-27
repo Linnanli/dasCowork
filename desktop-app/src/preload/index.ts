@@ -1,62 +1,83 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
-  AppServerNotification,
-  AppServerRequestOptions,
-  AppServerServerRequestResponse,
-  AppServerStatus,
-  DesktopAppServerApi
-} from '../shared/appServerApi'
+  CodexApprovalRequest,
+  CodexApprovalResponse,
+  CodexChatRequest,
+  CodexChatStreamCallbacks,
+  CodexChatStreamEvent,
+  CodexModelList,
+  CodexStatus,
+  DesktopCodexApi,
+  DesktopCodexChatApi
+} from '../shared/codexIpcApi'
 
-// Custom APIs for renderer
-const desktopAppServer: DesktopAppServerApi = {
-  request: <T = unknown>(method: string, params?: unknown, options: AppServerRequestOptions = {}) =>
-    ipcRenderer.invoke('app-server:request', {
-      method,
-      params,
-      hostId: options.hostId
-    }) as Promise<T>,
-  respondServerRequest: (
-    requestId: string | number,
-    response: AppServerServerRequestResponse,
-    options: AppServerRequestOptions = {}
-  ) =>
-    ipcRenderer.invoke('app-server:respond-server-request', {
-      requestId,
-      response,
-      hostId: options.hostId
-    }) as Promise<void>,
-  stop: () => ipcRenderer.invoke('app-server:stop'),
-  getStatus: () => ipcRenderer.invoke('app-server:get-status'),
-  checkHealth: () => ipcRenderer.invoke('app-server:check-health'),
+const activePorts = new Map<string, MessagePort>()
+
+const desktopCodex: DesktopCodexApi = {
+  getStatus: () => ipcRenderer.invoke('codex:get-status') as Promise<CodexStatus>,
+  listModels: () => ipcRenderer.invoke('codex:list-models') as Promise<CodexModelList>,
+  setSelectedModel: (modelId: string) =>
+    ipcRenderer.invoke('codex:set-selected-model', { modelId }) as Promise<{
+      selectedModelId: string
+    }>,
+  respondApproval: (requestId: string, response: CodexApprovalResponse) =>
+    ipcRenderer.invoke('codex:respond-approval', { requestId, response }) as Promise<void>,
   openExternalHttpUrl: (url: string) =>
-    ipcRenderer.invoke('app-server:open-external-http-url', { url }) as Promise<void>,
-  onStatusChange: (callback: (status: AppServerStatus) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, status: AppServerStatus): void => {
+    ipcRenderer.invoke('codex:open-external-http-url', { url }) as Promise<void>,
+  onStatusChange: (callback: (status: CodexStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: CodexStatus): void =>
       callback(status)
-    }
-    ipcRenderer.on('app-server:status-change', listener)
-    return () => ipcRenderer.removeListener('app-server:status-change', listener)
+    ipcRenderer.on('codex:status-change', listener)
+    return () => ipcRenderer.removeListener('codex:status-change', listener)
   },
-  onNotification: (callback: (notification: AppServerNotification) => void) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      notification: AppServerNotification
-    ): void => {
-      callback(notification)
-    }
-    ipcRenderer.on('app-server:notification', listener)
-    return () => ipcRenderer.removeListener('app-server:notification', listener)
+  onApprovalRequest: (callback: (request: CodexApprovalRequest) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, request: CodexApprovalRequest): void =>
+      callback(request)
+    ipcRenderer.on('codex:approval-request', listener)
+    return () => ipcRenderer.removeListener('codex:approval-request', listener)
   }
 }
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
+const desktopCodexChat: DesktopCodexChatApi = {
+  startChatStream: (request: CodexChatRequest, callbacks: CodexChatStreamCallbacks) => {
+    const streamId = crypto.randomUUID()
+    const channel = new MessageChannel()
+    activePorts.set(streamId, channel.port1)
+    channel.port1.onmessage = (event: MessageEvent<CodexChatStreamEvent>) => {
+      const message = event.data
+      if (message.type === 'chunk') callbacks.onChunk(message.chunk)
+      if (message.type === 'finish') {
+        callbacks.onFinish()
+        activePorts.delete(streamId)
+        channel.port1.close()
+      }
+      if (message.type === 'aborted') {
+        callbacks.onAbort()
+        activePorts.delete(streamId)
+        channel.port1.close()
+      }
+      if (message.type === 'error') {
+        callbacks.onError(message.error)
+        activePorts.delete(streamId)
+        channel.port1.close()
+      }
+    }
+    ipcRenderer.postMessage('codex-chat:start', request, [channel.port2])
+    return streamId
+  },
+  abortChatStream: (streamId: string) => {
+    const port = activePorts.get(streamId)
+    if (!port) return
+    port.postMessage({ type: 'abort' })
+  }
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('desktopAppServer', desktopAppServer)
+    contextBridge.exposeInMainWorld('desktopCodex', desktopCodex)
+    contextBridge.exposeInMainWorld('desktopCodexChat', desktopCodexChat)
   } catch (error) {
     console.error(error)
   }
@@ -64,5 +85,7 @@ if (process.contextIsolated) {
   // @ts-ignore (define in dts)
   window.electron = electronAPI
   // @ts-ignore (define in dts)
-  window.desktopAppServer = desktopAppServer
+  window.desktopCodex = desktopCodex
+  // @ts-ignore (define in dts)
+  window.desktopCodexChat = desktopCodexChat
 }
