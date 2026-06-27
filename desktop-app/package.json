@@ -15,12 +15,12 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
-    "build:dasclaw-app-server": "node scripts/build-dasclaw-app-server.mjs",
+    "build:codex-app-server": "node scripts/build-codex-app-server.mjs",
     "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && npm run build:dasclaw-app-server && electron-builder --dir",
-    "build:win": "npm run build && npm run build:dasclaw-app-server && electron-builder --win",
-    "build:mac": "npm run build && npm run build:dasclaw-app-server && electron-builder --mac",
-    "build:linux": "npm run build && npm run build:dasclaw-app-server && electron-builder --linux"
+    "build:unpack": "npm run build && npm run build:codex-app-server && electron-builder --dir",
+    "build:win": "npm run build && npm run build:codex-app-server && electron-builder --win",
+    "build:mac": "npm run build && npm run build:codex-app-server && electron-builder --mac",
+    "build:linux": "npm run build && npm run build:codex-app-server && electron-builder --linux"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.215",
@@ -51,9 +51,9 @@
     "zod": "^4.1.8"
   },
   "overrides": {
-    "@assistant-ui/core": "0.2.14",
-    "@assistant-ui/store": "0.2.16",
-    "@assistant-ui/tap": "0.7.1"
+    "@assistant-ui/core": "0.2.19",
+    "@assistant-ui/store": "0.2.19",
+    "@assistant-ui/tap": "0.9.3"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

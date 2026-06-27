@@ -12,8 +12,10 @@ files:
 asarUnpack:
   - resources/**
 extraResources:
-  - from: .bundle-resources/dasclaw-app-server
-    to: dasclaw-app-server
+  - from: .bundle-resources/codex-app-server
+    to: codex-app-server
+    filter:
+      - '**/*'
 win:
   executableName: desktop-app
 nsis:
