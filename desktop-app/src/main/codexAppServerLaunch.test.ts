@@ -64,6 +64,14 @@ describe('codex app-server launch resolution', () => {
     })
   })
 
+  it('uses the Windows executable name for packaged resources', () => {
+    const resourcesPath = tempResourcesDir()
+    const binary = createBinary(resourcesPath, 'win32')
+
+    expect(resolveBundledCodexAppServerBinary(resourcesPath, 'win32')).toBe(binary)
+    expect(binary.endsWith('codex-app-server.exe')).toBe(true)
+  })
+
   it('runs cargo from codex/codex-rs in development', () => {
     expect(
       resolveCodexAppServerLaunchOptions({

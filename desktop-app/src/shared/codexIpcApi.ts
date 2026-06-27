@@ -71,8 +71,8 @@ export const codexChatRequestSchema = z.object({
   chatId: z.string().min(1),
   trigger: z.enum(['submit-message', 'regenerate-message']),
   messageId: z.string().optional(),
-  messages: z.array(z.custom<UIMessage>((value) => Boolean(value && typeof value === 'object'))),
-  modelId: z.string().optional(),
+  messages: z.array(z.custom<UIMessage>(isUiMessage)),
+  modelId: z.string().min(1).optional(),
   metadata: z.unknown().optional(),
   body: z.record(z.string(), z.unknown()).optional()
 }) satisfies z.ZodType<CodexChatRequest>
@@ -95,7 +95,7 @@ export const codexSetSelectedModelPayloadSchema = z.object({
 })
 
 export const codexOpenExternalHttpUrlPayloadSchema = z.object({
-  url: z.string().url()
+  url: z.string().url().refine(isExternalHttpUrl, 'external URL must be http(s)')
 })
 
 export type DesktopCodexApi = {
@@ -111,4 +111,31 @@ export type DesktopCodexApi = {
 export type DesktopCodexChatApi = {
   startChatStream(request: CodexChatRequest, callbacks: CodexChatStreamCallbacks): string
   abortChatStream(streamId: string): void
+}
+
+function isExternalHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isUiMessage(value: unknown): value is UIMessage {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const message = value as { id?: unknown; role?: unknown; parts?: unknown }
+  return (
+    typeof message.id === 'string' &&
+    message.id.length > 0 &&
+    (message.role === 'system' || message.role === 'user' || message.role === 'assistant') &&
+    Array.isArray(message.parts) &&
+    message.parts.every(isUiMessagePart)
+  )
+}
+
+function isUiMessagePart(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const part = value as { type?: unknown }
+  return typeof part.type === 'string' && part.type.length > 0
 }
