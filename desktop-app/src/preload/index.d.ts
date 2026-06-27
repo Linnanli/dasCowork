@@ -1,9 +1,10 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { DesktopAppServerApi } from '../shared/appServerApi'
+import type { DesktopCodexApi, DesktopCodexChatApi } from '../shared/codexIpcApi'
 
 declare global {
   interface Window {
     electron: ElectronAPI
-    desktopAppServer: DesktopAppServerApi
+    desktopCodex: DesktopCodexApi
+    desktopCodexChat: DesktopCodexChatApi
   }
 }
