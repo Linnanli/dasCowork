@@ -1,25 +1,20 @@
-import { CheckIcon, PlayIcon, ShieldCheckIcon, XIcon } from 'lucide-react'
+import { CheckIcon, ShieldCheckIcon, XIcon } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { runClientToolRequest } from '@/lib/clientTools'
 
 import type {
-  AppServerServerRequest,
-  AppServerServerRequestResponse,
-  AppServerToolUserInputResponse
-} from '../../../../shared/appServerApi'
+  CodexApprovalRequest,
+  CodexApprovalResponse
+} from '../../../../shared/codexIpcApi'
 
 type ServerRequestPanelProps = {
-  requests: readonly AppServerServerRequest[]
-  onRespond: <Method extends AppServerServerRequest['method']>(
-    request: AppServerServerRequest<Method>,
-    response: AppServerServerRequestResponse<Method>
-  ) => Promise<void>
-  onReject: (request: AppServerServerRequest) => Promise<void>
+  requests: readonly CodexApprovalRequest[]
+  onRespond: (request: CodexApprovalRequest, response: CodexApprovalResponse) => Promise<void>
+  onReject: (request: CodexApprovalRequest) => Promise<void>
 }
 
-type ActionState = 'accept' | 'acceptForSession' | 'allowTurn' | 'allowSession' | 'reject' | 'run'
+type ActionState = 'approve' | 'approveForSession' | 'alwaysApprove' | 'decline' | 'answer'
 
 export function ServerRequestPanel({
   requests,
@@ -50,7 +45,7 @@ export function ServerRequestPanel({
       data-slot="server-request-panel"
     >
       <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-3">
-        <div key={requestKey(request)}>
+        <div key={request.id}>
           {renderRequestBody(request, onRespond, onReject, runAction, busyAction)}
         </div>
         {error ? (
@@ -64,167 +59,75 @@ export function ServerRequestPanel({
 }
 
 function renderRequestBody(
-  request: AppServerServerRequest,
+  request: CodexApprovalRequest,
   onRespond: ServerRequestPanelProps['onRespond'],
   onReject: ServerRequestPanelProps['onReject'],
   runAction: (action: ActionState, callback: () => Promise<void>) => Promise<void>,
   busyAction: ActionState | undefined
 ): React.JSX.Element {
-  switch (request.method) {
-    case 'item/fileChange/requestApproval':
-      return (
-        <RequestShell title="File change approval" method={request.method}>
-          <Detail label="Reason" value={request.params.reason ?? 'No reason provided'} />
-          {request.params.grantRoot ? (
-            <Detail label="Grant root" value={request.params.grantRoot} />
-          ) : null}
-          <ActionRow>
-            <Button
-              disabled={Boolean(busyAction)}
-              onClick={() =>
-                void runAction('accept', () => onRespond(request, { decision: 'accept' }))
-              }
-              size="sm"
-              type="button"
-            >
-              <CheckIcon className="size-4" />
-              Accept file changes
-            </Button>
-            <Button
-              disabled={Boolean(busyAction)}
-              onClick={() =>
-                void runAction('acceptForSession', () =>
-                  onRespond(request, { decision: 'acceptForSession' })
-                )
-              }
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              <ShieldCheckIcon className="size-4" />
-              Accept for session
-            </Button>
-            <RejectButton
-              busy={busyAction === 'reject'}
-              disabled={Boolean(busyAction)}
-              onClick={() => void runAction('reject', () => onReject(request))}
-            />
-          </ActionRow>
-        </RequestShell>
-      )
-    case 'item/permissions/requestApproval':
-      return (
-        <RequestShell title="Permission approval" method={request.method}>
-          <Detail label="Reason" value={request.params.reason ?? 'No reason provided'} />
-          <Detail label="Permissions" value={formatUnknown(request.params.permissions)} />
-          <ActionRow>
-            <Button
-              disabled={Boolean(busyAction)}
-              onClick={() =>
-                void runAction('allowTurn', () =>
-                  onRespond(request, {
-                    decision: 'approve',
-                    permissions: request.params.permissions,
-                    scope: 'turn',
-                    strictAutoReview: true
-                  })
-                )
-              }
-              size="sm"
-              type="button"
-            >
-              <CheckIcon className="size-4" />
-              Allow once
-            </Button>
-            <Button
-              disabled={Boolean(busyAction)}
-              onClick={() =>
-                void runAction('allowSession', () =>
-                  onRespond(request, {
-                    decision: 'approve',
-                    permissions: request.params.permissions,
-                    scope: 'session',
-                    strictAutoReview: true
-                  })
-                )
-              }
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              <ShieldCheckIcon className="size-4" />
-              Allow session
-            </Button>
-            <RejectButton
-              busy={busyAction === 'reject'}
-              disabled={Boolean(busyAction)}
-              onClick={() => void runAction('reject', () => onReject(request))}
-            />
-          </ActionRow>
-        </RequestShell>
-      )
-    case 'item/tool/requestUserInput':
-      return (
-        <ToolUserInputRequest
-          busy={Boolean(busyAction)}
-          onReject={() => void runAction('reject', () => onReject(request))}
-          onSubmit={(response) => void runAction('accept', () => onRespond(request, response))}
-          request={request}
-        />
-      )
-    case 'item/tool/call':
-      return (
-        <RequestShell title="Client tool request" method={request.method}>
-          <Detail
-            label="Tool"
-            value={
-              [request.params.namespace, request.params.tool].filter(Boolean).join('.') ||
-              request.params.tool
-            }
-          />
-          <Detail label="Arguments" value={formatUnknown(request.params.arguments)} />
-          <ActionRow>
-            <Button
-              disabled={Boolean(busyAction)}
-              onClick={() =>
-                void runAction('run', async () => {
-                  const response = await runClientToolRequest(request)
-                  await onRespond(request, response)
-                })
-              }
-              size="sm"
-              type="button"
-            >
-              <PlayIcon className="size-4" />
-              Run client tool
-            </Button>
-            <RejectButton
-              busy={busyAction === 'reject'}
-              disabled={Boolean(busyAction)}
-              onClick={() => void runAction('reject', () => onReject(request))}
-            />
-          </ActionRow>
-        </RequestShell>
-      )
-    case 'item/commandExecution/requestApproval':
-      return (
-        <RequestShell title="Command execution approval" method={request.method}>
-          <Detail label="Tool" value={request.params.toolName} />
-          {request.params.command ? (
-            <Detail label="Command" value={request.params.command} />
-          ) : null}
-          <Detail label="Description" value={request.params.description} />
-          <Detail label="Parameters" value={formatUnknown(request.params.displayParameters)} />
-          <ActionRow>
-            <RejectButton
-              busy={busyAction === 'reject'}
-              disabled={Boolean(busyAction)}
-              onClick={() => void runAction('reject', () => onReject(request))}
-            />
-          </ActionRow>
-        </RequestShell>
-      )
+  if (request.kind === 'tool-user-input') {
+    return (
+      <ToolUserInputRequest
+        busy={Boolean(busyAction)}
+        onReject={() => void runAction('decline', () => onReject(request))}
+        onSubmit={(response) => void runAction('answer', () => onRespond(request, response))}
+        request={request}
+      />
+    )
   }
+
+  const approveOnce: CodexApprovalResponse = { action: 'approve' }
+  const approveSession: CodexApprovalResponse = { action: 'approveForSession' }
+  const approveAlways: CodexApprovalResponse = { action: 'alwaysApprove' }
+
+  return (
+    <RequestShell title={requestTitle(request)} method={request.kind}>
+      <Detail label="Created" value={new Date(request.createdAt).toLocaleString()} />
+      <Detail label="Parameters" value={formatUnknown(request.params)} />
+      <ActionRow>
+        <Button
+          disabled={Boolean(busyAction)}
+          onClick={() => void runAction('approve', () => onRespond(request, approveOnce))}
+          size="sm"
+          type="button"
+        >
+          <CheckIcon className="size-4" />
+          Approve
+        </Button>
+        <Button
+          disabled={Boolean(busyAction)}
+          onClick={() =>
+            void runAction('approveForSession', () => onRespond(request, approveSession))
+          }
+          size="sm"
+          type="button"
+          variant="secondary"
+        >
+          <ShieldCheckIcon className="size-4" />
+          Approve session
+        </Button>
+        {request.kind === 'mcp-elicitation' ? (
+          <Button
+            disabled={Boolean(busyAction)}
+            onClick={() =>
+              void runAction('alwaysApprove', () => onRespond(request, approveAlways))
+            }
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <ShieldCheckIcon className="size-4" />
+            Always approve
+          </Button>
+        ) : null}
+        <RejectButton
+          busy={busyAction === 'decline'}
+          disabled={Boolean(busyAction)}
+          onClick={() => void runAction('decline', () => onReject(request))}
+        />
+      </ActionRow>
+    </RequestShell>
+  )
 }
 
 function ToolUserInputRequest({
@@ -235,31 +138,30 @@ function ToolUserInputRequest({
 }: {
   busy: boolean
   onReject: () => void
-  onSubmit: (response: AppServerToolUserInputResponse) => void
-  request: AppServerServerRequest<'item/tool/requestUserInput'>
+  onSubmit: (response: CodexApprovalResponse) => void
+  request: CodexApprovalRequest
 }): React.JSX.Element {
+  const questions = readToolUserInputQuestions(request.params)
   const initialValues = useMemo(
-    () => Object.fromEntries(request.params.questions.map((question) => [question.id, ''])),
-    [request.params.questions]
+    () => Object.fromEntries(questions.map((question) => [question.id, ''])),
+    [questions]
   )
   const [values, setValues] = useState<Record<string, string>>(initialValues)
 
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     onSubmit({
+      action: 'answer',
       answers: Object.fromEntries(
-        request.params.questions.map((question) => [
-          question.id,
-          { answers: [values[question.id] ?? ''] }
-        ])
+        questions.map((question) => [question.id, [values[question.id] ?? '']])
       )
     })
   }
 
   return (
-    <RequestShell title="User input requested" method={request.method}>
+    <RequestShell title="User input requested" method={request.kind}>
       <form className="flex flex-col gap-3" onSubmit={submit}>
-        {request.params.questions.map((question) => (
+        {questions.map((question) => (
           <label className="flex flex-col gap-1.5" key={question.id}>
             <span className="text-sm font-medium text-foreground">{question.header}</span>
             <span className="text-sm text-muted-foreground">{question.question}</span>
@@ -274,6 +176,7 @@ function ToolUserInputRequest({
             />
           </label>
         ))}
+        {questions.length === 0 ? <Detail label="Parameters" value={formatUnknown(request.params)} /> : null}
         <ActionRow>
           <Button disabled={busy} size="sm" type="submit">
             <CheckIcon className="size-4" />
@@ -338,6 +241,13 @@ function RejectButton({
   )
 }
 
+function requestTitle(request: CodexApprovalRequest): string {
+  if (request.kind === 'command') return 'Command execution approval'
+  if (request.kind === 'file-change') return 'File change approval'
+  if (request.kind === 'tool-user-input') return 'User input requested'
+  return 'MCP approval requested'
+}
+
 function formatUnknown(value: unknown): string {
   if (typeof value === 'string') return value
   try {
@@ -351,6 +261,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function requestKey(request: AppServerServerRequest): string {
-  return `${request.hostId}:${request.requestId}`
+type ToolUserInputQuestion = {
+  id: string
+  header: string
+  question: string
+  isSecret?: boolean
+}
+
+function readToolUserInputQuestions(params: unknown): ToolUserInputQuestion[] {
+  if (!params || typeof params !== 'object') return []
+  const questions = (params as { questions?: unknown }).questions
+  if (!Array.isArray(questions)) return []
+  return questions.flatMap((question) => {
+    if (!question || typeof question !== 'object') return []
+    const record = question as Record<string, unknown>
+    if (typeof record.id !== 'string') return []
+    const header = typeof record.header === 'string' ? record.header : record.id
+    const text = typeof record.question === 'string' ? record.question : header
+    return [{ id: record.id, header, question: text, isSecret: record.isSecret === true }]
+  })
 }

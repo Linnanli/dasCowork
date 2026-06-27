@@ -64,10 +64,8 @@ import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { cn } from './lib/utils'
 import { isPendingAssistantMessageContent } from './lib/assistantMessages'
-import {
-  useAppServerModelSelectorState,
-  useDasclawAssistantRuntime
-} from './hooks/useDasclawAssistantRuntime'
+import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
+import type { ModelOption } from './components/assistant-ui'
 
 type AppServerSidebarProps = {
   collapsed: boolean
@@ -77,6 +75,12 @@ type AppServerSidebarProps = {
 type HeaderProps = {
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
+}
+
+type ComposerProps = {
+  models: readonly ModelOption[]
+  selectedModelId: string | undefined
+  onSelectedModelChange: (modelId: string) => void
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -177,13 +181,23 @@ function useNativeBackdrop(): boolean {
 }
 
 function App(): React.JSX.Element {
-  const { runtime, serverRequests, respondToServerRequest, rejectServerRequest } =
-    useDasclawAssistantRuntime()
+  const {
+    runtime,
+    serverRequests,
+    respondToServerRequest,
+    rejectServerRequest,
+    models,
+    selectedModelId,
+    setSelectedModelId
+  } = useCodexIpcAssistantRuntime()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const nativeBackdrop = useNativeBackdrop()
 
   const toggleSidebar = (): void => {
     setSidebarCollapsed((collapsed) => !collapsed)
+  }
+  const handleSelectedModelChange = (modelId: string): void => {
+    void setSelectedModelId(modelId)
   }
 
   return (
@@ -206,7 +220,11 @@ function App(): React.JSX.Element {
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
             <Header sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatThread />
+              <ChatThread
+                models={models}
+                selectedModelId={selectedModelId}
+                onSelectedModelChange={handleSelectedModelChange}
+              />
             </div>
             <ServerRequestPanel
               onReject={rejectServerRequest}
@@ -382,7 +400,11 @@ function isNewChatView(state: AssistantState): boolean {
   return state.thread.messages.length === 0 && (!state.thread.isLoading || state.threads.isLoading)
 }
 
-function ChatThread(): React.JSX.Element {
+function ChatThread({
+  models,
+  selectedModelId,
+  onSelectedModelChange
+}: ComposerProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
 
   return (
@@ -420,7 +442,11 @@ function ChatThread(): React.JSX.Element {
           )}
         >
           <ThreadScrollToBottom />
-          <Composer />
+          <Composer
+            models={models}
+            selectedModelId={selectedModelId}
+            onSelectedModelChange={onSelectedModelChange}
+          />
           <AuiIf condition={isNewChatView}>
             <div className="aui-thread-welcome-suggestions-shell min-h-19">
               <AuiIf condition={(state) => state.composer.isEmpty}>
@@ -969,14 +995,17 @@ function ComposerTriggerPopover({
   )
 }
 
-function Composer(): React.JSX.Element {
+function Composer({
+  models,
+  selectedModelId,
+  onSelectedModelChange
+}: ComposerProps): React.JSX.Element {
   const mention = unstable_useMentionAdapter({ fallbackIcon: WrenchIcon })
   const slash = unstable_useSlashCommandAdapter({
     commands: slashCommands,
     fallbackIcon: SlashIcon,
     iconMap: slashIconMap
   })
-  const modelSelector = useAppServerModelSelectorState()
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -993,9 +1022,9 @@ function Composer(): React.JSX.Element {
           <div className="aui-composer-action-wrapper relative flex items-center justify-between">
             <div className="flex items-center gap-1">
               <ModelSelector
-                models={modelSelector.models}
-                value={modelSelector.value}
-                onValueChange={modelSelector.onValueChange}
+                models={models}
+                value={selectedModelId}
+                onValueChange={onSelectedModelChange}
                 variant="ghost"
                 size="sm"
               />
