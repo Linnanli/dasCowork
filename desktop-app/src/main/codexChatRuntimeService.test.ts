@@ -14,9 +14,13 @@ class FakePort implements CodexPortLike {
     if (event === 'message') this.handler = handler
   }
 
-  start(): void {}
+  start(): void {
+    return undefined
+  }
 
-  close(): void {}
+  close(): void {
+    return undefined
+  }
 
   emit(message: unknown): void {
     this.handler?.({ data: message })

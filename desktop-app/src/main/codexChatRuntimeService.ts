@@ -204,12 +204,22 @@ export class CodexChatRuntimeService {
     return 'cancel'
   }
 
-  private readonly handleToolUserInput = async (params: unknown) => {
+  private readonly handleToolUserInput = async (
+    params: unknown
+  ): Promise<{ answers: Record<string, { answers: string[] }> }> => {
     const response = await this.approvalBroker.request({ kind: 'tool-user-input', params })
-    return response.action === 'answer' ? { answers: toToolUserInputAnswers(response.answers) } : { answers: {} }
+    return response.action === 'answer'
+      ? { answers: toToolUserInputAnswers(response.answers) }
+      : { answers: {} }
   }
 
-  private readonly handleElicitation = async (params: unknown) => {
+  private readonly handleElicitation = async (
+    params: unknown
+  ): Promise<{
+    action: 'accept' | 'decline'
+    content: null
+    _meta: { persist: 'always' } | { persist: 'session' } | { reason: string | null } | null
+  }> => {
     const response = await this.approvalBroker.request({ kind: 'mcp-elicitation', params })
     if (response.action === 'alwaysApprove') {
       return { action: 'accept' as const, content: null, _meta: { persist: 'always' } }
@@ -217,7 +227,9 @@ export class CodexChatRuntimeService {
     if (response.action === 'approveForSession') {
       return { action: 'accept' as const, content: null, _meta: { persist: 'session' } }
     }
-    if (response.action === 'approve') return { action: 'accept' as const, content: null, _meta: null }
+    if (response.action === 'approve') {
+      return { action: 'accept' as const, content: null, _meta: null }
+    }
     return {
       action: 'decline' as const,
       content: null,
@@ -264,7 +276,9 @@ function toToolUserInputAnswers(
 }
 
 function isAbortMessage(value: unknown): value is { type: 'abort' } {
-  return Boolean(value && typeof value === 'object' && (value as { type?: unknown }).type === 'abort')
+  return Boolean(
+    value && typeof value === 'object' && (value as { type?: unknown }).type === 'abort'
+  )
 }
 
 function errorMessage(error: unknown): string {

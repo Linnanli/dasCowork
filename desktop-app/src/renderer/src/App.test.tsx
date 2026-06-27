@@ -6,10 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-import type {
-  AppServerDynamicToolCallResponse,
-  AppServerServerRequest
-} from '../../shared/appServerApi'
+import type { CodexApprovalRequest } from '../../shared/codexIpcApi'
 
 type MockThreadMessageState = {
   message: {
@@ -42,11 +39,13 @@ const streamdownPropsState = vi.hoisted<{
 const runtimeState = vi.hoisted<{
   rejectServerRequest: ReturnType<typeof vi.fn>
   respondToServerRequest: ReturnType<typeof vi.fn>
-  serverRequests: AppServerServerRequest[]
+  serverRequests: CodexApprovalRequest[]
+  setSelectedModelId: ReturnType<typeof vi.fn>
 }>(() => ({
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
-  serverRequests: []
+  serverRequests: [],
+  setSelectedModelId: vi.fn()
 }))
 
 function resetThreadMessageState(): void {
@@ -59,6 +58,8 @@ function resetThreadMessageState(): void {
   runtimeState.rejectServerRequest.mockResolvedValue(undefined)
   runtimeState.respondToServerRequest.mockReset()
   runtimeState.respondToServerRequest.mockResolvedValue(undefined)
+  runtimeState.setSelectedModelId.mockReset()
+  runtimeState.setSelectedModelId.mockResolvedValue(undefined)
   runtimeState.serverRequests = []
 }
 
@@ -97,15 +98,21 @@ function messagePartComponentFor(
   return undefined
 }
 
-vi.mock('./hooks/useDasclawAssistantRuntime', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./hooks/useDasclawAssistantRuntime')>()
+vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
   return {
-    ...actual,
-    useDasclawAssistantRuntime: () => ({
+    useCodexIpcAssistantRuntime: () => ({
       runtime: {},
       serverRequests: runtimeState.serverRequests,
       respondToServerRequest: runtimeState.respondToServerRequest,
-      rejectServerRequest: runtimeState.rejectServerRequest
+      rejectServerRequest: runtimeState.rejectServerRequest,
+      models: [
+        {
+          id: 'gpt-5-codex',
+          name: 'GPT-5 Codex'
+        }
+      ],
+      selectedModelId: 'gpt-5-codex',
+      setSelectedModelId: runtimeState.setSelectedModelId
     })
   }
 })
@@ -393,7 +400,7 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const sidebar = container.querySelector('[data-slot="app-server-sidebar"]')
+    const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
     const newThread = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'New thread'
@@ -420,7 +427,7 @@ describe('App composer', () => {
     })
 
     const appShell = container.querySelector('main')
-    const sidebar = container.querySelector('[data-slot="app-server-sidebar"]')
+    const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
     const newThread = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'New thread'
@@ -526,7 +533,7 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="server-request-panel"]')).toBeNull()
   })
 
-  it('responds to a file-change request when accepting file changes', async () => {
+  it('responds to a file-change request when approving', async () => {
     const request = fileChangeApprovalRequest('file-request-1')
     runtimeState.serverRequests = [request]
 
@@ -534,77 +541,54 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const accept = buttonWithText('Accept file changes')
-    expect(accept).not.toBeUndefined()
+    const approve = buttonWithText('Approve')
+    expect(approve).not.toBeUndefined()
 
     await act(async () => {
-      accept?.click()
+      approve?.click()
     })
 
     expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, {
-      decision: 'accept'
+      action: 'approve'
     })
   })
 
-  it('responds to a permissions request when allowing once', async () => {
-    const request = permissionsApprovalRequest('permissions-request-1')
+  it('responds to an MCP request when approving for the session', async () => {
+    const request = mcpApprovalRequest('mcp-request-1')
     runtimeState.serverRequests = [request]
 
     act(() => {
       root.render(<App />)
     })
 
-    const allow = buttonWithText('Allow once')
-    expect(allow).not.toBeUndefined()
+    const approveSession = buttonWithText('Approve session')
+    expect(approveSession).not.toBeUndefined()
 
     await act(async () => {
-      allow?.click()
+      approveSession?.click()
     })
 
     expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, {
-      decision: 'approve',
-      permissions: ['net:fetch'],
-      scope: 'turn',
-      strictAutoReview: true
+      action: 'approveForSession'
     })
   })
 
-  it('runs a client tool request from the panel and responds with sanitized output', async () => {
-    const request = toolCallRequest('tool-request-1', {
-      url: 'https://example.test/page?token=secret#fragment'
-    })
-    const openExternalHttpUrl = vi.fn().mockResolvedValue(undefined)
+  it('responds to a tool user input request with form answers', async () => {
+    const request = toolUserInputRequest('input-request-1')
     runtimeState.serverRequests = [request]
-    window.desktopAppServer = {
-      checkHealth: vi.fn().mockResolvedValue({}),
-      getStatus: vi.fn().mockResolvedValue({}),
-      onNotification: vi.fn(() => vi.fn()),
-      onStatusChange: vi.fn(() => vi.fn()),
-      openExternalHttpUrl,
-      request: vi.fn().mockResolvedValue({ models: [] }),
-      respondServerRequest: vi.fn().mockResolvedValue(undefined),
-      stop: vi.fn().mockResolvedValue({})
-    } as Window['desktopAppServer']
 
     act(() => {
       root.render(<App />)
     })
 
-    const run = buttonWithText('Run client tool')
-    expect(run).not.toBeUndefined()
-
     await act(async () => {
-      run?.click()
+      buttonWithText('Submit answers')?.click()
     })
 
-    const response = {
-      success: true,
-      contentItems: [{ type: 'inputText', text: 'Opened URL' }]
-    } satisfies AppServerDynamicToolCallResponse
-    expect(openExternalHttpUrl).toHaveBeenCalledWith(
-      'https://example.test/page?token=secret#fragment'
-    )
-    expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, response)
+    expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, {
+      action: 'answer',
+      answers: { confirmation: [''] }
+    })
   })
 })
 
@@ -614,13 +598,11 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
   )
 }
 
-function fileChangeApprovalRequest(
-  requestId: string
-): AppServerServerRequest<'item/fileChange/requestApproval'> {
+function fileChangeApprovalRequest(requestId: string): CodexApprovalRequest {
   return {
-    hostId: 'local',
-    requestId,
-    method: 'item/fileChange/requestApproval',
+    id: requestId,
+    kind: 'file-change',
+    createdAt: '2026-06-27T00:00:00.000Z',
     params: {
       threadId: 'thread_1',
       turnId: 'turn_1',
@@ -631,39 +613,33 @@ function fileChangeApprovalRequest(
   }
 }
 
-function permissionsApprovalRequest(
-  requestId: string
-): AppServerServerRequest<'item/permissions/requestApproval'> {
+function mcpApprovalRequest(requestId: string): CodexApprovalRequest {
   return {
-    hostId: 'local',
-    requestId,
-    method: 'item/permissions/requestApproval',
+    id: requestId,
+    kind: 'mcp-elicitation',
+    createdAt: '2026-06-27T00:00:00.000Z',
     params: {
-      threadId: 'thread_1',
-      turnId: 'turn_1',
-      itemId: 'permission_1',
-      cwd: '/workspace',
-      reason: 'needs network',
-      permissions: ['net:fetch']
+      server: 'github',
+      tool: 'create_issue',
+      prompt: 'Create issue?'
     }
   }
 }
 
-function toolCallRequest(
-  requestId: string,
-  args: unknown
-): AppServerServerRequest<'item/tool/call'> {
+function toolUserInputRequest(requestId: string): CodexApprovalRequest {
   return {
-    hostId: 'local',
-    requestId,
-    method: 'item/tool/call',
+    id: requestId,
+    kind: 'tool-user-input',
+    createdAt: '2026-06-27T00:00:00.000Z',
     params: {
-      threadId: 'thread_1',
-      turnId: 'turn_1',
-      callId: 'call_1',
-      namespace: 'client',
-      tool: 'open_url',
-      arguments: args
+      questions: [
+        {
+          id: 'confirmation',
+          header: 'Confirm',
+          question: 'Continue?',
+          isSecret: false
+        }
+      ]
     }
   }
 }

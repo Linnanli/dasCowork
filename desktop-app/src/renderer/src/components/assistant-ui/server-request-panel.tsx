@@ -3,10 +3,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
 
-import type {
-  CodexApprovalRequest,
-  CodexApprovalResponse
-} from '../../../../shared/codexIpcApi'
+import type { CodexApprovalRequest, CodexApprovalResponse } from '../../../../shared/codexIpcApi'
 
 type ServerRequestPanelProps = {
   requests: readonly CodexApprovalRequest[]
@@ -109,9 +106,7 @@ function renderRequestBody(
         {request.kind === 'mcp-elicitation' ? (
           <Button
             disabled={Boolean(busyAction)}
-            onClick={() =>
-              void runAction('alwaysApprove', () => onRespond(request, approveAlways))
-            }
+            onClick={() => void runAction('alwaysApprove', () => onRespond(request, approveAlways))}
             size="sm"
             type="button"
             variant="secondary"
@@ -176,7 +171,9 @@ function ToolUserInputRequest({
             />
           </label>
         ))}
-        {questions.length === 0 ? <Detail label="Parameters" value={formatUnknown(request.params)} /> : null}
+        {questions.length === 0 ? (
+          <Detail label="Parameters" value={formatUnknown(request.params)} />
+        ) : null}
         <ActionRow>
           <Button disabled={busy} size="sm" type="submit">
             <CheckIcon className="size-4" />

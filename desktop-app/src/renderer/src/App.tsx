@@ -67,7 +67,7 @@ import { isPendingAssistantMessageContent } from './lib/assistantMessages'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ModelOption } from './components/assistant-ui'
 
-type AppServerSidebarProps = {
+type CodexSidebarProps = {
   collapsed: boolean
   nativeBackdrop: boolean
 }
@@ -208,7 +208,7 @@ function App(): React.JSX.Element {
           nativeBackdrop ? 'bg-background/10 dark:bg-background/10' : 'bg-muted/30'
         )}
       >
-        <AppServerSidebar collapsed={sidebarCollapsed} nativeBackdrop={nativeBackdrop} />
+        <CodexSidebar collapsed={sidebarCollapsed} nativeBackdrop={nativeBackdrop} />
         <section
           data-slot="app-main-section"
           className={cn(
@@ -238,10 +238,10 @@ function App(): React.JSX.Element {
   )
 }
 
-function AppServerSidebar({ collapsed, nativeBackdrop }: AppServerSidebarProps): React.JSX.Element {
+function CodexSidebar({ collapsed, nativeBackdrop }: CodexSidebarProps): React.JSX.Element {
   return (
     <aside
-      data-slot="app-server-sidebar"
+      data-slot="codex-sidebar"
       className={cn(
         sidebarBaseClass,
         nativeBackdrop && nativeBackdropSurfaceClass,
@@ -278,7 +278,7 @@ function Logo(): React.JSX.Element {
   return (
     <div className="flex min-w-0 items-center gap-2 px-2 text-sm font-medium">
       <BrandMark />
-      <span className="min-w-0 truncate text-foreground/90">Dasclaw</span>
+      <span className="min-w-0 truncate text-foreground/90">Codex</span>
     </div>
   )
 }
@@ -286,7 +286,7 @@ function Logo(): React.JSX.Element {
 function BrandMark(): React.JSX.Element {
   return (
     <div className="grid size-5 shrink-0 place-items-center rounded-md bg-primary text-[11px] font-bold text-primary-foreground">
-      D
+      C
     </div>
   )
 }

@@ -47,11 +47,7 @@ export type CodexChatStreamCallbacks = {
   onError(error: string): void
 }
 
-export type CodexApprovalKind =
-  | 'command'
-  | 'file-change'
-  | 'tool-user-input'
-  | 'mcp-elicitation'
+export type CodexApprovalKind = 'command' | 'file-change' | 'tool-user-input' | 'mcp-elicitation'
 
 export type CodexApprovalRequest = {
   id: string
