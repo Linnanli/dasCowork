@@ -140,6 +140,29 @@ describe('ModelCatalogService', () => {
     })
   })
 
+  it('falls back when the previous selected model disappears from a refreshed catalog', async () => {
+    let now = 1_000
+    const source: ModelCatalogSource = {
+      listClientModels: vi
+        .fn()
+        .mockResolvedValueOnce([backendModel, secondaryModel])
+        .mockResolvedValueOnce([backendModel])
+    }
+    const service = new ModelCatalogService({
+      source,
+      cacheTtlMs: 5,
+      now: () => now
+    })
+
+    await service.setSelectedModel('claude-3-5-sonnet')
+    now = 2_000
+
+    await expect(service.listModels()).resolves.toMatchObject({
+      selectedModelId: 'gpt-4o'
+    })
+    expect(source.listClientModels).toHaveBeenCalledTimes(2)
+  })
+
   it('selects the default model then first model when no selected model exists', async () => {
     const serviceWithDefault = new ModelCatalogService({
       source: createSource([secondaryModel, backendModel])
