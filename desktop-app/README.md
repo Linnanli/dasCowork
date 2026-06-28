@@ -37,7 +37,7 @@ $ npm run build:linux
 
 The desktop app can load the model selector list from `admin-backend` through Electron main process.
 
-Set these environment variables before starting the app:
+Set `ADMIN_BACKEND_URL` before starting the app:
 
 ```bash
 export ADMIN_BACKEND_URL="http://127.0.0.1:3000"
@@ -46,9 +46,17 @@ export ADMIN_BACKEND_MODEL_CACHE_TTL_MS="60000"
 npm run dev
 ```
 
-`ADMIN_BACKEND_URL` enables the backend-backed model catalog. When it is not set, the app keeps using the Codex provider model list fallback.
+For local development, you can also put it in `desktop-app/.env` or `desktop-app/.env.local`:
 
-`ADMIN_BACKEND_MODEL_USER_ID` is optional. When present, it is sent as `user_id` to `GET /api/client-models` so admin-backend can apply department whitelist filtering.
+```bash
+ADMIN_BACKEND_URL="http://127.0.0.1:3000"
+ADMIN_BACKEND_MODEL_USER_ID="00000000-0000-0000-0000-000000000001"
+ADMIN_BACKEND_MODEL_CACHE_TTL_MS="60000"
+```
+
+`ADMIN_BACKEND_URL` enables the backend-backed model catalog. When it is not set, the app keeps using the Codex provider model list fallback. A real process environment variable takes precedence over `.env.local`.
+
+`ADMIN_BACKEND_MODEL_USER_ID` is optional. When present, it is sent as `user_id` to `GET /api/client-models` so admin-backend can apply user or department filtering.
 
 `ADMIN_BACKEND_MODEL_CACHE_TTL_MS` is optional and defaults to `60000`.
 

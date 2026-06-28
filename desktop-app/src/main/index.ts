@@ -4,7 +4,8 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { installWindowContextMenu } from './contextMenu'
-import { createModelCatalogServiceFromEnv } from './modelCatalogService'
+import { createModelCatalogService } from './modelCatalogService'
+import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
 import {
   codexChatRequestSchema,
@@ -15,7 +16,7 @@ import {
 } from '../shared/codexIpcApi'
 
 const codexRuntime = new CodexChatRuntimeService({
-  modelCatalog: createModelCatalogServiceFromEnv(process.env)
+  modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env))
 })
 
 async function openExternalHttpUrl(url: string): Promise<void> {

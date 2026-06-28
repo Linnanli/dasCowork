@@ -11,6 +11,12 @@ export type ModelCatalogServiceOptions = {
   now?: () => number
 }
 
+export type ModelCatalogServiceConfig = {
+  adminBackendUrl?: string
+  adminBackendModelUserId?: string
+  adminBackendModelCacheTtlMs?: number
+}
+
 type ModelCache = {
   models: AdminBackendClientModel[]
   loadedAt: number
@@ -118,28 +124,19 @@ export function toCodexModel(model: AdminBackendClientModel): CodexModel {
   }
 }
 
-export function createModelCatalogServiceFromEnv(
-  env: NodeJS.ProcessEnv
+export function createModelCatalogService(
+  config: ModelCatalogServiceConfig
 ): ModelCatalogService | undefined {
-  const baseUrl = env['ADMIN_BACKEND_URL']?.trim()
+  const baseUrl = config.adminBackendUrl?.trim()
   if (!baseUrl) return undefined
 
   return new ModelCatalogService({
     source: new AdminBackendModelClient({
       baseUrl,
-      userId: env['ADMIN_BACKEND_MODEL_USER_ID']
+      userId: config.adminBackendModelUserId
     }),
-    cacheTtlMs: parseCacheTtlMs(env['ADMIN_BACKEND_MODEL_CACHE_TTL_MS'])
+    cacheTtlMs: config.adminBackendModelCacheTtlMs
   })
-}
-
-function parseCacheTtlMs(value: string | undefined): number {
-  if (!value) return 60_000
-
-  const trimmed = value.trim()
-  if (!/^\d+$/.test(trimmed)) return 60_000
-
-  return normalizeCacheTtlMs(Number(trimmed))
 }
 
 function normalizeCacheTtlMs(value: number | undefined): number {

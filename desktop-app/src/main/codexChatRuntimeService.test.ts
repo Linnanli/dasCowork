@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 
+const providerState = vi.hoisted(() => ({
+  listModels: vi.fn(),
+  shutdown: vi.fn()
+}))
+
+vi.mock('./codexAspProvider', () => ({
+  createCodexAspProvider: vi.fn(() => ({
+    listModels: providerState.listModels,
+    shutdown: providerState.shutdown,
+    chat: vi.fn()
+  }))
+}))
+
 import {
   CodexChatRuntimeService,
   type CodexPortLike,
@@ -38,6 +51,85 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 }
 
 describe('CodexChatRuntimeService', () => {
+  it('returns catalog unavailability instead of provider fallback when catalog is configured', async () => {
+    providerState.listModels.mockResolvedValue([])
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn().mockResolvedValue({
+        models: [],
+        unavailableReason: 'backend down'
+      }),
+      setSelectedModel: vi.fn().mockRejectedValue(new Error('model catalog unavailable')),
+      resolveClientModel: vi.fn().mockRejectedValue(new Error('model catalog unavailable'))
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      modelCatalog
+    })
+
+    await expect(service.listModels()).resolves.toEqual({
+      models: [],
+      unavailableReason: 'backend down'
+    })
+    expect(providerState.listModels).not.toHaveBeenCalled()
+  })
+
+  it('keeps catalog validation required after an unavailable catalog list', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    providerState.listModels.mockResolvedValue([
+      {
+        id: 'provider-model',
+        displayName: 'Provider Model',
+        inputModalities: ['text'],
+        isDefault: true
+      }
+    ])
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn().mockResolvedValue({
+        models: [],
+        unavailableReason: 'backend down'
+      }),
+      setSelectedModel: vi.fn().mockRejectedValue(new Error('model catalog unavailable')),
+      resolveClientModel: vi.fn().mockRejectedValue(new Error('model catalog unavailable'))
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      modelCatalog,
+      streamText
+    })
+
+    await service.listModels()
+    await expect(service.setSelectedModel('provider-model')).rejects.toThrow(
+      'model catalog unavailable'
+    )
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'provider-model'
+      },
+      port
+    )
+
+    expect(modelCatalog.setSelectedModel).toHaveBeenCalledWith('provider-model')
+    expect(modelCatalog.resolveClientModel).toHaveBeenCalledWith('provider-model')
+    expect(streamText).not.toHaveBeenCalled()
+    expect(port.messages).toEqual([{ type: 'error', error: 'model catalog unavailable' }])
+  })
+
   it('uses the configured model catalog for listModels', async () => {
     const catalogList = {
       models: [

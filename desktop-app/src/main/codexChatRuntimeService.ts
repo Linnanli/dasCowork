@@ -116,13 +116,19 @@ export class CodexChatRuntimeService {
     if (this.modelCatalog) {
       try {
         const list = await this.modelCatalog.listModels()
-        this.selectedModelId = list.selectedModelId
+        if (list.models.length > 0) {
+          this.selectedModelId = list.selectedModelId
+        }
         return list
       } catch (error) {
         return { models: [], unavailableReason: errorMessage(error) }
       }
     }
 
+    return this.listProviderModels()
+  }
+
+  private async listProviderModels(unavailableReason?: string): Promise<CodexModelList> {
     try {
       const models = await this.provider.listModels()
       const mapped = models.map<CodexModel>((model) => ({
@@ -137,7 +143,7 @@ export class CodexChatRuntimeService {
       this.selectedModelId = selectedModelId
       return { models: mapped, selectedModelId }
     } catch (error) {
-      return { models: [], unavailableReason: errorMessage(error) }
+      return { models: [], unavailableReason: unavailableReason ?? errorMessage(error) }
     }
   }
 

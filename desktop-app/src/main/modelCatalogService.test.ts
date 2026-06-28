@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { AdminBackendClientModel, FetchLike } from './adminBackendModelClient'
 import {
-  createModelCatalogServiceFromEnv,
+  createModelCatalogService,
   ModelCatalogService,
   toCodexModel,
   type ModelCatalogSource
@@ -272,13 +272,13 @@ describe('ModelCatalogService', () => {
   })
 })
 
-describe('createModelCatalogServiceFromEnv', () => {
-  it('returns undefined without ADMIN_BACKEND_URL', () => {
-    expect(createModelCatalogServiceFromEnv({})).toBeUndefined()
-    expect(createModelCatalogServiceFromEnv({ ADMIN_BACKEND_URL: '   ' })).toBeUndefined()
+describe('createModelCatalogService', () => {
+  it('returns undefined without adminBackendUrl', () => {
+    expect(createModelCatalogService({})).toBeUndefined()
+    expect(createModelCatalogService({ adminBackendUrl: '   ' })).toBeUndefined()
   })
 
-  it('returns ModelCatalogService with ADMIN_BACKEND_URL, ADMIN_BACKEND_MODEL_USER_ID, ADMIN_BACKEND_MODEL_CACHE_TTL_MS', async () => {
+  it('returns ModelCatalogService with admin backend config', async () => {
     vi.useFakeTimers()
 
     try {
@@ -286,10 +286,10 @@ describe('createModelCatalogServiceFromEnv', () => {
       vi.stubGlobal('fetch', fetchImpl)
       vi.setSystemTime(0)
 
-      const service = createModelCatalogServiceFromEnv({
-        ADMIN_BACKEND_URL: 'https://admin.example.com/backend/',
-        ADMIN_BACKEND_MODEL_USER_ID: 'user-1',
-        ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '5'
+      const service = createModelCatalogService({
+        adminBackendUrl: 'https://admin.example.com/backend/',
+        adminBackendModelUserId: 'user-1',
+        adminBackendModelCacheTtlMs: 5
       })
 
       expect(service).toBeInstanceOf(ModelCatalogService)
@@ -298,7 +298,7 @@ describe('createModelCatalogServiceFromEnv', () => {
       await service.listModels()
       vi.setSystemTime(4)
       await service.listModels()
-      vi.setSystemTime(6)
+      vi.setSystemTime(60_001)
       await service.resolveClientModel('gpt-4o')
 
       expect(fetchImpl).toHaveBeenCalledTimes(2)
