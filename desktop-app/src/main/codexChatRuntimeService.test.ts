@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { CodexChatRuntimeService, type CodexPortLike } from './codexChatRuntimeService'
+import {
+  CodexChatRuntimeService,
+  type CodexPortLike,
+  type ModelCatalogLike
+} from './codexChatRuntimeService'
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
@@ -27,7 +31,160 @@ class FakePort implements CodexPortLike {
   }
 }
 
+async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
+  if (process.env['NODE_ENV'] === '__unused_test_stream__') {
+    yield undefined as never
+  }
+}
+
 describe('CodexChatRuntimeService', () => {
+  it('uses the configured model catalog for listModels', async () => {
+    const catalogList = {
+      models: [
+        {
+          id: 'backend-model',
+          displayName: 'Backend Model',
+          description: 'Catalog model',
+          inputModalities: ['text'],
+          isDefault: true
+        }
+      ],
+      selectedModelId: 'backend-model'
+    }
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn().mockResolvedValue(catalogList),
+      setSelectedModel: vi.fn(),
+      resolveClientModel: vi.fn()
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      modelCatalog
+    })
+
+    await expect(service.listModels()).resolves.toEqual(catalogList)
+    expect(modelCatalog.listModels).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the catalog selected model when chat requests omit modelId', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn().mockResolvedValue({
+        models: [
+          {
+            id: 'backend-default',
+            displayName: 'Backend Default',
+            inputModalities: ['text'],
+            isDefault: true
+          }
+        ],
+        selectedModelId: 'backend-default'
+      }),
+      setSelectedModel: vi.fn(),
+      resolveClientModel: vi.fn().mockResolvedValue({
+        model_id: 'backend-default',
+        display_name: 'Backend Default',
+        description: null,
+        capabilities: ['text'],
+        is_default: true,
+        api_base_url: 'https://models.example.test',
+        api_key: 'secret'
+      })
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      modelCatalog
+    })
+
+    await service.listModels()
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: []
+      },
+      port
+    )
+
+    expect(modelCatalog.resolveClientModel).toHaveBeenCalledWith('backend-default')
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'backend-default'
+      })
+    )
+    expect(port.messages).toEqual([{ type: 'finish' }])
+  })
+
+  it('rejects chat request modelId values that are not in the catalog', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn(),
+      setSelectedModel: vi.fn(),
+      resolveClientModel: vi.fn().mockRejectedValue(new Error('Unknown model: unknown-model'))
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      modelCatalog
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'unknown-model'
+      },
+      port
+    )
+
+    expect(streamText).not.toHaveBeenCalled()
+    expect(port.messages).toEqual([{ type: 'error', error: 'Unknown model: unknown-model' }])
+  })
+
+  it('delegates selected model validation to the catalog', async () => {
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn(),
+      setSelectedModel: vi.fn().mockResolvedValue({ selectedModelId: 'backend-model' }),
+      resolveClientModel: vi.fn()
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      modelCatalog
+    })
+
+    await expect(service.setSelectedModel('backend-model')).resolves.toEqual({
+      selectedModelId: 'backend-model'
+    })
+    expect(modelCatalog.setSelectedModel).toHaveBeenCalledWith('backend-model')
+  })
+
   it('streams UI message chunks to the provided port', async () => {
     const port = new FakePort()
     const service = new CodexChatRuntimeService({

@@ -13,6 +13,7 @@ import {
   type CodexAppServerLaunchOptions
 } from './codexAppServerLaunch'
 import { createCodexAspProvider } from './codexAspProvider'
+import type { ModelCatalogService } from './modelCatalogService'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
@@ -45,10 +46,16 @@ type StreamTextLike = (input: {
   abortSignal: AbortSignal
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
+export type ModelCatalogLike = Pick<
+  ModelCatalogService,
+  'listModels' | 'setSelectedModel' | 'resolveClientModel'
+>
+
 export type CodexChatRuntimeServiceOptions = {
   cwd?: string
   defaultModel?: string
   launch?: CodexAppServerLaunchOptions
+  modelCatalog?: ModelCatalogLike
   streamText?: StreamTextLike
 }
 
@@ -57,6 +64,7 @@ export class CodexChatRuntimeService {
   private readonly cwd: string
   private readonly provider: CodexProvider
   private readonly launch: CodexAppServerLaunchOptions
+  private readonly modelCatalog: ModelCatalogLike | undefined
   private readonly streamText: StreamTextLike
   private selectedModelId: string | undefined
   private status: CodexStatus
@@ -72,6 +80,7 @@ export class CodexChatRuntimeService {
         resourcesPath: process.resourcesPath
       })
     this.streamText = options.streamText ?? defaultStreamText
+    this.modelCatalog = options.modelCatalog
     this.provider = createCodexAspProvider({
       launch: this.launch,
       cwd: this.cwd,
@@ -104,6 +113,16 @@ export class CodexChatRuntimeService {
   }
 
   async listModels(): Promise<CodexModelList> {
+    if (this.modelCatalog) {
+      try {
+        const list = await this.modelCatalog.listModels()
+        this.selectedModelId = list.selectedModelId
+        return list
+      } catch (error) {
+        return { models: [], unavailableReason: errorMessage(error) }
+      }
+    }
+
     try {
       const models = await this.provider.listModels()
       const mapped = models.map<CodexModel>((model) => ({
@@ -124,6 +143,12 @@ export class CodexChatRuntimeService {
 
   async setSelectedModel(modelId: string): Promise<{ selectedModelId: string }> {
     if (!modelId.trim()) throw new Error('modelId is required')
+    if (this.modelCatalog) {
+      const response = await this.modelCatalog.setSelectedModel(modelId)
+      this.selectedModelId = response.selectedModelId
+      return response
+    }
+
     this.selectedModelId = modelId
     return { selectedModelId: modelId }
   }
@@ -142,6 +167,7 @@ export class CodexChatRuntimeService {
       }
       const modelId = request.modelId ?? this.selectedModelId
       if (!modelId) throw new Error('No Codex model selected')
+      if (this.modelCatalog) await this.modelCatalog.resolveClientModel(modelId)
       const result = await this.streamText({
         request,
         modelId,
