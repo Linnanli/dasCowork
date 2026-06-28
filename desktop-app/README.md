@@ -52,6 +52,8 @@ npm run dev
 
 `ADMIN_BACKEND_MODEL_CACHE_TTL_MS` is optional and defaults to `60000`.
 
+After one successful catalog load, the main process reuses the stale cached catalog during transient backend failures so an active desktop session can continue validating previously loaded model ids.
+
 The backend response includes provider credentials for main-process use. Renderer IPC responses only receive the safe `CodexModelList` summary defined in `src/shared/codexIpcApi.ts`.
 
 This integration is Phase 1. It controls the model selector list and validates selected/requested model ids. It does not route inference through backend-provided `provider`, `api_base_url`, `api_key`, or `api_format`; chat still uses the existing Codex ASP provider.

@@ -80,6 +80,8 @@ export class ModelCatalogService {
       this.cache = { models, loadedAt: this.now() }
       return models
     } catch (error) {
+      // Fail open after a successful load so transient backend outages do not
+      // strand an already-running desktop session without model validation data.
       if (this.cache) return this.cache.models
       throw error
     }
