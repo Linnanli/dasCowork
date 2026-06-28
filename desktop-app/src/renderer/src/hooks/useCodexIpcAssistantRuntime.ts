@@ -5,15 +5,13 @@ import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
-  CodexModelList,
-  CodexStatus
+  CodexModelList
 } from '../../../shared/codexIpcApi'
 import type { ModelOption } from '../components/assistant-ui'
 import { ElectronIpcChatTransport } from '../lib/ElectronIpcChatTransport'
 
 export type CodexIpcAssistantRuntimeState = {
   runtime: ReturnType<typeof useAISDKRuntime>
-  status: CodexStatus | undefined
   serverRequests: readonly CodexApprovalRequest[]
   models: readonly ModelOption[]
   selectedModelId: string | undefined
@@ -26,29 +24,23 @@ export type CodexIpcAssistantRuntimeState = {
 }
 
 export function useCodexIpcAssistantRuntime(): CodexIpcAssistantRuntimeState {
-  const [status, setStatus] = useState<CodexStatus>()
   const [serverRequests, setServerRequests] = useState<CodexApprovalRequest[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
 
   useEffect(() => {
     let cancelled = false
-    void window.desktopCodex.getStatus().then((nextStatus) => {
-      if (!cancelled) setStatus(nextStatus)
-    })
     void window.desktopCodex.listModels().then((list) => {
       if (cancelled) return
       setModels(toModelOptions(list))
       setSelectedModelIdState(list.selectedModelId)
     })
-    const removeStatus = window.desktopCodex.onStatusChange(setStatus)
     const removeApproval = window.desktopCodex.onApprovalRequest((request) => {
       setServerRequests((current) => [...current, request])
     })
 
     return () => {
       cancelled = true
-      removeStatus()
       removeApproval()
     }
   }, [])
@@ -87,7 +79,6 @@ export function useCodexIpcAssistantRuntime(): CodexIpcAssistantRuntimeState {
 
   return {
     runtime,
-    status,
     serverRequests,
     models,
     selectedModelId,

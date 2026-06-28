@@ -109,7 +109,7 @@ export type DesktopCodexChatApi = {
   abortChatStream(streamId: string): void
 }
 
-function isExternalHttpUrl(value: string): boolean {
+export function isExternalHttpUrl(value: string): boolean {
   try {
     const url = new URL(value)
     return url.protocol === 'http:' || url.protocol === 'https:'

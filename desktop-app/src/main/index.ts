@@ -7,21 +7,13 @@ import { installWindowContextMenu } from './contextMenu'
 import { createMainWindowOptions } from './windowOptions'
 import {
   codexChatRequestSchema,
+  isExternalHttpUrl,
   codexOpenExternalHttpUrlPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema
 } from '../shared/codexIpcApi'
 
 const codexRuntime = new CodexChatRuntimeService()
-
-function isExternalHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
 
 async function openExternalHttpUrl(url: string): Promise<void> {
   if (!isExternalHttpUrl(url)) throw new Error('external URL must be http(s)')
@@ -71,7 +63,6 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = 'system'
 
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
-  ipcMain.on('ping', () => console.log('pong'))
 
   ipcMain.handle('codex:get-status', () => codexRuntime.getStatus())
   ipcMain.handle('codex:list-models', () => codexRuntime.listModels())
