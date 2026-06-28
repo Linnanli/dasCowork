@@ -4,11 +4,16 @@ directories:
   buildResources: build
 files:
   - '!**/.vscode/*'
+  - '!.bundle-resources/**'
+  - '!.code-review-graph/**'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!node_modules/**/*.map'
+  - '!node_modules/**/*.d.ts'
+  - '!node_modules/**/{demo,demos,docs,examples,test,tests,__tests__}/**'
 asarUnpack:
   - resources/**
 extraResources:
