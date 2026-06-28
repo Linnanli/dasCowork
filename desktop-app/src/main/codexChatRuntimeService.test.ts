@@ -163,6 +163,57 @@ describe('CodexChatRuntimeService', () => {
     expect(port.messages).toEqual([{ type: 'error', error: 'Unknown model: unknown-model' }])
   })
 
+  it('streams with the canonical catalog model id after resolving padded request values', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const modelCatalog: ModelCatalogLike = {
+      listModels: vi.fn(),
+      setSelectedModel: vi.fn(),
+      resolveClientModel: vi.fn().mockResolvedValue({
+        model_id: 'canonical-model',
+        display_name: 'Canonical Model',
+        description: null,
+        provider: 'openai',
+        capabilities: ['text'],
+        is_default: false,
+        api_base_url: 'https://models.example.test',
+        api_key: 'secret',
+        api_format: 'openai',
+        source: 'admin'
+      })
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      modelCatalog
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: '  canonical-model  '
+      },
+      port
+    )
+
+    expect(modelCatalog.resolveClientModel).toHaveBeenCalledWith('  canonical-model  ')
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'canonical-model'
+      })
+    )
+    expect(port.messages).toEqual([{ type: 'finish' }])
+  })
+
   it('delegates selected model validation to the catalog', async () => {
     const modelCatalog: ModelCatalogLike = {
       listModels: vi.fn(),

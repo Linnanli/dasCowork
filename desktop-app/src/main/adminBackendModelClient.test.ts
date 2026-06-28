@@ -39,6 +39,18 @@ describe('AdminBackendModelClient', () => {
     )
   })
 
+  it('rejects remote plaintext HTTP backend URLs', () => {
+    expect(() => normalizeAdminBackendBaseUrl('http://admin.example.com')).toThrow(
+      'ADMIN_BACKEND_URL must use https outside local development'
+    )
+  })
+
+  it('allows plaintext HTTP backend URLs for local development loopback hosts', () => {
+    expect(normalizeAdminBackendBaseUrl('http://localhost:3000/')).toBe('http://localhost:3000')
+    expect(normalizeAdminBackendBaseUrl('http://127.0.0.1:3000/')).toBe('http://127.0.0.1:3000')
+    expect(normalizeAdminBackendBaseUrl('http://[::1]:3000/')).toBe('http://[::1]:3000')
+  })
+
   it('fetches client models with user_id and parses the backend contract', async () => {
     const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse(200, [validModel]))
     const client = new AdminBackendModelClient({

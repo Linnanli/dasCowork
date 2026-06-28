@@ -167,10 +167,12 @@ export class CodexChatRuntimeService {
       }
       const modelId = request.modelId ?? this.selectedModelId
       if (!modelId) throw new Error('No Codex model selected')
-      if (this.modelCatalog) await this.modelCatalog.resolveClientModel(modelId)
+      const streamModelId = this.modelCatalog
+        ? (await this.modelCatalog.resolveClientModel(modelId)).model_id
+        : modelId
       const result = await this.streamText({
         request,
-        modelId,
+        modelId: streamModelId,
         provider: this.provider,
         abortSignal: abortController.signal
       })

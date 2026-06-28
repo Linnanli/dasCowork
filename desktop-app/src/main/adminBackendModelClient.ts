@@ -93,9 +93,21 @@ export function normalizeAdminBackendBaseUrl(baseUrl: string): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('ADMIN_BACKEND_URL must use http or https')
   }
+  if (url.protocol === 'http:' && !isLocalDevelopmentHost(url.hostname)) {
+    throw new Error('ADMIN_BACKEND_URL must use https outside local development')
+  }
 
   url.pathname = url.pathname.replace(/\/+$/, '')
   url.search = ''
   url.hash = ''
   return url.toString().replace(/\/$/, '')
+}
+
+function isLocalDevelopmentHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '[::1]' ||
+    hostname === '::1'
+  )
 }
