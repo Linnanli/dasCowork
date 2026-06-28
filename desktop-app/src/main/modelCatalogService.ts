@@ -1,0 +1,132 @@
+import type { CodexModel, CodexModelList } from '../shared/codexIpcApi'
+import { AdminBackendModelClient, type AdminBackendClientModel } from './adminBackendModelClient'
+
+export type ModelCatalogSource = {
+  listClientModels(): Promise<AdminBackendClientModel[]>
+}
+
+export type ModelCatalogServiceOptions = {
+  source: ModelCatalogSource
+  cacheTtlMs?: number
+  now?: () => number
+}
+
+type ModelCache = {
+  models: AdminBackendClientModel[]
+  loadedAt: number
+}
+
+export class ModelCatalogService {
+  private readonly source: ModelCatalogSource
+  private readonly cacheTtlMs: number
+  private readonly now: () => number
+  private cache: ModelCache | undefined
+  private selectedModelId: string | undefined
+
+  constructor(options: ModelCatalogServiceOptions) {
+    this.source = options.source
+    this.cacheTtlMs = options.cacheTtlMs ?? 60_000
+    this.now = options.now ?? Date.now
+  }
+
+  async listModels(force = false): Promise<CodexModelList> {
+    const models = await this.loadModels(force)
+    const selectedModelId = this.resolveSelectedModelId(models)
+    this.selectedModelId = selectedModelId
+
+    return {
+      models: models.map(toCodexModel),
+      selectedModelId
+    }
+  }
+
+  async setSelectedModel(modelId: string): Promise<{ selectedModelId: string }> {
+    const selectedModel = await this.resolveClientModel(modelId)
+    this.selectedModelId = selectedModel.model_id
+
+    return { selectedModelId: selectedModel.model_id }
+  }
+
+  async resolveClientModel(modelId: string): Promise<AdminBackendClientModel> {
+    const trimmed = modelId.trim()
+    if (!trimmed) throw new Error('Model id is required')
+
+    const models = await this.loadModels(false)
+    const model = models.find((candidate) => candidate.model_id === trimmed)
+    if (!model) throw new Error(`Unknown model: ${trimmed}`)
+
+    return model
+  }
+
+  private async loadModels(force: boolean): Promise<AdminBackendClientModel[]> {
+    if (!force && this.cache && this.now() - this.cache.loadedAt < this.cacheTtlMs) {
+      return this.cache.models
+    }
+
+    try {
+      const models = await this.source.listClientModels()
+      this.cache = { models, loadedAt: this.now() }
+      return models
+    } catch (error) {
+      if (this.cache) return this.cache.models
+      throw error
+    }
+  }
+
+  private resolveSelectedModelId(models: AdminBackendClientModel[]): string | undefined {
+    if (
+      this.selectedModelId &&
+      models.some((candidate) => candidate.model_id === this.selectedModelId)
+    ) {
+      return this.selectedModelId
+    }
+
+    return (
+      models.find((candidate) => candidate.is_default)?.model_id ?? models[0]?.model_id ?? undefined
+    )
+  }
+}
+
+export function toCodexModel(model: AdminBackendClientModel): CodexModel {
+  const capabilities = model.capabilities.map((capability) => capability.toLowerCase())
+  const inputModalities = ['text']
+
+  if (capabilities.includes('vision') || capabilities.includes('image')) {
+    inputModalities.push('image')
+  }
+
+  return {
+    id: model.model_id,
+    displayName: model.display_name || model.model_id,
+    description: model.description ?? undefined,
+    inputModalities,
+    isDefault: model.is_default
+  }
+}
+
+export function createModelCatalogServiceFromEnv(
+  env: NodeJS.ProcessEnv
+): ModelCatalogService | undefined {
+  const baseUrl = env['ADMIN_BACKEND_URL']?.trim()
+  if (!baseUrl) return undefined
+
+  return new ModelCatalogService({
+    source: new AdminBackendModelClient({
+      baseUrl,
+      userId: env['ADMIN_BACKEND_MODEL_USER_ID']
+    }),
+    cacheTtlMs: parseCacheTtlMs(env['ADMIN_BACKEND_MODEL_CACHE_TTL_MS'])
+  })
+}
+
+function parseCacheTtlMs(value: string | undefined): number {
+  if (!value) return 60_000
+
+  const trimmed = value.trim()
+  if (!/^\d+$/.test(trimmed)) return 60_000
+
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 60_000
+
+  return parsed
+}
