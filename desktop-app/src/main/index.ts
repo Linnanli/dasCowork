@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { installWindowContextMenu } from './contextMenu'
+import { createModelCatalogServiceFromEnv } from './modelCatalogService'
 import { createMainWindowOptions } from './windowOptions'
 import {
   codexChatRequestSchema,
@@ -13,7 +14,9 @@ import {
   codexSetSelectedModelPayloadSchema
 } from '../shared/codexIpcApi'
 
-const codexRuntime = new CodexChatRuntimeService()
+const codexRuntime = new CodexChatRuntimeService({
+  modelCatalog: createModelCatalogServiceFromEnv(process.env)
+})
 
 async function openExternalHttpUrl(url: string): Promise<void> {
   if (!isExternalHttpUrl(url)) throw new Error('external URL must be http(s)')
