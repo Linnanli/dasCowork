@@ -109,6 +109,36 @@ describe('ModelCatalogService', () => {
     expect(source.listClientModels).toHaveBeenCalledTimes(2)
   })
 
+  it('listModels returns an unavailable reason on cold-start backend failure', async () => {
+    const source: ModelCatalogSource = {
+      listClientModels: vi.fn().mockRejectedValue(new Error('backend down'))
+    }
+    const service = new ModelCatalogService({ source })
+
+    await expect(service.listModels()).resolves.toEqual({
+      models: [],
+      unavailableReason: 'backend down'
+    })
+  })
+
+  it('defaults invalid direct cacheTtlMs constructor input to 60000', async () => {
+    for (const cacheTtlMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      let now = 1_000
+      const source = createSource([backendModel])
+      const service = new ModelCatalogService({
+        source,
+        cacheTtlMs,
+        now: () => now
+      })
+
+      await service.listModels()
+      now = 2_000
+      await service.listModels()
+
+      expect(source.listClientModels).toHaveBeenCalledOnce()
+    }
+  })
+
   it('setSelectedModel rejects unknown models', async () => {
     const service = new ModelCatalogService({ source: createSource([backendModel]) })
 

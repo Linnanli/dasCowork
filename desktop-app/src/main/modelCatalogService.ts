@@ -25,12 +25,24 @@ export class ModelCatalogService {
 
   constructor(options: ModelCatalogServiceOptions) {
     this.source = options.source
-    this.cacheTtlMs = options.cacheTtlMs ?? 60_000
+    this.cacheTtlMs = normalizeCacheTtlMs(options.cacheTtlMs)
     this.now = options.now ?? Date.now
   }
 
   async listModels(force = false): Promise<CodexModelList> {
-    const models = await this.loadModels(force)
+    const models = await this.loadModels(force).catch((error: unknown) => {
+      return {
+        error
+      }
+    })
+
+    if (!Array.isArray(models)) {
+      return {
+        models: [],
+        unavailableReason: errorMessage(models.error)
+      }
+    }
+
     const selectedModelId = this.resolveSelectedModelId(models)
     this.selectedModelId = selectedModelId
 
@@ -125,8 +137,16 @@ function parseCacheTtlMs(value: string | undefined): number {
   const trimmed = value.trim()
   if (!/^\d+$/.test(trimmed)) return 60_000
 
-  const parsed = Number(trimmed)
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 60_000
+  return normalizeCacheTtlMs(Number(trimmed))
+}
 
-  return parsed
+function normalizeCacheTtlMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return 60_000
+
+  return value
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
 }
