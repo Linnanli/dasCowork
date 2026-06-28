@@ -42,7 +42,9 @@ describe('AdminBackendModelClient', () => {
   })
 
   it('fetches client models with user_id and parses the backend contract', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, [validModel]))
+    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+      jsonResponse(200, [validModel])
+    )
     const client = new AdminBackendModelClient({
       baseUrl: 'https://admin.example.com/backend/',
       userId: '00000000-0000-0000-0000-000000000001',
@@ -61,7 +63,9 @@ describe('AdminBackendModelClient', () => {
   })
 
   it('throws a readable error for non-2xx responses without echoing the body', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(500, { error: 'secret sk-test-key' }))
+    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+      jsonResponse(500, { error: 'secret sk-test-key' })
+    )
     const client = new AdminBackendModelClient({
       baseUrl: 'https://admin.example.com',
       fetchImpl
@@ -74,7 +78,7 @@ describe('AdminBackendModelClient', () => {
   })
 
   it('rejects malformed model payloads', async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
       jsonResponse(200, [{ ...validModel, capabilities: 'chat' }])
     )
     const client = new AdminBackendModelClient({
