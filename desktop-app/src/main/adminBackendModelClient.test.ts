@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import {
-  AdminBackendModelClient,
-  normalizeAdminBackendBaseUrl
-} from './adminBackendModelClient'
+import { AdminBackendModelClient, normalizeAdminBackendBaseUrl } from './adminBackendModelClient'
+import type { FetchLike } from './adminBackendModelClient'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -42,9 +40,7 @@ describe('AdminBackendModelClient', () => {
   })
 
   it('fetches client models with user_id and parses the backend contract', async () => {
-    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
-      jsonResponse(200, [validModel])
-    )
+    const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse(200, [validModel]))
     const client = new AdminBackendModelClient({
       baseUrl: 'https://admin.example.com/backend/',
       userId: '00000000-0000-0000-0000-000000000001',
@@ -62,8 +58,23 @@ describe('AdminBackendModelClient', () => {
     })
   })
 
+  it('preserves extra backend model fields returned by the admin backend', async () => {
+    const backendModel = {
+      ...validModel,
+      backend_model_id: 'model-record-1',
+      routing_weight: 100
+    }
+    const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse(200, [backendModel]))
+    const client = new AdminBackendModelClient({
+      baseUrl: 'https://admin.example.com',
+      fetchImpl
+    })
+
+    await expect(client.listClientModels()).resolves.toEqual([backendModel])
+  })
+
   it('throws a readable error for non-2xx responses without echoing the body', async () => {
-    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+    const fetchImpl = vi.fn<FetchLike>(async () =>
       jsonResponse(500, { error: 'secret sk-test-key' })
     )
     const client = new AdminBackendModelClient({
@@ -78,7 +89,7 @@ describe('AdminBackendModelClient', () => {
   })
 
   it('rejects malformed model payloads', async () => {
-    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+    const fetchImpl = vi.fn<FetchLike>(async () =>
       jsonResponse(200, [{ ...validModel, capabilities: 'chat' }])
     )
     const client = new AdminBackendModelClient({
@@ -86,8 +97,39 @@ describe('AdminBackendModelClient', () => {
       fetchImpl
     })
 
-    await expect(client.listClientModels()).rejects.toThrow(
-      'Invalid admin backend model response'
-    )
+    await expect(client.listClientModels()).rejects.toThrow('Invalid admin backend model response')
+  })
+
+  it('aborts the backend request when the timeout elapses', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const fetchImpl = vi.fn<FetchLike>(
+        async (...args: Parameters<FetchLike>) =>
+          new Promise<Response>((resolve, reject) => {
+            void resolve
+            const init = args[1]
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('Aborted', 'AbortError'))
+            )
+          })
+      )
+      const client = new AdminBackendModelClient({
+        baseUrl: 'https://admin.example.com',
+        fetchImpl,
+        timeoutMs: 25
+      })
+
+      const request = client.listClientModels()
+      const expectation = expect(request).rejects.toThrow(
+        'Timed out fetching admin backend models after 25ms'
+      )
+      await vi.advanceTimersByTimeAsync(25)
+
+      await expectation
+      expect(fetchImpl).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

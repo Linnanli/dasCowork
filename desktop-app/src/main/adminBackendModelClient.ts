@@ -1,17 +1,19 @@
 import { z } from 'zod'
 
-const adminBackendClientModelSchema = z.object({
-  model_id: z.string().min(1),
-  display_name: z.string().min(1),
-  description: z.string().nullable(),
-  provider: z.string().min(1),
-  is_default: z.boolean(),
-  capabilities: z.array(z.string()),
-  api_base_url: z.string().nullable(),
-  api_key: z.string().nullable(),
-  api_format: z.string().min(1),
-  source: z.string().min(1)
-})
+const adminBackendClientModelSchema = z
+  .object({
+    model_id: z.string().min(1),
+    display_name: z.string().min(1),
+    description: z.string().nullable(),
+    provider: z.string().min(1),
+    is_default: z.boolean(),
+    capabilities: z.array(z.string()),
+    api_base_url: z.string().nullable(),
+    api_key: z.string().nullable(),
+    api_format: z.string().min(1),
+    source: z.string().min(1)
+  })
+  .passthrough()
 
 const adminBackendClientModelsSchema = z.array(adminBackendClientModelSchema)
 
