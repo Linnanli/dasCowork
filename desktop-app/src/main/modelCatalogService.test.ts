@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { AdminBackendClientModel } from './adminBackendModelClient'
+import type { AdminBackendClientModel, FetchLike } from './adminBackendModelClient'
 import {
   createModelCatalogServiceFromEnv,
   ModelCatalogService,
@@ -21,10 +21,29 @@ const backendModel: AdminBackendClientModel = {
   source: 'admin'
 }
 
+const secondaryModel: AdminBackendClientModel = {
+  ...backendModel,
+  model_id: 'claude-3-5-sonnet',
+  display_name: 'Claude 3.5 Sonnet',
+  description: 'Text model',
+  provider: 'anthropic',
+  is_default: false,
+  capabilities: ['chat'],
+  api_base_url: 'https://api.anthropic.com/v1',
+  api_format: 'anthropic'
+}
+
 function createSource(models: AdminBackendClientModel[]): ModelCatalogSource {
   return {
     listClientModels: vi.fn(async () => models)
   }
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  })
 }
 
 describe('toCodexModel', () => {
@@ -109,6 +128,37 @@ describe('ModelCatalogService', () => {
     expect(source.listClientModels).toHaveBeenCalledTimes(2)
   })
 
+  it('reuses the previous valid selected model after listModels', async () => {
+    const service = new ModelCatalogService({
+      source: createSource([backendModel, secondaryModel])
+    })
+
+    await service.setSelectedModel('claude-3-5-sonnet')
+
+    await expect(service.listModels()).resolves.toMatchObject({
+      selectedModelId: 'claude-3-5-sonnet'
+    })
+  })
+
+  it('selects the default model then first model when no selected model exists', async () => {
+    const serviceWithDefault = new ModelCatalogService({
+      source: createSource([secondaryModel, backendModel])
+    })
+    const serviceWithoutDefault = new ModelCatalogService({
+      source: createSource([
+        { ...backendModel, is_default: false },
+        { ...secondaryModel, is_default: false }
+      ])
+    })
+
+    await expect(serviceWithDefault.listModels()).resolves.toMatchObject({
+      selectedModelId: 'gpt-4o'
+    })
+    await expect(serviceWithoutDefault.listModels()).resolves.toMatchObject({
+      selectedModelId: 'gpt-4o'
+    })
+  })
+
   it('listModels returns an unavailable reason on cold-start backend failure', async () => {
     const source: ModelCatalogSource = {
       listClientModels: vi.fn().mockRejectedValue(new Error('backend down'))
@@ -139,6 +189,20 @@ describe('ModelCatalogService', () => {
     }
   })
 
+  it('setSelectedModel accepts trimmed model ids', async () => {
+    const service = new ModelCatalogService({ source: createSource([backendModel]) })
+
+    await expect(service.setSelectedModel('  gpt-4o  ')).resolves.toEqual({
+      selectedModelId: 'gpt-4o'
+    })
+  })
+
+  it('setSelectedModel rejects blank model ids', async () => {
+    const service = new ModelCatalogService({ source: createSource([backendModel]) })
+
+    await expect(service.setSelectedModel('   ')).rejects.toThrow('modelId is required')
+  })
+
   it('setSelectedModel rejects unknown models', async () => {
     const service = new ModelCatalogService({ source: createSource([backendModel]) })
 
@@ -153,12 +217,35 @@ describe('ModelCatalogService', () => {
     await expect(service.resolveClientModel('gpt-4o')).resolves.toEqual(backendModel)
   })
 
+  it('resolveClientModel accepts trimmed model ids', async () => {
+    const service = new ModelCatalogService({ source: createSource([backendModel]) })
+
+    await expect(service.resolveClientModel('  gpt-4o  ')).resolves.toEqual(backendModel)
+  })
+
+  it('resolveClientModel rejects blank model ids', async () => {
+    const service = new ModelCatalogService({ source: createSource([backendModel]) })
+
+    await expect(service.resolveClientModel('   ')).rejects.toThrow('modelId is required')
+  })
+
   it('resolveClientModel rejects unknown models', async () => {
     const service = new ModelCatalogService({ source: createSource([backendModel]) })
 
     await expect(service.resolveClientModel('unknown-model')).rejects.toThrow(
       'Unknown model: unknown-model'
     )
+  })
+
+  it('resolveClientModel rejects cold-load failures with the original error', async () => {
+    const error = new Error('backend down')
+    const service = new ModelCatalogService({
+      source: {
+        listClientModels: vi.fn().mockRejectedValue(error)
+      }
+    })
+
+    await expect(service.resolveClientModel('gpt-4o')).rejects.toBe(error)
   })
 })
 
@@ -169,12 +256,35 @@ describe('createModelCatalogServiceFromEnv', () => {
   })
 
   it('returns ModelCatalogService with ADMIN_BACKEND_URL, ADMIN_BACKEND_MODEL_USER_ID, ADMIN_BACKEND_MODEL_CACHE_TTL_MS', async () => {
-    const service = createModelCatalogServiceFromEnv({
-      ADMIN_BACKEND_URL: 'https://admin.example.com',
-      ADMIN_BACKEND_MODEL_USER_ID: 'user-1',
-      ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '2500'
-    })
+    vi.useFakeTimers()
 
-    expect(service).toBeInstanceOf(ModelCatalogService)
+    try {
+      const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse(200, [backendModel]))
+      vi.stubGlobal('fetch', fetchImpl)
+      vi.setSystemTime(0)
+
+      const service = createModelCatalogServiceFromEnv({
+        ADMIN_BACKEND_URL: 'https://admin.example.com/backend/',
+        ADMIN_BACKEND_MODEL_USER_ID: 'user-1',
+        ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '5'
+      })
+
+      expect(service).toBeInstanceOf(ModelCatalogService)
+      if (!service) throw new Error('expected model catalog service')
+
+      await service.listModels()
+      vi.setSystemTime(4)
+      await service.listModels()
+      vi.setSystemTime(6)
+      await service.resolveClientModel('gpt-4o')
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      expect(String(fetchImpl.mock.calls[0][0])).toBe(
+        'https://admin.example.com/backend/api/client-models?user_id=user-1'
+      )
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
   })
 })

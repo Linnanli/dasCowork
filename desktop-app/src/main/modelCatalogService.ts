@@ -61,7 +61,7 @@ export class ModelCatalogService {
 
   async resolveClientModel(modelId: string): Promise<AdminBackendClientModel> {
     const trimmed = modelId.trim()
-    if (!trimmed) throw new Error('Model id is required')
+    if (!trimmed) throw new Error('modelId is required')
 
     const models = await this.loadModels(false)
     const model = models.find((candidate) => candidate.model_id === trimmed)
