@@ -13,7 +13,6 @@ import {
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
   type QuoteMessagePartProps,
-  type ReasoningMessagePartProps,
   type TextMessagePartProps,
   type Unstable_SlashCommand,
   type Unstable_TriggerItem,
@@ -63,7 +62,10 @@ import {
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { cn } from './lib/utils'
-import { isPendingAssistantMessageContent } from './lib/assistantMessages'
+import {
+  hasVisibleAssistantTextContent,
+  pendingAssistantMessageText
+} from './lib/assistantMessages'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ModelOption } from './components/assistant-ui'
 
@@ -580,7 +582,7 @@ function AssistantMessage(): React.JSX.Element {
   const isThinking = useAuiState(
     (state) =>
       state.message.status?.type === 'running' &&
-      isPendingAssistantMessageContent(state.message.content)
+      !hasVisibleAssistantTextContent(state.message.content)
   )
 
   return (
@@ -596,7 +598,11 @@ function AssistantMessage(): React.JSX.Element {
           isThinking && 'shimmer text-foreground/60 motion-reduce:animate-none'
         )}
       >
-        <MessagePrimitive.Parts components={{ Text: AssistantText, Reasoning: ReasoningPart }} />
+        {isThinking ? (
+          pendingAssistantMessageText
+        ) : (
+          <MessagePrimitive.Parts components={{ Text: AssistantText }} />
+        )}
         <MessagePrimitive.Error />
       </div>
       {isThinking ? null : (
@@ -711,18 +717,6 @@ function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
 
 function AssistantText(): React.JSX.Element {
   return <StreamdownTextPrimitive caret="block" defer plugins={streamdownPlugins} />
-}
-
-function ReasoningPart({ text }: ReasoningMessagePartProps): React.JSX.Element {
-  return (
-    <section
-      className="my-2 rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-      data-slot="aui_reasoning-part"
-    >
-      <div className="font-medium text-foreground">推理摘要</div>
-      <div className="mt-2 whitespace-pre-wrap">{text}</div>
-    </section>
-  )
 }
 
 function UserActionBar(): React.JSX.Element {

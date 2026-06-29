@@ -1,16 +1,18 @@
 export const pendingAssistantMessageText = '正在思考'
 
-type PendingMessageContentPart = {
+type AssistantMessageContentPart = {
   readonly type: string
   readonly text?: string
 }
 
-export function isPendingAssistantMessageContent(
-  content: readonly PendingMessageContentPart[]
+export function hasVisibleAssistantTextContent(
+  content: readonly AssistantMessageContentPart[]
 ): boolean {
-  return (
-    content.length === 1 &&
-    content[0]?.type === 'text' &&
-    content[0].text === pendingAssistantMessageText
+  return content.some(
+    (part) =>
+      part.type === 'text' &&
+      typeof part.text === 'string' &&
+      part.text.trim().length > 0 &&
+      part.text !== pendingAssistantMessageText
   )
 }

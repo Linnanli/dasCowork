@@ -554,7 +554,7 @@ describe('App composer', () => {
     })
   })
 
-  it('shows reasoning summary content instead of the thinking placeholder once reasoning streams', () => {
+  it('keeps the thinking placeholder while only reasoning streams', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [{ type: 'reasoning', text: '正在整理上下文' }]
@@ -566,9 +566,41 @@ describe('App composer', () => {
     const assistantContent = container.querySelector('[data-slot="aui_assistant-message-content"]')
     const reasoning = container.querySelector('[data-slot="aui_reasoning-part"]')
 
+    expect(assistantContent?.className).toContain('shimmer')
+    expect(assistantContent?.textContent).toContain('正在思考')
+    expect(reasoning).toBeNull()
+    expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).toBeNull()
+  })
+
+  it('hides the thinking placeholder once assistant text is visible', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [{ type: 'text', text: '你好，有什么可以帮你？' }]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const assistantContent = container.querySelector('[data-slot="aui_assistant-message-content"]')
+
     expect(assistantContent?.className).not.toContain('shimmer')
-    expect(reasoning?.textContent).toContain('推理摘要')
-    expect(reasoning?.textContent).toContain('正在整理上下文')
+    expect(assistantContent?.textContent).not.toContain('正在思考')
+    expect(container.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
+  })
+
+  it('does not render reasoning summary parts after the assistant finishes', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [{ type: 'reasoning', text: '推理内容' }]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="aui_reasoning-part"]')).toBeNull()
+    expect(container.textContent).not.toContain('推理摘要')
+    expect(container.textContent).not.toContain('推理内容')
   })
 
   it('does not render the server request panel when there is no queued request', () => {
