@@ -76,6 +76,10 @@ async function persistProjectAssignment({
 }): Promise<void> {
   if (!projectStore || !resolvedTarget.projectAssignment) return
 
+  // The provider stream wrapper does not currently expose the app-server thread id here.
+  // Persist against the renderer conversation id when present, otherwise the request chat id.
+  // When provider metadata extraction is added, this key should be normalized to the app-server
+  // thread id at the same boundary.
   const conversationId = request.body?.conversationId ?? request.chatId
   const state = await projectStore.getState()
   await projectStore.setState({

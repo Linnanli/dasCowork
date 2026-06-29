@@ -24,6 +24,8 @@ import {
   CodexChatRuntimeService,
   type CodexPortLike
 } from '../codexChatRuntimeService'
+import { ProjectStore, createDefaultProjectState } from '../projects/ProjectStore'
+import { startConversation } from './startConversation'
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
@@ -110,5 +112,49 @@ describe('startConversation', () => {
       cwd: '/malicious'
     })
     expect(port.messages).toEqual([{ type: 'finish' }])
+  })
+
+  it('persists project assignment by request chat id when no conversation id is available', async () => {
+    const projectStore = ProjectStore.inMemory(createDefaultProjectState())
+    const projectService = {
+      resolveNewThreadTarget: vi.fn().mockResolvedValue({
+        hostId: 'local',
+        cwd: '/repo',
+        workspaceRoots: ['/repo'],
+        workspaceKind: 'project',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: '/repo',
+          path: '/repo',
+          cwd: '/repo'
+        }
+      }),
+      resolveExistingThreadTarget: vi.fn()
+    }
+
+    await startConversation({
+      request: {
+        chatId: 'chat-fallback',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: {
+          projectSelection: { projectKind: 'path', path: '/repo' }
+        }
+      },
+      projectService,
+      projectStore
+    })
+
+    await expect(projectStore.getState()).resolves.toMatchObject({
+      threadProjectAssignments: {
+        'chat-fallback': {
+          projectKind: 'local',
+          projectId: '/repo',
+          path: '/repo',
+          cwd: '/repo'
+        }
+      }
+    })
   })
 })

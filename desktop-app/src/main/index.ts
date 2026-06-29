@@ -5,6 +5,7 @@ import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { installWindowContextMenu } from './contextMenu'
 import { createModelCatalogService } from './modelCatalogService'
+import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
 import {
@@ -15,8 +16,13 @@ import {
   codexSetSelectedModelPayloadSchema
 } from '../shared/codexIpcApi'
 
+const projectRuntimeServices = createProjectRuntimeServices({
+  userDataPath: app.getPath('userData')
+})
 const codexRuntime = new CodexChatRuntimeService({
-  modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env))
+  modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
+  projectService: projectRuntimeServices.projectService,
+  projectStore: projectRuntimeServices.projectStore
 })
 
 async function openExternalHttpUrl(url: string): Promise<void> {
