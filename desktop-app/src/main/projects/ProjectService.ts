@@ -124,7 +124,7 @@ export class ProjectService {
       return input.routeFallback
     }
 
-    if (input.allowActiveProjectFallback) {
+    if (input.allowActiveProjectFallback && !input.threadId) {
       return this.resolveActiveProjectFallback(state)
     }
 

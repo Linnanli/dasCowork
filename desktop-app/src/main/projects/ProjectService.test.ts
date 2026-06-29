@@ -259,7 +259,7 @@ describe('ProjectService', () => {
     ).resolves.toBeNull()
   })
 
-  it('uses active project only when existing resolution allows new home fallback', async () => {
+  it('does not use active project for existing thread continuation even when fallback is allowed', async () => {
     const { service, readThread } = makeProjectService({
       activeLocalProjectId: 'p1',
       localProjects: {
@@ -282,11 +282,36 @@ describe('ProjectService', () => {
         threadId: 't1',
         allowActiveProjectFallback: true
       })
+    ).resolves.toBeNull()
+  })
+
+  it('uses active project fallback for brand-new home composer state', async () => {
+    const { service, readThread } = makeProjectService({
+      activeLocalProjectId: 'p1',
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/active/repo']
+        }
+      }
+    })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        allowActiveProjectFallback: true
+      })
     ).resolves.toMatchObject({
       hostId: 'local',
       cwd: '/active/repo',
       workspaceRoots: ['/active/repo'],
       workspaceKind: 'project'
     })
+    expect(readThread).not.toHaveBeenCalled()
   })
 })
