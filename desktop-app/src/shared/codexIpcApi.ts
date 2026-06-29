@@ -1,6 +1,9 @@
 import type { UIMessage, UIMessageChunk } from 'ai'
 import { z } from 'zod'
 
+import { projectSelectionSchema } from './projects/projectSchemas'
+import type { ProjectSelection } from './projects/projectTypes'
+
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
 
 export type CodexStatus = {
@@ -31,8 +34,24 @@ export type CodexChatRequest = {
   messages: UIMessage[]
   modelId?: string
   metadata?: unknown
-  body?: Record<string, unknown>
+  body?: CodexChatRequestBody
 }
+
+export type CodexChatRequestBody = {
+  system?: string
+  projectSelection?: ProjectSelection
+  conversationId?: string
+  threadId?: string
+} & Record<string, unknown>
+
+export const codexChatRequestBodySchema = z
+  .object({
+    system: z.string().optional(),
+    projectSelection: projectSelectionSchema.optional(),
+    conversationId: z.string().min(1).optional(),
+    threadId: z.string().min(1).optional()
+  })
+  .catchall(z.unknown()) satisfies z.ZodType<CodexChatRequestBody>
 
 export type CodexChatStreamEvent =
   | { type: 'chunk'; chunk: UIMessageChunk }
@@ -70,7 +89,7 @@ export const codexChatRequestSchema = z.object({
   messages: z.array(z.custom<UIMessage>(isUiMessage)),
   modelId: z.string().min(1).optional(),
   metadata: z.unknown().optional(),
-  body: z.record(z.string(), z.unknown()).optional()
+  body: codexChatRequestBodySchema.optional()
 }) satisfies z.ZodType<CodexChatRequest>
 
 export const codexApprovalResponseSchema = z.discriminatedUnion('action', [

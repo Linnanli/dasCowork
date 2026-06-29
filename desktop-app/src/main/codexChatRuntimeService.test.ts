@@ -13,6 +13,13 @@ vi.mock('./codexAspProvider', () => ({
   }))
 }))
 
+vi.mock('electron', () => ({
+  app: {
+    getAppPath: () => '/app',
+    isPackaged: false
+  }
+}))
+
 import {
   CodexChatRuntimeService,
   type CodexPortLike,

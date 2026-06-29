@@ -22,6 +22,8 @@ import {
 } from './codexAppServerLaunch'
 import { createCodexAspProvider } from './codexAspProvider'
 import type { ModelCatalogService } from './modelCatalogService'
+import type { ProjectStoreLike, ProjectServiceLike } from './threads/startConversation'
+import { startConversation, type ConversationExecutionTarget } from './threads/startConversation'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
@@ -53,6 +55,7 @@ type StreamTextLike = (input: {
   provider: CodexProvider
   abortSignal: AbortSignal
   clientModel?: AdminBackendClientModel
+  executionTarget?: ConversationExecutionTarget
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 export type ModelCatalogLike = Pick<
@@ -65,6 +68,8 @@ export type CodexChatRuntimeServiceOptions = {
   defaultModel?: string
   launch?: CodexAppServerLaunchOptions
   modelCatalog?: ModelCatalogLike
+  projectService?: ProjectServiceLike
+  projectStore?: ProjectStoreLike
   streamText?: StreamTextLike
 }
 
@@ -74,6 +79,8 @@ export class CodexChatRuntimeService {
   private readonly provider: CodexProvider
   private readonly launch: CodexAppServerLaunchOptions
   private readonly modelCatalog: ModelCatalogLike | undefined
+  private readonly projectService: ProjectServiceLike | undefined
+  private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
   private selectedModelId: string | undefined
   private status: CodexStatus
@@ -90,6 +97,8 @@ export class CodexChatRuntimeService {
       })
     this.streamText = options.streamText ?? defaultStreamText
     this.modelCatalog = options.modelCatalog
+    this.projectService = options.projectService
+    this.projectStore = options.projectStore
     this.provider = createCodexAspProvider({
       launch: this.launch,
       cwd: this.cwd,
@@ -186,12 +195,18 @@ export class CodexChatRuntimeService {
         ? await this.modelCatalog.resolveClientModel(modelId)
         : undefined
       const streamModelId = clientModel?.model_id ?? modelId
+      const conversation = await startConversation({
+        request,
+        projectService: this.projectService,
+        projectStore: this.projectStore
+      })
       const result = await this.streamText({
         request,
         modelId: streamModelId,
         provider: this.provider,
         abortSignal: abortController.signal,
-        clientModel
+        clientModel,
+        executionTarget: conversation.executionTarget
       })
       this.status = {
         state: 'ready',
@@ -288,19 +303,27 @@ async function defaultStreamText({
   modelId,
   provider,
   abortSignal,
-  clientModel
+  clientModel,
+  executionTarget
 }: {
   request: CodexChatRequest
   modelId: string
   provider: CodexProvider
   abortSignal: AbortSignal
   clientModel?: AdminBackendClientModel
+  executionTarget?: ConversationExecutionTarget
 }): Promise<StreamTextLikeResult> {
   const modelMessages = await convertToModelMessages(request.messages)
   const system = typeof request.body?.system === 'string' ? request.body.system : undefined
-  const cwd = typeof request.body?.cwd === 'string' ? request.body.cwd : undefined
   const model = resolveLanguageModel({ provider, modelId, clientModel })
-  const providerOptions = codexCallOptions({ model: modelId, summary: 'auto', cwd })
+  const providerOptions = codexCallOptions({
+    model: modelId,
+    summary: 'auto',
+    ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
+    ...(executionTarget?.runtimeWorkspaceRoots
+      ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
+      : {})
+  })
 
   return aiStreamText({
     model,
