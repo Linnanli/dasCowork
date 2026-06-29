@@ -150,11 +150,7 @@ export class ProjectService {
 
   private async resolveLocalProject(project: LocalProject): Promise<ResolvedExecutionTarget> {
     const roots = await this.validateLocalRoots(project.writableRoots)
-    const cwd = project.defaultCwd ?? roots[0] ?? null
-
-    if (project.defaultCwd) {
-      await this.dependencies.validateLocalRoot(project.defaultCwd)
-    }
+    const cwd = await this.resolveLocalProjectCwd(project, roots)
 
     return {
       hostId: 'local',
@@ -167,6 +163,23 @@ export class ProjectService {
         cwd
       }
     }
+  }
+
+  private async resolveLocalProjectCwd(
+    project: LocalProject,
+    roots: string[]
+  ): Promise<string | null> {
+    if (!project.defaultCwd) {
+      return roots[0] ?? null
+    }
+
+    const { realPath } = await this.dependencies.validateLocalRoot(project.defaultCwd)
+
+    if (!roots.includes(realPath)) {
+      throw new Error(`Default cwd is not in writable roots: ${project.defaultCwd}`)
+    }
+
+    return realPath
   }
 
   private async resolveRemoteProject(project: RemoteProject): Promise<ResolvedExecutionTarget> {
@@ -211,11 +224,15 @@ export class ProjectService {
     return result.thread?.cwd ?? null
   }
 
-  private resolveAssignmentTarget(
+  private async resolveAssignmentTarget(
     assignment: ThreadProjectAssignment,
     state: ProjectState
-  ): ResolvedExecutionTarget {
+  ): Promise<ResolvedExecutionTarget> {
     if (assignment.projectKind === 'remote') {
+      if (assignment.cwd) {
+        await this.dependencies.validateRemoteRoot(assignment.hostId, assignment.cwd)
+      }
+
       return {
         hostId: assignment.hostId,
         cwd: assignment.cwd,
@@ -235,15 +252,56 @@ export class ProjectService {
       }
     }
 
+    return this.resolveLocalAssignmentTarget(assignment, state)
+  }
+
+  private async resolveLocalAssignmentTarget(
+    assignment: Extract<ThreadProjectAssignment, { projectKind: 'local' }>,
+    state: ProjectState
+  ): Promise<ResolvedExecutionTarget> {
     const project = state.localProjects[assignment.projectId]
-    const workspaceRoots = project?.writableRoots ?? (assignment.cwd ? [assignment.cwd] : [])
+
+    if (project) {
+      const workspaceRoots = await this.validateLocalRoots(project.writableRoots)
+      const cwd = assignment.cwd
+        ? (await this.dependencies.validateLocalRoot(assignment.cwd)).realPath
+        : null
+
+      if (cwd && !workspaceRoots.includes(cwd)) {
+        throw new Error(`Assigned cwd is not in writable roots: ${assignment.cwd}`)
+      }
+
+      return {
+        hostId: 'local',
+        cwd,
+        workspaceRoots,
+        workspaceKind: 'project',
+        projectAssignment: {
+          ...assignment,
+          cwd
+        }
+      }
+    }
+
+    const localRoot = assignment.path ?? assignment.cwd
+    const resolvedRoot = localRoot
+      ? (await this.dependencies.validateLocalRoot(localRoot)).realPath
+      : null
+    const projectAssignment = {
+      ...assignment,
+      cwd: resolvedRoot
+    }
+
+    if (assignment.path && resolvedRoot) {
+      projectAssignment.path = resolvedRoot
+    }
 
     return {
       hostId: 'local',
-      cwd: assignment.cwd,
-      workspaceRoots,
+      cwd: resolvedRoot,
+      workspaceRoots: resolvedRoot ? [resolvedRoot] : [],
       workspaceKind: 'project',
-      projectAssignment: assignment
+      projectAssignment
     }
   }
 

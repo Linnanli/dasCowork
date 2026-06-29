@@ -6,11 +6,7 @@ import {
   type ProjectServiceDependencies,
   type ThreadReader
 } from './ProjectService'
-import {
-  ProjectStore,
-  createDefaultProjectState,
-  type ProjectState
-} from './ProjectStore'
+import { ProjectStore, createDefaultProjectState, type ProjectState } from './ProjectStore'
 
 const now = '2026-06-29T00:00:00.000Z'
 
@@ -111,6 +107,64 @@ describe('ProjectService', () => {
     })
   })
 
+  it('uses normalized local project defaultCwd when it matches a writable root', async () => {
+    const { service, validateLocalRoot } = makeProjectService({
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/repo', '/repo/packages/api'],
+          defaultCwd: '/repo/link-api'
+        }
+      }
+    })
+    validateLocalRoot.mockImplementation(async (path: string) => ({
+      realPath: path === '/repo/link-api' ? '/repo/packages/api' : path
+    }))
+
+    await expect(
+      service.resolveNewThreadTarget({
+        selection: { projectKind: 'local', projectId: 'p1' },
+        prompt: 'fix api'
+      })
+    ).resolves.toMatchObject({
+      cwd: '/repo/packages/api',
+      workspaceRoots: ['/repo', '/repo/packages/api'],
+      projectAssignment: { projectKind: 'local', projectId: 'p1', cwd: '/repo/packages/api' }
+    })
+  })
+
+  it('rejects local project defaultCwd outside writable roots after normalization', async () => {
+    const { service, validateLocalRoot } = makeProjectService({
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/repo'],
+          defaultCwd: '/outside-link'
+        }
+      }
+    })
+    validateLocalRoot.mockImplementation(async (path: string) => ({
+      realPath: path === '/outside-link' ? '/outside' : path
+    }))
+
+    await expect(
+      service.resolveNewThreadTarget({
+        selection: { projectKind: 'local', projectId: 'p1' },
+        prompt: 'fix api'
+      })
+    ).rejects.toThrow('Default cwd is not in writable roots')
+  })
+
   it('resolves remote project to host and remote root', async () => {
     const { service, validateRemoteRoot } = makeProjectService({
       remoteProjects: [
@@ -193,12 +247,23 @@ describe('ProjectService', () => {
   })
 
   it('resolves existing thread from stored assignment before app-server cwd', async () => {
-    const { service, readThread } = makeProjectService({
+    const { service, readThread, validateLocalRoot } = makeProjectService({
       threadProjectAssignments: {
         c1: {
           projectKind: 'local',
           projectId: 'p1',
           cwd: '/assigned/cwd'
+        }
+      },
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/assigned/cwd']
         }
       }
     })
@@ -215,6 +280,105 @@ describe('ProjectService', () => {
       workspaceKind: 'project'
     })
     expect(readThread).not.toHaveBeenCalled()
+    expect(validateLocalRoot).toHaveBeenCalledWith('/assigned/cwd')
+  })
+
+  it('validates and canonicalizes local assignments for existing threads', async () => {
+    const { service, validateLocalRoot } = makeProjectService({
+      threadProjectAssignments: {
+        c1: {
+          projectKind: 'local',
+          projectId: 'p1',
+          cwd: '/repo/link-api'
+        }
+      },
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/repo', '/repo/packages/api']
+        }
+      }
+    })
+    validateLocalRoot.mockImplementation(async (path: string) => ({
+      realPath: path === '/repo/link-api' ? '/repo/packages/api' : path
+    }))
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        threadId: 't1'
+      })
+    ).resolves.toMatchObject({
+      hostId: 'local',
+      cwd: '/repo/packages/api',
+      workspaceRoots: ['/repo', '/repo/packages/api'],
+      workspaceKind: 'project',
+      projectAssignment: { projectKind: 'local', projectId: 'p1', cwd: '/repo/packages/api' }
+    })
+  })
+
+  it('validates local assignment path when assigned project no longer exists', async () => {
+    const { service, validateLocalRoot } = makeProjectService({
+      threadProjectAssignments: {
+        c1: {
+          projectKind: 'local',
+          projectId: '/stale/link',
+          path: '/stale/link',
+          cwd: null
+        }
+      }
+    })
+    validateLocalRoot.mockResolvedValueOnce({ realPath: '/real/stale' })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        threadId: 't1'
+      })
+    ).resolves.toMatchObject({
+      hostId: 'local',
+      cwd: '/real/stale',
+      workspaceRoots: ['/real/stale'],
+      workspaceKind: 'project',
+      projectAssignment: {
+        projectKind: 'local',
+        projectId: '/stale/link',
+        path: '/real/stale',
+        cwd: '/real/stale'
+      }
+    })
+    expect(validateLocalRoot).toHaveBeenCalledWith('/stale/link')
+  })
+
+  it('validates remote assignments for existing threads', async () => {
+    const { service, validateRemoteRoot } = makeProjectService({
+      threadProjectAssignments: {
+        c1: {
+          projectKind: 'remote',
+          projectId: 'r1',
+          hostId: 'ssh-prod',
+          cwd: '/srv/app'
+        }
+      }
+    })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        threadId: 't1'
+      })
+    ).resolves.toMatchObject({
+      hostId: 'ssh-prod',
+      cwd: '/srv/app',
+      workspaceRoots: ['/srv/app'],
+      workspaceKind: 'project'
+    })
+    expect(validateRemoteRoot).toHaveBeenCalledWith('ssh-prod', '/srv/app')
   })
 
   it('falls back to app-server thread cwd for existing threads', async () => {
@@ -232,6 +396,39 @@ describe('ProjectService', () => {
       workspaceKind: 'project'
     } satisfies ResolvedExecutionTarget)
     expect(readThread).toHaveBeenCalledWith('t1')
+  })
+
+  it('returns route fallback before active project fallback', async () => {
+    const routeFallback = {
+      hostId: 'local',
+      cwd: '/route/cwd',
+      workspaceRoots: ['/route/cwd'],
+      workspaceKind: 'project'
+    } satisfies ResolvedExecutionTarget
+    const { service, readThread } = makeProjectService({
+      activeLocalProjectId: 'p1',
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/active/repo']
+        }
+      }
+    })
+    readThread.mockResolvedValueOnce({ thread: { cwd: null } })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        threadId: 't1',
+        routeFallback,
+        allowActiveProjectFallback: true
+      })
+    ).resolves.toBe(routeFallback)
   })
 
   it('does not use active project for existing thread continuation by default', async () => {
