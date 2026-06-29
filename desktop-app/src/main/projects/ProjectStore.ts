@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import type { ThreadProjectAssignment } from '../../shared/projects/projectTypes'
@@ -51,6 +51,13 @@ export type ProjectState = {
   projectlessHints: Record<string, { workspaceRoot: string | null; outputDirectory: string | null }>
 }
 
+type ProjectStateWriter = (filePath: string, state: ProjectState) => Promise<void>
+
+type ProjectStoreDiskOptions = {
+  initialState?: ProjectState
+  writeJsonAtomically?: ProjectStateWriter
+}
+
 export function createDefaultProjectState(): ProjectState {
   return {
     workspaceRootOptions: [],
@@ -74,8 +81,13 @@ function cloneState(state: ProjectState): ProjectState {
 
 export class ProjectStore {
   private state: ProjectState
+  private writeQueue = Promise.resolve()
 
-  private constructor(private readonly filePath?: string, initialState = createDefaultProjectState()) {
+  private constructor(
+    private readonly filePath?: string,
+    initialState = createDefaultProjectState(),
+    private readonly writeProjectState: ProjectStateWriter = writeJsonAtomically
+  ) {
     this.state = cloneState(initialState)
   }
 
@@ -83,8 +95,10 @@ export class ProjectStore {
     return new ProjectStore(undefined, initialState)
   }
 
-  static onDisk(filePath: string, initialState?: ProjectState): ProjectStore {
-    return new ProjectStore(filePath, initialState)
+  static onDisk(filePath: string, options?: ProjectState | ProjectStoreDiskOptions): ProjectStore {
+    const diskOptions = toDiskOptions(options)
+
+    return new ProjectStore(filePath, diskOptions.initialState, diskOptions.writeJsonAtomically)
   }
 
   async getState(): Promise<ProjectState> {
@@ -111,8 +125,32 @@ export class ProjectStore {
       return
     }
 
-    await writeJsonAtomically(this.filePath, this.state)
+    const filePath = this.filePath
+    const stateToWrite = cloneState(this.state)
+    const writeState = (): Promise<void> => this.writeProjectState(filePath, stateToWrite)
+    const queuedWrite = this.writeQueue.then(writeState, writeState)
+    this.writeQueue = queuedWrite
+
+    await queuedWrite
   }
+}
+
+function toDiskOptions(options?: ProjectState | ProjectStoreDiskOptions): ProjectStoreDiskOptions {
+  if (!options) {
+    return {}
+  }
+
+  if (isProjectStoreDiskOptions(options)) {
+    return options
+  }
+
+  return { initialState: options }
+}
+
+function isProjectStoreDiskOptions(
+  options: ProjectState | ProjectStoreDiskOptions
+): options is ProjectStoreDiskOptions {
+  return 'writeJsonAtomically' in options || 'initialState' in options
 }
 
 async function writeJsonAtomically(filePath: string, state: ProjectState): Promise<void> {
@@ -122,9 +160,14 @@ async function writeJsonAtomically(filePath: string, state: ProjectState): Promi
     `.${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.tmp`
   )
 
-  await mkdir(directory, { recursive: true })
-  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
-  await rename(tempPath, filePath)
+  try {
+    await mkdir(directory, { recursive: true })
+    await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+    await rename(tempPath, filePath)
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined)
+    throw error
+  }
 }
 
 function isFileNotFoundError(error: unknown): boolean {

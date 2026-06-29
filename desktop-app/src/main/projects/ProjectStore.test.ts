@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -31,6 +31,29 @@ const storedState: ProjectState = {
   projectlessHints: {},
   activeLocalProjectId: 'abc',
   activeWorkspaceRoots: ['/repo']
+}
+
+function withProjectId(id: string): ProjectState {
+  return {
+    ...storedState,
+    localProjects: {
+      [id]: {
+        ...storedState.localProjects.abc,
+        id
+      }
+    },
+    projectOrder: [id],
+    activeLocalProjectId: id
+  }
+}
+
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+
+  return { promise, resolve }
 }
 
 describe('ProjectStore', () => {
@@ -69,5 +92,41 @@ describe('ProjectStore', () => {
 
     expect((await store.getState()).activeWorkspaceRoots).toEqual(['/repo'])
     expect((await store.getState()).localProjects.abc.writableRoots).toEqual(['/repo'])
+  })
+
+  it('serializes overlapping disk writes in invocation order', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'project-store-'))
+    const filePath = join(directory, 'projects.json')
+    const firstWrite = createDeferred()
+    const startedWrites: string[] = []
+
+    try {
+      const store = ProjectStore.onDisk(filePath, {
+        writeJsonAtomically: async (targetPath, state) => {
+          startedWrites.push(state.activeLocalProjectId ?? '')
+
+          if (state.activeLocalProjectId === 'first') {
+            await firstWrite.promise
+          }
+
+          await writeFile(targetPath, `${JSON.stringify(state)}\n`, 'utf8')
+        }
+      })
+
+      const firstSetState = store.setState(withProjectId('first'))
+      const secondSetState = store.setState(withProjectId('second'))
+
+      await Promise.resolve()
+      expect(startedWrites).toEqual(['first'])
+
+      firstWrite.resolve()
+      await Promise.all([firstSetState, secondSetState])
+
+      expect(startedWrites).toEqual(['first', 'second'])
+      expect(JSON.parse(await readFile(filePath, 'utf8')).activeLocalProjectId).toBe('second')
+    } finally {
+      firstWrite.resolve()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })
