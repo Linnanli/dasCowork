@@ -662,6 +662,20 @@ describe('App composer', () => {
     })
   })
 
+  it('shows approval project context', () => {
+    const request = fileChangeApprovalRequest('file-request-context')
+    runtimeState.serverRequests = [request]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('local')
+    expect(container.textContent).toContain('/workspace')
+    expect(container.textContent).toContain('thread_1')
+    expect(container.textContent).toContain('turn_1')
+  })
+
   it('responds to an MCP request when approving for the session', async () => {
     const request = mcpApprovalRequest('mcp-request-1')
     runtimeState.serverRequests = [request]
@@ -718,6 +732,12 @@ function fileChangeApprovalRequest(requestId: string): CodexApprovalRequest {
     id: requestId,
     kind: 'file-change',
     createdAt: '2026-06-27T00:00:00.000Z',
+    context: {
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      hostId: 'local',
+      cwd: '/workspace'
+    },
     params: {
       threadId: 'thread_1',
       turnId: 'turn_1',

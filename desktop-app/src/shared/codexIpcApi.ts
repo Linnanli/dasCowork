@@ -77,11 +77,20 @@ export type CodexChatStreamCallbacks = {
 
 export type CodexApprovalKind = 'command' | 'file-change' | 'tool-user-input' | 'mcp-elicitation'
 
+export type CodexApprovalContext = {
+  threadId?: string
+  turnId?: string
+  hostId?: string
+  cwd?: string
+  projectLabel?: string
+}
+
 export type CodexApprovalRequest = {
   id: string
   kind: CodexApprovalKind
   params: unknown
   createdAt: string
+  context?: CodexApprovalContext
 }
 
 export type CodexApprovalResponse =

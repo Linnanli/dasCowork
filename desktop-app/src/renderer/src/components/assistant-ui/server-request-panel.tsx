@@ -79,6 +79,7 @@ function renderRequestBody(
 
   return (
     <RequestShell title={requestTitle(request)} method={request.kind}>
+      <ApprovalContextDetails request={request} />
       <Detail label="Created" value={new Date(request.createdAt).toLocaleString()} />
       <Detail label="Parameters" value={formatUnknown(request.params)} />
       <ActionRow>
@@ -156,6 +157,7 @@ function ToolUserInputRequest({
   return (
     <RequestShell title="User input requested" method={request.kind}>
       <form className="flex flex-col gap-3" onSubmit={submit}>
+        <ApprovalContextDetails request={request} />
         {questions.map((question) => (
           <label className="flex flex-col gap-1.5" key={question.id}>
             <span className="text-sm font-medium text-foreground">{question.header}</span>
@@ -183,6 +185,25 @@ function ToolUserInputRequest({
         </ActionRow>
       </form>
     </RequestShell>
+  )
+}
+
+function ApprovalContextDetails({
+  request
+}: {
+  request: CodexApprovalRequest
+}): React.JSX.Element | null {
+  const context = request.context
+  if (!context) return null
+
+  return (
+    <>
+      {context.projectLabel ? <Detail label="Project" value={context.projectLabel} /> : null}
+      {context.hostId ? <Detail label="Host" value={context.hostId} /> : null}
+      {context.cwd ? <Detail label="Working directory" value={context.cwd} /> : null}
+      {context.threadId ? <Detail label="Thread" value={context.threadId} /> : null}
+      {context.turnId ? <Detail label="Turn" value={context.turnId} /> : null}
+    </>
   )
 }
 
