@@ -16,14 +16,19 @@ import {
   codexSetSelectedModelPayloadSchema
 } from '../shared/codexIpcApi'
 
-const projectRuntimeServices = createProjectRuntimeServices({
-  userDataPath: app.getPath('userData')
-})
-const codexRuntime = new CodexChatRuntimeService({
-  modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
-  projectService: projectRuntimeServices.projectService,
-  projectStore: projectRuntimeServices.projectStore
-})
+let codexRuntime: CodexChatRuntimeService | undefined
+
+function createCodexRuntime(): CodexChatRuntimeService {
+  const projectRuntimeServices = createProjectRuntimeServices({
+    userDataPath: app.getPath('userData')
+  })
+
+  return new CodexChatRuntimeService({
+    modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
+    projectService: projectRuntimeServices.projectService,
+    projectStore: projectRuntimeServices.projectStore
+  })
+}
 
 async function openExternalHttpUrl(url: string): Promise<void> {
   if (!isExternalHttpUrl(url)) throw new Error('external URL must be http(s)')
@@ -31,13 +36,14 @@ async function openExternalHttpUrl(url: string): Promise<void> {
 }
 
 function broadcastStatus(): void {
+  if (!codexRuntime) return
   const status = codexRuntime.getStatus()
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:status-change', status)
   }
 }
 
-function createWindow(): void {
+function createWindow(runtime: CodexChatRuntimeService): void {
   const mainWindow = new BrowserWindow(
     createMainWindowOptions({
       preloadPath: join(__dirname, '../preload/index.js'),
@@ -54,7 +60,7 @@ function createWindow(): void {
   })
   installWindowContextMenu(mainWindow, Menu)
 
-  const unsubscribeApprovals = codexRuntime.onApprovalRequest((request) => {
+  const unsubscribeApprovals = runtime.onApprovalRequest((request) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('codex:approval-request', request)
     }
@@ -69,20 +75,23 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const runtime = createCodexRuntime()
+  codexRuntime = runtime
+
   electronApp.setAppUserModelId('com.electron')
   nativeTheme.themeSource = 'system'
 
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
-  ipcMain.handle('codex:get-status', () => codexRuntime.getStatus())
-  ipcMain.handle('codex:list-models', () => codexRuntime.listModels())
+  ipcMain.handle('codex:get-status', () => runtime.getStatus())
+  ipcMain.handle('codex:list-models', () => runtime.listModels())
   ipcMain.handle('codex:set-selected-model', (_, payload: unknown) => {
     const request = codexSetSelectedModelPayloadSchema.parse(payload)
-    return codexRuntime.setSelectedModel(request.modelId)
+    return runtime.setSelectedModel(request.modelId)
   })
   ipcMain.handle('codex:respond-approval', (_, payload: unknown) => {
     const request = codexRespondApprovalPayloadSchema.parse(payload)
-    codexRuntime.respondApproval(request.requestId, request.response)
+    runtime.respondApproval(request.requestId, request.response)
   })
   ipcMain.handle('codex:open-external-http-url', (_, payload: unknown) => {
     const request = codexOpenExternalHttpUrlPayloadSchema.parse(payload)
@@ -92,15 +101,15 @@ app.whenReady().then(() => {
     const port = event.ports[0]
     if (!port) return
     const request = codexChatRequestSchema.parse(payload)
-    void codexRuntime.startChatStream(request, port).finally(broadcastStatus)
+    void runtime.startChatStream(request, port).finally(broadcastStatus)
     broadcastStatus()
   })
 
-  createWindow()
+  createWindow(runtime)
   broadcastStatus()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(runtime)
   })
 })
 
@@ -109,5 +118,5 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  void codexRuntime.stop()
+  void codexRuntime?.stop()
 })
