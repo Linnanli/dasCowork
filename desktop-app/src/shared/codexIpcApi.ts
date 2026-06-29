@@ -2,7 +2,16 @@ import type { UIMessage, UIMessageChunk } from 'ai'
 import { z } from 'zod'
 
 import { projectSelectionSchema } from './projects/projectSchemas'
-import type { ProjectSelection } from './projects/projectTypes'
+import type {
+  LocalProject,
+  ProjectSelection,
+  ProjectState,
+  WorkspaceRootOption
+} from './projects/projectTypes'
+import {
+  projectCreateLocalPayloadSchema,
+  projectSelectPayloadSchema
+} from './projects/projectSchemas'
 
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
 
@@ -127,6 +136,18 @@ export type DesktopCodexChatApi = {
   startChatStream(request: CodexChatRequest, callbacks: CodexChatStreamCallbacks): string
   abortChatStream(streamId: string): void
 }
+
+export type ProjectCreateLocalPayload = z.infer<typeof projectCreateLocalPayloadSchema>
+
+export type DesktopProjectsApi = {
+  getState(): Promise<ProjectState>
+  pickWorkspaceRoot(): Promise<WorkspaceRootOption | null>
+  createLocalProject(input: ProjectCreateLocalPayload): Promise<LocalProject>
+  selectProject(input: ProjectSelection): Promise<ProjectState>
+  onStateChange(callback: (state: ProjectState) => void): () => void
+}
+
+export { projectCreateLocalPayloadSchema, projectSelectPayloadSchema }
 
 export function isExternalHttpUrl(value: string): boolean {
   try {

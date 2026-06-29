@@ -16,3 +16,10 @@ export const projectSelectionSchema = z.discriminatedUnion('projectKind', [
   }),
   z.object({ projectKind: z.literal('projectless') })
 ]) satisfies z.ZodType<ProjectSelection>
+
+export const projectCreateLocalPayloadSchema = z.object({
+  name: z.string().trim().optional(),
+  sourceRoots: z.array(z.string().min(1)).min(1)
+})
+
+export const projectSelectPayloadSchema = projectSelectionSchema

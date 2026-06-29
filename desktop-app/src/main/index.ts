@@ -1,10 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, Menu, nativeTheme } from 'electron'
+import { app, shell, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { installWindowContextMenu } from './contextMenu'
 import { createModelCatalogService } from './modelCatalogService'
+import type { ProjectApiService } from './projects/ProjectApiService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
@@ -12,16 +13,21 @@ import {
   codexChatRequestSchema,
   isExternalHttpUrl,
   codexOpenExternalHttpUrlPayloadSchema,
+  projectCreateLocalPayloadSchema,
+  projectSelectPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema
 } from '../shared/codexIpcApi'
 
 let codexRuntime: CodexChatRuntimeService | undefined
+let projectApi: ProjectApiService | undefined
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
-    userDataPath: app.getPath('userData')
+    userDataPath: app.getPath('userData'),
+    pickWorkspaceRoot: pickWorkspaceRootPath
   })
+  projectApi = projectRuntimeServices.projectApi
 
   return new CodexChatRuntimeService({
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
@@ -30,9 +36,22 @@ function createCodexRuntime(): CodexChatRuntimeService {
   })
 }
 
+async function pickWorkspaceRootPath(): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  })
+
+  return result.canceled ? null : (result.filePaths[0] ?? null)
+}
+
 async function openExternalHttpUrl(url: string): Promise<void> {
   if (!isExternalHttpUrl(url)) throw new Error('external URL must be http(s)')
   await shell.openExternal(url)
+}
+
+function requireProjectApi(): ProjectApiService {
+  if (!projectApi) throw new Error('Project API is not initialized')
+  return projectApi
 }
 
 function broadcastStatus(): void {
@@ -40,6 +59,14 @@ function broadcastStatus(): void {
   const status = codexRuntime.getStatus()
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:status-change', status)
+  }
+}
+
+async function broadcastProjectState(): Promise<void> {
+  if (!projectApi) return
+  const state = await projectApi.getState()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('codex:projects-state-change', state)
   }
 }
 
@@ -96,6 +123,24 @@ app.whenReady().then(() => {
   ipcMain.handle('codex:open-external-http-url', (_, payload: unknown) => {
     const request = codexOpenExternalHttpUrlPayloadSchema.parse(payload)
     return openExternalHttpUrl(request.url)
+  })
+  ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
+  ipcMain.handle('codex:projects:pick-workspace-root', async () => {
+    const option = await requireProjectApi().pickWorkspaceRoot()
+    await broadcastProjectState()
+    return option ?? null
+  })
+  ipcMain.handle('codex:projects:create-local', async (_, payload: unknown) => {
+    const request = projectCreateLocalPayloadSchema.parse(payload)
+    const project = await requireProjectApi().createLocalProject(request)
+    await broadcastProjectState()
+    return project
+  })
+  ipcMain.handle('codex:projects:select', async (_, payload: unknown) => {
+    const request = projectSelectPayloadSchema.parse(payload)
+    const state = await requireProjectApi().selectProject(request)
+    await broadcastProjectState()
+    return state
   })
   ipcMain.on('codex-chat:start', (event, payload: unknown) => {
     const port = event.ports[0]

@@ -2,20 +2,24 @@ import { createHash } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { ProjectApiService } from './ProjectApiService'
 import { ProjectService, type ThreadReader } from './ProjectService'
 import { ProjectStore } from './ProjectStore'
 
 export type ProjectRuntimeServices = {
   projectStore: ProjectStore
   projectService: ProjectService
+  projectApi: ProjectApiService
 }
 
 export function createProjectRuntimeServices({
   userDataPath,
-  readThread
+  readThread,
+  pickWorkspaceRoot
 }: {
   userDataPath: string
   readThread?: ThreadReader
+  pickWorkspaceRoot?: () => Promise<string | null>
 }): ProjectRuntimeServices {
   const projectStore = ProjectStore.onDisk(join(userDataPath, 'projects', 'state.json'))
   const projectService = new ProjectService({
@@ -26,8 +30,13 @@ export function createProjectRuntimeServices({
       createProjectlessWorkspace({ userDataPath, prompt }),
     readThread
   })
+  const projectApi = new ProjectApiService({
+    store: projectStore,
+    validateLocalRoot,
+    pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null)
+  })
 
-  return { projectStore, projectService }
+  return { projectStore, projectService, projectApi }
 }
 
 async function validateLocalRoot(path: string): Promise<{ realPath: string }> {

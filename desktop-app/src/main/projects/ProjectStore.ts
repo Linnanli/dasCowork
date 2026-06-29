@@ -1,55 +1,14 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
-import type { ThreadProjectAssignment } from '../../shared/projects/projectTypes'
+import type { ProjectState } from '../../shared/projects/projectTypes'
 
-export type WorkspaceRootOption = {
-  root: string
-  label?: string
-  hostId: string
-  addedAt: string
-  lastOpenedAt: string
-  missing?: boolean
-}
-
-export type LocalProject = {
-  id: string
-  kind: 'local'
-  name: string
-  hostId: 'local'
-  createdAt: string
-  updatedAt: string
-  writableRoots: string[]
-  defaultCwd?: string
-}
-
-export type RemoteProject = {
-  id: string
-  kind: 'remote'
-  hostId: string
-  label: string
-  remotePath: string
-  createdAt: string
-  updatedAt: string
-}
-
-export type ProjectState = {
-  activeWorkspaceRoots?: string[]
-  workspaceRootOptions: WorkspaceRootOption[]
-  localProjects: Record<string, LocalProject>
-  remoteProjects: RemoteProject[]
-  activeLocalProjectId?: string
-  activeRemoteProjectId?: string
-  projectOrder: string[]
-  pinnedProjectIds: string[]
-  projectWritableRoots: Record<string, string[]>
-  threadProjectAssignments: Record<string, ThreadProjectAssignment>
-  threadWritableRoots: Record<string, string[]>
-  threadWorkspaceRootHints: Record<string, string[]>
-  threadProjectlessOutputDirectories: Record<string, string | null>
-  projectlessThreadIds: string[]
-  projectlessHints: Record<string, { workspaceRoot: string | null; outputDirectory: string | null }>
-}
+export type {
+  WorkspaceRootOption,
+  LocalProject,
+  RemoteProject,
+  ProjectState
+} from '../../shared/projects/projectTypes'
 
 type ProjectStateWriter = (filePath: string, state: ProjectState) => Promise<void>
 

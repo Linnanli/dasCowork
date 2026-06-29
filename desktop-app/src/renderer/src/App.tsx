@@ -7,8 +7,6 @@ import {
   ComposerPrimitive,
   type AssistantState,
   MessagePrimitive,
-  ThreadListItemMorePrimitive,
-  ThreadListItemPrimitive,
   ThreadListPrimitive,
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
@@ -31,7 +29,6 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import {
   ActivityIcon,
-  ArchiveIcon,
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
@@ -40,14 +37,12 @@ import {
   CopyIcon,
   FileTextIcon,
   HelpCircleIcon,
-  MoreHorizontalIcon,
   PanelLeftIcon,
   PencilIcon,
   PlusIcon,
   QuoteIcon,
   SlashIcon,
   SquareIcon,
-  TrashIcon,
   WrenchIcon
 } from 'lucide-react'
 import {
@@ -61,6 +56,10 @@ import {
 
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
+import { ProjectGate } from './projects/ProjectGate'
+import { ProjectSwitcher } from './projects/ProjectSwitcher'
+import { useProjectState, type ProjectStateController } from './projects/useProjectState'
+import { ThreadList } from './threads/ThreadList'
 import { cn } from './lib/utils'
 import {
   hasVisibleAssistantTextContent,
@@ -72,9 +71,11 @@ import type { ModelOption } from './components/assistant-ui'
 type CodexSidebarProps = {
   collapsed: boolean
   nativeBackdrop: boolean
+  projectState: ProjectStateController
 }
 
 type HeaderProps = {
+  projectState: ProjectStateController
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
 }
@@ -84,6 +85,7 @@ type ComposerProps = {
   selectedModelId: string | undefined
   modelSelectionError?: string
   onSelectedModelChange: (modelId: string) => void
+  projectState: ProjectStateController
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -169,16 +171,6 @@ const nativeBackdropSurfaceClass =
 const sidebarGlassClass =
   'shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)] dark:shadow-[0_18px_60px_-48px_rgba(0,0,0,0.95)]'
 
-const threadListNewButtonClass =
-  'inline-flex h-8 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors'
-
-const threadListNewButtonGlassClass = 'hover:bg-background/40 dark:hover:bg-foreground/8'
-
-const threadListItemClass = 'group flex min-h-8 items-center gap-1 rounded-md transition-colors'
-
-const threadListItemGlassClass =
-  'hover:bg-background/40 focus-visible:bg-background/40 data-[active]:bg-background/50 dark:hover:bg-foreground/8 dark:focus-visible:bg-foreground/8 dark:data-[active]:bg-foreground/10'
-
 function useNativeBackdrop(): boolean {
   return window.electron?.process.platform === 'darwin'
 }
@@ -196,6 +188,7 @@ function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
+  const projectState = useProjectState()
 
   const toggleSidebar = (): void => {
     setSidebarCollapsed((collapsed) => !collapsed)
@@ -215,7 +208,11 @@ function App(): React.JSX.Element {
           nativeBackdrop ? 'bg-background/10 dark:bg-background/10' : 'bg-muted/30'
         )}
       >
-        <CodexSidebar collapsed={sidebarCollapsed} nativeBackdrop={nativeBackdrop} />
+        <CodexSidebar
+          collapsed={sidebarCollapsed}
+          nativeBackdrop={nativeBackdrop}
+          projectState={projectState}
+        />
         <section
           data-slot="app-main-section"
           className={cn(
@@ -225,13 +222,18 @@ function App(): React.JSX.Element {
           )}
         >
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
-            <Header sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+            <Header
+              projectState={projectState}
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={toggleSidebar}
+            />
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatThread
                 models={models}
                 selectedModelId={selectedModelId}
                 modelSelectionError={modelSelectionError}
                 onSelectedModelChange={handleSelectedModelChange}
+                projectState={projectState}
               />
             </div>
             <ServerRequestPanel
@@ -246,7 +248,11 @@ function App(): React.JSX.Element {
   )
 }
 
-function CodexSidebar({ collapsed, nativeBackdrop }: CodexSidebarProps): React.JSX.Element {
+function CodexSidebar({
+  collapsed,
+  nativeBackdrop,
+  projectState
+}: CodexSidebarProps): React.JSX.Element {
   return (
     <aside
       data-slot="codex-sidebar"
@@ -274,7 +280,7 @@ function CodexSidebar({ collapsed, nativeBackdrop }: CodexSidebarProps): React.J
             <Logo />
           </div>
           <div className="relative min-h-0 flex-1 overflow-y-auto p-3">
-            <ThreadList nativeBackdrop={nativeBackdrop} />
+            <ThreadList nativeBackdrop={nativeBackdrop} projectState={projectState} />
           </div>
         </>
       )}
@@ -299,84 +305,11 @@ function BrandMark(): React.JSX.Element {
   )
 }
 
-function ThreadList({ nativeBackdrop }: { nativeBackdrop: boolean }): React.JSX.Element {
-  return (
-    <ThreadListPrimitive.Root className="flex flex-col gap-1">
-      <ThreadListPrimitive.New asChild>
-        <button
-          className={cn(
-            threadListNewButtonClass,
-            nativeBackdrop ? threadListNewButtonGlassClass : 'hover:bg-muted'
-          )}
-          type="button"
-        >
-          <PlusIcon className="size-4" />
-          New thread
-        </button>
-      </ThreadListPrimitive.New>
-      <ThreadListPrimitive.Items>
-        {() => <ThreadListItem nativeBackdrop={nativeBackdrop} />}
-      </ThreadListPrimitive.Items>
-    </ThreadListPrimitive.Root>
-  )
-}
-
-function ThreadListItem({ nativeBackdrop }: { nativeBackdrop: boolean }): React.JSX.Element {
-  return (
-    <ThreadListItemPrimitive.Root
-      className={cn(
-        threadListItemClass,
-        nativeBackdrop
-          ? threadListItemGlassClass
-          : 'hover:bg-muted focus-visible:bg-muted data-[active]:bg-muted'
-      )}
-    >
-      <ThreadListItemPrimitive.Trigger className="flex min-w-0 flex-1 items-center px-3 text-left text-sm font-medium text-foreground outline-none">
-        <span className="min-w-0 flex-1 truncate">
-          <ThreadListItemPrimitive.Title fallback="New Chat" />
-        </span>
-      </ThreadListItemPrimitive.Trigger>
-      <ThreadListItemActions />
-    </ThreadListItemPrimitive.Root>
-  )
-}
-
-function ThreadListItemActions(): React.JSX.Element {
-  return (
-    <ThreadListItemMorePrimitive.Root>
-      <ThreadListItemMorePrimitive.Trigger asChild>
-        <IconButton
-          className="mr-1.5 size-6 opacity-0 transition-opacity group-hover:opacity-100 group-data-[active]:opacity-100 data-[state=open]:bg-accent data-[state=open]:opacity-100"
-          label="更多线程选项"
-          title="更多线程选项"
-        >
-          <MoreHorizontalIcon className="size-3.5" />
-        </IconButton>
-      </ThreadListItemMorePrimitive.Trigger>
-      <ThreadListItemMorePrimitive.Content
-        align="start"
-        className="z-50 min-w-32 overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
-        side="right"
-        sideOffset={6}
-      >
-        <ThreadListItemPrimitive.Archive asChild>
-          <ThreadListItemMorePrimitive.Item className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-            <ArchiveIcon className="size-4" />
-            Archive
-          </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Archive>
-        <ThreadListItemPrimitive.Delete asChild>
-          <ThreadListItemMorePrimitive.Item className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-destructive outline-none select-none hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive">
-            <TrashIcon className="size-4" />
-            Delete
-          </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Delete>
-      </ThreadListItemMorePrimitive.Content>
-    </ThreadListItemMorePrimitive.Root>
-  )
-}
-
-function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps): React.JSX.Element {
+function Header({
+  projectState,
+  sidebarCollapsed,
+  onToggleSidebar
+}: HeaderProps): React.JSX.Element {
   const toggleLabel = sidebarCollapsed ? '显示侧栏' : '隐藏侧栏'
 
   return (
@@ -389,6 +322,7 @@ function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps): React.JSX.E
       >
         <PanelLeftIcon className="size-4" />
       </IconButton>
+      <ProjectSwitcher projectState={projectState} />
       <ThreadTitle />
       <div className="ml-auto" />
     </header>
@@ -412,9 +346,11 @@ function ChatThread({
   models,
   selectedModelId,
   modelSelectionError,
-  onSelectedModelChange
+  onSelectedModelChange,
+  projectState
 }: ComposerProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
+  const showProjectGate = isEmpty && !projectState.hasSelection
 
   return (
     <ThreadPrimitive.Root
@@ -432,9 +368,12 @@ function ChatThread({
           isEmpty && 'justify-center'
         )}
       >
-        <AuiIf condition={isNewChatView}>
-          <ThreadWelcome />
-        </AuiIf>
+        {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
+        {!showProjectGate ? (
+          <AuiIf condition={isNewChatView}>
+            <ThreadWelcome />
+          </AuiIf>
+        ) : null}
         <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
           <ThreadPrimitive.Messages>
             {({ message }) => {
@@ -456,6 +395,7 @@ function ChatThread({
             selectedModelId={selectedModelId}
             modelSelectionError={modelSelectionError}
             onSelectedModelChange={onSelectedModelChange}
+            projectState={projectState}
           />
           <AuiIf condition={isNewChatView}>
             <div className="aui-thread-welcome-suggestions-shell min-h-19">
@@ -1001,7 +941,8 @@ function Composer({
   models,
   selectedModelId,
   modelSelectionError,
-  onSelectedModelChange
+  onSelectedModelChange,
+  projectState
 }: ComposerProps): React.JSX.Element {
   const mention = unstable_useMentionAdapter({ fallbackIcon: WrenchIcon })
   const slash = unstable_useSlashCommandAdapter({
@@ -1023,7 +964,7 @@ function Composer({
             placeholder="输入消息（@ 提及工具，/ 输入命令）"
           />
           <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-            <div className="flex items-center gap-1">
+            <div className="flex min-w-0 items-center gap-1">
               <ModelSelector
                 models={models}
                 value={selectedModelId}
@@ -1041,12 +982,19 @@ function Composer({
                   {modelSelectionError}
                 </span>
               )}
+              <span
+                className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
+                title={projectState.currentDetail ?? projectState.currentLabel}
+              >
+                Working in: {projectState.currentLabel}
+              </span>
             </div>
             <div className="flex items-center gap-1.5">
               <AuiIf condition={(state) => !state.thread.isRunning}>
                 <ComposerPrimitive.Send asChild>
                   <IconButton
                     className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                    disabled={!projectState.hasSelection}
                     label="发送消息"
                     title="发送消息"
                   >

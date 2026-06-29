@@ -20,10 +20,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import {
-  CodexChatRuntimeService,
-  type CodexPortLike
-} from '../codexChatRuntimeService'
+import { CodexChatRuntimeService, type CodexPortLike } from '../codexChatRuntimeService'
 import { ProjectStore, createDefaultProjectState } from '../projects/ProjectStore'
 import { startConversation } from './startConversation'
 
@@ -56,9 +53,12 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 describe('startConversation', () => {
   it('ignores renderer supplied cwd and uses resolved target', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async (_input: unknown) => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = vi.fn(async (input: unknown) => {
+      void input
+      return {
+        toUIMessageStream: () => emptyUiMessageStream()
+      }
+    })
     const projectService = {
       resolveNewThreadTarget: vi.fn().mockResolvedValue({
         hostId: 'local',

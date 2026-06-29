@@ -9,8 +9,15 @@ import type {
   CodexModelList,
   CodexStatus,
   DesktopCodexApi,
-  DesktopCodexChatApi
+  DesktopCodexChatApi,
+  DesktopProjectsApi
 } from '../shared/codexIpcApi'
+import type {
+  LocalProject,
+  ProjectSelection,
+  ProjectState,
+  WorkspaceRootOption
+} from '../shared/projects/projectTypes'
 
 const activePorts = new Map<string, MessagePort>()
 
@@ -73,11 +80,28 @@ const desktopCodexChat: DesktopCodexChatApi = {
   }
 }
 
+const desktopProjects: DesktopProjectsApi = {
+  getState: () => ipcRenderer.invoke('codex:projects:get-state') as Promise<ProjectState>,
+  pickWorkspaceRoot: () =>
+    ipcRenderer.invoke('codex:projects:pick-workspace-root') as Promise<WorkspaceRootOption | null>,
+  createLocalProject: (input) =>
+    ipcRenderer.invoke('codex:projects:create-local', input) as Promise<LocalProject>,
+  selectProject: (input: ProjectSelection) =>
+    ipcRenderer.invoke('codex:projects:select', input) as Promise<ProjectState>,
+  onStateChange: (callback: (state: ProjectState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: ProjectState): void =>
+      callback(state)
+    ipcRenderer.on('codex:projects-state-change', listener)
+    return () => ipcRenderer.removeListener('codex:projects-state-change', listener)
+  }
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('desktopCodex', desktopCodex)
     contextBridge.exposeInMainWorld('desktopCodexChat', desktopCodexChat)
+    contextBridge.exposeInMainWorld('desktopProjects', desktopProjects)
   } catch (error) {
     console.error(error)
   }
@@ -88,4 +112,6 @@ if (process.contextIsolated) {
   window.desktopCodex = desktopCodex
   // @ts-ignore (define in dts)
   window.desktopCodexChat = desktopCodexChat
+  // @ts-ignore (define in dts)
+  window.desktopProjects = desktopProjects
 }

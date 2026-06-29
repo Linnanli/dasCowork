@@ -50,6 +50,33 @@ const runtimeState = vi.hoisted<{
   setSelectedModelId: vi.fn()
 }))
 
+const projectHookState = vi.hoisted(() => ({
+  controller: {
+    state: {
+      activeProjectSelection: { projectKind: 'path', path: '/repo' },
+      activeWorkspaceRoots: ['/repo'],
+      workspaceRootOptions: [],
+      localProjects: {},
+      remoteProjects: [],
+      projectOrder: [],
+      pinnedProjectIds: [],
+      projectWritableRoots: {},
+      threadProjectAssignments: {},
+      threadWritableRoots: {},
+      threadWorkspaceRootHints: {},
+      threadProjectlessOutputDirectories: {},
+      projectlessThreadIds: [],
+      projectlessHints: {}
+    },
+    hasSelection: true,
+    currentLabel: 'repo',
+    currentDetail: '/repo',
+    pickWorkspaceRoot: vi.fn(),
+    createLocalProject: vi.fn(),
+    selectProject: vi.fn()
+  }
+}))
+
 function resetThreadMessageState(): void {
   threadMessageState.message.composer.isEditing = false
   threadMessageState.message.content = [{ type: 'text', text: '正在思考' }]
@@ -141,6 +168,10 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
     })
   }
 })
+
+vi.mock('./projects/useProjectState', () => ({
+  useProjectState: () => projectHookState.controller
+}))
 
 vi.mock('@assistant-ui/react-lexical', () => ({
   LexicalComposerInput: ({ placeholder, directiveChip, className }: PrimitiveProps) => (

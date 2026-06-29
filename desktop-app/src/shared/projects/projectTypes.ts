@@ -36,3 +36,52 @@ export type ResolvedExecutionTarget = {
   workspaceKind: WorkspaceKind
   projectAssignment?: ThreadProjectAssignment
 }
+
+export type WorkspaceRootOption = {
+  root: string
+  label?: string
+  hostId: string
+  addedAt: string
+  lastOpenedAt: string
+  missing?: boolean
+}
+
+export type LocalProject = {
+  id: string
+  kind: 'local'
+  name: string
+  hostId: 'local'
+  createdAt: string
+  updatedAt: string
+  writableRoots: string[]
+  defaultCwd?: string
+}
+
+export type RemoteProject = {
+  id: string
+  kind: 'remote'
+  hostId: string
+  label: string
+  remotePath: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type ProjectState = {
+  activeWorkspaceRoots?: string[]
+  activeProjectSelection?: ProjectSelection
+  workspaceRootOptions: WorkspaceRootOption[]
+  localProjects: Record<string, LocalProject>
+  remoteProjects: RemoteProject[]
+  activeLocalProjectId?: string
+  activeRemoteProjectId?: string
+  projectOrder: string[]
+  pinnedProjectIds: string[]
+  projectWritableRoots: Record<string, string[]>
+  threadProjectAssignments: Record<string, ThreadProjectAssignment>
+  threadWritableRoots: Record<string, string[]>
+  threadWorkspaceRootHints: Record<string, string[]>
+  threadProjectlessOutputDirectories: Record<string, string | null>
+  projectlessThreadIds: string[]
+  projectlessHints: Record<string, { workspaceRoot: string | null; outputDirectory: string | null }>
+}
