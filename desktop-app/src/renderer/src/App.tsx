@@ -80,6 +80,7 @@ type HeaderProps = {
 type ComposerProps = {
   models: readonly ModelOption[]
   selectedModelId: string | undefined
+  modelSelectionError?: string
   onSelectedModelChange: (modelId: string) => void
 }
 
@@ -191,13 +192,17 @@ function App(): React.JSX.Element {
     setSelectedModelId
   } = useCodexIpcAssistantRuntime()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
 
   const toggleSidebar = (): void => {
     setSidebarCollapsed((collapsed) => !collapsed)
   }
   const handleSelectedModelChange = (modelId: string): void => {
-    void setSelectedModelId(modelId)
+    setModelSelectionError(undefined)
+    void setSelectedModelId(modelId).catch((error: unknown) => {
+      setModelSelectionError(errorMessage(error))
+    })
   }
 
   return (
@@ -223,6 +228,7 @@ function App(): React.JSX.Element {
               <ChatThread
                 models={models}
                 selectedModelId={selectedModelId}
+                modelSelectionError={modelSelectionError}
                 onSelectedModelChange={handleSelectedModelChange}
               />
             </div>
@@ -403,6 +409,7 @@ function isNewChatView(state: AssistantState): boolean {
 function ChatThread({
   models,
   selectedModelId,
+  modelSelectionError,
   onSelectedModelChange
 }: ComposerProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
@@ -445,6 +452,7 @@ function ChatThread({
           <Composer
             models={models}
             selectedModelId={selectedModelId}
+            modelSelectionError={modelSelectionError}
             onSelectedModelChange={onSelectedModelChange}
           />
           <AuiIf condition={isNewChatView}>
@@ -998,6 +1006,7 @@ function ComposerTriggerPopover({
 function Composer({
   models,
   selectedModelId,
+  modelSelectionError,
   onSelectedModelChange
 }: ComposerProps): React.JSX.Element {
   const mention = unstable_useMentionAdapter({ fallbackIcon: WrenchIcon })
@@ -1028,6 +1037,16 @@ function Composer({
                 variant="ghost"
                 size="sm"
               />
+              {modelSelectionError && (
+                <span
+                  role="alert"
+                  data-slot="model-selection-error"
+                  className="text-destructive max-w-56 truncate text-xs"
+                  title={modelSelectionError}
+                >
+                  {modelSelectionError}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               <AuiIf condition={(state) => !state.thread.isRunning}>
@@ -1060,6 +1079,10 @@ function Composer({
       </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   )
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(

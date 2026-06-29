@@ -65,4 +65,56 @@ describe('ElectronIpcChatTransport', () => {
 
     expect(bridge.abortChatStream).toHaveBeenCalledWith('stream-1')
   })
+
+  it('ignores bridge chunks after the readable stream has finished', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onFinish()
+
+    expect(() => callbacks?.onChunk({ type: 'text-start', id: 'late-text' })).not.toThrow()
+  })
+
+  it('ignores bridge finish events after the readable stream has errored', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onError('boom')
+
+    expect(() => callbacks?.onFinish()).not.toThrow()
+  })
 })

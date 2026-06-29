@@ -1,3 +1,6 @@
 [submodule "codex"]
 	path = codex
 	url = https://github.com/Linnanli/codex.git
+[submodule "desktop-app/vendors/ai-sdk-provider-codex-asp"]
+	path = desktop-app/vendors/ai-sdk-provider-codex-asp
+	url = https://github.com/Linnanli/ai-sdk-provider-codex-asp.git

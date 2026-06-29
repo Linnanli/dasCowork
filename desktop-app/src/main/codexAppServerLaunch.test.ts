@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -95,6 +95,27 @@ describe('codex app-server launch resolution', () => {
       cwd: resolve('/repo/codex/codex-rs'),
       displayBinary:
         'cargo run --quiet -p codex-app-server --bin codex-app-server -- --listen stdio://',
+      env: {}
+    })
+  })
+
+  it('uses the built desktop app-server resource in development before falling back to cargo', () => {
+    const repoRoot = tempResourcesDir()
+    const desktopRoot = join(repoRoot, 'desktop-app')
+    const binary = join(desktopRoot, '.bundle-resources', 'codex-app-server', 'codex-app-server')
+    mkdirSync(dirname(binary), { recursive: true })
+    writeFileSync(binary, 'binary')
+
+    expect(
+      resolveCodexAppServerLaunchOptions({
+        env: {},
+        isPackaged: false,
+        mainDir: join(desktopRoot, 'out', 'main')
+      })
+    ).toEqual({
+      command: binary,
+      args: ['--listen', 'stdio://'],
+      displayBinary: `${binary} --listen stdio://`,
       env: {}
     })
   })

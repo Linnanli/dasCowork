@@ -40,11 +40,13 @@ const runtimeState = vi.hoisted<{
   rejectServerRequest: ReturnType<typeof vi.fn>
   respondToServerRequest: ReturnType<typeof vi.fn>
   serverRequests: CodexApprovalRequest[]
+  selectedModelId: string | undefined
   setSelectedModelId: ReturnType<typeof vi.fn>
 }>(() => ({
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
   serverRequests: [],
+  selectedModelId: 'gpt-5-codex',
   setSelectedModelId: vi.fn()
 }))
 
@@ -58,6 +60,7 @@ function resetThreadMessageState(): void {
   runtimeState.rejectServerRequest.mockResolvedValue(undefined)
   runtimeState.respondToServerRequest.mockReset()
   runtimeState.respondToServerRequest.mockResolvedValue(undefined)
+  runtimeState.selectedModelId = 'gpt-5-codex'
   runtimeState.setSelectedModelId.mockReset()
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
   runtimeState.serverRequests = []
@@ -72,6 +75,24 @@ function setDesktopPlatform(platform: NodeJS.Platform): void {
       }
     }
   })
+}
+
+function noopResizeObserverMethod(): void {
+  return undefined
+}
+
+class TestResizeObserver implements ResizeObserver {
+  disconnect(): void {
+    noopResizeObserverMethod()
+  }
+
+  observe(): void {
+    noopResizeObserverMethod()
+  }
+
+  unobserve(): void {
+    noopResizeObserverMethod()
+  }
 }
 
 type PrimitiveProps = {
@@ -109,9 +130,13 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
         {
           id: 'gpt-5-codex',
           name: 'GPT-5 Codex'
+        },
+        {
+          id: 'gpt-5.5',
+          name: 'GPT-5.5'
         }
       ],
-      selectedModelId: 'gpt-5-codex',
+      selectedModelId: runtimeState.selectedModelId,
       setSelectedModelId: runtimeState.setSelectedModelId
     })
   }
@@ -347,6 +372,8 @@ describe('App composer', () => {
   beforeEach(() => {
     resetThreadMessageState()
     setDesktopPlatform('darwin')
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -383,6 +410,25 @@ describe('App composer', () => {
     )
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
     expect(triggerChars).toEqual(['/', '@'])
+  })
+
+  it('shows model selection failures instead of silently swallowing them', async () => {
+    runtimeState.setSelectedModelId.mockRejectedValue(new Error('model catalog unavailable'))
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    await act(async () => {
+      buttonWithText('GPT-5 Codex')?.click()
+    })
+
+    await act(async () => {
+      modelSelectorItemWithText('GPT-5.5')?.click()
+    })
+
+    expect(runtimeState.setSelectedModelId).toHaveBeenCalledWith('gpt-5.5')
+    expect(container.textContent).toContain('model catalog unavailable')
   })
 
   it('renders thread list item actions for archive and delete', () => {
@@ -596,6 +642,12 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(
     (button) => button.textContent?.trim() === text
   )
+}
+
+function modelSelectorItemWithText(text: string): HTMLElement | undefined {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[data-slot="model-selector-item"]')
+  ).find((item) => item.textContent?.includes(text))
 }
 
 function fileChangeApprovalRequest(requestId: string): CodexApprovalRequest {

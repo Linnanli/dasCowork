@@ -9,7 +9,12 @@ describe('createCodexAspProviderSettings', () => {
         command: '/bin/codex-app-server',
         args: ['--listen', 'stdio://'],
         displayBinary: '/bin/codex-app-server --listen stdio://',
-        env: { CODEX_HOME: '/tmp/codex-home' }
+        env: {
+          CODEX_CI: '1',
+          CODEX_HOME: '/tmp/codex-home',
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex Desktop',
+          CODEX_THREAD_ID: 'thread-from-host'
+        }
       },
       cwd: '/repo',
       defaultModel: 'gpt-5.5-codex',
@@ -31,7 +36,11 @@ describe('createCodexAspProviderSettings', () => {
         stdio: {
           command: '/bin/codex-app-server',
           args: ['--listen', 'stdio://'],
-          env: { CODEX_HOME: '/tmp/codex-home' }
+          env: {
+            CODEX_HOME: '/tmp/codex-home',
+            NO_PROXY: 'localhost,127.0.0.1,::1',
+            no_proxy: 'localhost,127.0.0.1,::1'
+          }
         }
       },
       defaultThreadSettings: {
@@ -39,6 +48,14 @@ describe('createCodexAspProviderSettings', () => {
         approvalPolicy: 'on-request',
         approvalsReviewer: 'user',
         sandbox: 'workspace-write'
+      },
+      defaultTurnSettings: {
+        cwd: '/repo',
+        summary: 'auto',
+        sandboxPolicy: {
+          type: 'externalSandbox',
+          networkAccess: 'enabled'
+        }
       },
       persistent: {
         scope: 'provider',

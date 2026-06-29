@@ -76,13 +76,35 @@ export function resolveCodexAppServerLaunchOptions(
     }
   }
 
+  const mainDir = options.mainDir ?? __dirname
+  const developmentBinary = resolveDevelopmentCodexAppServerBinary(
+    mainDir,
+    options.platform ?? process.platform
+  )
+  if (developmentBinary) {
+    return {
+      command: developmentBinary,
+      args: [...SERVER_ARGS],
+      displayBinary: `${developmentBinary} ${SERVER_ARGS.join(' ')}`,
+      env
+    }
+  }
+
   return {
     command: 'cargo',
     args: [...CARGO_ARGS],
-    cwd: resolveCodexRustWorkspaceRoot(options.mainDir ?? __dirname, env),
+    cwd: resolveCodexRustWorkspaceRoot(mainDir, env),
     displayBinary: `cargo ${CARGO_ARGS.join(' ')}`,
     env
   }
+}
+
+function resolveDevelopmentCodexAppServerBinary(
+  mainDir: string,
+  platform: NodeJS.Platform
+): string | null {
+  const desktopRoot = resolve(mainDir, '..', '..')
+  return resolveBundledCodexAppServerBinary(join(desktopRoot, '.bundle-resources'), platform)
 }
 
 function resolveCodexRustWorkspaceRoot(mainDir: string, env: NodeJS.ProcessEnv): string {

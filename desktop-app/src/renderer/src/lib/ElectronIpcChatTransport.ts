@@ -20,9 +20,21 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     options: Parameters<ChatTransport<UIMessage>['sendMessages']>[0]
   ): Promise<ReadableStream<UIMessageChunk>> {
     let streamId: string | undefined
+    let settled = false
 
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
+        const closeStream = (): void => {
+          if (settled) return
+          settled = true
+          controller.close()
+        }
+        const errorStream = (error: string): void => {
+          if (settled) return
+          settled = true
+          controller.error(new Error(error))
+        }
+
         streamId = this.chatBridge.startChatStream(
           {
             chatId: options.chatId,
@@ -34,10 +46,12 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
             body: options.body as Record<string, unknown> | undefined
           },
           {
-            onChunk: (chunk) => controller.enqueue(chunk),
-            onFinish: () => controller.close(),
-            onAbort: () => controller.close(),
-            onError: (error) => controller.error(new Error(error))
+            onChunk: (chunk) => {
+              if (!settled) controller.enqueue(chunk)
+            },
+            onFinish: closeStream,
+            onAbort: closeStream,
+            onError: errorStream
           }
         )
         options.abortSignal?.addEventListener(
@@ -49,6 +63,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
         )
       },
       cancel: () => {
+        settled = true
         if (streamId) this.chatBridge.abortChatStream(streamId)
       }
     })

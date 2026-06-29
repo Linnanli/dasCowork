@@ -1,12 +1,20 @@
 import { app } from 'electron'
-import { convertToModelMessages, streamText as aiStreamText, type UIMessageChunk } from 'ai'
+import {
+  convertToModelMessages,
+  streamText as aiStreamText,
+  type LanguageModel,
+  type UIMessageChunk
+} from 'ai'
 import {
   codexCallOptions,
+  type CodexLanguageModelSettings,
+  type CodexModelProviderInfo,
   type CodexProvider,
   type CommandApprovalHandler,
   type FileChangeApprovalHandler
 } from '@janole/ai-sdk-provider-codex-asp'
 
+import type { AdminBackendClientModel } from './adminBackendModelClient'
 import { CodexApprovalBroker, type CodexApprovalRequestInput } from './codexApprovalBroker'
 import {
   resolveCodexAppServerLaunchOptions,
@@ -44,6 +52,7 @@ type StreamTextLike = (input: {
   modelId: string
   provider: CodexProvider
   abortSignal: AbortSignal
+  clientModel?: AdminBackendClientModel
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 export type ModelCatalogLike = Pick<
@@ -173,14 +182,16 @@ export class CodexChatRuntimeService {
       }
       const modelId = request.modelId ?? this.selectedModelId
       if (!modelId) throw new Error('No Codex model selected')
-      const streamModelId = this.modelCatalog
-        ? (await this.modelCatalog.resolveClientModel(modelId)).model_id
-        : modelId
+      const clientModel = this.modelCatalog
+        ? await this.modelCatalog.resolveClientModel(modelId)
+        : undefined
+      const streamModelId = clientModel?.model_id ?? modelId
       const result = await this.streamText({
         request,
         modelId: streamModelId,
         provider: this.provider,
-        abortSignal: abortController.signal
+        abortSignal: abortController.signal,
+        clientModel
       })
       this.status = {
         state: 'ready',
@@ -276,26 +287,81 @@ async function defaultStreamText({
   request,
   modelId,
   provider,
-  abortSignal
+  abortSignal,
+  clientModel
 }: {
   request: CodexChatRequest
   modelId: string
   provider: CodexProvider
   abortSignal: AbortSignal
+  clientModel?: AdminBackendClientModel
 }): Promise<StreamTextLikeResult> {
   const modelMessages = await convertToModelMessages(request.messages)
   const system = typeof request.body?.system === 'string' ? request.body.system : undefined
   const cwd = typeof request.body?.cwd === 'string' ? request.body.cwd : undefined
+  const model = resolveLanguageModel({ provider, modelId, clientModel })
+  const providerOptions = codexCallOptions({ model: modelId, summary: 'auto', cwd })
 
   return aiStreamText({
-    model: provider.chat(modelId),
+    model,
     messages: modelMessages,
     system,
     abortSignal,
-    providerOptions: {
-      ...codexCallOptions({ model: modelId, summary: 'auto', cwd })
-    }
+    ...(providerOptions ? { providerOptions } : {})
   })
+}
+
+function resolveLanguageModel({
+  provider,
+  modelId,
+  clientModel
+}: {
+  provider: CodexProvider
+  modelId: string
+  clientModel?: AdminBackendClientModel
+}): LanguageModel {
+  if (!clientModel) return provider.chat(modelId)
+
+  const apiFormat = clientModel.api_format.trim().toLowerCase()
+  if (apiFormat !== 'openai') {
+    throw new Error(`Unsupported admin backend model api_format: ${clientModel.api_format}`)
+  }
+  if (!clientModel.api_base_url?.trim()) {
+    throw new Error(`Admin backend model ${clientModel.model_id} is missing api_base_url`)
+  }
+
+  return provider.chat(modelId, createCodexCustomModelSettings(clientModel))
+}
+
+function createCodexCustomModelSettings(
+  clientModel: AdminBackendClientModel
+): CodexLanguageModelSettings {
+  const providerId = clientModel.provider
+  return {
+    modelProvider: providerId,
+    customModelProviders: {
+      [providerId]: createCodexModelProviderInfo(clientModel)
+    }
+  }
+}
+
+function createCodexModelProviderInfo(
+  clientModel: AdminBackendClientModel
+): CodexModelProviderInfo {
+  const providerInfo: CodexModelProviderInfo = {
+    name: clientModel.provider,
+    base_url: clientModel.api_base_url?.trim(),
+    wire_api: 'responses',
+    requires_openai_auth: false,
+    supports_websockets: false,
+    request_max_retries: 0,
+    stream_max_retries: 0
+  }
+
+  const apiKey = clientModel.api_key?.trim()
+  if (apiKey) providerInfo.experimental_bearer_token = apiKey
+
+  return providerInfo
 }
 
 function toToolUserInputAnswers(
