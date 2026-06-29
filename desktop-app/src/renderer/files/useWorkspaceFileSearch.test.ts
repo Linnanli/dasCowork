@@ -12,23 +12,19 @@ describe('searchWorkspaceFiles', () => {
 
     await searchWorkspaceFiles({
       manager,
-      hostId: 'local',
-      roots: ['/repo'],
       query: 'app'
     })
 
     expect(manager.sessions[0]).toMatchObject({
-      hostId: 'local',
-      roots: ['/repo'],
       query: 'app'
     })
   })
 })
 
 function createMockAppServerManager(): {
-  sessions: Array<{ hostId: string; roots: string[]; query: string }>
+  sessions: Array<{ query: string }>
 } & WorkspaceFileSearchManager {
-  const sessions: Array<{ hostId: string; roots: string[]; query: string }> = []
+  const sessions: Array<{ query: string }> = []
 
   return {
     sessions,

@@ -126,12 +126,18 @@ export class ProjectApiService {
 
     if (selection.projectKind === 'path') {
       const { realPath } = await this.dependencies.validateLocalRoot(selection.path)
+      const trustedRoot = state.workspaceRootOptions.find(
+        (option) => option.hostId === 'local' && option.root === realPath
+      )
+      if (!trustedRoot) {
+        throw new Error(`Workspace root is not registered: ${selection.path}`)
+      }
       const now = new Date().toISOString()
       const option = upsertWorkspaceRootOption(state.workspaceRootOptions, {
         root: realPath,
-        label: basename(realPath),
+        label: trustedRoot.label ?? basename(realPath),
         hostId: 'local',
-        addedAt: now,
+        addedAt: trustedRoot.addedAt,
         lastOpenedAt: now
       })
       const nextState: ProjectState = {

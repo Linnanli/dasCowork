@@ -10,7 +10,9 @@ import type {
   CodexStatus,
   DesktopCodexApi,
   DesktopCodexChatApi,
-  DesktopProjectsApi
+  DesktopProjectsApi,
+  WorkspaceFileSearchPayload,
+  WorkspaceFileSearchResponse
 } from '../shared/codexIpcApi'
 import type {
   LocalProject,
@@ -88,6 +90,11 @@ const desktopProjects: DesktopProjectsApi = {
     ipcRenderer.invoke('codex:projects:create-local', input) as Promise<LocalProject>,
   selectProject: (input: ProjectSelection) =>
     ipcRenderer.invoke('codex:projects:select', input) as Promise<ProjectState>,
+  createFuzzyFileSearchSession: (input: WorkspaceFileSearchPayload) =>
+    ipcRenderer.invoke(
+      'codex:projects:create-fuzzy-file-search-session',
+      input
+    ) as Promise<WorkspaceFileSearchResponse>,
   onStateChange: (callback: (state: ProjectState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: ProjectState): void =>
       callback(state)

@@ -1,18 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 
-export type WorkspaceFileSearchTarget = {
-  hostId: string
-  roots: string[]
-}
+import type { WorkspaceFileSearchResult } from '../../shared/projects/projectTypes'
 
-export type WorkspaceFileSearchResult = {
-  path: string
-  label?: string
-  root?: string
-  score?: number
-}
-
-export type WorkspaceFileSearchSessionRequest = WorkspaceFileSearchTarget & {
+export type WorkspaceFileSearchSessionRequest = {
   query: string
   limit?: number
 }
@@ -42,14 +32,10 @@ export type WorkspaceFileSearchState = {
 
 export async function searchWorkspaceFiles({
   manager,
-  hostId,
-  roots,
   query,
   limit
 }: SearchWorkspaceFilesInput): Promise<WorkspaceFileSearchResult[]> {
   const response = await manager.createFuzzyFileSearchSession({
-    hostId,
-    roots,
     query,
     ...(limit === undefined ? {} : { limit })
   })
@@ -59,10 +45,12 @@ export async function searchWorkspaceFiles({
 
 export function useWorkspaceFileSearch({
   manager,
-  target
+  enabled = true,
+  limit
 }: {
   manager: WorkspaceFileSearchManager | null
-  target: WorkspaceFileSearchTarget | null
+  enabled?: boolean
+  limit?: number
 }): WorkspaceFileSearchState {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -70,7 +58,7 @@ export function useWorkspaceFileSearch({
 
   const search = useCallback(
     async (query: string) => {
-      if (!manager || !target || query.trim().length === 0) {
+      if (!manager || !enabled) {
         setResults([])
         return []
       }
@@ -80,9 +68,8 @@ export function useWorkspaceFileSearch({
       try {
         const nextResults = await searchWorkspaceFiles({
           manager,
-          hostId: target.hostId,
-          roots: target.roots,
-          query
+          query,
+          ...(limit === undefined ? {} : { limit })
         })
         setResults(nextResults)
         return nextResults
@@ -95,7 +82,7 @@ export function useWorkspaceFileSearch({
         setLoading(false)
       }
     },
-    [manager, target]
+    [enabled, limit, manager]
   )
 
   return useMemo(

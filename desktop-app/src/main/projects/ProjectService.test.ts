@@ -201,7 +201,17 @@ describe('ProjectService', () => {
   })
 
   it('normalizes path selections through local validation', async () => {
-    const { service, validateLocalRoot } = makeProjectService()
+    const { service, validateLocalRoot } = makeProjectService({
+      activeProjectSelection: { projectKind: 'path', path: '/real/repo' },
+      workspaceRootOptions: [
+        {
+          root: '/real/repo',
+          hostId: 'local',
+          addedAt: now,
+          lastOpenedAt: now
+        }
+      ]
+    })
     validateLocalRoot.mockResolvedValueOnce({ realPath: '/real/repo' })
 
     await expect(
@@ -222,6 +232,27 @@ describe('ProjectService', () => {
       }
     })
     expect(validateLocalRoot).toHaveBeenCalledWith('~/repo')
+  })
+
+  it('rejects new thread path selections that are not the active registered root', async () => {
+    const { service } = makeProjectService({
+      activeProjectSelection: { projectKind: 'path', path: '/safe/repo' },
+      workspaceRootOptions: [
+        {
+          root: '/safe/repo',
+          hostId: 'local',
+          addedAt: now,
+          lastOpenedAt: now
+        }
+      ]
+    })
+
+    await expect(
+      service.resolveNewThreadTarget({
+        selection: { projectKind: 'path', path: '/malicious' },
+        prompt: 'start here'
+      })
+    ).rejects.toThrow('Workspace root is not the active registered project')
   })
 
   it('creates projectless workspace when no project is selected', async () => {

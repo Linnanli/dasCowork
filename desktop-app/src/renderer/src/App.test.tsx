@@ -50,6 +50,12 @@ const runtimeState = vi.hoisted<{
   setSelectedModelId: vi.fn()
 }))
 
+const mentionAdapterState = vi.hoisted<{
+  calls: unknown[]
+}>(() => ({
+  calls: []
+}))
+
 const projectHookState = vi.hoisted(() => ({
   controller: {
     state: {
@@ -91,6 +97,7 @@ function resetThreadMessageState(): void {
   runtimeState.setSelectedModelId.mockReset()
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
   runtimeState.serverRequests = []
+  mentionAdapterState.calls = []
 }
 
 function setDesktopPlatform(platform: NodeJS.Platform): void {
@@ -374,7 +381,10 @@ vi.mock('@assistant-ui/react', () => {
     unstable_defaultDirectiveFormatter: {
       parse: (text: string) => [{ kind: 'text', text }]
     },
-    unstable_useMentionAdapter: () => ({ adapter: {}, directive: {} }),
+    unstable_useMentionAdapter: (options: unknown) => {
+      mentionAdapterState.calls.push(options)
+      return { adapter: {}, directive: {} }
+    },
     unstable_useSlashCommandAdapter: () => ({ action: { onExecute: vi.fn() }, adapter: {} }),
     useAui: () => ({
       composer: () => ({
@@ -389,8 +399,31 @@ vi.mock('@assistant-ui/react', () => {
       })
     }),
     useMessageTiming: () => null,
-    useAuiState: (selector: (state: typeof assistantState) => unknown) =>
-      selector(currentAssistantState())
+    useAuiState: (
+      selector: (
+        state: typeof assistantState & {
+          threadListItem: {
+            id: string
+            remoteId: string | undefined
+            externalId: string | undefined
+            title: string
+            status: string
+            custom: undefined
+          }
+        }
+      ) => unknown
+    ) =>
+      selector({
+        ...currentAssistantState(),
+        threadListItem: {
+          id: 'main',
+          remoteId: undefined,
+          externalId: undefined,
+          title: 'Main Thread',
+          status: 'regular',
+          custom: undefined
+        }
+      })
   }
 })
 
@@ -403,6 +436,14 @@ describe('App composer', () => {
   beforeEach(() => {
     resetThreadMessageState()
     setDesktopPlatform('darwin')
+    vi.stubGlobal('desktopProjects', {
+      getState: vi.fn(),
+      pickWorkspaceRoot: vi.fn(),
+      createLocalProject: vi.fn(),
+      selectProject: vi.fn(),
+      createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
+      onStateChange: vi.fn(() => vi.fn())
+    })
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
     container = document.createElement('div')
@@ -441,6 +482,33 @@ describe('App composer', () => {
     )
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
     expect(triggerChars).toEqual(['/', '@'])
+  })
+
+  it('prefetches selected project files for composer mentions', async () => {
+    const searchFiles = vi.fn(async () => ({
+      results: [{ path: '/repo/src/App.tsx', label: 'src/App.tsx', root: '/repo' }]
+    }))
+    window.desktopProjects.createFuzzyFileSearchSession = searchFiles
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(searchFiles).toHaveBeenCalledWith({ query: '', limit: 40 })
+    expect(
+      mentionAdapterState.calls.some((call) => {
+        const categories = (call as { categories?: Array<{ items?: Array<{ id?: string }> }> })
+          .categories
+        return categories?.some((category) =>
+          category.items?.some((item) => item.id === '/repo/src/App.tsx')
+        )
+      })
+    ).toBe(true)
   })
 
   it('shows model selection failures instead of silently swallowing them', async () => {

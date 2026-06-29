@@ -18,6 +18,11 @@ export type ThreadProjectGroup = {
   warning?: string
 }
 
+export type ThreadProjectBadge = {
+  label: string
+  projectless: boolean
+}
+
 export function buildThreadProjectSections(
   state: ProjectState | null,
   currentLabel: string,
@@ -123,6 +128,41 @@ export function buildThreadProjectSections(
   }
 
   return sections
+}
+
+export function getThreadProjectBadge(
+  state: ProjectState | null,
+  threadIds: Array<string | undefined>,
+  fallbackLabel: string
+): ThreadProjectBadge {
+  if (!state) return { label: fallbackLabel, projectless: false }
+
+  const assignment = threadIds
+    .filter((threadId): threadId is string => Boolean(threadId))
+    .map((threadId) => state.threadProjectAssignments[threadId])
+    .find(Boolean)
+
+  if (!assignment) return { label: fallbackLabel, projectless: false }
+
+  if (assignment.projectKind === 'projectless') {
+    return { label: 'Projectless', projectless: true }
+  }
+
+  if (assignment.projectKind === 'remote') {
+    const project = state.remoteProjects.find(
+      (candidate) => candidate.id === assignment.projectId && candidate.hostId === assignment.hostId
+    )
+    return {
+      label: project?.label ?? `${assignment.hostId}:${assignment.cwd ?? assignment.projectId}`,
+      projectless: false
+    }
+  }
+
+  const project = state.localProjects[assignment.projectId]
+  return {
+    label: project?.name ?? assignment.path ?? assignment.cwd ?? assignment.projectId,
+    projectless: false
+  }
 }
 
 function localProjectGroup(state: ProjectState, project: LocalProject): ThreadProjectGroup {

@@ -21,6 +21,7 @@ vi.mock('electron', () => ({
 }))
 
 import { CodexChatRuntimeService, type CodexPortLike } from '../codexChatRuntimeService'
+import { ProjectService } from '../projects/ProjectService'
 import { ProjectStore, createDefaultProjectState } from '../projects/ProjectStore'
 import { startConversation } from './startConversation'
 
@@ -156,5 +157,65 @@ describe('startConversation', () => {
         }
       }
     })
+  })
+
+  it('rejects direct chat payloads that forge an unselected path project', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const store = ProjectStore.inMemory({
+      ...createDefaultProjectState(),
+      activeProjectSelection: { projectKind: 'path', path: '/safe/repo' },
+      workspaceRootOptions: [
+        {
+          root: '/safe/repo',
+          hostId: 'local',
+          addedAt: '2026-06-29T00:00:00.000Z',
+          lastOpenedAt: '2026-06-29T00:00:00.000Z'
+        }
+      ]
+    })
+    const projectService = new ProjectService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      validateRemoteRoot: async () => undefined,
+      createProjectlessWorkspace: async () => ({
+        cwd: '/tmp/projectless',
+        workspaceRoot: '/tmp/projectless',
+        outputDirectory: '/tmp/projectless/out'
+      })
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/fallback',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      projectService
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: {
+          projectSelection: { projectKind: 'path', path: '/malicious' }
+        }
+      },
+      port
+    )
+
+    expect(streamText).not.toHaveBeenCalled()
+    expect(port.messages).toEqual([
+      {
+        type: 'error',
+        error: 'Workspace root is not the active registered project: /malicious'
+      }
+    ])
   })
 })

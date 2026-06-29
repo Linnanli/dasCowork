@@ -14,7 +14,11 @@ describe('createProjectRuntimeServices', () => {
       const repo = join(tempRoot, 'repo')
       await mkdir(repo)
       const realRepo = await realpath(repo)
-      const services = createProjectRuntimeServices({ userDataPath: tempRoot })
+      const services = createProjectRuntimeServices({
+        userDataPath: tempRoot,
+        pickWorkspaceRoot: async () => repo
+      })
+      await services.projectApi.pickWorkspaceRoot()
 
       const target = await services.projectService.resolveNewThreadTarget({
         selection: { projectKind: 'path', path: repo },

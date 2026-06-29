@@ -46,6 +46,13 @@ export type WorkspaceRootOption = {
   missing?: boolean
 }
 
+export type WorkspaceFileSearchResult = {
+  path: string
+  label?: string
+  root?: string
+  score?: number
+}
+
 export type LocalProject = {
   id: string
   kind: 'local'

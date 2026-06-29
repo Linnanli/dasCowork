@@ -120,6 +120,7 @@ function installDesktopProjects(overrides: Partial<DesktopProjectsApi>): void {
     pickWorkspaceRoot: vi.fn().mockResolvedValue(null),
     createLocalProject: vi.fn(),
     selectProject: vi.fn(),
+    createFuzzyFileSearchSession: vi.fn().mockResolvedValue({ results: [] }),
     onStateChange: vi.fn(() => vi.fn()),
     ...overrides
   } satisfies DesktopProjectsApi)

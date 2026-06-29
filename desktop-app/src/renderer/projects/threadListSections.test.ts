@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ProjectState } from '../../shared/projects/projectTypes'
-import { buildThreadProjectSections } from '../src/threads/threadProjectSections'
+import {
+  buildThreadProjectSections,
+  getThreadProjectBadge
+} from '../src/threads/threadProjectSections'
 
 const baseState: ProjectState = {
   workspaceRootOptions: [],
@@ -105,6 +108,44 @@ describe('buildThreadProjectSections', () => {
       label: 'Projectless',
       detail: '/tmp/codex/thread-4',
       threadCount: 1
+    })
+  })
+
+  it('derives item badges from each thread assignment instead of the active project', () => {
+    const state: ProjectState = {
+      ...baseState,
+      localProjects: {
+        local: {
+          id: 'local',
+          kind: 'local',
+          name: 'Local App',
+          hostId: 'local',
+          createdAt: '2026-06-29T00:00:00.000Z',
+          updatedAt: '2026-06-29T00:00:00.000Z',
+          writableRoots: ['/repo/local']
+        },
+        other: {
+          id: 'other',
+          kind: 'local',
+          name: 'Other App',
+          hostId: 'local',
+          createdAt: '2026-06-29T00:00:00.000Z',
+          updatedAt: '2026-06-29T00:00:00.000Z',
+          writableRoots: ['/repo/other']
+        }
+      },
+      activeProjectSelection: { projectKind: 'local', projectId: 'local' },
+      threadProjectAssignments: {
+        'thread-1': { projectKind: 'local', projectId: 'local', cwd: '/repo/local' },
+        'thread-2': { projectKind: 'local', projectId: 'other', cwd: '/repo/other' }
+      }
+    }
+
+    expect(getThreadProjectBadge(state, ['thread-1'], 'Active App')).toMatchObject({
+      label: 'Local App'
+    })
+    expect(getThreadProjectBadge(state, ['thread-2'], 'Active App')).toMatchObject({
+      label: 'Other App'
     })
   })
 })

@@ -49,8 +49,19 @@ describe('ProjectApiService', () => {
     ).rejects.toThrow('Local project requires at least one source root')
   })
 
-  it('selects a path root through validation before storing it as active', async () => {
-    const store = ProjectStore.inMemory(createDefaultProjectState())
+  it('selects a registered path root through validation before storing it as active', async () => {
+    const store = ProjectStore.inMemory({
+      ...createDefaultProjectState(),
+      workspaceRootOptions: [
+        {
+          root: '/real/repo',
+          label: 'Repo',
+          hostId: 'local',
+          addedAt: '2026-06-29T00:00:00.000Z',
+          lastOpenedAt: '2026-06-29T00:00:00.000Z'
+        }
+      ]
+    })
     const service = new ProjectApiService({
       store,
       validateLocalRoot: async (path) => ({ realPath: `/real${path}` }),
@@ -65,9 +76,23 @@ describe('ProjectApiService', () => {
       workspaceRootOptions: [
         {
           root: '/real/repo',
-          hostId: 'local'
+          hostId: 'local',
+          label: 'Repo'
         }
       ]
     })
+  })
+
+  it('rejects unregistered path selections from renderer-owned calls', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: `/real${path}` }),
+      pickWorkspaceRoot: vi.fn()
+    })
+
+    await expect(service.selectProject({ projectKind: 'path', path: '/repo' })).rejects.toThrow(
+      'Workspace root is not registered'
+    )
   })
 })

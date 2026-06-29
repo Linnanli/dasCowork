@@ -35,6 +35,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
+  FileIcon,
   FileTextIcon,
   HelpCircleIcon,
   PanelLeftIcon,
@@ -47,6 +48,8 @@ import {
 } from 'lucide-react'
 import {
   forwardRef,
+  useEffect,
+  useMemo,
   useState,
   type ButtonHTMLAttributes,
   type ComponentPropsWithoutRef,
@@ -66,6 +69,7 @@ import {
   pendingAssistantMessageText
 } from './lib/assistantMessages'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
+import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
 import type { ModelOption } from './components/assistant-ui'
 
 type CodexSidebarProps = {
@@ -946,7 +950,49 @@ function Composer({
   onSelectedModelChange,
   projectState
 }: ComposerProps): React.JSX.Element {
-  const mention = unstable_useMentionAdapter({ fallbackIcon: WrenchIcon })
+  const workspaceFileSearch = useWorkspaceFileSearch({
+    manager: window.desktopProjects,
+    enabled: projectState.hasSelection,
+    limit: 40
+  })
+  const { results: workspaceFileResults, search: searchWorkspaceFilesForMentions } =
+    workspaceFileSearch
+  const projectSelectionKey = JSON.stringify(projectState.state?.activeProjectSelection ?? null)
+
+  useEffect(() => {
+    if (!projectState.hasSelection) return
+    void searchWorkspaceFilesForMentions('')
+  }, [projectSelectionKey, projectState.hasSelection, searchWorkspaceFilesForMentions])
+
+  const fileMentions = useMemo(
+    () =>
+      workspaceFileResults.map((result) => ({
+        id: result.path,
+        type: 'file',
+        label: result.label ?? result.path,
+        description: result.root ? result.path.replace(`${result.root}/`, '') : result.path,
+        icon: 'file'
+      })),
+    [workspaceFileResults]
+  )
+  const mention = unstable_useMentionAdapter({
+    categories:
+      fileMentions.length > 0
+        ? [
+            {
+              id: 'workspace-files',
+              label: 'Files',
+              items: fileMentions
+            }
+          ]
+        : undefined,
+    includeModelContextTools: {
+      category: { id: 'tools', label: 'Tools' },
+      icon: 'tool'
+    },
+    fallbackIcon: WrenchIcon,
+    iconMap: { file: FileIcon, tool: WrenchIcon }
+  })
   const slash = unstable_useSlashCommandAdapter({
     commands: slashCommands,
     fallbackIcon: SlashIcon,

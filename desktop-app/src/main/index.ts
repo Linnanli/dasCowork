@@ -6,6 +6,7 @@ import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { installWindowContextMenu } from './contextMenu'
 import { createModelCatalogService } from './modelCatalogService'
 import type { ProjectApiService } from './projects/ProjectApiService'
+import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
@@ -16,11 +17,13 @@ import {
   projectCreateLocalPayloadSchema,
   projectSelectPayloadSchema,
   codexRespondApprovalPayloadSchema,
-  codexSetSelectedModelPayloadSchema
+  codexSetSelectedModelPayloadSchema,
+  workspaceFileSearchPayloadSchema
 } from '../shared/codexIpcApi'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
+let workspaceFileSearch: WorkspaceFileSearchService | undefined
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
@@ -28,6 +31,7 @@ function createCodexRuntime(): CodexChatRuntimeService {
     pickWorkspaceRoot: pickWorkspaceRootPath
   })
   projectApi = projectRuntimeServices.projectApi
+  workspaceFileSearch = projectRuntimeServices.workspaceFileSearch
 
   return new CodexChatRuntimeService({
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
@@ -52,6 +56,11 @@ async function openExternalHttpUrl(url: string): Promise<void> {
 function requireProjectApi(): ProjectApiService {
   if (!projectApi) throw new Error('Project API is not initialized')
   return projectApi
+}
+
+function requireWorkspaceFileSearch(): WorkspaceFileSearchService {
+  if (!workspaceFileSearch) throw new Error('Workspace file search is not initialized')
+  return workspaceFileSearch
 }
 
 function broadcastStatus(): void {
@@ -141,6 +150,10 @@ app.whenReady().then(() => {
     const state = await requireProjectApi().selectProject(request)
     await broadcastProjectState()
     return state
+  })
+  ipcMain.handle('codex:projects:create-fuzzy-file-search-session', (_, payload: unknown) => {
+    const request = workspaceFileSearchPayloadSchema.parse(payload)
+    return requireWorkspaceFileSearch().createFuzzyFileSearchSession(request)
   })
   ipcMain.on('codex-chat:start', (event, payload: unknown) => {
     const port = event.ports[0]

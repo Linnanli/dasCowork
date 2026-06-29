@@ -6,6 +6,7 @@ import type {
   LocalProject,
   ProjectSelection,
   ProjectState,
+  WorkspaceFileSearchResult,
   WorkspaceRootOption
 } from './projects/projectTypes'
 import {
@@ -131,6 +132,17 @@ export const codexOpenExternalHttpUrlPayloadSchema = z.object({
   url: z.string().url().refine(isExternalHttpUrl, 'external URL must be http(s)')
 })
 
+export const workspaceFileSearchPayloadSchema = z.object({
+  query: z.string().optional(),
+  limit: z.number().int().min(1).max(200).optional()
+})
+
+export type WorkspaceFileSearchPayload = z.infer<typeof workspaceFileSearchPayloadSchema>
+
+export type WorkspaceFileSearchResponse = {
+  results: WorkspaceFileSearchResult[]
+}
+
 export type DesktopCodexApi = {
   getStatus(): Promise<CodexStatus>
   listModels(): Promise<CodexModelList>
@@ -153,6 +165,9 @@ export type DesktopProjectsApi = {
   pickWorkspaceRoot(): Promise<WorkspaceRootOption | null>
   createLocalProject(input: ProjectCreateLocalPayload): Promise<LocalProject>
   selectProject(input: ProjectSelection): Promise<ProjectState>
+  createFuzzyFileSearchSession(
+    input: WorkspaceFileSearchPayload
+  ): Promise<WorkspaceFileSearchResponse>
   onStateChange(callback: (state: ProjectState) => void): () => void
 }
 

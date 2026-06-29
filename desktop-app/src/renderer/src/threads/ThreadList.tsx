@@ -1,7 +1,8 @@
 import {
   ThreadListItemMorePrimitive,
   ThreadListItemPrimitive,
-  ThreadListPrimitive
+  ThreadListPrimitive,
+  useAuiState
 } from '@assistant-ui/react'
 import {
   AlertTriangleIcon,
@@ -14,7 +15,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { ProjectState } from '../../../shared/projects/projectTypes'
 import type { ProjectStateController } from '../projects/useProjectState'
-import { buildThreadProjectSections } from './threadProjectSections'
+import { buildThreadProjectSections, getThreadProjectBadge } from './threadProjectSections'
 
 const threadListNewButtonClass =
   'inline-flex h-8 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors'
@@ -56,8 +57,8 @@ export function ThreadList({
         {() => (
           <ThreadListItem
             nativeBackdrop={nativeBackdrop}
-            projectLabel={projectState.currentLabel}
-            projectless={projectState.state?.activeProjectSelection?.projectKind === 'projectless'}
+            projectState={projectState.state}
+            fallbackProjectLabel={projectState.currentLabel}
           />
         )}
       </ThreadListPrimitive.Items>
@@ -116,13 +117,20 @@ function ThreadProjectSections({
 
 function ThreadListItem({
   nativeBackdrop,
-  projectLabel,
-  projectless
+  projectState,
+  fallbackProjectLabel
 }: {
   nativeBackdrop: boolean
-  projectLabel: string
-  projectless: boolean
+  projectState: ProjectState | null
+  fallbackProjectLabel: string
 }): React.JSX.Element {
+  const threadListItem = useAuiState((state) => state.threadListItem)
+  const projectBadge = getThreadProjectBadge(
+    projectState,
+    [threadListItem.remoteId, threadListItem.externalId, threadListItem.id],
+    fallbackProjectLabel
+  )
+
   return (
     <ThreadListItemPrimitive.Root
       className={cn(
@@ -137,7 +145,7 @@ function ThreadListItem({
           <ThreadListItemPrimitive.Title fallback="New Chat" />
         </span>
         <span className="truncate text-[11px] font-normal text-muted-foreground">
-          {projectless ? 'Projectless' : projectLabel}
+          {projectBadge.label}
         </span>
       </ThreadListItemPrimitive.Trigger>
       <ThreadListItemActions />
