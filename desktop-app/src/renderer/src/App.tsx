@@ -176,6 +176,7 @@ function useNativeBackdrop(): boolean {
 }
 
 function App(): React.JSX.Element {
+  const projectState = useProjectState()
   const {
     runtime,
     serverRequests,
@@ -184,11 +185,12 @@ function App(): React.JSX.Element {
     models,
     selectedModelId,
     setSelectedModelId
-  } = useCodexIpcAssistantRuntime()
+  } = useCodexIpcAssistantRuntime({
+    projectSelection: projectState.state?.activeProjectSelection
+  })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
-  const projectState = useProjectState()
 
   const toggleSidebar = (): void => {
     setSidebarCollapsed((collapsed) => !collapsed)

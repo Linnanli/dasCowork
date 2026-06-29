@@ -7,6 +7,7 @@ import type {
   CodexApprovalResponse,
   CodexModelList
 } from '../../../shared/codexIpcApi'
+import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 import type { ModelOption } from '../components/assistant-ui'
 import { ElectronIpcChatTransport } from '../lib/ElectronIpcChatTransport'
 
@@ -23,10 +24,17 @@ export type CodexIpcAssistantRuntimeState = {
   rejectServerRequest: (request: CodexApprovalRequest) => Promise<void>
 }
 
-export function useCodexIpcAssistantRuntime(): CodexIpcAssistantRuntimeState {
+export type CodexIpcAssistantRuntimeOptions = {
+  projectSelection?: ProjectSelection
+}
+
+export function useCodexIpcAssistantRuntime(
+  options: CodexIpcAssistantRuntimeOptions = {}
+): CodexIpcAssistantRuntimeState {
   const [serverRequests, setServerRequests] = useState<CodexApprovalRequest[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
+  const { projectSelection } = options
 
   useEffect(() => {
     let cancelled = false
@@ -49,9 +57,10 @@ export function useCodexIpcAssistantRuntime(): CodexIpcAssistantRuntimeState {
     () =>
       new ElectronIpcChatTransport({
         chatBridge: window.desktopCodexChat,
+        getProjectSelection: () => projectSelection,
         getSelectedModelId: () => selectedModelId
       }),
-    [selectedModelId]
+    [projectSelection, selectedModelId]
   )
   const chat = useChat({ transport })
   const runtime = useAISDKRuntime(chat)

@@ -1,18 +1,22 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 
 import type { DesktopCodexChatApi } from '../../../shared/codexIpcApi'
+import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 
 export type ElectronIpcChatTransportOptions = {
   chatBridge: DesktopCodexChatApi
+  getProjectSelection?: () => ProjectSelection | undefined
   getSelectedModelId: () => string | undefined
 }
 
 export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly chatBridge: DesktopCodexChatApi
+  private readonly getProjectSelection: () => ProjectSelection | undefined
   private readonly getSelectedModelId: () => string | undefined
 
   constructor(options: ElectronIpcChatTransportOptions) {
     this.chatBridge = options.chatBridge
+    this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
     this.getSelectedModelId = options.getSelectedModelId
   }
 
@@ -43,7 +47,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
             messages: options.messages,
             modelId: this.getSelectedModelId(),
             metadata: options.metadata,
-            body: options.body as Record<string, unknown> | undefined
+            body: this.createTrustedBody(options.body)
           },
           {
             onChunk: (chunk) => {
@@ -72,4 +76,23 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   async reconnectToStream(): Promise<ReadableStream<UIMessageChunk> | null> {
     return null
   }
+
+  private createTrustedBody(body: unknown): Record<string, unknown> | undefined {
+    const trustedBody = stripRendererExecutionHints(body)
+    const projectSelection = this.getProjectSelection()
+    if (projectSelection) trustedBody.projectSelection = projectSelection
+    return Object.keys(trustedBody).length > 0 ? trustedBody : undefined
+  }
+}
+
+function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return {}
+  const {
+    cwd: _cwd,
+    runtimeWorkspaceRoots: _runtimeWorkspaceRoots,
+    ...trustedBody
+  } = body as Record<string, unknown>
+  void _cwd
+  void _runtimeWorkspaceRoots
+  return trustedBody
 }
