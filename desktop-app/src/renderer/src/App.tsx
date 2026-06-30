@@ -176,7 +176,7 @@ const sidebarGlassClass =
   'shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)] dark:shadow-[0_18px_60px_-48px_rgba(0,0,0,0.95)]'
 
 function useNativeBackdrop(): boolean {
-  return window.electron?.process.platform === 'darwin'
+  return window.desktopApp.electron.process.platform === 'darwin'
 }
 
 function App(): React.JSX.Element {
@@ -951,7 +951,7 @@ function Composer({
   projectState
 }: ComposerProps): React.JSX.Element {
   const workspaceFileSearch = useWorkspaceFileSearch({
-    manager: window.desktopProjects,
+    manager: window.desktopApp.projects,
     enabled: projectState.hasSelection,
     limit: 40
   })

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-import type { CodexApprovalRequest } from '../../shared/codexIpcApi'
+import type { CodexApprovalRequest, DesktopProjectsApi } from '../../shared/codexIpcApi'
 
 type MockThreadMessageState = {
   message: {
@@ -101,13 +101,37 @@ function resetThreadMessageState(): void {
 }
 
 function setDesktopPlatform(platform: NodeJS.Platform): void {
-  Object.defineProperty(window, 'electron', {
-    configurable: true,
-    value: {
+  window.desktopApp = {
+    ...window.desktopApp,
+    electron: {
       process: {
         platform
       }
-    }
+    } as typeof window.desktopApp.electron
+  }
+}
+
+function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
+  vi.stubGlobal('desktopApp', {
+    electron: {
+      process: {
+        platform: 'darwin'
+      }
+    },
+    codex: {},
+    chat: {},
+    projects: {
+      getState: vi.fn(),
+      pickWorkspaceRoot: vi.fn(),
+      createLocalProject: vi.fn(),
+      createRemoteProject: vi.fn(),
+      selectProject: vi.fn(),
+      removeProject: vi.fn(),
+      renameProject: vi.fn(),
+      createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
+      onStateChange: vi.fn(() => vi.fn()),
+      ...projects
+    } satisfies DesktopProjectsApi
   })
 }
 
@@ -435,15 +459,7 @@ describe('App composer', () => {
 
   beforeEach(() => {
     resetThreadMessageState()
-    setDesktopPlatform('darwin')
-    vi.stubGlobal('desktopProjects', {
-      getState: vi.fn(),
-      pickWorkspaceRoot: vi.fn(),
-      createLocalProject: vi.fn(),
-      selectProject: vi.fn(),
-      createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
-      onStateChange: vi.fn(() => vi.fn())
-    })
+    installDesktopApp()
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
     container = document.createElement('div')
@@ -488,7 +504,7 @@ describe('App composer', () => {
     const searchFiles = vi.fn(async () => ({
       results: [{ path: '/repo/src/App.tsx', label: 'src/App.tsx', root: '/repo' }]
     }))
-    window.desktopProjects.createFuzzyFileSearchSession = searchFiles
+    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
 
     act(() => {
       root.render(<App />)

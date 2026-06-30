@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
 
@@ -35,20 +35,15 @@ export function useCodexIpcAssistantRuntime(
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
   const { projectSelection } = options
-  const projectSelectionRef = useRef(projectSelection)
-  const selectedModelIdRef = useRef(selectedModelId)
-
-  projectSelectionRef.current = projectSelection
-  selectedModelIdRef.current = selectedModelId
 
   useEffect(() => {
     let cancelled = false
-    void window.desktopCodex.listModels().then((list) => {
+    void window.desktopApp.codex.listModels().then((list) => {
       if (cancelled) return
       setModels(toModelOptions(list))
       setSelectedModelIdState(list.selectedModelId)
     })
-    const removeApproval = window.desktopCodex.onApprovalRequest((request) => {
+    const removeApproval = window.desktopApp.codex.onApprovalRequest((request) => {
       setServerRequests((current) => [...current, request])
     })
 
@@ -61,30 +56,30 @@ export function useCodexIpcAssistantRuntime(
   const transport = useMemo(
     () =>
       new ElectronIpcChatTransport({
-        chatBridge: window.desktopCodexChat,
-        getProjectSelection: () => projectSelectionRef.current,
-        getSelectedModelId: () => selectedModelIdRef.current
+        chatBridge: window.desktopApp.chat,
+        getProjectSelection: () => projectSelection,
+        getSelectedModelId: () => selectedModelId
       }),
-    []
+    [projectSelection, selectedModelId]
   )
   const chat = useChat({ transport })
   const runtime = useAISDKRuntime(chat)
 
   const setSelectedModelId = useCallback(async (modelId: string) => {
-    const response = await window.desktopCodex.setSelectedModel(modelId)
+    const response = await window.desktopApp.codex.setSelectedModel(modelId)
     setSelectedModelIdState(response.selectedModelId)
   }, [])
 
   const respondToServerRequest = useCallback(
     async (request: CodexApprovalRequest, response: CodexApprovalResponse) => {
-      await window.desktopCodex.respondApproval(request.id, response)
+      await window.desktopApp.codex.respondApproval(request.id, response)
       setServerRequests((current) => current.filter((item) => item.id !== request.id))
     },
     []
   )
 
   const rejectServerRequest = useCallback(async (request: CodexApprovalRequest) => {
-    await window.desktopCodex.respondApproval(request.id, {
+    await window.desktopApp.codex.respondApproval(request.id, {
       action: 'decline',
       reason: 'Rejected from desktop UI'
     })

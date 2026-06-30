@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { watchSystemTheme } from './lib/systemTheme'
 
-const desktopPlatform = window.electron?.process.platform
+const desktopPlatform = window.desktopApp.electron.process.platform
 document.documentElement.dataset.desktopPlatform = desktopPlatform ?? 'unknown'
 if (desktopPlatform === 'darwin') {
   document.documentElement.dataset.nativeBackdrop = 'true'

@@ -21,10 +21,10 @@ export function useProjectState(): ProjectStateController {
 
   useEffect(() => {
     let cancelled = false
-    void window.desktopProjects.getState().then((nextState) => {
+    void window.desktopApp.projects.getState().then((nextState) => {
       if (!cancelled) setState(nextState)
     })
-    const removeStateListener = window.desktopProjects.onStateChange((nextState) => {
+    const removeStateListener = window.desktopApp.projects.onStateChange((nextState) => {
       setState(nextState)
     })
 
@@ -35,16 +35,16 @@ export function useProjectState(): ProjectStateController {
   }, [])
 
   const pickWorkspaceRoot = useCallback(async () => {
-    const option = await window.desktopProjects.pickWorkspaceRoot()
+    const option = await window.desktopApp.projects.pickWorkspaceRoot()
     if (!option) return
-    const nextState = await window.desktopProjects.getState()
+    const nextState = await window.desktopApp.projects.getState()
     setState(nextState)
   }, [])
 
   const createLocalProject = useCallback(
     async (input: { name?: string; sourceRoots: string[] }) => {
-      const project = await window.desktopProjects.createLocalProject(input)
-      const nextState = await window.desktopProjects.getState()
+      const project = await window.desktopApp.projects.createLocalProject(input)
+      const nextState = await window.desktopApp.projects.getState()
       setState(nextState)
       return project
     },
@@ -52,7 +52,7 @@ export function useProjectState(): ProjectStateController {
   )
 
   const selectProject = useCallback(async (selection: ProjectSelection) => {
-    const nextState = await window.desktopProjects.selectProject(selection)
+    const nextState = await window.desktopApp.projects.selectProject(selection)
     setState(nextState)
   }, [])
 

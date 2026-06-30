@@ -5,11 +5,15 @@ import type {
   DesktopProjectsApi
 } from '../shared/codexIpcApi'
 
+export type DesktopAppApi = {
+  electron: ElectronAPI
+  codex: DesktopCodexApi
+  chat: DesktopCodexChatApi
+  projects: DesktopProjectsApi
+}
+
 declare global {
   interface Window {
-    electron: ElectronAPI
-    desktopCodex: DesktopCodexApi
-    desktopCodexChat: DesktopCodexChatApi
-    desktopProjects: DesktopProjectsApi
+    desktopApp: DesktopAppApi
   }
 }

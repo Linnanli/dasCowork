@@ -110,22 +110,19 @@ const desktopProjects: DesktopProjectsApi = {
   }
 }
 
+const desktopApp = {
+  electron: electronAPI,
+  codex: desktopCodex,
+  chat: desktopCodexChat,
+  projects: desktopProjects
+}
+
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('desktopCodex', desktopCodex)
-    contextBridge.exposeInMainWorld('desktopCodexChat', desktopCodexChat)
-    contextBridge.exposeInMainWorld('desktopProjects', desktopProjects)
+    contextBridge.exposeInMainWorld('desktopApp', desktopApp)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.desktopCodex = desktopCodex
-  // @ts-ignore (define in dts)
-  window.desktopCodexChat = desktopCodexChat
-  // @ts-ignore (define in dts)
-  window.desktopProjects = desktopProjects
+  ;(window as typeof window & { desktopApp: typeof desktopApp }).desktopApp = desktopApp
 }

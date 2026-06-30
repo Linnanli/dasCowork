@@ -256,12 +256,15 @@ async function ensureLocalProjectSelected(page: Page): Promise<void> {
 }
 
 async function createLocalProject(page: Page, name: string, root: string): Promise<void> {
-  await page.evaluate(async ({ projectName, projectRoot }) => {
-    await window.desktopProjects.createLocalProject({
-      name: projectName,
-      sourceRoots: [projectRoot]
-    })
-  }, { projectName: name, projectRoot: root })
+  await page.evaluate(
+    async ({ projectName, projectRoot }) => {
+      await window.desktopApp.projects.createLocalProject({
+        name: projectName,
+        sourceRoots: [projectRoot]
+      })
+    },
+    { projectName: name, projectRoot: root }
+  )
 }
 
 function collectRendererLogs(page: Page, logs: string[]): void {
@@ -285,7 +288,7 @@ async function attachDiagnostics(
     const page = windows[0]
     if (page) {
       status = await page
-        .evaluate(async () => window.desktopCodex?.getStatus?.())
+        .evaluate(async () => window.desktopApp?.codex?.getStatus?.())
         .catch((error: unknown) => `status unavailable: ${errorMessage(error)}`)
     }
   }
@@ -402,7 +405,11 @@ function writeResponsesStream(response: ServerResponse, step: ResponsesStep): vo
   response.end()
 }
 
-function assistantMessageResponse(responseId: string, messageId: string, text: string): ResponsesStep {
+function assistantMessageResponse(
+  responseId: string,
+  messageId: string,
+  text: string
+): ResponsesStep {
   return {
     events: [
       responseCreated(responseId),

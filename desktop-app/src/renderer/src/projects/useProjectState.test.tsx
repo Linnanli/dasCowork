@@ -115,16 +115,18 @@ function Probe({
 }
 
 function installDesktopProjects(overrides: Partial<DesktopProjectsApi>): void {
-  vi.stubGlobal('desktopProjects', {
-    getState: vi.fn().mockResolvedValue(emptyState),
-    pickWorkspaceRoot: vi.fn().mockResolvedValue(null),
-    createLocalProject: vi.fn(),
-    createRemoteProject: vi.fn(),
-    selectProject: vi.fn(),
-    removeProject: vi.fn(),
-    renameProject: vi.fn(),
-    createFuzzyFileSearchSession: vi.fn().mockResolvedValue({ results: [] }),
-    onStateChange: vi.fn(() => vi.fn()),
-    ...overrides
-  } satisfies DesktopProjectsApi)
+  vi.stubGlobal('desktopApp', {
+    projects: {
+      getState: vi.fn().mockResolvedValue(emptyState),
+      pickWorkspaceRoot: vi.fn().mockResolvedValue(null),
+      createLocalProject: vi.fn(),
+      createRemoteProject: vi.fn(),
+      selectProject: vi.fn(),
+      removeProject: vi.fn(),
+      renameProject: vi.fn(),
+      createFuzzyFileSearchSession: vi.fn().mockResolvedValue({ results: [] }),
+      onStateChange: vi.fn(() => vi.fn()),
+      ...overrides
+    } satisfies DesktopProjectsApi
+  })
 }
