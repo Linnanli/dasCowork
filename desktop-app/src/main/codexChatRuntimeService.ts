@@ -6,6 +6,7 @@ import {
   type UIMessageChunk
 } from 'ai'
 import {
+  CODEX_PROVIDER_ID,
   codexCallOptions,
   type CodexLanguageModelSettings,
   type CodexModelProviderInfo,
@@ -200,6 +201,8 @@ export class CodexChatRuntimeService {
         projectService: this.projectService,
         projectStore: this.projectStore
       })
+      const projectAssignmentKey = request.body?.conversationId ?? request.chatId
+      let normalizedProjectAssignmentThreadId: string | undefined
       const result = await this.streamText({
         request,
         modelId: streamModelId,
@@ -218,6 +221,15 @@ export class CodexChatRuntimeService {
         sendReasoning: true,
         sendSources: true
       })) {
+        const threadId = extractCodexThreadId(chunk)
+        if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
+          await normalizeProjectAssignmentThreadId({
+            projectStore: this.projectStore,
+            fromId: projectAssignmentKey,
+            toId: threadId
+          })
+          normalizedProjectAssignmentThreadId = threadId
+        }
         port.postMessage({ type: 'chunk', chunk })
       }
       port.postMessage({ type: abortController.signal.aborted ? 'aborted' : 'finish' })
@@ -332,6 +344,45 @@ async function defaultStreamText({
     abortSignal,
     ...(providerOptions ? { providerOptions } : {})
   })
+}
+
+async function normalizeProjectAssignmentThreadId({
+  projectStore,
+  fromId,
+  toId
+}: {
+  projectStore?: ProjectStoreLike
+  fromId: string
+  toId: string
+}): Promise<void> {
+  if (!projectStore || fromId === toId) return
+
+  const state = await projectStore.getState()
+  const assignment = state.threadProjectAssignments[fromId]
+  if (!assignment) return
+
+  const threadProjectAssignments = { ...state.threadProjectAssignments }
+  delete threadProjectAssignments[fromId]
+  threadProjectAssignments[toId] = threadProjectAssignments[toId] ?? assignment
+
+  await projectStore.setState({
+    ...state,
+    threadProjectAssignments
+  })
+}
+
+function extractCodexThreadId(chunk: UIMessageChunk): string | undefined {
+  if (!isRecord(chunk)) return undefined
+  const providerMetadata = chunk['providerMetadata']
+  if (!isRecord(providerMetadata)) return undefined
+  const codexMetadata = providerMetadata[CODEX_PROVIDER_ID]
+  if (!isRecord(codexMetadata)) return undefined
+  const threadId = codexMetadata.threadId
+  return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function resolveLanguageModel({

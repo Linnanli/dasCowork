@@ -25,6 +25,7 @@ import {
   type CodexPortLike,
   type ModelCatalogLike
 } from './codexChatRuntimeService'
+import { ProjectStore, createDefaultProjectState } from './projects/ProjectStore'
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
@@ -370,6 +371,73 @@ describe('CodexChatRuntimeService', () => {
       { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } },
       { type: 'finish' }
     ])
+  })
+
+  it('normalizes project assignment to the app-server thread id from stream metadata', async () => {
+    const port = new FakePort()
+    const projectStore = ProjectStore.inMemory(createDefaultProjectState())
+    const projectService = {
+      resolveNewThreadTarget: vi.fn().mockResolvedValue({
+        hostId: 'local',
+        cwd: '/repo',
+        workspaceRoots: ['/repo'],
+        workspaceKind: 'project',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: 'project-1',
+          cwd: '/repo'
+        }
+      }),
+      resolveExistingThreadTarget: vi.fn()
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      projectService,
+      projectStore,
+      streamText: async () => ({
+        toUIMessageStream: () =>
+          (async function* () {
+            yield {
+              type: 'text-start',
+              id: 'text-1',
+              providerMetadata: {
+                '@janole/ai-sdk-provider-codex-asp': {
+                  threadId: 'thread-real'
+                }
+              }
+            } as never
+          })()
+      })
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-temp',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: {
+          projectSelection: { projectKind: 'local', projectId: 'project-1' }
+        }
+      },
+      port
+    )
+
+    await expect(projectStore.getState()).resolves.toMatchObject({
+      threadProjectAssignments: {
+        'thread-real': {
+          projectKind: 'local',
+          projectId: 'project-1',
+          cwd: '/repo'
+        }
+      }
+    })
+    expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty('chat-temp')
   })
 
   it('sends stream errors to the provided port', async () => {

@@ -6,11 +6,14 @@ import type {
   LocalProject,
   ProjectSelection,
   ProjectState,
+  RemoteProject,
   WorkspaceFileSearchResult,
   WorkspaceRootOption
 } from './projects/projectTypes'
 import {
+  projectCreateRemotePayloadSchema,
   projectCreateLocalPayloadSchema,
+  projectRenamePayloadSchema,
   projectSelectPayloadSchema
 } from './projects/projectSchemas'
 
@@ -159,19 +162,29 @@ export type DesktopCodexChatApi = {
 }
 
 export type ProjectCreateLocalPayload = z.infer<typeof projectCreateLocalPayloadSchema>
+export type ProjectCreateRemotePayload = z.infer<typeof projectCreateRemotePayloadSchema>
+export type ProjectRenamePayload = z.infer<typeof projectRenamePayloadSchema>
 
 export type DesktopProjectsApi = {
   getState(): Promise<ProjectState>
   pickWorkspaceRoot(): Promise<WorkspaceRootOption | null>
   createLocalProject(input: ProjectCreateLocalPayload): Promise<LocalProject>
+  createRemoteProject(input: ProjectCreateRemotePayload): Promise<RemoteProject>
   selectProject(input: ProjectSelection): Promise<ProjectState>
+  removeProject(input: ProjectSelection): Promise<ProjectState>
+  renameProject(input: ProjectRenamePayload): Promise<ProjectState>
   createFuzzyFileSearchSession(
     input: WorkspaceFileSearchPayload
   ): Promise<WorkspaceFileSearchResponse>
   onStateChange(callback: (state: ProjectState) => void): () => void
 }
 
-export { projectCreateLocalPayloadSchema, projectSelectPayloadSchema }
+export {
+  projectCreateLocalPayloadSchema,
+  projectCreateRemotePayloadSchema,
+  projectRenamePayloadSchema,
+  projectSelectPayloadSchema
+}
 
 export function isExternalHttpUrl(value: string): boolean {
   try {

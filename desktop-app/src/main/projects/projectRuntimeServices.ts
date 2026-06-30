@@ -35,6 +35,7 @@ export function createProjectRuntimeServices({
   const projectApi = new ProjectApiService({
     store: projectStore,
     validateLocalRoot,
+    validateRemoteRoot: async () => undefined,
     pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null)
   })
   const workspaceFileSearch = new WorkspaceFileSearchService({

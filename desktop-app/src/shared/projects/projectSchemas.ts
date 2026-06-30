@@ -22,4 +22,28 @@ export const projectCreateLocalPayloadSchema = z.object({
   sourceRoots: z.array(z.string().min(1)).min(1)
 })
 
+export const projectCreateRemotePayloadSchema = z.object({
+  hostId: z.string().min(1),
+  label: z.string().trim().min(1),
+  remotePath: z.string().min(1)
+})
+
+export const projectRenamePayloadSchema = z.discriminatedUnion('projectKind', [
+  z.object({
+    projectKind: z.literal('local'),
+    projectId: z.string().min(1),
+    label: z.string().trim().min(1)
+  }),
+  z.object({
+    projectKind: z.literal('remote'),
+    projectId: z.string().min(1),
+    label: z.string().trim().min(1)
+  }),
+  z.object({
+    projectKind: z.literal('path'),
+    path: z.string().min(1),
+    label: z.string().trim().min(1)
+  })
+])
+
 export const projectSelectPayloadSchema = projectSelectionSchema

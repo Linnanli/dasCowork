@@ -18,6 +18,7 @@ import type {
   LocalProject,
   ProjectSelection,
   ProjectState,
+  RemoteProject,
   WorkspaceRootOption
 } from '../shared/projects/projectTypes'
 
@@ -88,8 +89,14 @@ const desktopProjects: DesktopProjectsApi = {
     ipcRenderer.invoke('codex:projects:pick-workspace-root') as Promise<WorkspaceRootOption | null>,
   createLocalProject: (input) =>
     ipcRenderer.invoke('codex:projects:create-local', input) as Promise<LocalProject>,
+  createRemoteProject: (input) =>
+    ipcRenderer.invoke('codex:projects:create-remote', input) as Promise<RemoteProject>,
   selectProject: (input: ProjectSelection) =>
     ipcRenderer.invoke('codex:projects:select', input) as Promise<ProjectState>,
+  removeProject: (input: ProjectSelection) =>
+    ipcRenderer.invoke('codex:projects:remove', input) as Promise<ProjectState>,
+  renameProject: (input) =>
+    ipcRenderer.invoke('codex:projects:rename', input) as Promise<ProjectState>,
   createFuzzyFileSearchSession: (input: WorkspaceFileSearchPayload) =>
     ipcRenderer.invoke(
       'codex:projects:create-fuzzy-file-search-session',

@@ -15,6 +15,8 @@ import {
   isExternalHttpUrl,
   codexOpenExternalHttpUrlPayloadSchema,
   projectCreateLocalPayloadSchema,
+  projectCreateRemotePayloadSchema,
+  projectRenamePayloadSchema,
   projectSelectPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema,
@@ -145,9 +147,27 @@ app.whenReady().then(() => {
     await broadcastProjectState()
     return project
   })
+  ipcMain.handle('codex:projects:create-remote', async (_, payload: unknown) => {
+    const request = projectCreateRemotePayloadSchema.parse(payload)
+    const project = await requireProjectApi().createRemoteProject(request)
+    await broadcastProjectState()
+    return project
+  })
   ipcMain.handle('codex:projects:select', async (_, payload: unknown) => {
     const request = projectSelectPayloadSchema.parse(payload)
     const state = await requireProjectApi().selectProject(request)
+    await broadcastProjectState()
+    return state
+  })
+  ipcMain.handle('codex:projects:remove', async (_, payload: unknown) => {
+    const request = projectSelectPayloadSchema.parse(payload)
+    const state = await requireProjectApi().removeProject(request)
+    await broadcastProjectState()
+    return state
+  })
+  ipcMain.handle('codex:projects:rename', async (_, payload: unknown) => {
+    const request = projectRenamePayloadSchema.parse(payload)
+    const state = await requireProjectApi().renameProject(request)
     await broadcastProjectState()
     return state
   })
