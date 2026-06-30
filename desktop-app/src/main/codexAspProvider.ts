@@ -50,11 +50,7 @@ export function createCodexAspProviderSettings(
     },
     defaultTurnSettings: {
       cwd: input.cwd,
-      summary: 'auto',
-      sandboxPolicy: {
-        type: 'externalSandbox',
-        networkAccess: 'enabled'
-      }
+      summary: 'auto'
     },
     approvals: {
       onCommandApproval: input.onCommandApproval,

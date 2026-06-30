@@ -1,5 +1,6 @@
 import type {
   LocalProject,
+  ProjectSelection,
   ProjectState,
   RemoteProject
 } from '../../../shared/projects/projectTypes'
@@ -14,6 +15,7 @@ export type ThreadProjectGroup = {
   key: string
   label: string
   detail?: string
+  selection?: ProjectSelection
   threadCount: number
   warning?: string
 }
@@ -93,6 +95,7 @@ export function buildThreadProjectSections(
           key: 'projectless',
           label: 'Projectless',
           detail: projectlessDetail(state),
+          selection: { projectKind: 'projectless' },
           threadCount: projectlessThreadCount
         }
       ]
@@ -110,6 +113,7 @@ export function buildThreadProjectSections(
           key: `path:${activePath}`,
           label: option?.label ?? currentLabel,
           detail: activePath,
+          selection: { projectKind: 'path', path: activePath },
           threadCount: countPathThreads(state, activePath),
           warning: option?.missing ? 'Workspace root is missing' : undefined
         }
@@ -175,6 +179,7 @@ function localProjectGroup(state: ProjectState, project: LocalProject): ThreadPr
       project.writableRoots.length === 1
         ? project.writableRoots[0]
         : `${project.writableRoots.length} roots`,
+    selection: { projectKind: 'local', projectId: project.id },
     threadCount: Object.values(state.threadProjectAssignments).filter(
       (assignment) => assignment.projectKind === 'local' && assignment.projectId === project.id
     ).length,
@@ -187,6 +192,7 @@ function remoteProjectGroup(state: ProjectState, project: RemoteProject): Thread
     key: `remote:${project.hostId}:${project.id}`,
     label: project.label,
     detail: `${project.hostId}:${project.remotePath}`,
+    selection: { projectKind: 'remote', projectId: project.id, hostId: project.hostId },
     threadCount: Object.values(state.threadProjectAssignments).filter(
       (assignment) =>
         assignment.projectKind === 'remote' &&

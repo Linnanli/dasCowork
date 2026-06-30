@@ -12,6 +12,7 @@ import electronExecutable from 'electron'
 import { _electron as electron, type ElectronApplication } from 'playwright'
 
 const appRoot = resolve(__dirname, '..', '..')
+const repoRoot = resolve(appRoot, '..')
 
 type MockRequest = {
   method: string
@@ -26,42 +27,32 @@ type MockBackend = {
   close(): Promise<void>
 }
 
+type ResponsesStep = {
+  events: ResponseEvent[]
+}
+
+type ResponseEvent = {
+  type: string
+  [key: string]: unknown
+}
+
 test('sends a real desktop chat turn through the admin backend model provider', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
-  const backend = await startMockBackend()
+  const backend = await startMockBackend({
+    responses: [assistantMessageResponse('resp-e2e', 'msg-resp-e2e', 'E2E hello response')]
+  })
   const logs: string[] = []
   let app: ElectronApplication | undefined
 
   try {
-    app = await electron.launch({
-      executablePath: electronExecutable,
-      args: ['.'],
-      cwd: appRoot,
-      env: {
-        ...process.env,
-        ADMIN_BACKEND_URL: backend.baseUrl,
-        ADMIN_BACKEND_MODEL_USER_ID: 'e2e-user',
-        ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '1000',
-        CODEX_ASP_DEBUG_PACKETS: '1',
-        CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
-        ELECTRON_ENABLE_LOGGING: '1'
-      }
-    })
-
-    app.process().stdout?.on('data', (chunk) => logs.push(`[main:stdout] ${String(chunk)}`))
-    app.process().stderr?.on('data', (chunk) => logs.push(`[main:stderr] ${String(chunk)}`))
-
+    app = await launchApp(backend, logs)
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
 
-    await expect(page.locator('body')).toContainText('qwen3.7-plus')
-
-    const input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
-    await input.fill('你好')
-    await page.getByRole('button', { name: '发送消息' }).click()
+    await sendMessage(page, '你好')
 
     await expect(page.locator('[data-role="assistant"]')).toContainText('E2E hello response')
 
@@ -87,6 +78,191 @@ test('sends a real desktop chat turn through the admin backend model provider', 
     await backend.close()
   }
 })
+
+test('approves a command request through the desktop approval panel', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [
+      shellCommandResponse('resp-approval-tool', 'call-approved-pwd', {
+        command: 'pwd && printf "\\nE2E_APPROVED_COMMAND"',
+        timeout_ms: 5000,
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E verifies the desktop approval panel'
+      }),
+      assistantMessageResponse(
+        'resp-approval-final',
+        'msg-approval-final',
+        'Approved command completed'
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, '运行 pwd，然后告诉我当前目录。')
+
+    const panel = page.locator('[data-slot="server-request-panel"]')
+    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('pwd')
+
+    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'Approved command completed'
+    )
+    await expect(panel).toBeHidden()
+
+    const providerBodies = providerResponseBodies(backend)
+    expect(providerBodies).toHaveLength(2)
+    const toolOutput = functionCallOutputText(providerBodies[1], 'call-approved-pwd')
+    expect(toolOutput).toContain(appRoot)
+    expect(toolOutput).toContain('E2E_APPROVED_COMMAND')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
+test('rejects a command request through the desktop approval panel', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [
+      shellCommandResponse('resp-reject-tool', 'call-rejected-pwd', {
+        command: 'pwd && printf "\\nE2E_REJECTED_COMMAND_SHOULD_NOT_RUN"',
+        timeout_ms: 5000,
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E verifies command rejection'
+      }),
+      assistantMessageResponse(
+        'resp-reject-final',
+        'msg-reject-final',
+        'Command was rejected by the user'
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, '运行 pwd，然后拒绝授权。')
+
+    const panel = page.locator('[data-slot="server-request-panel"]')
+    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('pwd')
+
+    await panel.getByRole('button', { name: 'Reject' }).click()
+
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'Command was rejected by the user'
+    )
+    await expect(panel).toBeHidden()
+
+    const providerBodies = providerResponseBodies(backend)
+    expect(providerBodies).toHaveLength(2)
+    const toolOutput = functionCallOutputText(providerBodies[1], 'call-rejected-pwd')
+    expect(toolOutput).toBe('exec command rejected by user')
+    expect(toolOutput).not.toContain('E2E_REJECTED_COMMAND_SHOULD_NOT_RUN')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
+test('switches projects from the left sidebar project list', async ({ browserName }, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [assistantMessageResponse('resp-sidebar-switch', 'msg-sidebar-switch', 'ok')]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    const runId = Date.now().toString(36)
+    const firstProjectName = `E2E Sidebar Alpha ${runId}`
+    const secondProjectName = `E2E Sidebar Beta ${runId}`
+    await createLocalProject(page, firstProjectName, appRoot)
+    await createLocalProject(page, secondProjectName, repoRoot)
+    await expect(page.locator('body')).toContainText(`Working in: ${secondProjectName}`)
+
+    await page
+      .locator('[data-slot="codex-sidebar"]')
+      .getByText(firstProjectName, { exact: true })
+      .click()
+
+    await expect(page.locator('body')).toContainText(`Working in: ${firstProjectName}`)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
+async function launchApp(backend: MockBackend, logs: string[]): Promise<ElectronApplication> {
+  const app = await electron.launch({
+    executablePath: electronExecutable,
+    args: ['.'],
+    cwd: appRoot,
+    env: {
+      ...process.env,
+      ADMIN_BACKEND_URL: backend.baseUrl,
+      ADMIN_BACKEND_MODEL_USER_ID: 'e2e-user',
+      ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '1000',
+      CODEX_ASP_DEBUG_PACKETS: '1',
+      CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
+      ELECTRON_ENABLE_LOGGING: '1'
+    }
+  })
+
+  app.process().stdout?.on('data', (chunk) => logs.push(`[main:stdout] ${String(chunk)}`))
+  app.process().stderr?.on('data', (chunk) => logs.push(`[main:stderr] ${String(chunk)}`))
+  return app
+}
+
+async function sendMessage(page: Page, message: string): Promise<void> {
+  await expect(page.locator('body')).toContainText('qwen3.7-plus')
+  await ensureLocalProjectSelected(page)
+  const input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
+  await input.fill(message)
+  const sendButton = page.getByRole('button', { name: '发送消息' })
+  await expect(sendButton).toBeEnabled()
+  await sendButton.click()
+}
+
+async function ensureLocalProjectSelected(page: Page): Promise<void> {
+  await createLocalProject(page, 'E2E Local Project', appRoot)
+  await expect(page.locator('body')).toContainText('Working in: E2E Local Project')
+}
+
+async function createLocalProject(page: Page, name: string, root: string): Promise<void> {
+  await page.evaluate(async ({ projectName, projectRoot }) => {
+    await window.desktopProjects.createLocalProject({
+      name: projectName,
+      sourceRoots: [projectRoot]
+    })
+  }, { projectName: name, projectRoot: root })
+}
 
 function collectRendererLogs(page: Page, logs: string[]): void {
   page.on('console', (message) => {
@@ -133,8 +309,9 @@ async function attachDiagnostics(
   })
 }
 
-async function startMockBackend(): Promise<MockBackend> {
+async function startMockBackend(options: { responses: ResponsesStep[] }): Promise<MockBackend> {
   const requests: MockRequest[] = []
+  const responses = [...options.responses]
   const server = createServer(async (request, response) => {
     const capturedRequest: MockRequest = {
       method: request.method ?? 'GET',
@@ -174,7 +351,13 @@ async function startMockBackend(): Promise<MockBackend> {
     }
 
     if (request.method === 'POST' && request.url === '/responses') {
-      writeResponsesStream(response)
+      const nextResponse = responses.shift()
+      if (!nextResponse) {
+        response.writeHead(500, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: 'No scripted /responses payload remaining' }))
+        return
+      }
+      writeResponsesStream(response, nextResponse)
       return
     }
 
@@ -209,29 +392,68 @@ function writeJson(response: ServerResponse, payload: unknown): void {
   response.end(JSON.stringify(payload))
 }
 
-function writeResponsesStream(response: ServerResponse): void {
+function writeResponsesStream(response: ServerResponse, step: ResponsesStep): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive'
   })
-  writeSse(response, {
+  for (const event of step.events) writeSse(response, event)
+  response.end()
+}
+
+function assistantMessageResponse(responseId: string, messageId: string, text: string): ResponsesStep {
+  return {
+    events: [
+      responseCreated(responseId),
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          role: 'assistant',
+          id: messageId,
+          content: [{ type: 'output_text', text }]
+        }
+      },
+      responseCompleted(responseId)
+    ]
+  }
+}
+
+function shellCommandResponse(
+  responseId: string,
+  callId: string,
+  args: Record<string, unknown>
+): ResponsesStep {
+  return {
+    events: [
+      responseCreated(responseId),
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'function_call',
+          call_id: callId,
+          name: 'shell_command',
+          arguments: JSON.stringify(args)
+        }
+      },
+      responseCompleted(responseId)
+    ]
+  }
+}
+
+function responseCreated(responseId: string): ResponseEvent {
+  return {
     type: 'response.created',
-    response: { id: 'resp-e2e' }
-  })
-  writeSse(response, {
-    type: 'response.output_item.done',
-    item: {
-      type: 'message',
-      role: 'assistant',
-      id: 'msg-resp-e2e',
-      content: [{ type: 'output_text', text: 'E2E hello response' }]
-    }
-  })
-  writeSse(response, {
+    response: { id: responseId }
+  }
+}
+
+function responseCompleted(responseId: string): ResponseEvent {
+  return {
     type: 'response.completed',
     response: {
-      id: 'resp-e2e',
+      id: responseId,
       usage: {
         input_tokens: 1,
         input_tokens_details: null,
@@ -240,13 +462,31 @@ function writeResponsesStream(response: ServerResponse): void {
         total_tokens: 2
       }
     }
-  })
-  response.end()
+  }
 }
 
-function writeSse(response: ServerResponse, payload: { type: string }): void {
+function writeSse(response: ServerResponse, payload: ResponseEvent): void {
   response.write(`event: ${payload.type}\n`)
   response.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function providerResponseBodies(backend: MockBackend): unknown[] {
+  return backend.requests
+    .filter((request) => request.method === 'POST' && request.url === '/responses')
+    .map((request) => JSON.parse(request.body) as unknown)
+}
+
+function functionCallOutputText(providerBody: unknown, callId: string): string | undefined {
+  if (!isRecord(providerBody) || !Array.isArray(providerBody.input)) return undefined
+  const outputItem = providerBody.input.find(
+    (item) => isRecord(item) && item.type === 'function_call_output' && item.call_id === callId
+  )
+  if (!isRecord(outputItem) || typeof outputItem.output !== 'string') return undefined
+  return outputItem.output
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function readRequestBody(request: IncomingMessage): Promise<string> {

@@ -51,11 +51,7 @@ describe('createCodexAspProviderSettings', () => {
       },
       defaultTurnSettings: {
         cwd: '/repo',
-        summary: 'auto',
-        sandboxPolicy: {
-          type: 'externalSandbox',
-          networkAccess: 'enabled'
-        }
+        summary: 'auto'
       },
       persistent: {
         scope: 'provider',

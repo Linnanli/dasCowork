@@ -51,7 +51,7 @@ export function ThreadList({
       <ThreadProjectSections
         currentDetail={projectState.currentDetail}
         currentLabel={projectState.currentLabel}
-        state={projectState.state}
+        projectState={projectState}
       />
       <ThreadListPrimitive.Items>
         {() => (
@@ -69,16 +69,17 @@ export function ThreadList({
 function ThreadProjectSections({
   currentDetail,
   currentLabel,
-  state
+  projectState
 }: {
   currentDetail: string | null
   currentLabel: string
-  state: ProjectState | null
+  projectState: ProjectStateController
 }): React.JSX.Element {
+  const state = projectState.state
   const sections = buildThreadProjectSections(state, currentLabel, currentDetail)
 
   return (
-    <div className="space-y-2 px-1 pt-2">
+    <div className="space-y-2 px-1 pt-2" data-slot="thread-project-sections">
       {sections.map((section) => (
         <section key={section.key} className="space-y-1">
           <div className="text-[11px] font-medium text-muted-foreground uppercase">
@@ -86,9 +87,15 @@ function ThreadProjectSections({
           </div>
           <div className="space-y-0.5">
             {section.groups.map((group) => (
-              <div
+              <button
                 key={group.key}
-                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground"
+                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted disabled:pointer-events-none"
+                disabled={!group.selection}
+                type="button"
+                onClick={() => {
+                  if (!group.selection) return
+                  void projectState.selectProject(group.selection)
+                }}
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium text-foreground">{group.label}</span>
@@ -106,7 +113,7 @@ function ThreadProjectSections({
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px]">
                   {group.threadCount}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         </section>

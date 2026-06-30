@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
 
@@ -35,6 +35,11 @@ export function useCodexIpcAssistantRuntime(
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
   const { projectSelection } = options
+  const projectSelectionRef = useRef(projectSelection)
+  const selectedModelIdRef = useRef(selectedModelId)
+
+  projectSelectionRef.current = projectSelection
+  selectedModelIdRef.current = selectedModelId
 
   useEffect(() => {
     let cancelled = false
@@ -57,10 +62,10 @@ export function useCodexIpcAssistantRuntime(
     () =>
       new ElectronIpcChatTransport({
         chatBridge: window.desktopCodexChat,
-        getProjectSelection: () => projectSelection,
-        getSelectedModelId: () => selectedModelId
+        getProjectSelection: () => projectSelectionRef.current,
+        getSelectedModelId: () => selectedModelIdRef.current
       }),
-    [projectSelection, selectedModelId]
+    []
   )
   const chat = useChat({ transport })
   const runtime = useAISDKRuntime(chat)
