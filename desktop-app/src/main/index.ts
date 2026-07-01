@@ -3,6 +3,9 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
+import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
+import { AppServerThreadClient } from './conversations/AppServerThreadClient'
+import { ConversationApiService } from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
 import { createModelCatalogService } from './modelCatalogService'
 import type { ProjectApiService } from './projects/ProjectApiService'
@@ -20,12 +23,16 @@ import {
   projectSelectPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema,
+  sidebarConversationActionPayloadSchema,
+  sidebarConversationRenamePayloadSchema,
+  sidebarPreferencesPatchSchema,
   workspaceFileSearchPayloadSchema
 } from '../shared/codexIpcApi'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
 let workspaceFileSearch: WorkspaceFileSearchService | undefined
+let conversationApi: ConversationApiService | undefined
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
@@ -34,8 +41,19 @@ function createCodexRuntime(): CodexChatRuntimeService {
   })
   projectApi = projectRuntimeServices.projectApi
   workspaceFileSearch = projectRuntimeServices.workspaceFileSearch
+  const launch = resolveCodexAppServerLaunchOptions({
+    env: process.env,
+    isPackaged: app.isPackaged,
+    mainDir: __dirname,
+    resourcesPath: process.resourcesPath
+  })
+  conversationApi = new ConversationApiService({
+    threadClient: new AppServerThreadClient({ launch }),
+    projectStore: projectRuntimeServices.projectStore
+  })
 
   return new CodexChatRuntimeService({
+    launch,
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore
@@ -65,6 +83,11 @@ function requireWorkspaceFileSearch(): WorkspaceFileSearchService {
   return workspaceFileSearch
 }
 
+function requireConversationApi(): ConversationApiService {
+  if (!conversationApi) throw new Error('Conversation API is not initialized')
+  return conversationApi
+}
+
 function broadcastStatus(): void {
   if (!codexRuntime) return
   const status = codexRuntime.getStatus()
@@ -79,6 +102,44 @@ async function broadcastProjectState(): Promise<void> {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:projects-state-change', state)
   }
+}
+
+async function broadcastConversationState(options: { awaitThreadId?: string } = {}): Promise<void> {
+  if (!conversationApi) return
+  const state = await refreshConversationListForBroadcast(options.awaitThreadId)
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('codex:conversations-state-change', state)
+  }
+}
+
+async function refreshConversationListForBroadcast(
+  awaitThreadId?: string
+): Promise<Awaited<ReturnType<ConversationApiService['refreshConversationList']>>> {
+  if (!conversationApi) throw new Error('Conversation API is not initialized')
+
+  const maxAttempts = awaitThreadId ? 8 : 1
+  let state = await conversationApi.refreshConversationList({
+    ensureThreadIds: awaitThreadId ? [awaitThreadId] : []
+  })
+  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
+    if (!awaitThreadId || hasConversationThread(state, awaitThreadId)) return state
+    await delay(150 * attempt)
+    state = await conversationApi.refreshConversationList({ ensureThreadIds: [awaitThreadId] })
+  }
+  return state
+}
+
+function hasConversationThread(
+  state: Awaited<ReturnType<ConversationApiService['refreshConversationList']>>,
+  threadId: string
+): boolean {
+  return state.conversations.some(
+    (conversation) => conversation.id === threadId || conversation.threadId === threadId
+  )
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function createWindow(runtime: CodexChatRuntimeService): void {
@@ -175,11 +236,60 @@ app.whenReady().then(() => {
     const request = workspaceFileSearchPayloadSchema.parse(payload)
     return requireWorkspaceFileSearch().createFuzzyFileSearchSession(request)
   })
+  ipcMain.handle('codex:conversations:get-list', () =>
+    requireConversationApi().getConversationList()
+  )
+  ipcMain.handle('codex:conversations:refresh-list', async () => {
+    const state = await requireConversationApi().refreshConversationList()
+    await broadcastConversationState()
+    return state
+  })
+  ipcMain.handle('codex:conversations:open', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return requireConversationApi().openConversation(request)
+  })
+  ipcMain.handle('codex:conversations:archive', async (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    const state = await requireConversationApi().archiveConversation(request)
+    await broadcastConversationState()
+    return state
+  })
+  ipcMain.handle('codex:conversations:unarchive', async (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    const state = await requireConversationApi().unarchiveConversation(request)
+    await broadcastConversationState()
+    return state
+  })
+  ipcMain.handle('codex:conversations:rename', async (_, payload: unknown) => {
+    const request = sidebarConversationRenamePayloadSchema.parse(payload)
+    const state = await requireConversationApi().renameConversation(request)
+    await broadcastConversationState()
+    return state
+  })
+  ipcMain.handle('codex:conversations:interrupt', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return runtime.interruptConversation(request.conversationId)
+  })
+  ipcMain.handle('codex:conversations:get-preferences', () =>
+    requireConversationApi().getPreferences()
+  )
+  ipcMain.handle('codex:conversations:set-preferences', (_, payload: unknown) => {
+    const request = sidebarPreferencesPatchSchema.parse(payload)
+    return requireConversationApi().setPreferences(request)
+  })
   ipcMain.on('codex-chat:start', (event, payload: unknown) => {
     const port = event.ports[0]
     if (!port) return
     const request = codexChatRequestSchema.parse(payload)
-    void runtime.startChatStream(request, port).finally(broadcastStatus)
+    void runtime
+      .startChatStream(request, port)
+      .then((result) => broadcastConversationState({ awaitThreadId: result.threadId }))
+      .catch((error: unknown) => {
+        console.error('failed to complete codex chat stream', error)
+      })
+      .finally(() => {
+        broadcastStatus()
+      })
     broadcastStatus()
   })
 

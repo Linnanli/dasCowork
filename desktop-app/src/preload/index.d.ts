@@ -2,6 +2,7 @@ import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopConversationsApi,
   DesktopProjectsApi
 } from '../shared/codexIpcApi'
 
@@ -10,6 +11,7 @@ export type DesktopAppApi = {
   codex: DesktopCodexApi
   chat: DesktopCodexChatApi
   projects: DesktopProjectsApi
+  conversations: DesktopConversationsApi
 }
 
 declare global {

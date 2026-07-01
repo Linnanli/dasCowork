@@ -7,7 +7,6 @@ import {
   ComposerPrimitive,
   type AssistantState,
   MessagePrimitive,
-  ThreadListPrimitive,
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
   type QuoteMessagePartProps,
@@ -62,7 +61,11 @@ import { ServerRequestPanel } from './components/assistant-ui/server-request-pan
 import { ProjectGate } from './projects/ProjectGate'
 import { ProjectSwitcher } from './projects/ProjectSwitcher'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
-import { ThreadList } from './threads/ThreadList'
+import { SidebarRoot } from './sidebar/SidebarRoot'
+import {
+  useConversationState,
+  type ConversationStateController
+} from './sidebar/useConversationState'
 import { cn } from './lib/utils'
 import {
   hasVisibleAssistantTextContent,
@@ -76,6 +79,8 @@ type CodexSidebarProps = {
   collapsed: boolean
   nativeBackdrop: boolean
   projectState: ProjectStateController
+  conversationState: ConversationStateController
+  onNewChat: () => void
 }
 
 type HeaderProps = {
@@ -188,10 +193,13 @@ function App(): React.JSX.Element {
     rejectServerRequest,
     models,
     selectedModelId,
-    setSelectedModelId
+    setSelectedModelId,
+    startNewConversation,
+    openConversation
   } = useCodexIpcAssistantRuntime({
     projectSelection: projectState.state?.activeProjectSelection
   })
+  const conversationState = useConversationState({ openConversation })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
@@ -218,6 +226,8 @@ function App(): React.JSX.Element {
           collapsed={sidebarCollapsed}
           nativeBackdrop={nativeBackdrop}
           projectState={projectState}
+          conversationState={conversationState}
+          onNewChat={startNewConversation}
         />
         <section
           data-slot="app-main-section"
@@ -257,7 +267,9 @@ function App(): React.JSX.Element {
 function CodexSidebar({
   collapsed,
   nativeBackdrop,
-  projectState
+  projectState,
+  conversationState,
+  onNewChat
 }: CodexSidebarProps): React.JSX.Element {
   return (
     <aside
@@ -274,11 +286,9 @@ function CodexSidebar({
           <div className="mt-2 flex h-12 shrink-0 items-center justify-center">
             <BrandMark />
           </div>
-          <ThreadListPrimitive.New asChild>
-            <IconButton className="size-8" label="新对话" title="新对话">
-              <PlusIcon className="size-4" />
-            </IconButton>
-          </ThreadListPrimitive.New>
+          <IconButton className="size-8" label="新对话" title="新对话" onClick={onNewChat}>
+            <PlusIcon className="size-4" />
+          </IconButton>
         </div>
       ) : (
         <>
@@ -286,7 +296,12 @@ function CodexSidebar({
             <Logo />
           </div>
           <div className="relative min-h-0 flex-1 overflow-y-auto p-3">
-            <ThreadList nativeBackdrop={nativeBackdrop} projectState={projectState} />
+            <SidebarRoot
+              nativeBackdrop={nativeBackdrop}
+              projectState={projectState}
+              conversationState={conversationState}
+              onNewChat={onNewChat}
+            />
           </div>
         </>
       )}

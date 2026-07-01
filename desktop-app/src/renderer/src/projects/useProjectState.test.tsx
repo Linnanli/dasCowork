@@ -98,6 +98,53 @@ describe('useProjectState', () => {
     expect(selectProject).toHaveBeenCalledWith({ projectKind: 'projectless' })
     expect(controller?.currentLabel).toBe('Projectless')
   })
+
+  it('renames and removes projects through the desktop project bridge', async () => {
+    const renamedState: ProjectState = {
+      ...emptyState,
+      localProjects: {
+        local: {
+          id: 'local',
+          kind: 'local',
+          name: 'Renamed Desktop App',
+          hostId: 'local',
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+          writableRoots: ['/repo']
+        }
+      },
+      projectOrder: ['local']
+    }
+    const renameProject = vi.fn().mockResolvedValue(renamedState)
+    const removeProject = vi.fn().mockResolvedValue(emptyState)
+    installDesktopProjects({
+      getState: vi.fn().mockResolvedValue(emptyState),
+      onStateChange: vi.fn(() => vi.fn()),
+      renameProject,
+      removeProject
+    })
+
+    await act(async () => {
+      root.render(<Probe onController={(nextController) => (controller = nextController)} />)
+    })
+    await act(async () => {
+      await controller?.renameProject({
+        projectKind: 'local',
+        projectId: 'local',
+        label: 'Renamed Desktop App'
+      })
+    })
+    await act(async () => {
+      await controller?.removeProject({ projectKind: 'local', projectId: 'local' })
+    })
+
+    expect(renameProject).toHaveBeenCalledWith({
+      projectKind: 'local',
+      projectId: 'local',
+      label: 'Renamed Desktop App'
+    })
+    expect(removeProject).toHaveBeenCalledWith({ projectKind: 'local', projectId: 'local' })
+  })
 })
 
 function Probe({

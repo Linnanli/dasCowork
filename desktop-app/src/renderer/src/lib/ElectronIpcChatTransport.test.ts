@@ -85,6 +85,47 @@ describe('ElectronIpcChatTransport', () => {
       abortSignal: undefined,
       body: {
         conversationId: 'conversation-1',
+        threadId: 'thread-1',
+        cwd: '/renderer/cwd',
+        projectSelection: { projectKind: 'path', path: '/renderer/project' },
+        runtimeWorkspaceRoots: ['/renderer/root']
+      }
+    })
+
+    expect(bridge.startChatStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          projectSelection: { projectKind: 'path', path: '/repo' }
+        }
+      }),
+      expect.any(Object)
+    )
+    const request = vi.mocked(bridge.startChatStream).mock.calls[0][0]
+    expect(request.body).not.toHaveProperty('conversationId')
+    expect(request.body).not.toHaveProperty('threadId')
+  })
+
+  it('binds active conversation identity from the trusted runtime context', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({ conversationId: 'conversation-1', threadId: 'thread-1' }),
+      getProjectSelection: () => ({ projectKind: 'path', path: '/repo' }),
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+      body: {
+        conversationId: 'renderer-forged-conversation',
+        threadId: 'renderer-forged-thread',
         cwd: '/renderer/cwd',
         runtimeWorkspaceRoots: ['/renderer/root']
       }
@@ -94,7 +135,48 @@ describe('ElectronIpcChatTransport', () => {
       expect.objectContaining({
         body: {
           conversationId: 'conversation-1',
+          threadId: 'thread-1',
           projectSelection: { projectKind: 'path', path: '/repo' }
+        }
+      }),
+      expect.any(Object)
+    )
+  })
+
+  it('uses the opened conversation project context before ambient project selection', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({
+        conversationId: 'conversation-1',
+        threadId: 'thread-1',
+        projectSelection: { projectKind: 'remote', projectId: 'remote-app', hostId: 'ssh-dev' }
+      }),
+      getProjectSelection: () => ({ projectKind: 'path', path: '/ambient-project' }),
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+
+    expect(bridge.startChatStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          conversationId: 'conversation-1',
+          threadId: 'thread-1',
+          projectSelection: {
+            projectKind: 'remote',
+            projectId: 'remote-app',
+            hostId: 'ssh-dev'
+          }
         }
       }),
       expect.any(Object)

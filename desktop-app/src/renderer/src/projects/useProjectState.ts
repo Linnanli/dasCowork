@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import type { ProjectRenamePayload } from '../../../shared/codexIpcApi'
 import type {
   LocalProject,
   ProjectSelection,
@@ -14,6 +15,8 @@ export type ProjectStateController = {
   pickWorkspaceRoot: () => Promise<void>
   createLocalProject: (input: { name?: string; sourceRoots: string[] }) => Promise<LocalProject>
   selectProject: (selection: ProjectSelection) => Promise<void>
+  renameProject: (input: ProjectRenamePayload) => Promise<void>
+  removeProject: (selection: ProjectSelection) => Promise<void>
 }
 
 export function useProjectState(): ProjectStateController {
@@ -56,6 +59,16 @@ export function useProjectState(): ProjectStateController {
     setState(nextState)
   }, [])
 
+  const renameProject = useCallback(async (input: ProjectRenamePayload) => {
+    const nextState = await window.desktopApp.projects.renameProject(input)
+    setState(nextState)
+  }, [])
+
+  const removeProject = useCallback(async (selection: ProjectSelection) => {
+    const nextState = await window.desktopApp.projects.removeProject(selection)
+    setState(nextState)
+  }, [])
+
   const summary = useMemo(() => describeProjectState(state), [state])
 
   return {
@@ -65,7 +78,9 @@ export function useProjectState(): ProjectStateController {
     currentDetail: summary.detail,
     pickWorkspaceRoot,
     createLocalProject,
-    selectProject
+    selectProject,
+    renameProject,
+    removeProject
   }
 }
 

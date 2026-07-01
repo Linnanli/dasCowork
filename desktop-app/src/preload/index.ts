@@ -10,7 +10,11 @@ import type {
   CodexStatus,
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopConversationsApi,
   DesktopProjectsApi,
+  SidebarConversationListState,
+  SidebarConversationOpenResult,
+  SidebarPreferences,
   WorkspaceFileSearchPayload,
   WorkspaceFileSearchResponse
 } from '../shared/codexIpcApi'
@@ -110,11 +114,50 @@ const desktopProjects: DesktopProjectsApi = {
   }
 }
 
+const desktopConversations: DesktopConversationsApi = {
+  getConversationList: () =>
+    ipcRenderer.invoke('codex:conversations:get-list') as Promise<SidebarConversationListState>,
+  refreshConversationList: () =>
+    ipcRenderer.invoke('codex:conversations:refresh-list') as Promise<SidebarConversationListState>,
+  openConversation: (input) =>
+    ipcRenderer.invoke('codex:conversations:open', input) as Promise<SidebarConversationOpenResult>,
+  archiveConversation: (input) =>
+    ipcRenderer.invoke(
+      'codex:conversations:archive',
+      input
+    ) as Promise<SidebarConversationListState>,
+  unarchiveConversation: (input) =>
+    ipcRenderer.invoke(
+      'codex:conversations:unarchive',
+      input
+    ) as Promise<SidebarConversationListState>,
+  renameConversation: (input) =>
+    ipcRenderer.invoke(
+      'codex:conversations:rename',
+      input
+    ) as Promise<SidebarConversationListState>,
+  interruptConversation: (input) =>
+    ipcRenderer.invoke('codex:conversations:interrupt', input) as Promise<void>,
+  getPreferences: () =>
+    ipcRenderer.invoke('codex:conversations:get-preferences') as Promise<SidebarPreferences>,
+  setPreferences: (input) =>
+    ipcRenderer.invoke('codex:conversations:set-preferences', input) as Promise<SidebarPreferences>,
+  onConversationListChange: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      state: SidebarConversationListState
+    ): void => callback(state)
+    ipcRenderer.on('codex:conversations-state-change', listener)
+    return () => ipcRenderer.removeListener('codex:conversations-state-change', listener)
+  }
+}
+
 const desktopApp = {
   electron: electronAPI,
   codex: desktopCodex,
   chat: desktopCodexChat,
-  projects: desktopProjects
+  projects: desktopProjects,
+  conversations: desktopConversations
 }
 
 if (process.contextIsolated) {

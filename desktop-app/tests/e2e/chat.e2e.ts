@@ -219,6 +219,122 @@ test('switches projects from the left sidebar project list', async ({ browserNam
   }
 })
 
+test('opens a sidebar conversation and continues the same desktop thread', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const runId = Date.now().toString(36)
+  const firstPrompt = `sidebar-history-${runId}`
+  const secondPrompt = `sidebar-continued-${runId}`
+  const firstResponse = `sidebar restored response ${runId}`
+  const secondResponse = `sidebar continued response ${runId}`
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse(
+        'resp-sidebar-history-first',
+        'msg-sidebar-history-first',
+        firstResponse
+      ),
+      assistantMessageResponse(
+        'resp-sidebar-history-second',
+        'msg-sidebar-history-second',
+        secondResponse
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, firstPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toBeVisible()
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+
+    await sidebar.getByRole('button', { name: 'New chat', exact: true }).click()
+    await expect(page.locator('[data-role="user"]').filter({ hasText: firstPrompt })).toHaveCount(0)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toHaveCount(0)
+
+    await sidebar.getByText(firstPrompt, { exact: true }).click()
+    await expect(page.locator('[data-role="user"]')).toContainText(firstPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toBeVisible()
+
+    await sendComposerMessage(page, secondPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: secondResponse })
+    ).toBeVisible()
+
+    const providerBodies = providerResponseBodies(backend)
+    expect(providerBodies).toHaveLength(2)
+    const resumedInput = JSON.stringify(providerBodies[1])
+    expect(resumedInput).toContain(firstPrompt)
+    expect(resumedInput).toContain(firstResponse)
+    expect(resumedInput).toContain(secondPrompt)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
+test('keeps sidebar projects and conversations after a renderer reload', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const runId = Date.now().toString(36)
+  const projectName = `E2E Reload Project ${runId}`
+  const firstPrompt = `reload-history-${runId}`
+  const firstResponse = `reload restored response ${runId}`
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('resp-reload-history', 'msg-reload-history', firstResponse)
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await createLocalProject(page, projectName, appRoot)
+    await expect(page.locator('body')).toContainText(`Working in: ${projectName}`)
+
+    await sendComposerMessage(page, firstPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toBeVisible()
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    await expect(sidebar.getByText(projectName, { exact: true })).toBeVisible()
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+
+    await page.reload()
+
+    await expect(page.locator('body')).toContainText(`Working in: ${projectName}`)
+    await expect(sidebar.getByText(projectName, { exact: true })).toBeVisible()
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
 async function launchApp(backend: MockBackend, logs: string[]): Promise<ElectronApplication> {
   const app = await electron.launch({
     executablePath: electronExecutable,
@@ -243,9 +359,13 @@ async function launchApp(backend: MockBackend, logs: string[]): Promise<Electron
 async function sendMessage(page: Page, message: string): Promise<void> {
   await expect(page.locator('body')).toContainText('qwen3.7-plus')
   await ensureLocalProjectSelected(page)
+  await sendComposerMessage(page, message)
+}
+
+async function sendComposerMessage(page: Page, message: string): Promise<void> {
   const input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
   await input.fill(message)
-  const sendButton = page.getByRole('button', { name: '发送消息' })
+  const sendButton = page.getByRole('button', { name: '发送消息', exact: true })
   await expect(sendButton).toBeEnabled()
   await sendButton.click()
 }

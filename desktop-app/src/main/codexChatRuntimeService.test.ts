@@ -58,6 +58,20 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
   }
 }
 
+function deferred<T = void>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
+}
+
 describe('CodexChatRuntimeService', () => {
   it('returns catalog unavailability instead of provider fallback when catalog is configured', async () => {
     providerState.listModels.mockResolvedValue([])
@@ -438,6 +452,66 @@ describe('CodexChatRuntimeService', () => {
       }
     })
     expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty('chat-temp')
+  })
+
+  it('tracks and interrupts an active conversation by conversation id or app-server thread id', async () => {
+    const port = new FakePort()
+    const metadataSeen = deferred()
+    const abortSeen = deferred()
+    let capturedAbortSignal: AbortSignal | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ abortSignal }) => {
+        capturedAbortSignal = abortSignal
+        abortSignal.addEventListener('abort', () => abortSeen.resolve(), { once: true })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield {
+                type: 'text-start',
+                id: 'text-1',
+                providerMetadata: {
+                  '@janole/ai-sdk-provider-codex-asp': {
+                    threadId: 'thread-real',
+                    turnId: 'turn-real'
+                  }
+                }
+              } as never
+              metadataSeen.resolve()
+              await abortSeen.promise
+            })()
+        }
+      }
+    })
+
+    const streamPromise = service.startChatStream(
+      {
+        chatId: 'chat-temp',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1' }
+      },
+      port
+    )
+
+    await metadataSeen.promise
+    expect(service.isConversationRunning('conversation-1')).toBe(true)
+    expect(service.isConversationRunning('thread-real')).toBe(true)
+
+    service.interruptConversation('conversation-1')
+    await abortSeen.promise
+    expect(capturedAbortSignal?.aborted).toBe(true)
+    await streamPromise
+
+    expect(service.isConversationRunning('conversation-1')).toBe(false)
+    expect(service.isConversationRunning('thread-real')).toBe(false)
+    expect(port.messages.at(-1)).toEqual({ type: 'aborted' })
   })
 
   it('sends stream errors to the provided port', async () => {

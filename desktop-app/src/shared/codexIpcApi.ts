@@ -7,6 +7,7 @@ import type {
   ProjectSelection,
   ProjectState,
   RemoteProject,
+  ThreadProjectAssignment,
   WorkspaceFileSearchResult,
   WorkspaceRootOption
 } from './projects/projectTypes'
@@ -38,6 +39,50 @@ export type CodexModelList = {
   models: CodexModel[]
   selectedModelId?: string
   unavailableReason?: string
+}
+
+export type SidebarConversation = {
+  id: string
+  threadId?: string
+  title: string | null
+  projectAssignment?: ThreadProjectAssignment
+  createdAt?: string
+  updatedAt?: string
+  archived?: boolean
+  unread?: boolean
+  running?: boolean
+  cwd?: string | null
+}
+
+export type SidebarConversationListState = {
+  conversations: SidebarConversation[]
+  archivedConversationIds: string[]
+  loaded: boolean
+  error?: string
+}
+
+export type SidebarPreferences = {
+  organizeMode: 'project' | 'recent-projects' | 'chronological'
+  sortKey: 'updated_at' | 'created_at'
+  collapsedSectionIds: string[]
+  collapsedGroupIds: string[]
+}
+
+export type SidebarConversationActionPayload = {
+  conversationId: string
+}
+
+export type SidebarConversationRenamePayload = SidebarConversationActionPayload & {
+  title: string
+}
+
+export type SidebarConversationOpenResult = {
+  conversationId: string
+  threadId: string
+  title: string | null
+  messages: UIMessage[]
+  projectAssignment?: ThreadProjectAssignment
+  cwd?: string | null
 }
 
 export type CodexChatRequest = {
@@ -140,6 +185,34 @@ export const workspaceFileSearchPayloadSchema = z.object({
   limit: z.number().int().min(1).max(200).optional()
 })
 
+export const sidebarConversationActionPayloadSchema = z.object({
+  conversationId: z.string().min(1)
+})
+
+export const sidebarConversationRenamePayloadSchema = sidebarConversationActionPayloadSchema.extend(
+  {
+    title: z.string().trim().min(1).max(120)
+  }
+)
+
+export const sidebarConversationOpenResultSchema = z.object({
+  conversationId: z.string().min(1),
+  threadId: z.string().min(1),
+  title: z.string().nullable(),
+  messages: z.array(z.custom<UIMessage>(isUiMessage)),
+  projectAssignment: z.custom<ThreadProjectAssignment>().optional(),
+  cwd: z.string().nullable().optional()
+}) satisfies z.ZodType<SidebarConversationOpenResult>
+
+export const sidebarPreferencesSchema = z.object({
+  organizeMode: z.enum(['project', 'recent-projects', 'chronological']),
+  sortKey: z.enum(['updated_at', 'created_at']),
+  collapsedSectionIds: z.array(z.string()),
+  collapsedGroupIds: z.array(z.string())
+}) satisfies z.ZodType<SidebarPreferences>
+
+export const sidebarPreferencesPatchSchema = sidebarPreferencesSchema.partial()
+
 export type WorkspaceFileSearchPayload = z.infer<typeof workspaceFileSearchPayloadSchema>
 
 export type WorkspaceFileSearchResponse = {
@@ -159,6 +232,23 @@ export type DesktopCodexApi = {
 export type DesktopCodexChatApi = {
   startChatStream(request: CodexChatRequest, callbacks: CodexChatStreamCallbacks): string
   abortChatStream(streamId: string): void
+}
+
+export type DesktopConversationsApi = {
+  getConversationList(): Promise<SidebarConversationListState>
+  refreshConversationList(): Promise<SidebarConversationListState>
+  openConversation(input: SidebarConversationActionPayload): Promise<SidebarConversationOpenResult>
+  archiveConversation(
+    input: SidebarConversationActionPayload
+  ): Promise<SidebarConversationListState>
+  unarchiveConversation(
+    input: SidebarConversationActionPayload
+  ): Promise<SidebarConversationListState>
+  renameConversation(input: SidebarConversationRenamePayload): Promise<SidebarConversationListState>
+  interruptConversation(input: SidebarConversationActionPayload): Promise<void>
+  getPreferences(): Promise<SidebarPreferences>
+  setPreferences(input: Partial<SidebarPreferences>): Promise<SidebarPreferences>
+  onConversationListChange(callback: (state: SidebarConversationListState) => void): () => void
 }
 
 export type ProjectCreateLocalPayload = z.infer<typeof projectCreateLocalPayloadSchema>

@@ -3,19 +3,29 @@ import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 import type { DesktopCodexChatApi } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 
+export type ActiveConversationContext = {
+  conversationId: string
+  threadId: string
+  projectSelection?: ProjectSelection
+  cwd?: string | null
+}
+
 export type ElectronIpcChatTransportOptions = {
   chatBridge: DesktopCodexChatApi
+  getActiveConversation?: () => ActiveConversationContext | undefined
   getProjectSelection?: () => ProjectSelection | undefined
   getSelectedModelId: () => string | undefined
 }
 
 export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly chatBridge: DesktopCodexChatApi
+  private readonly getActiveConversation: () => ActiveConversationContext | undefined
   private readonly getProjectSelection: () => ProjectSelection | undefined
   private readonly getSelectedModelId: () => string | undefined
 
   constructor(options: ElectronIpcChatTransportOptions) {
     this.chatBridge = options.chatBridge
+    this.getActiveConversation = options.getActiveConversation ?? (() => undefined)
     this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
     this.getSelectedModelId = options.getSelectedModelId
   }
@@ -79,8 +89,13 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
 
   private createTrustedBody(body: unknown): Record<string, unknown> | undefined {
     const trustedBody = stripRendererExecutionHints(body)
-    const projectSelection = this.getProjectSelection()
+    const activeConversation = this.getActiveConversation()
+    const projectSelection = activeConversation?.projectSelection ?? this.getProjectSelection()
     if (projectSelection) trustedBody.projectSelection = projectSelection
+    if (activeConversation) {
+      trustedBody.conversationId = activeConversation.conversationId
+      trustedBody.threadId = activeConversation.threadId
+    }
     return Object.keys(trustedBody).length > 0 ? trustedBody : undefined
   }
 }
@@ -90,9 +105,15 @@ function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
   const {
     cwd: _cwd,
     runtimeWorkspaceRoots: _runtimeWorkspaceRoots,
+    conversationId: _conversationId,
+    threadId: _threadId,
+    projectSelection: _projectSelection,
     ...trustedBody
   } = body as Record<string, unknown>
   void _cwd
   void _runtimeWorkspaceRoots
+  void _conversationId
+  void _threadId
+  void _projectSelection
   return trustedBody
 }

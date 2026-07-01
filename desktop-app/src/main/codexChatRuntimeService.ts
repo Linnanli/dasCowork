@@ -59,6 +59,13 @@ type StreamTextLike = (input: {
   executionTarget?: ConversationExecutionTarget
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
+type ActiveConversationRun = {
+  conversationId: string
+  threadId?: string
+  turnId?: string
+  abortController: AbortController
+}
+
 export type ModelCatalogLike = Pick<
   ModelCatalogService,
   'listModels' | 'setSelectedModel' | 'resolveClientModel'
@@ -74,6 +81,10 @@ export type CodexChatRuntimeServiceOptions = {
   streamText?: StreamTextLike
 }
 
+export type CodexChatRunResult = {
+  threadId?: string
+}
+
 export class CodexChatRuntimeService {
   private readonly approvalBroker = new CodexApprovalBroker()
   private readonly cwd: string
@@ -83,6 +94,7 @@ export class CodexChatRuntimeService {
   private readonly projectService: ProjectServiceLike | undefined
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
+  private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private selectedModelId: string | undefined
   private status: CodexStatus
 
@@ -178,8 +190,19 @@ export class CodexChatRuntimeService {
     return { selectedModelId: modelId }
   }
 
-  async startChatStream(request: CodexChatRequest, port: CodexPortLike): Promise<void> {
+  async startChatStream(
+    request: CodexChatRequest,
+    port: CodexPortLike
+  ): Promise<CodexChatRunResult> {
     const abortController = new AbortController()
+    const conversationKey = request.body?.conversationId ?? request.body?.threadId ?? request.chatId
+    const activeRun: ActiveConversationRun = {
+      conversationId: conversationKey,
+      threadId: request.body?.threadId,
+      abortController
+    }
+    this.activeConversationRuns.set(conversationKey, activeRun)
+    if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
     port.on('message', (event) => {
       if (isAbortMessage(event.data)) abortController.abort()
     })
@@ -222,6 +245,13 @@ export class CodexChatRuntimeService {
         sendSources: true
       })) {
         const threadId = extractCodexThreadId(chunk)
+        const turnId = extractCodexTurnId(chunk)
+        if (threadId || turnId) {
+          activeRun.threadId = threadId ?? activeRun.threadId
+          activeRun.turnId = turnId ?? activeRun.turnId
+          this.activeConversationRuns.set(activeRun.conversationId, activeRun)
+          if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
+        }
         if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
           await normalizeProjectAssignmentThreadId({
             projectStore: this.projectStore,
@@ -245,8 +275,20 @@ export class CodexChatRuntimeService {
         port.postMessage({ type: 'error', error: errorMessage(error) })
       }
     } finally {
+      this.clearActiveConversationRun(activeRun)
       port.close()
     }
+    return { threadId: activeRun.threadId }
+  }
+
+  interruptConversation(conversationId: string): void {
+    const run = this.activeConversationRuns.get(conversationId)
+    if (!run) return
+    run.abortController.abort()
+  }
+
+  isConversationRunning(conversationId: string): boolean {
+    return this.activeConversationRuns.has(conversationId)
   }
 
   async stop(): Promise<void> {
@@ -254,6 +296,12 @@ export class CodexChatRuntimeService {
     this.approvalBroker.rejectAll(new Error('Codex runtime is stopping'))
     await this.provider.shutdown()
     this.status = { state: 'stopped', binary: this.launch.displayBinary }
+  }
+
+  private clearActiveConversationRun(run: ActiveConversationRun): void {
+    for (const [key, value] of this.activeConversationRuns.entries()) {
+      if (value === run) this.activeConversationRuns.delete(key)
+    }
   }
 
   private readonly handleCommandApproval: CommandApprovalHandler = async (params) => {
@@ -331,6 +379,9 @@ async function defaultStreamText({
   const providerOptions = codexCallOptions({
     model: modelId,
     summary: 'auto',
+    ...(typeof request.body?.threadId === 'string'
+      ? { resumeThreadId: request.body.threadId }
+      : {}),
     ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
     ...(executionTarget?.runtimeWorkspaceRoots
       ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
@@ -379,6 +430,16 @@ function extractCodexThreadId(chunk: UIMessageChunk): string | undefined {
   if (!isRecord(codexMetadata)) return undefined
   const threadId = codexMetadata.threadId
   return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined
+}
+
+function extractCodexTurnId(chunk: UIMessageChunk): string | undefined {
+  if (!isRecord(chunk)) return undefined
+  const providerMetadata = chunk['providerMetadata']
+  if (!isRecord(providerMetadata)) return undefined
+  const codexMetadata = providerMetadata[CODEX_PROVIDER_ID]
+  if (!isRecord(codexMetadata)) return undefined
+  const turnId = codexMetadata.turnId
+  return typeof turnId === 'string' && turnId.length > 0 ? turnId : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

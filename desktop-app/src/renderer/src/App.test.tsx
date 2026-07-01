@@ -42,12 +42,16 @@ const runtimeState = vi.hoisted<{
   serverRequests: CodexApprovalRequest[]
   selectedModelId: string | undefined
   setSelectedModelId: ReturnType<typeof vi.fn>
+  startNewConversation: ReturnType<typeof vi.fn>
+  openConversation: ReturnType<typeof vi.fn>
 }>(() => ({
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
   serverRequests: [],
   selectedModelId: 'gpt-5-codex',
-  setSelectedModelId: vi.fn()
+  setSelectedModelId: vi.fn(),
+  startNewConversation: vi.fn(),
+  openConversation: vi.fn()
 }))
 
 const mentionAdapterState = vi.hoisted<{
@@ -63,7 +67,17 @@ const projectHookState = vi.hoisted(() => ({
       activeWorkspaceRoots: ['/repo'],
       workspaceRootOptions: [],
       localProjects: {},
-      remoteProjects: [],
+      remoteProjects: [
+        {
+          id: 'remote',
+          kind: 'remote',
+          hostId: 'ssh-dev',
+          label: 'Remote App',
+          remotePath: '/srv/app',
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z'
+        }
+      ],
       projectOrder: [],
       pinnedProjectIds: [],
       projectWritableRoots: {},
@@ -79,7 +93,9 @@ const projectHookState = vi.hoisted(() => ({
     currentDetail: '/repo',
     pickWorkspaceRoot: vi.fn(),
     createLocalProject: vi.fn(),
-    selectProject: vi.fn()
+    selectProject: vi.fn(),
+    renameProject: vi.fn(),
+    removeProject: vi.fn()
   }
 }))
 
@@ -96,6 +112,9 @@ function resetThreadMessageState(): void {
   runtimeState.selectedModelId = 'gpt-5-codex'
   runtimeState.setSelectedModelId.mockReset()
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
+  runtimeState.startNewConversation.mockReset()
+  runtimeState.openConversation.mockReset()
+  runtimeState.openConversation.mockResolvedValue(undefined)
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
 }
@@ -131,7 +150,54 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
       onStateChange: vi.fn(() => vi.fn()),
       ...projects
-    } satisfies DesktopProjectsApi
+    } satisfies DesktopProjectsApi,
+    conversations: {
+      getConversationList: vi.fn(async () => ({
+        conversations: [],
+        archivedConversationIds: [],
+        loaded: true
+      })),
+      refreshConversationList: vi.fn(async () => ({
+        conversations: [],
+        archivedConversationIds: [],
+        loaded: true
+      })),
+      openConversation: vi.fn(async () => ({
+        conversationId: 'thread-1',
+        threadId: 'thread-1',
+        title: 'Thread',
+        messages: []
+      })),
+      archiveConversation: vi.fn(async () => ({
+        conversations: [],
+        archivedConversationIds: [],
+        loaded: true
+      })),
+      unarchiveConversation: vi.fn(async () => ({
+        conversations: [],
+        archivedConversationIds: [],
+        loaded: true
+      })),
+      renameConversation: vi.fn(async () => ({
+        conversations: [],
+        archivedConversationIds: [],
+        loaded: true
+      })),
+      interruptConversation: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({
+        organizeMode: 'project',
+        sortKey: 'updated_at',
+        collapsedSectionIds: [],
+        collapsedGroupIds: []
+      })),
+      setPreferences: vi.fn(async (input) => ({
+        organizeMode: input.organizeMode ?? 'project',
+        sortKey: input.sortKey ?? 'updated_at',
+        collapsedSectionIds: input.collapsedSectionIds ?? [],
+        collapsedGroupIds: input.collapsedGroupIds ?? []
+      })),
+      onConversationListChange: vi.fn(() => () => undefined)
+    }
   })
 }
 
@@ -195,6 +261,9 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
         }
       ],
       selectedModelId: runtimeState.selectedModelId,
+      activeConversation: undefined,
+      startNewConversation: runtimeState.startNewConversation,
+      openConversation: runtimeState.openConversation,
       setSelectedModelId: runtimeState.setSelectedModelId
     })
   }
@@ -546,14 +615,33 @@ describe('App composer', () => {
     expect(container.textContent).toContain('model catalog unavailable')
   })
 
-  it('renders thread list item actions for archive and delete', () => {
+  it('renders split sidebar sections without delete actions', () => {
     act(() => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-primitive="ThreadListItemMore.Trigger"]')).not.toBeNull()
-    expect(container.querySelector('[data-primitive="ThreadListItem.Archive"]')).not.toBeNull()
-    expect(container.querySelector('[data-primitive="ThreadListItem.Delete"]')).not.toBeNull()
+    expect(container.textContent).toContain('Projects')
+    expect(container.textContent).toContain('Remote App')
+    expect(container.textContent).toContain('Quick chats')
+    expect(container.textContent).toContain('New chat')
+    expect(container.textContent).not.toContain('Remote projects')
+    expect(container.textContent).not.toContain('Pinned')
+    expect(container.textContent).not.toContain('Delete')
+  })
+
+  it('starts a new runtime conversation from the sidebar New chat action', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const newChat = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'New chat'
+    )
+    act(() => {
+      newChat?.click()
+    })
+
+    expect(runtimeState.startNewConversation).toHaveBeenCalledOnce()
   })
 
   it('renders the sidebar with translucent glass styling', () => {
@@ -563,10 +651,9 @@ describe('App composer', () => {
 
     const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
-    const newThread = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'New thread'
+    const newChat = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'New chat'
     )
-    const threadItem = container.querySelector('[data-primitive="ThreadListItem.Root"]')
 
     expect(sidebar?.className).toContain('bg-background/50')
     expect(sidebar?.className).toContain('backdrop-blur-xl')
@@ -576,8 +663,7 @@ describe('App composer', () => {
     expect(sidebar?.className).toContain(
       '[@media(prefers-reduced-transparency:reduce)]:backdrop-blur-none'
     )
-    expect(newThread?.className).toContain('hover:bg-background/40')
-    expect(threadItem?.className).toContain('data-[active]:bg-background/50')
+    expect(newChat?.className).toContain('hover:bg-background/40')
   })
 
   it('keeps the original opaque sidebar colors on Windows', () => {
@@ -590,20 +676,17 @@ describe('App composer', () => {
     const appShell = container.querySelector('main')
     const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
-    const newThread = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'New thread'
+    const newChat = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'New chat'
     )
-    const threadItem = container.querySelector('[data-primitive="ThreadListItem.Root"]')
 
     expect(appShell?.className).toContain('bg-muted/30')
     expect(sidebar?.className).not.toContain('bg-background/50')
     expect(sidebar?.className).not.toContain('backdrop-blur-xl')
     expect(mainSection?.className).not.toContain('bg-background/50')
     expect(mainSection?.className).not.toContain('backdrop-blur-xl')
-    expect(newThread?.className).toContain('hover:bg-muted')
-    expect(newThread?.className).not.toContain('hover:bg-background/40')
-    expect(threadItem?.className).toContain('data-[active]:bg-muted')
-    expect(threadItem?.className).not.toContain('data-[active]:bg-background/50')
+    expect(newChat?.className).toContain('hover:bg-muted')
+    expect(newChat?.className).not.toContain('hover:bg-background/40')
   })
 
   it('renders user messages with the assistant-ui base message structure', () => {
