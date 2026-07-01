@@ -27,7 +27,7 @@ export function SidebarChatsSection({
       className="min-w-0 space-y-1"
       aria-label={showChronological ? 'Recent chats' : 'Quick chats'}
     >
-      <div className="group flex min-w-0 items-center justify-between text-[11px] text-muted-foreground uppercase">
+      <div className="group flex min-w-0 items-center justify-between pl-2 text-[11px] text-muted-foreground uppercase">
         <span className="min-w-0 truncate">
           {showChronological ? 'Recent chats' : 'Quick chats'}
         </span>

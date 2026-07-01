@@ -14,7 +14,7 @@ export function SidebarPrimaryActions({
     ? 'hover:bg-background/40 dark:hover:bg-foreground/8'
     : 'hover:bg-muted'
   return (
-    <div className="min-w-0 shrink-0 space-y-1">
+    <div className="min-w-0 shrink-0 space-y-1 px-2">
       <Button
         className={cn('w-full min-w-0 justify-start gap-2 font-normal text-foreground', hoverClass)}
         size="sm"

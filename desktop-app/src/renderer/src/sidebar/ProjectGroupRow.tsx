@@ -29,7 +29,7 @@ export function ProjectGroupRow({
     <div className="min-w-0 space-y-0.5">
       <div
         className={cn(
-          'group flex min-h-8 min-w-0 items-center gap-1 rounded-md px-1 transition-colors',
+          'group flex min-h-8 min-w-0 items-center gap-1 rounded-md transition-colors',
           group.active && 'bg-muted',
           nativeBackdrop ? 'hover:bg-background/40 dark:hover:bg-foreground/8' : 'hover:bg-muted'
         )}
