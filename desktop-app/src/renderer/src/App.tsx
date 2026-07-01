@@ -296,7 +296,7 @@ function CodexSidebar({
           <div className="mt-2 flex h-12 shrink-0 items-center px-4">
             <Logo />
           </div>
-          <div className="relative min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
             <SidebarRoot
               nativeBackdrop={nativeBackdrop}
               projectState={projectState}
@@ -312,7 +312,7 @@ function CodexSidebar({
 
 function Logo(): React.JSX.Element {
   return (
-    <div className="flex min-w-0 items-center gap-2 px-2 text-sm font-medium">
+    <div className="flex min-w-0 items-center gap-2 px-2 text-sm">
       <BrandMark />
       <span className="min-w-0 truncate text-foreground/90">Codex</span>
     </div>
@@ -321,7 +321,7 @@ function Logo(): React.JSX.Element {
 
 function BrandMark(): React.JSX.Element {
   return (
-    <div className="grid size-5 shrink-0 place-items-center rounded-md bg-primary text-[11px] font-bold text-primary-foreground">
+    <div className="grid size-5 shrink-0 place-items-center rounded-md bg-primary text-[11px] text-primary-foreground">
       C
     </div>
   )
@@ -359,15 +359,10 @@ function ConversationContextText({
   if (!activeConversation) return null
 
   const title = activeConversation.title ?? 'New Chat'
-  const meta = formatActiveConversationMeta(activeConversation)
 
   return (
-    <span
-      className="flex min-w-0 flex-col"
-      title={[title, meta].filter(Boolean).join(' / ')}
-    >
-      <span className="min-w-0 truncate text-sm font-medium text-foreground">{title}</span>
-      <span className="truncate text-[11px] font-normal text-muted-foreground">{meta}</span>
+    <span className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
+      {title}
     </span>
   )
 }
@@ -381,10 +376,6 @@ function ThreadTitle(): React.JSX.Element | null {
   if (!title) return null
 
   return <span className="min-w-0 truncate text-sm font-medium">{title}</span>
-}
-
-function formatActiveConversationMeta(conversation: ActiveConversationContext): string {
-  return conversation.cwd ?? 'Conversation'
 }
 
 function isNewChatView(state: AssistantState): boolean {

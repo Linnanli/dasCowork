@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 import type { CodexApprovalRequest, DesktopProjectsApi } from '../../shared/codexIpcApi'
+import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 
 type MockThreadMessageState = {
   message: {
@@ -37,6 +38,7 @@ const streamdownPropsState = vi.hoisted<{
 }))
 
 const runtimeState = vi.hoisted<{
+  activeConversation: ActiveConversationContext | undefined
   rejectServerRequest: ReturnType<typeof vi.fn>
   respondToServerRequest: ReturnType<typeof vi.fn>
   serverRequests: CodexApprovalRequest[]
@@ -45,6 +47,7 @@ const runtimeState = vi.hoisted<{
   startNewConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
 }>(() => ({
+  activeConversation: undefined,
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
   serverRequests: [],
@@ -115,6 +118,7 @@ function resetThreadMessageState(): void {
   runtimeState.startNewConversation.mockReset()
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
+  runtimeState.activeConversation = undefined
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
 }
@@ -261,7 +265,7 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
         }
       ],
       selectedModelId: runtimeState.selectedModelId,
-      activeConversation: undefined,
+      activeConversation: runtimeState.activeConversation,
       startNewConversation: runtimeState.startNewConversation,
       openConversation: runtimeState.openConversation,
       setSelectedModelId: runtimeState.setSelectedModelId
@@ -642,6 +646,24 @@ describe('App composer', () => {
     })
 
     expect(runtimeState.startNewConversation).toHaveBeenCalledOnce()
+  })
+
+  it('shows active conversation title in the header without workspace path', () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-1',
+      threadId: 'thread-1',
+      title: 'Feature thread',
+      cwd: '/Users/test/repo'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const header = container.querySelector('header')
+
+    expect(header?.textContent).toContain('Feature thread')
+    expect(header?.innerHTML).not.toContain('/Users/test/repo')
   })
 
   it('renders the sidebar with translucent glass styling', () => {

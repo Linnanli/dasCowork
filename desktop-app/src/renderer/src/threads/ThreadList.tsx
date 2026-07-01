@@ -4,13 +4,7 @@ import {
   ThreadListPrimitive,
   useAuiState
 } from '@assistant-ui/react'
-import {
-  AlertTriangleIcon,
-  ArchiveIcon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  TrashIcon
-} from 'lucide-react'
+import { AlertTriangleIcon, MoreHorizontalIcon, PlusIcon, TrashIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import type { ProjectState } from '../../../shared/projects/projectTypes'
@@ -18,7 +12,7 @@ import type { ProjectStateController } from '../projects/useProjectState'
 import { buildThreadProjectSections, getThreadProjectBadge } from './threadProjectSections'
 
 const threadListNewButtonClass =
-  'inline-flex h-8 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors'
+  'inline-flex h-8 w-full items-center gap-2 rounded-md px-3 text-sm text-foreground transition-colors'
 
 const threadListNewButtonGlassClass = 'hover:bg-background/40 dark:hover:bg-foreground/8'
 
@@ -82,9 +76,7 @@ function ThreadProjectSections({
     <div className="space-y-2 px-1 pt-2" data-slot="thread-project-sections">
       {sections.map((section) => (
         <section key={section.key} className="space-y-1">
-          <div className="text-[11px] font-medium text-muted-foreground uppercase">
-            {section.title}
-          </div>
+          <div className="text-[11px] text-muted-foreground uppercase">{section.title}</div>
           <div className="space-y-0.5">
             {section.groups.map((group) => (
               <button
@@ -98,7 +90,7 @@ function ThreadProjectSections({
                 }}
               >
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-foreground">{group.label}</span>
+                  <span className="block truncate text-foreground">{group.label}</span>
                   {group.detail ? <span className="block truncate">{group.detail}</span> : null}
                 </span>
                 {group.warning ? (
@@ -147,7 +139,7 @@ function ThreadListItem({
           : 'hover:bg-muted focus-visible:bg-muted data-[active]:bg-muted'
       )}
     >
-      <ThreadListItemPrimitive.Trigger className="flex min-w-0 flex-1 flex-col px-3 py-1 text-left text-sm font-medium text-foreground outline-none">
+      <ThreadListItemPrimitive.Trigger className="flex min-w-0 flex-1 flex-col px-3 py-1 text-left text-sm text-foreground outline-none">
         <span className="min-w-0 flex-1 truncate">
           <ThreadListItemPrimitive.Title fallback="New Chat" />
         </span>
@@ -179,12 +171,6 @@ function ThreadListItemActions(): React.JSX.Element {
         side="right"
         sideOffset={6}
       >
-        <ThreadListItemPrimitive.Archive asChild>
-          <ThreadListItemMorePrimitive.Item className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-            <ArchiveIcon className="size-4" />
-            Archive
-          </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Archive>
         <ThreadListItemPrimitive.Delete asChild>
           <ThreadListItemMorePrimitive.Item className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-destructive outline-none select-none hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive">
             <TrashIcon className="size-4" />

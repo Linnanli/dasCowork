@@ -27,12 +27,12 @@ export function SidebarProjectsSection({
   }
 
   return (
-    <section className="space-y-1" aria-label="Projects">
-      <div className="flex items-center justify-between px-2 text-[11px] font-medium text-muted-foreground uppercase">
-        <span>Projects</span>
+    <section className="min-w-0 space-y-1" aria-label="Projects">
+      <div className="flex min-w-0 items-center justify-between px-2 text-[11px] text-muted-foreground uppercase">
+        <span className="min-w-0 truncate">Projects</span>
         <button
           aria-label="Open folder"
-          className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Open folder"
           type="button"
           onClick={() => void projectState.pickWorkspaceRoot()}
@@ -40,10 +40,10 @@ export function SidebarProjectsSection({
           <PlusIcon className="size-3.5" />
         </button>
       </div>
-      <div className="space-y-0.5">
+      <div className="min-w-0 space-y-0.5">
         {groups.length === 0 ? (
           <button
-            className="w-full rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted"
+            className="w-full min-w-0 rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted"
             type="button"
             onClick={() => void projectState.pickWorkspaceRoot()}
           >
@@ -59,14 +59,6 @@ export function SidebarProjectsSection({
               onNewChat={() => {
                 onNewChat()
                 void projectState.selectProject(group.selection)
-              }}
-              onArchiveConversation={(conversationId) =>
-                void conversationState.archiveConversation({ conversationId })
-              }
-              onArchiveProjectChats={() => {
-                for (const conversation of group.conversations) {
-                  void conversationState.archiveConversation({ conversationId: conversation.id })
-                }
               }}
               onRemoveProject={() => void projectState.removeProject(group.selection)}
               onOpenConversation={(conversationId) =>

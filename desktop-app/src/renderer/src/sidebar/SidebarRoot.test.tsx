@@ -106,7 +106,7 @@ const conversationState: ConversationStateController = {
 describe('SidebarRoot', () => {
   const onNewChat = vi.fn()
 
-  it('renders primary actions, project groups, quick chats, and archive-only conversation actions', async () => {
+  it('renders primary actions, project groups, and quick chats without archive actions', async () => {
     const container = document.createElement('div')
     const root = createRoot(container)
 
@@ -122,6 +122,22 @@ describe('SidebarRoot', () => {
     })
 
     expect(container.textContent).toContain('New chat')
+    const navigationContainer = container.querySelector<HTMLDivElement>(
+      '[aria-label="Projects and quick chats"]'
+    )
+    expect(navigationContainer).not.toBeNull()
+    expect(navigationContainer?.getAttribute('data-slot')).toBe('scroll-area')
+    expect(navigationContainer?.className).toContain('min-w-0')
+    expect(navigationContainer?.className).toContain('overflow-hidden')
+    const viewport = navigationContainer?.querySelector('[data-slot="scroll-area-viewport"]')
+    expect(viewport).not.toBeNull()
+    expect(viewport?.className).toContain('[&>div]:!block')
+    expect(
+      [...(viewport?.querySelectorAll('div') ?? [])].some(
+        (element) => element.className.includes('w-full') && element.className.includes('min-w-0')
+      )
+    ).toBe(true)
+    expect(navigationContainer?.textContent).not.toContain('New chat')
     expect(
       [...container.querySelectorAll('button')].some(
         (candidate) => candidate.textContent?.trim() === 'Quick chat'
@@ -134,6 +150,7 @@ describe('SidebarRoot', () => {
     expect(quickChatButton?.className).toContain('opacity-0')
     expect(quickChatButton?.className).toContain('group-hover:opacity-100')
     expect(container.textContent).toContain('Projects')
+    expect(navigationContainer?.textContent).toContain('Projects')
     expect(container.querySelector('button[aria-label="Open folder"]')).not.toBeNull()
     expect(container.textContent).toContain('Desktop App')
     expect(container.textContent).toContain('Path Repo')
@@ -143,6 +160,12 @@ describe('SidebarRoot', () => {
     expect(projectChatButton).not.toBeNull()
     expect(projectChatButton?.className).toContain('opacity-0')
     expect(projectChatButton?.className).toContain('group-hover:opacity-100')
+    const projectRemoveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove Desktop App"]'
+    )
+    expect(projectRemoveButton).not.toBeNull()
+    expect(projectRemoveButton?.className).toContain('opacity-0')
+    expect(projectRemoveButton?.className).toContain('group-hover:opacity-100')
     expect(container.querySelector('button[aria-label="Collapse Desktop App"]')).not.toBeNull()
     expect(container.querySelector('button[aria-label="Collapse Path Repo"]')).not.toBeNull()
     expect(container.textContent).not.toContain('/repo/local')
@@ -150,8 +173,10 @@ describe('SidebarRoot', () => {
     expect(container.textContent).toContain('Local thread')
     expect(container.textContent).toContain('暂无对话')
     expect(container.textContent).toContain('Quick chats')
+    expect(navigationContainer?.textContent).toContain('Quick chats')
     expect(container.textContent).toContain('Scratch')
-    expect(container.textContent).toContain('Archive')
+    expect(container.textContent).not.toContain('Archive')
+    expect(container.querySelector('[aria-label*="Archive"]')).toBeNull()
     expect(container.textContent).not.toContain('Delete')
     root.unmount()
   })

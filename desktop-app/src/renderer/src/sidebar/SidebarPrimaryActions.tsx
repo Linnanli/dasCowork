@@ -13,17 +13,17 @@ export function SidebarPrimaryActions({
     ? 'hover:bg-background/40 dark:hover:bg-foreground/8'
     : 'hover:bg-muted'
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 shrink-0 space-y-1">
       <button
         className={cn(
-          'inline-flex h-8 w-full items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors',
+          'inline-flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-3 text-sm text-foreground transition-colors',
           hoverClass
         )}
         type="button"
         onClick={onNewChat}
       >
-        <PlusIcon className="size-4" />
-        New chat
+        <PlusIcon className="size-4 shrink-0" />
+        <span className="min-w-0 truncate">New chat</span>
       </button>
     </div>
   )
