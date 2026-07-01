@@ -251,13 +251,13 @@ export class CodexChatRuntimeService {
       })) {
         const threadId = extractCodexThreadId(chunk)
         const turnId = extractCodexTurnId(chunk)
+        let threadIdChanged = false
         if (threadId || turnId) {
-          const threadIdChanged = threadId && threadId !== activeRun.threadId
+          threadIdChanged = Boolean(threadId && threadId !== activeRun.threadId)
           activeRun.threadId = threadId ?? activeRun.threadId
           activeRun.turnId = turnId ?? activeRun.turnId
           this.activeConversationRuns.set(activeRun.conversationId, activeRun)
           if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
-          if (threadIdChanged) callbacks?.onThreadIdAvailable?.(threadId!)
         }
         if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
           await normalizeProjectAssignmentThreadId({
@@ -267,6 +267,7 @@ export class CodexChatRuntimeService {
           })
           normalizedProjectAssignmentThreadId = threadId
         }
+        if (threadIdChanged) callbacks?.onThreadIdAvailable?.(threadId!)
         port.postMessage({ type: 'chunk', chunk })
       }
       if (abortController.signal.aborted) {

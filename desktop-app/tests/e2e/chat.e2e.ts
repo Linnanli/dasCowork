@@ -335,6 +335,51 @@ test('keeps sidebar projects and conversations after a renderer reload', async (
   }
 })
 
+test('preserves a new conversation across reload and restores its history', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const runId = Date.now().toString(36)
+  const firstPrompt = `preserve-reload-${runId}`
+  const firstResponse = `preserve reloaded response ${runId}`
+  const backend = await startMockBackend({
+    responses: [assistantMessageResponse('resp-preserve', 'msg-preserve', firstResponse)]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, firstPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toBeVisible()
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+    await expectConversationInAuthoritativeList(page, firstPrompt)
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+
+    await page.reload()
+
+    await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+
+    await sidebar.getByText(firstPrompt, { exact: true }).click()
+    await expect(page.locator('[data-role="user"]')).toContainText(firstPrompt)
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+    ).toBeVisible()
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
 async function launchApp(backend: MockBackend, logs: string[]): Promise<ElectronApplication> {
   const app = await electron.launch({
     executablePath: electronExecutable,
@@ -385,6 +430,25 @@ async function createLocalProject(page: Page, name: string, root: string): Promi
     },
     { projectName: name, projectRoot: root }
   )
+}
+
+async function expectConversationInAuthoritativeList(page: Page, title: string): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async (expectedTitle) => {
+          const state = await window.desktopApp.conversations.refreshConversationList()
+          return (
+            !state.error &&
+            state.conversations.some(
+              (conversation) =>
+                conversation.title === expectedTitle || conversation.id === expectedTitle
+            )
+          )
+        }, title),
+      { timeout: 15_000 }
+    )
+    .toBe(true)
 }
 
 function collectRendererLogs(page: Page, logs: string[]): void {

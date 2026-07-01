@@ -72,6 +72,9 @@ export class AppServerThreadClient {
           await client.request('thread/list', {
             cursor,
             limit: 100,
+            // Empty means all providers; omitting this would filter to the
+            // sidebar app-server process's default provider.
+            modelProviders: [],
             sortKey: input.sortKey === 'created_at' ? 'created_at' : 'updated_at',
             sortDirection: 'desc',
             ...(input.includeArchived ? { archived: true } : {})

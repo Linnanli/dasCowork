@@ -33,6 +33,7 @@ let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
 let workspaceFileSearch: WorkspaceFileSearchService | undefined
 let conversationApi: ConversationApiService | undefined
+const convergingConversationThreadIds = new Set<string>()
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
@@ -106,36 +107,54 @@ async function broadcastProjectState(): Promise<void> {
 
 async function broadcastConversationState(options: { awaitThreadId?: string } = {}): Promise<void> {
   if (!conversationApi) return
-  const state = await refreshConversationListForBroadcast(options.awaitThreadId)
+  if (options.awaitThreadId) {
+    // Immediately broadcast with ensure so the sidebar shows the thread right away,
+    // even if thread/list hasn't caught up yet.
+    const ensuredState = await conversationApi.refreshConversationList({
+      ensureThreadIds: [options.awaitThreadId]
+    })
+    sendConversationState(ensuredState)
+    // In the background, wait for thread/list to converge (include the thread
+    // naturally), then broadcast the converged state.
+    startConversationListConvergence(options.awaitThreadId)
+  } else {
+    const state = await conversationApi.refreshConversationList()
+    sendConversationState(state)
+  }
+}
+
+function sendConversationState(
+  state: Awaited<ReturnType<ConversationApiService['refreshConversationList']>>
+): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:conversations-state-change', state)
   }
 }
 
-async function refreshConversationListForBroadcast(
-  awaitThreadId?: string
-): Promise<Awaited<ReturnType<ConversationApiService['refreshConversationList']>>> {
-  if (!conversationApi) throw new Error('Conversation API is not initialized')
-
-  const maxAttempts = awaitThreadId ? 8 : 1
-  let state = await conversationApi.refreshConversationList({
-    ensureThreadIds: awaitThreadId ? [awaitThreadId] : []
-  })
-  for (let attempt = 1; attempt < maxAttempts; attempt += 1) {
-    if (!awaitThreadId || hasConversationThread(state, awaitThreadId)) return state
-    await delay(150 * attempt)
-    state = await conversationApi.refreshConversationList({ ensureThreadIds: [awaitThreadId] })
-  }
-  return state
+function startConversationListConvergence(threadId: string): void {
+  if (convergingConversationThreadIds.has(threadId)) return
+  convergingConversationThreadIds.add(threadId)
+  void convergeConversationList(threadId)
+    .catch((error: unknown) => {
+      console.error(`failed to converge thread/list for ${threadId}`, error)
+    })
+    .finally(() => {
+      convergingConversationThreadIds.delete(threadId)
+    })
 }
 
-function hasConversationThread(
-  state: Awaited<ReturnType<ConversationApiService['refreshConversationList']>>,
-  threadId: string
-): boolean {
-  return state.conversations.some(
-    (conversation) => conversation.id === threadId || conversation.threadId === threadId
-  )
+async function convergeConversationList(awaitThreadId: string): Promise<void> {
+  if (!conversationApi) return
+  const maxAttempts = 8
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await delay(150 * attempt)
+    if (await conversationApi.hasThreadInList(awaitThreadId)) {
+      const state = await conversationApi.refreshConversationList()
+      sendConversationState(state)
+      return
+    }
+  }
+  console.warn(`thread/list did not include ${awaitThreadId} after ${maxAttempts} attempts`)
 }
 
 function delay(ms: number): Promise<void> {

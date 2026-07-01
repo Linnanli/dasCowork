@@ -49,6 +49,19 @@ export class ConversationApiService {
     return this.refreshConversationList()
   }
 
+  /**
+   * Checks whether a thread appears in the raw `thread/list` result without
+   * updating `lastState`. Used by the convergence loop to detect when
+   * `thread/list` has caught up to a newly created thread.
+   */
+  async hasThreadInList(threadId: string): Promise<boolean> {
+    const threads = await this.options.threadClient.listThreads({
+      includeArchived: false,
+      sortKey: this.preferences.sortKey
+    })
+    return threads.some((thread) => thread.id === threadId)
+  }
+
   async refreshConversationList(
     input: { ensureThreadIds?: string[] } = {}
   ): Promise<SidebarConversationListState> {

@@ -65,7 +65,11 @@ describe('AppServerThreadClient', () => {
     expect(jsonRpc.notification).toHaveBeenCalledWith('initialized')
     expect(jsonRpc.request).toHaveBeenCalledWith(
       'thread/list',
-      expect.objectContaining({ sortKey: 'updated_at', sortDirection: 'desc' })
+      expect.objectContaining({
+        modelProviders: [],
+        sortKey: 'updated_at',
+        sortDirection: 'desc'
+      })
     )
     expect(jsonRpc.disconnect).toHaveBeenCalledOnce()
   })
@@ -134,7 +138,7 @@ describe('AppServerThreadClient', () => {
 
     expect(jsonRpc.request).toHaveBeenCalledWith(
       'thread/list',
-      expect.objectContaining({ cursor: 'cursor-1', archived: true })
+      expect.objectContaining({ cursor: 'cursor-1', modelProviders: [], archived: true })
     )
   })
 

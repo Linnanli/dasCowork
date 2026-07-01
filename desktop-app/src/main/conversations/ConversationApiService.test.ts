@@ -189,6 +189,54 @@ describe('ConversationApiService', () => {
     expect(threadClient.readThread).toHaveBeenCalledWith('thread-fresh', { includeTurns: true })
   })
 
+  it('keeps getConversationList authoritative after an ensured sidebar broadcast', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([])
+    vi.mocked(threadClient.readThread).mockResolvedValue({
+      id: 'thread-fresh',
+      title: null,
+      preview: '',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      turns: [
+        {
+          items: [
+            {
+              id: 'user-fresh',
+              type: 'userMessage',
+              content: [{ type: 'text', text: 'Fresh sidebar prompt' }]
+            }
+          ]
+        }
+      ]
+    })
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await service.refreshConversationList({ ensureThreadIds: ['thread-fresh'] })
+    vi.mocked(threadClient.readThread).mockClear()
+
+    const state = await service.getConversationList()
+    expect(state.conversations).toEqual([])
+    expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('propagates thread/list failures during convergence checks', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockRejectedValueOnce(new Error('thread/list failed'))
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await expect(service.hasThreadInList('thread-local')).rejects.toThrow('thread/list failed')
+  })
+
   it('does not reinsert a stale row after archive when thread/read can still return it', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads)
