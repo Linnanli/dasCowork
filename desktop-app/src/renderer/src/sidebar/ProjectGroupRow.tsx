@@ -2,6 +2,7 @@ import {
   AlertTriangleIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  FolderIcon,
   PencilIcon,
   TrashIcon
 } from 'lucide-react'
@@ -38,20 +39,21 @@ export function ProjectGroupRow({
         )}
       >
         <button
-          className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground"
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left text-sm"
+          type="button"
+          onClick={onToggleCollapsed}
+        >
+          <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate text-foreground">{group.label}</span>
+        </button>
+        <button
+          className="pointer-events-none grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-accent focus-visible:pointer-events-auto focus-visible:opacity-100"
           type="button"
           aria-label={`${group.collapsed ? 'Expand' : 'Collapse'} ${group.label}`}
           aria-expanded={!group.collapsed}
           onClick={onToggleCollapsed}
         >
           <Chevron className="size-3.5" />
-        </button>
-        <button
-          className="flex min-w-0 flex-1 py-1 text-left text-sm"
-          type="button"
-          onClick={onToggleCollapsed}
-        >
-          <span className="min-w-0 truncate text-foreground">{group.label}</span>
         </button>
         {group.warning ? (
           <span

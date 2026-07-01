@@ -154,6 +154,19 @@ describe('SidebarRoot', () => {
     expect(container.querySelector('button[aria-label="Open folder"]')).not.toBeNull()
     expect(container.textContent).toContain('Desktop App')
     expect(container.textContent).toContain('Path Repo')
+    const desktopProjectLabelButton = [...container.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent?.trim() === 'Desktop App'
+    )
+    const desktopProjectToggleButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse Desktop App"]'
+    )
+    expect(desktopProjectLabelButton).not.toBeUndefined()
+    expect(desktopProjectLabelButton?.className).toContain('px-2')
+    expect(desktopProjectLabelButton?.querySelector('.lucide-folder')).not.toBeNull()
+    expect(desktopProjectToggleButton).not.toBeNull()
+    expect(desktopProjectLabelButton?.nextElementSibling).toBe(desktopProjectToggleButton)
+    expect(desktopProjectToggleButton?.className).toContain('opacity-0')
+    expect(desktopProjectToggleButton?.className).toContain('group-hover:opacity-100')
     const projectChatButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="New chat in Desktop App"]'
     )
@@ -166,7 +179,6 @@ describe('SidebarRoot', () => {
     expect(projectRemoveButton).not.toBeNull()
     expect(projectRemoveButton?.className).toContain('opacity-0')
     expect(projectRemoveButton?.className).toContain('group-hover:opacity-100')
-    expect(container.querySelector('button[aria-label="Collapse Desktop App"]')).not.toBeNull()
     expect(container.querySelector('button[aria-label="Collapse Path Repo"]')).not.toBeNull()
     expect(container.textContent).not.toContain('/repo/local')
     expect(container.textContent).not.toContain('/repo/path')
