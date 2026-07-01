@@ -239,7 +239,7 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'backend-default'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish' }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
   })
 
   it('rejects chat request modelId values that are not in the catalog', async () => {
@@ -325,7 +325,7 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'canonical-model'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish' }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
   })
 
   it('delegates selected model validation to the catalog', async () => {
@@ -383,7 +383,7 @@ describe('CodexChatRuntimeService', () => {
       { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
       { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } },
       { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } },
-      { type: 'finish' }
+      { type: 'finish', threadId: undefined }
     ])
   })
 
@@ -452,6 +452,51 @@ describe('CodexChatRuntimeService', () => {
       }
     })
     expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty('chat-temp')
+  })
+
+  it('fires onThreadIdAvailable when the thread id is first extracted from stream metadata', async () => {
+    const port = new FakePort()
+    const onThreadIdAvailable = vi.fn()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => ({
+        toUIMessageStream: () =>
+          (async function* () {
+            yield {
+              type: 'text-start',
+              id: 'text-1',
+              providerMetadata: {
+                '@janole/ai-sdk-provider-codex-asp': {
+                  threadId: 'thread-real',
+                  turnId: 'turn-real'
+                }
+              }
+            } as never
+            yield { type: 'text-end', id: 'text-1' } as never
+          })()
+      })
+    })
+
+    const result = await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port,
+      { onThreadIdAvailable }
+    )
+
+    expect(onThreadIdAvailable).toHaveBeenCalledTimes(1)
+    expect(onThreadIdAvailable).toHaveBeenCalledWith('thread-real')
+    expect(result.threadId).toBe('thread-real')
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-real' })
   })
 
   it('tracks and interrupts an active conversation by conversation id or app-server thread id', async () => {

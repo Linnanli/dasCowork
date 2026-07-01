@@ -282,7 +282,11 @@ app.whenReady().then(() => {
     if (!port) return
     const request = codexChatRequestSchema.parse(payload)
     void runtime
-      .startChatStream(request, port)
+      .startChatStream(request, port, {
+        onThreadIdAvailable: (threadId) => {
+          void broadcastConversationState({ awaitThreadId: threadId })
+        }
+      })
       .then((result) => broadcastConversationState({ awaitThreadId: result.threadId }))
       .catch((error: unknown) => {
         console.error('failed to complete codex chat stream', error)

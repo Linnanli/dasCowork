@@ -112,7 +112,7 @@ describe('startConversation', () => {
     expect(streamTextInput?.executionTarget).not.toMatchObject({
       cwd: '/malicious'
     })
-    expect(port.messages).toEqual([{ type: 'finish' }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
   })
 
   it('persists project assignment by request chat id when no conversation id is available', async () => {

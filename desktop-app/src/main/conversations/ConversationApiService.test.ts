@@ -211,7 +211,7 @@ describe('ConversationApiService', () => {
       preview: '',
       createdAt: '2026-06-30T04:00:00.000Z',
       updatedAt: '2026-06-30T04:05:00.000Z',
-      archived: false,
+      archived: true,
       running: false,
       cwd: '/repo/desktop-app',
       turns: [
@@ -241,6 +241,40 @@ describe('ConversationApiService', () => {
     })
     expect(threadClient.archiveThread).toHaveBeenCalledWith('thread-local')
     expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('does not preserve missing known threads without an explicit ensure request', async () => {
+    const threadClient = createClient()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    // First refresh populates lastState with thread-local
+    await service.refreshConversationList()
+
+    // Second refresh: thread/list is authoritative unless a caller explicitly awaits a thread.
+    vi.mocked(threadClient.listThreads).mockResolvedValueOnce([])
+
+    const state = await service.refreshConversationList()
+    expect(state.conversations).toEqual([])
+    expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('surfaces read failures for explicitly ensured threads', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([])
+    vi.mocked(threadClient.readThread).mockRejectedValue(new Error('thread read failed'))
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    const state = await service.refreshConversationList({ ensureThreadIds: ['thread-fresh'] })
+    expect(state.conversations).toEqual([])
+    expect(state.loaded).toBe(false)
+    expect(state.error).toBe('thread read failed')
+    expect(threadClient.readThread).toHaveBeenCalledWith('thread-fresh', { includeTurns: true })
   })
 
   it('merges sidebar preferences with defaults', () => {

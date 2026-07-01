@@ -85,6 +85,10 @@ export type CodexChatRunResult = {
   threadId?: string
 }
 
+export type StartChatStreamCallbacks = {
+  onThreadIdAvailable?: (threadId: string) => void
+}
+
 export class CodexChatRuntimeService {
   private readonly approvalBroker = new CodexApprovalBroker()
   private readonly cwd: string
@@ -192,7 +196,8 @@ export class CodexChatRuntimeService {
 
   async startChatStream(
     request: CodexChatRequest,
-    port: CodexPortLike
+    port: CodexPortLike,
+    callbacks?: StartChatStreamCallbacks
   ): Promise<CodexChatRunResult> {
     const abortController = new AbortController()
     const conversationKey = request.body?.conversationId ?? request.body?.threadId ?? request.chatId
@@ -247,10 +252,12 @@ export class CodexChatRuntimeService {
         const threadId = extractCodexThreadId(chunk)
         const turnId = extractCodexTurnId(chunk)
         if (threadId || turnId) {
+          const threadIdChanged = threadId && threadId !== activeRun.threadId
           activeRun.threadId = threadId ?? activeRun.threadId
           activeRun.turnId = turnId ?? activeRun.turnId
           this.activeConversationRuns.set(activeRun.conversationId, activeRun)
           if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
+          if (threadIdChanged) callbacks?.onThreadIdAvailable?.(threadId!)
         }
         if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
           await normalizeProjectAssignmentThreadId({
@@ -262,7 +269,11 @@ export class CodexChatRuntimeService {
         }
         port.postMessage({ type: 'chunk', chunk })
       }
-      port.postMessage({ type: abortController.signal.aborted ? 'aborted' : 'finish' })
+      if (abortController.signal.aborted) {
+        port.postMessage({ type: 'aborted' })
+      } else {
+        port.postMessage({ type: 'finish', threadId: activeRun.threadId })
+      }
     } catch (error) {
       if (abortController.signal.aborted) {
         port.postMessage({ type: 'aborted' })

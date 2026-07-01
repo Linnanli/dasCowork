@@ -62,7 +62,7 @@ const desktopCodexChat: DesktopCodexChatApi = {
       const message = event.data
       if (message.type === 'chunk') callbacks.onChunk(message.chunk)
       if (message.type === 'finish') {
-        callbacks.onFinish()
+        callbacks.onFinish(message.threadId)
         activePorts.delete(streamId)
         channel.port1.close()
       }

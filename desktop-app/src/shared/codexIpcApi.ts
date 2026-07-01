@@ -113,13 +113,13 @@ export const codexChatRequestBodySchema = z
 
 export type CodexChatStreamEvent =
   | { type: 'chunk'; chunk: UIMessageChunk }
-  | { type: 'finish' }
+  | { type: 'finish'; threadId?: string }
   | { type: 'aborted' }
   | { type: 'error'; error: string }
 
 export type CodexChatStreamCallbacks = {
   onChunk(chunk: UIMessageChunk): void
-  onFinish(): void
+  onFinish(threadId?: string): void
   onAbort(): void
   onError(error: string): void
 }

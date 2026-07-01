@@ -15,20 +15,41 @@ export type ElectronIpcChatTransportOptions = {
   chatBridge: DesktopCodexChatApi
   getActiveConversation?: () => ActiveConversationContext | undefined
   getProjectSelection?: () => ProjectSelection | undefined
+  getConversationRevision?: () => number
   getSelectedModelId: () => string | undefined
+  onStreamFinished?: (context: StreamFinishedContext) => void
+}
+
+export type StreamFinishedContext = {
+  chatId: string
+  threadId: string | undefined
+  activeConversation: ActiveConversationContext | undefined
+  projectSelection: ProjectSelection | undefined
+  conversationRevision: number
+}
+
+type TrustedRequestContext = {
+  body: Record<string, unknown> | undefined
+  activeConversation: ActiveConversationContext | undefined
+  projectSelection: ProjectSelection | undefined
+  conversationRevision: number
 }
 
 export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly chatBridge: DesktopCodexChatApi
   private readonly getActiveConversation: () => ActiveConversationContext | undefined
   private readonly getProjectSelection: () => ProjectSelection | undefined
+  private readonly getConversationRevision: () => number
   private readonly getSelectedModelId: () => string | undefined
+  private readonly onStreamFinished: ((context: StreamFinishedContext) => void) | undefined
 
   constructor(options: ElectronIpcChatTransportOptions) {
     this.chatBridge = options.chatBridge
     this.getActiveConversation = options.getActiveConversation ?? (() => undefined)
     this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
+    this.getConversationRevision = options.getConversationRevision ?? (() => 0)
     this.getSelectedModelId = options.getSelectedModelId
+    this.onStreamFinished = options.onStreamFinished
   }
 
   async sendMessages(
@@ -39,6 +60,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
 
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
+        const trustedContext = this.createTrustedContext(options.body)
         const closeStream = (): void => {
           if (settled) return
           settled = true
@@ -58,13 +80,23 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
             messages: options.messages,
             modelId: this.getSelectedModelId(),
             metadata: options.metadata,
-            body: this.createTrustedBody(options.body)
+            body: trustedContext.body
           },
           {
             onChunk: (chunk) => {
               if (!settled) controller.enqueue(chunk)
             },
-            onFinish: closeStream,
+            onFinish: (threadId) => {
+              if (settled) return
+              this.onStreamFinished?.({
+                chatId: options.chatId,
+                threadId,
+                activeConversation: trustedContext.activeConversation,
+                projectSelection: trustedContext.projectSelection,
+                conversationRevision: trustedContext.conversationRevision
+              })
+              closeStream()
+            },
             onAbort: closeStream,
             onError: errorStream
           }
@@ -88,7 +120,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     return null
   }
 
-  private createTrustedBody(body: unknown): Record<string, unknown> | undefined {
+  private createTrustedContext(body: unknown): TrustedRequestContext {
     const trustedBody = stripRendererExecutionHints(body)
     const activeConversation = this.getActiveConversation()
     const projectSelection = activeConversation?.projectSelection ?? this.getProjectSelection()
@@ -97,7 +129,12 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
       trustedBody.conversationId = activeConversation.conversationId
       trustedBody.threadId = activeConversation.threadId
     }
-    return Object.keys(trustedBody).length > 0 ? trustedBody : undefined
+    return {
+      body: Object.keys(trustedBody).length > 0 ? trustedBody : undefined,
+      activeConversation,
+      projectSelection,
+      conversationRevision: this.getConversationRevision()
+    }
   }
 }
 

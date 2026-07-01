@@ -13,7 +13,8 @@ import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 import type { ModelOption } from '../components/assistant-ui'
 import {
   ElectronIpcChatTransport,
-  type ActiveConversationContext
+  type ActiveConversationContext,
+  type StreamFinishedContext
 } from '../lib/ElectronIpcChatTransport'
 
 export type CodexIpcAssistantRuntimeState = {
@@ -36,18 +37,26 @@ export type CodexIpcAssistantRuntimeOptions = {
   projectSelection?: ProjectSelection
 }
 
+export type ConversationRuntimeState = {
+  activeConversation: ActiveConversationContext | undefined
+  revision: number
+}
+
 class TransportStateHolder {
   private activeConversation: ActiveConversationContext | undefined
   private projectSelection: ProjectSelection | undefined
+  private conversationRevision = 0
   private selectedModelId: string | undefined
 
   set(input: {
     activeConversation: ActiveConversationContext | undefined
     projectSelection: ProjectSelection | undefined
+    conversationRevision: number
     selectedModelId: string | undefined
   }): void {
     this.activeConversation = input.activeConversation
     this.projectSelection = input.projectSelection
+    this.conversationRevision = input.conversationRevision
     this.selectedModelId = input.selectedModelId
   }
 
@@ -57,6 +66,10 @@ class TransportStateHolder {
 
   getProjectSelection(): ProjectSelection | undefined {
     return this.projectSelection
+  }
+
+  getConversationRevision(): number {
+    return this.conversationRevision
   }
 
   getSelectedModelId(): string | undefined {
@@ -70,9 +83,11 @@ export function useCodexIpcAssistantRuntime(
   const [serverRequests, setServerRequests] = useState<CodexApprovalRequest[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
-  const [activeConversation, setActiveConversation] = useState<
-    ActiveConversationContext | undefined
-  >()
+  const [conversationRuntime, setConversationRuntime] = useState<ConversationRuntimeState>({
+    activeConversation: undefined,
+    revision: 0
+  })
+  const activeConversation = conversationRuntime.activeConversation
   const { projectSelection } = options
   const latestTransportState = useMemo(() => new TransportStateHolder(), [])
 
@@ -80,9 +95,16 @@ export function useCodexIpcAssistantRuntime(
     latestTransportState.set({
       activeConversation,
       projectSelection,
+      conversationRevision: conversationRuntime.revision,
       selectedModelId
     })
-  }, [activeConversation, latestTransportState, projectSelection, selectedModelId])
+  }, [
+    activeConversation,
+    conversationRuntime.revision,
+    latestTransportState,
+    projectSelection,
+    selectedModelId
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -107,7 +129,10 @@ export function useCodexIpcAssistantRuntime(
         chatBridge: window.desktopApp.chat,
         getActiveConversation: () => latestTransportState.getActiveConversation(),
         getProjectSelection: () => latestTransportState.getProjectSelection(),
-        getSelectedModelId: () => latestTransportState.getSelectedModelId()
+        getConversationRevision: () => latestTransportState.getConversationRevision(),
+        getSelectedModelId: () => latestTransportState.getSelectedModelId(),
+        onStreamFinished: (context) =>
+          setConversationRuntime((prev) => reduceStreamFinishedConversationState(prev, context))
       }),
     [latestTransportState]
   )
@@ -118,12 +143,17 @@ export function useCodexIpcAssistantRuntime(
     async (input: SidebarConversationActionPayload) => {
       const result = await window.desktopApp.conversations.openConversation(input)
       chat.setMessages(result.messages)
-      setActiveConversation({
-        conversationId: result.conversationId,
-        threadId: result.threadId,
-        title: result.title,
-        projectSelection: projectSelectionFromOpenResult(result),
-        cwd: result.cwd
+      setConversationRuntime((prev) => {
+        return {
+          activeConversation: {
+            conversationId: result.conversationId,
+            threadId: result.threadId,
+            title: result.title,
+            projectSelection: projectSelectionFromOpenResult(result),
+            cwd: result.cwd
+          },
+          revision: prev.revision + 1
+        }
       })
     },
     [chat]
@@ -131,7 +161,10 @@ export function useCodexIpcAssistantRuntime(
 
   const startNewConversation = useCallback(() => {
     chat.setMessages([])
-    setActiveConversation(undefined)
+    setConversationRuntime((prev) => ({
+      activeConversation: undefined,
+      revision: prev.revision + 1
+    }))
   }, [chat])
 
   const setSelectedModelId = useCallback(async (modelId: string) => {
@@ -203,4 +236,39 @@ function projectSelectionFromOpenResult(
   }
 
   return { projectKind: 'projectless' }
+}
+
+export function reduceStreamFinishedConversationState(
+  state: ConversationRuntimeState,
+  context: StreamFinishedContext
+): ConversationRuntimeState {
+  if (!context.threadId) return state
+  if (state.revision !== context.conversationRevision) return state
+  if (!sameActiveConversation(state.activeConversation, context.activeConversation)) return state
+
+  const activeConversation = context.activeConversation
+    ? {
+        ...state.activeConversation!,
+        threadId: context.threadId
+      }
+    : {
+        conversationId: context.threadId,
+        threadId: context.threadId,
+        projectSelection: context.projectSelection
+      }
+
+  if (sameActiveConversation(state.activeConversation, activeConversation)) return state
+
+  return {
+    activeConversation,
+    revision: state.revision + 1
+  }
+}
+
+function sameActiveConversation(
+  left: ActiveConversationContext | undefined,
+  right: ActiveConversationContext | undefined
+): boolean {
+  if (!left || !right) return left === right
+  return left.conversationId === right.conversationId && left.threadId === right.threadId
 }

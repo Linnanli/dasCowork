@@ -234,4 +234,70 @@ describe('ElectronIpcChatTransport', () => {
 
     expect(() => callbacks?.onFinish()).not.toThrow()
   })
+
+  it('calls onStreamFinished with stream-scoped context when the stream finishes', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamFinished = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({ conversationId: 'conversation-1', threadId: 'thread-1' }),
+      getProjectSelection: () => ({ projectKind: 'path', path: '/repo' }),
+      getConversationRevision: () => 7,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamFinished
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onFinish('thread-real')
+
+    expect(onStreamFinished).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      threadId: 'thread-real',
+      activeConversation: { conversationId: 'conversation-1', threadId: 'thread-1' },
+      projectSelection: { projectKind: 'path', path: '/repo' },
+      conversationRevision: 7
+    })
+  })
+
+  it('does not call onStreamFinished for a late finish after an error', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamFinished = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamFinished
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onError('boom')
+    callbacks?.onFinish('thread-real')
+
+    expect(onStreamFinished).not.toHaveBeenCalled()
+  })
 })

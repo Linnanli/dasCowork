@@ -161,6 +161,7 @@ export class ConversationApiService {
     for (const threadId of requiredMissingThreadIds) {
       const thread = await this.options.threadClient.readThread(threadId, { includeTurns: true })
       if (rowsById.has(thread.id)) continue
+      if (thread.archived) continue
       rowsById.set(thread.id, thread)
       rows.unshift(thread)
     }
