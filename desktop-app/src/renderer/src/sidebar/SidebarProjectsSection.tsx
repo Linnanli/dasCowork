@@ -29,7 +29,7 @@ export function SidebarProjectsSection({
 
   return (
     <section className="min-w-0 space-y-1" aria-label="Projects">
-      <div className="flex min-w-0 items-center justify-between px-2 text-[11px] text-muted-foreground uppercase">
+      <div className="flex min-w-0 items-center justify-between text-[11px] text-muted-foreground uppercase">
         <span className="min-w-0 truncate">Projects</span>
         <Button
           aria-label="Open folder"

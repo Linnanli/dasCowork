@@ -39,7 +39,7 @@ export function SidebarRoot({
         </Button>
       ) : null}
       <ScrollArea className="min-h-0 w-full min-w-0 flex-1" aria-label="Projects and quick chats">
-        <div className="w-full min-w-0 space-y-3 p-3">
+        <div className="w-full min-w-0 space-y-3 px-3 pb-3 pt-0">
           <SidebarProjectsSection
             groups={model.projectGroups}
             nativeBackdrop={nativeBackdrop}
