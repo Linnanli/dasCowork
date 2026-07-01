@@ -67,8 +67,8 @@ export function ProjectGroupRow({
           size="icon-xs"
           type="button"
           variant="ghost"
-          aria-label={`New chat in ${group.label}`}
-          title={`New chat in ${group.label}`}
+          aria-label={`在 ${group.label} 中新对话`}
+          title={`在 ${group.label} 中新对话`}
           onClick={onNewChat}
         >
           <PencilIcon className="size-3.5" />

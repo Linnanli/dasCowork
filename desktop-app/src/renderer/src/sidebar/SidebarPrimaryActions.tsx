@@ -23,7 +23,7 @@ export function SidebarPrimaryActions({
         onClick={onNewChat}
       >
         <PlusIcon className="size-4 shrink-0" />
-        <span className="min-w-0 truncate">New chat</span>
+        <span className="min-w-0 truncate">新对话</span>
       </Button>
     </div>
   )

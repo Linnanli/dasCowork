@@ -259,7 +259,7 @@ test('opens a sidebar conversation and continues the same desktop thread', async
     const sidebar = page.locator('[data-slot="codex-sidebar"]')
     await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
 
-    await sidebar.getByRole('button', { name: 'New chat', exact: true }).click()
+    await sidebar.getByRole('button', { name: '新对话', exact: true }).click()
     await expect(page.locator('[data-role="user"]').filter({ hasText: firstPrompt })).toHaveCount(0)
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })

@@ -121,7 +121,7 @@ describe('SidebarRoot', () => {
       )
     })
 
-    expect(container.textContent).toContain('New chat')
+    expect(container.textContent).toContain('新对话')
     const navigationContainer = container.querySelector<HTMLDivElement>(
       '[aria-label="Projects and quick chats"]'
     )
@@ -137,7 +137,7 @@ describe('SidebarRoot', () => {
         (element) => element.className.includes('w-full') && element.className.includes('min-w-0')
       )
     ).toBe(true)
-    expect(navigationContainer?.textContent).not.toContain('New chat')
+    expect(navigationContainer?.textContent).not.toContain('新对话')
     expect(
       [...container.querySelectorAll('button')].some(
         (candidate) => candidate.textContent?.trim() === 'Quick chat'
@@ -181,7 +181,7 @@ describe('SidebarRoot', () => {
     )
     expect(desktopProjectConversations?.className).toContain('grid-rows-[1fr]')
     const projectChatButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="New chat in Desktop App"]'
+      'button[aria-label="在 Desktop App 中新对话"]'
     )
     expect(projectChatButton).not.toBeNull()
     expect(projectChatButton?.className).toContain('opacity-0')
@@ -290,7 +290,7 @@ describe('SidebarRoot', () => {
     })
 
     const button = [...container.querySelectorAll('button')].find(
-      (candidate) => candidate.textContent?.trim() === 'New chat'
+      (candidate) => candidate.textContent?.trim() === '新对话'
     )
     await act(async () => button?.click())
 

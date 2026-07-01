@@ -627,19 +627,19 @@ describe('App composer', () => {
     expect(container.textContent).toContain('Projects')
     expect(container.textContent).toContain('Remote App')
     expect(container.textContent).toContain('Quick chats')
-    expect(container.textContent).toContain('New chat')
+    expect(container.textContent).toContain('新对话')
     expect(container.textContent).not.toContain('Remote projects')
     expect(container.textContent).not.toContain('Pinned')
     expect(container.textContent).not.toContain('Delete')
   })
 
-  it('starts a new runtime conversation from the sidebar New chat action', () => {
+  it('starts a new runtime conversation from the sidebar new conversation action', () => {
     act(() => {
       root.render(<App />)
     })
 
     const newChat = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'New chat'
+      (button) => button.textContent?.trim() === '新对话'
     )
     act(() => {
       newChat?.click()
@@ -674,7 +674,7 @@ describe('App composer', () => {
     const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
     const newChat = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'New chat'
+      (button) => button.textContent?.trim() === '新对话'
     )
 
     expect(sidebar?.className).toContain('bg-background/50')
@@ -699,7 +699,7 @@ describe('App composer', () => {
     const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
     const mainSection = container.querySelector('[data-slot="app-main-section"]')
     const newChat = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'New chat'
+      (button) => button.textContent?.trim() === '新对话'
     )
 
     expect(appShell?.className).toContain('bg-muted/30')
