@@ -121,6 +121,7 @@ export function useCodexIpcAssistantRuntime(
       setActiveConversation({
         conversationId: result.conversationId,
         threadId: result.threadId,
+        title: result.title,
         projectSelection: projectSelectionFromOpenResult(result),
         cwd: result.cwd
       })

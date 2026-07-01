@@ -6,6 +6,7 @@ import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 export type ActiveConversationContext = {
   conversationId: string
   threadId: string
+  title?: string | null
   projectSelection?: ProjectSelection
   cwd?: string | null
 }

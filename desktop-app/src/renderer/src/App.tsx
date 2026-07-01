@@ -59,7 +59,6 @@ import {
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { ProjectGate } from './projects/ProjectGate'
-import { ProjectSwitcher } from './projects/ProjectSwitcher'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
 import {
@@ -72,6 +71,7 @@ import {
   pendingAssistantMessageText
 } from './lib/assistantMessages'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
+import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
 import type { ModelOption } from './components/assistant-ui'
 
@@ -84,7 +84,7 @@ type CodexSidebarProps = {
 }
 
 type HeaderProps = {
-  projectState: ProjectStateController
+  activeConversation?: ActiveConversationContext
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
 }
@@ -194,6 +194,7 @@ function App(): React.JSX.Element {
     models,
     selectedModelId,
     setSelectedModelId,
+    activeConversation,
     startNewConversation,
     openConversation
   } = useCodexIpcAssistantRuntime({
@@ -239,7 +240,7 @@ function App(): React.JSX.Element {
         >
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
             <Header
-              projectState={projectState}
+              activeConversation={activeConversation}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
             />
@@ -327,7 +328,7 @@ function BrandMark(): React.JSX.Element {
 }
 
 function Header({
-  projectState,
+  activeConversation,
   sidebarCollapsed,
   onToggleSidebar
 }: HeaderProps): React.JSX.Element {
@@ -343,20 +344,47 @@ function Header({
       >
         <PanelLeftIcon className="size-4" />
       </IconButton>
-      <ProjectSwitcher projectState={projectState} />
-      <ThreadTitle />
+      <ConversationContextText activeConversation={activeConversation} />
+      {!activeConversation ? <ThreadTitle /> : null}
       <div className="ml-auto" />
     </header>
   )
 }
 
-function ThreadTitle(): React.JSX.Element {
+function ConversationContextText({
+  activeConversation
+}: {
+  activeConversation?: ActiveConversationContext
+}): React.JSX.Element | null {
+  if (!activeConversation) return null
+
+  const title = activeConversation.title ?? 'New Chat'
+  const meta = formatActiveConversationMeta(activeConversation)
+
+  return (
+    <span
+      className="flex min-w-0 flex-col"
+      title={[title, meta].filter(Boolean).join(' / ')}
+    >
+      <span className="min-w-0 truncate text-sm font-medium text-foreground">{title}</span>
+      <span className="truncate text-[11px] font-normal text-muted-foreground">{meta}</span>
+    </span>
+  )
+}
+
+function ThreadTitle(): React.JSX.Element | null {
   const title = useAuiState(
     (state) =>
       state.threads.threadItems.find((thread) => thread.id === state.threads.mainThreadId)?.title
   )
 
-  return <span className="min-w-0 truncate text-sm font-medium">{title ?? 'New Chat'}</span>
+  if (!title) return null
+
+  return <span className="min-w-0 truncate text-sm font-medium">{title}</span>
+}
+
+function formatActiveConversationMeta(conversation: ActiveConversationContext): string {
+  return conversation.cwd ?? 'Conversation'
 }
 
 function isNewChatView(state: AssistantState): boolean {
