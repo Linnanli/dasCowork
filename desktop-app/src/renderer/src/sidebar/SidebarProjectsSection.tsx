@@ -1,5 +1,6 @@
 import { PlusIcon } from 'lucide-react'
 
+import { Button } from '../components/ui/button'
 import type { ProjectStateController } from '../projects/useProjectState'
 import { ProjectGroupRow } from './ProjectGroupRow'
 import type { SidebarProjectGroup } from './sidebarTypes'
@@ -30,25 +31,29 @@ export function SidebarProjectsSection({
     <section className="min-w-0 space-y-1" aria-label="Projects">
       <div className="flex min-w-0 items-center justify-between px-2 text-[11px] text-muted-foreground uppercase">
         <span className="min-w-0 truncate">Projects</span>
-        <button
+        <Button
           aria-label="Open folder"
-          className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+          size="icon-xs"
           title="Open folder"
           type="button"
+          variant="ghost"
           onClick={() => void projectState.pickWorkspaceRoot()}
         >
           <PlusIcon className="size-3.5" />
-        </button>
+        </Button>
       </div>
       <div className="min-w-0 space-y-0.5">
         {groups.length === 0 ? (
-          <button
-            className="w-full min-w-0 rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted"
+          <Button
+            className="h-auto w-full min-w-0 justify-start px-2 py-1 text-left text-xs font-normal text-muted-foreground"
+            size="xs"
             type="button"
+            variant="ghost"
             onClick={() => void projectState.pickWorkspaceRoot()}
           >
             Open a local project folder
-          </button>
+          </Button>
         ) : (
           groups.map((group) => (
             <ProjectGroupRow

@@ -154,19 +154,32 @@ describe('SidebarRoot', () => {
     expect(container.querySelector('button[aria-label="Open folder"]')).not.toBeNull()
     expect(container.textContent).toContain('Desktop App')
     expect(container.textContent).toContain('Path Repo')
-    const desktopProjectLabelButton = [...container.querySelectorAll('button')].find(
-      (candidate) => candidate.textContent?.trim() === 'Desktop App'
-    )
+    const desktopProjectLabel = container.querySelector('.lucide-folder')?.parentElement
     const desktopProjectToggleButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Collapse Desktop App"]'
     )
-    expect(desktopProjectLabelButton).not.toBeUndefined()
-    expect(desktopProjectLabelButton?.className).toContain('px-2')
-    expect(desktopProjectLabelButton?.querySelector('.lucide-folder')).not.toBeNull()
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (candidate) => candidate.textContent?.trim() === 'Desktop App'
+      )
+    ).toBe(false)
+    expect(desktopProjectLabel).not.toBeUndefined()
+    expect(desktopProjectLabel?.tagName).toBe('DIV')
+    expect(desktopProjectLabel?.className).toContain('px-2')
+    expect(desktopProjectLabel?.querySelector('.lucide-folder')).not.toBeNull()
     expect(desktopProjectToggleButton).not.toBeNull()
-    expect(desktopProjectLabelButton?.nextElementSibling).toBe(desktopProjectToggleButton)
+    expect(
+      desktopProjectToggleButton?.querySelector('.lucide-chevron-down')?.getAttribute('class')
+    ).toContain('transition-transform')
+    expect(desktopProjectLabel?.nextElementSibling).toBe(desktopProjectToggleButton)
     expect(desktopProjectToggleButton?.className).toContain('opacity-0')
     expect(desktopProjectToggleButton?.className).toContain('group-hover:opacity-100')
+    const desktopProjectConversations =
+      desktopProjectToggleButton?.parentElement?.nextElementSibling
+    expect(desktopProjectConversations?.className).toContain(
+      'transition-[grid-template-rows,opacity]'
+    )
+    expect(desktopProjectConversations?.className).toContain('grid-rows-[1fr]')
     const projectChatButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="New chat in Desktop App"]'
     )
@@ -187,13 +200,23 @@ describe('SidebarRoot', () => {
     expect(container.textContent).toContain('Quick chats')
     expect(navigationContainer?.textContent).toContain('Quick chats')
     expect(container.textContent).toContain('Scratch')
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (candidate) => candidate.textContent?.trim() === 'Local thread'
+      )
+    ).toBe(false)
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (candidate) => candidate.textContent?.trim() === 'Scratch'
+      )
+    ).toBe(false)
     expect(container.textContent).not.toContain('Archive')
     expect(container.querySelector('[aria-label*="Archive"]')).toBeNull()
     expect(container.textContent).not.toContain('Delete')
     root.unmount()
   })
 
-  it('toggles a project group when a project row is clicked', async () => {
+  it('toggles a project group when the project toggle is clicked', async () => {
     const container = document.createElement('div')
     const root = createRoot(container)
     vi.mocked(projectState.selectProject).mockClear()
@@ -210,8 +233,8 @@ describe('SidebarRoot', () => {
       )
     })
 
-    const button = [...container.querySelectorAll('button')].find((candidate) =>
-      candidate.textContent?.includes('Desktop App')
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse Desktop App"]'
     )
     await act(async () => button?.click())
 
@@ -219,6 +242,33 @@ describe('SidebarRoot', () => {
     expect(onNewChat).not.toHaveBeenCalled()
     expect(conversationState.setPreferences).toHaveBeenCalledWith({
       collapsedGroupIds: ['local:local']
+    })
+    root.unmount()
+  })
+
+  it('opens a conversation when its row is clicked', async () => {
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    vi.mocked(conversationState.openConversation).mockClear()
+
+    await act(async () => {
+      root.render(
+        <SidebarRoot
+          nativeBackdrop={false}
+          projectState={projectState}
+          conversationState={conversationState}
+          onNewChat={onNewChat}
+        />
+      )
+    })
+
+    const row = [...container.querySelectorAll('[role="button"]')].find((candidate) =>
+      candidate.textContent?.includes('Scratch')
+    )
+    await act(async () => row?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    expect(conversationState.openConversation).toHaveBeenCalledWith({
+      conversationId: 'thread-quick'
     })
     root.unmount()
   })

@@ -1,6 +1,7 @@
 import { PencilIcon } from 'lucide-react'
 
 import type { SidebarConversation } from '../../../shared/codexIpcApi'
+import { Button } from '../components/ui/button'
 import { ConversationRow } from './ConversationRow'
 import type { ConversationStateController } from './useConversationState'
 
@@ -31,15 +32,17 @@ export function SidebarChatsSection({
           {showChronological ? 'Recent chats' : 'Quick chats'}
         </span>
         {!showChronological ? (
-          <button
+          <Button
             aria-label={quickChatActionLabel}
-            className="pointer-events-none grid size-6 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100"
+            className="pointer-events-none shrink-0 text-muted-foreground opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100"
+            size="icon-xs"
             title={quickChatActionLabel}
             type="button"
+            variant="ghost"
             onClick={onNewQuickChat}
           >
             <PencilIcon className="size-3.5" />
-          </button>
+          </Button>
         ) : null}
       </div>
       <div className="min-w-0 space-y-0.5">

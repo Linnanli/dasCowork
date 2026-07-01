@@ -1,5 +1,6 @@
 import { PlusIcon } from 'lucide-react'
 
+import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
 
 export function SidebarPrimaryActions({
@@ -14,17 +15,16 @@ export function SidebarPrimaryActions({
     : 'hover:bg-muted'
   return (
     <div className="min-w-0 shrink-0 space-y-1">
-      <button
-        className={cn(
-          'inline-flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-3 text-sm text-foreground transition-colors',
-          hoverClass
-        )}
+      <Button
+        className={cn('w-full min-w-0 justify-start gap-2 font-normal text-foreground', hoverClass)}
+        size="sm"
         type="button"
+        variant="ghost"
         onClick={onNewChat}
       >
         <PlusIcon className="size-4 shrink-0" />
         <span className="min-w-0 truncate">New chat</span>
-      </button>
+      </Button>
     </div>
   )
 }
