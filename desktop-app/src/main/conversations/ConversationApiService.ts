@@ -18,6 +18,7 @@ export type ConversationThreadClientLike = {
     sortKey?: 'updated_at' | 'created_at'
   }): Promise<AppServerThreadRow[]>
   readThread(threadId: string, input?: { includeTurns?: boolean }): Promise<AppServerThreadRow>
+  readThreadWithFullTurns(threadId: string): Promise<AppServerThreadRow>
   archiveThread(threadId: string): Promise<void>
   unarchiveThread(threadId: string): Promise<void>
   renameThread(threadId: string, name: string): Promise<void>
@@ -115,7 +116,7 @@ export class ConversationApiService {
   ): Promise<SidebarConversationOpenResult> {
     const [projectState, thread] = await Promise.all([
       this.options.projectStore.getState(),
-      this.options.threadClient.readThread(input.conversationId, { includeTurns: true })
+      this.options.threadClient.readThreadWithFullTurns(input.conversationId)
     ])
     return {
       conversationId: thread.id,
@@ -176,7 +177,7 @@ export class ConversationApiService {
     )
 
     for (const threadId of requiredMissingThreadIds) {
-      const thread = await this.options.threadClient.readThread(threadId, { includeTurns: true })
+      const thread = await this.options.threadClient.readThreadWithFullTurns(threadId)
       if (rowsById.has(thread.id)) continue
       if (thread.archived) continue
       rowsById.set(thread.id, thread)

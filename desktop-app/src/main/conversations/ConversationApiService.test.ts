@@ -81,6 +81,7 @@ function createClient(): ConversationThreadClientLike {
       }
     ]),
     readThread: vi.fn(),
+    readThreadWithFullTurns: vi.fn(),
     archiveThread: vi.fn(async () => undefined),
     unarchiveThread: vi.fn(async () => undefined),
     renameThread: vi.fn(async () => undefined)
@@ -148,7 +149,7 @@ describe('ConversationApiService', () => {
   it('ensures a just-finished app-server thread is visible when thread/list lags', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])
-    vi.mocked(threadClient.readThread).mockResolvedValue({
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-fresh',
       title: null,
       preview: '',
@@ -195,13 +196,14 @@ describe('ConversationApiService', () => {
         }
       ]
     })
-    expect(threadClient.readThread).toHaveBeenCalledWith('thread-fresh', { includeTurns: true })
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-fresh')
+    expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
   it('uses provider user input formatting for skill and mention sidebar titles', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])
-    vi.mocked(threadClient.readThread).mockResolvedValue({
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-skill',
       title: null,
       preview: '',
@@ -254,7 +256,7 @@ describe('ConversationApiService', () => {
   it('keeps getConversationList authoritative after an ensured sidebar broadcast', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])
-    vi.mocked(threadClient.readThread).mockResolvedValue({
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-fresh',
       title: null,
       preview: '',
@@ -289,10 +291,11 @@ describe('ConversationApiService', () => {
     })
 
     await service.refreshConversationList({ ensureThreadIds: ['thread-fresh'] })
-    vi.mocked(threadClient.readThread).mockClear()
+    vi.mocked(threadClient.readThreadWithFullTurns).mockClear()
 
     const state = await service.getConversationList()
     expect(state.conversations).toEqual([])
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
     expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
@@ -323,7 +326,7 @@ describe('ConversationApiService', () => {
         }
       ])
       .mockResolvedValueOnce([])
-    vi.mocked(threadClient.readThread).mockResolvedValue({
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-local',
       title: null,
       preview: '',
@@ -366,6 +369,7 @@ describe('ConversationApiService', () => {
       error: undefined
     })
     expect(threadClient.archiveThread).toHaveBeenCalledWith('thread-local')
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
     expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
@@ -392,7 +396,7 @@ describe('ConversationApiService', () => {
         ]
       }
     ]
-    vi.mocked(threadClient.readThread).mockResolvedValue({
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-local',
       title: 'History with tools',
       preview: 'History with tools',
@@ -416,7 +420,8 @@ describe('ConversationApiService', () => {
       title: 'History with tools',
       messages
     })
-    expect(threadClient.readThread).toHaveBeenCalledWith('thread-local', { includeTurns: true })
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-local')
+    expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
   it('does not preserve missing known threads without an explicit ensure request', async () => {
@@ -434,13 +439,16 @@ describe('ConversationApiService', () => {
 
     const state = await service.refreshConversationList()
     expect(state.conversations).toEqual([])
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
     expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
   it('surfaces read failures for explicitly ensured threads', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])
-    vi.mocked(threadClient.readThread).mockRejectedValue(new Error('thread read failed'))
+    vi.mocked(threadClient.readThreadWithFullTurns).mockRejectedValue(
+      new Error('thread read failed')
+    )
     const service = new ConversationApiService({
       threadClient,
       projectStore: { getState: async () => baseProjectState }
@@ -450,7 +458,8 @@ describe('ConversationApiService', () => {
     expect(state.conversations).toEqual([])
     expect(state.loaded).toBe(false)
     expect(state.error).toBe('thread read failed')
-    expect(threadClient.readThread).toHaveBeenCalledWith('thread-fresh', { includeTurns: true })
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-fresh')
+    expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
   it('merges sidebar preferences with defaults', () => {

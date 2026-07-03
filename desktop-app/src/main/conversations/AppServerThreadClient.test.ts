@@ -14,6 +14,15 @@ function createHistoryClient(threads: HistoryThread[] = []): AppServerHistoryCli
       if (!thread) throw new Error(`unexpected thread ${threadId}`)
       return thread
     }),
+    listTurns: vi.fn(async (threadId: string) => {
+      const thread = threads.find((candidate) => candidate.id === threadId)
+      if (!thread) throw new Error(`unexpected thread ${threadId}`)
+      return {
+        data: [...thread.turns].reverse(),
+        nextCursor: null,
+        backwardsCursor: null
+      }
+    }),
     archiveThread: vi.fn(async () => undefined),
     unarchiveThread: vi.fn(async () => undefined),
     renameThread: vi.fn(async () => undefined)
@@ -111,7 +120,7 @@ describe('AppServerThreadClient', () => {
     })
   })
 
-  it('maps read threads with provider-generated UI messages when turns are requested', async () => {
+  it('hydrates read threads from full turn pages for provider-generated UI messages', async () => {
     const commandItem = {
       id: 'cmd_1',
       type: 'commandExecution',
@@ -155,7 +164,7 @@ describe('AppServerThreadClient', () => {
     ])
     const client = new AppServerThreadClient({ historyClient })
 
-    await expect(client.readThread('thread-1', { includeTurns: true })).resolves.toMatchObject({
+    await expect(client.readThreadWithFullTurns('thread-1')).resolves.toMatchObject({
       id: 'thread-1',
       title: 'History',
       turns: expect.any(Array),
@@ -181,7 +190,37 @@ describe('AppServerThreadClient', () => {
         }
       ]
     })
-    expect(historyClient.readThread).toHaveBeenCalledWith('thread-1', { includeTurns: true })
+    expect(historyClient.readThread).toHaveBeenCalledWith('thread-1', { includeTurns: false })
+    expect(historyClient.listTurns).toHaveBeenCalledWith('thread-1', {
+      limit: 100,
+      sortDirection: 'desc',
+      itemsView: 'full'
+    })
+  })
+
+  it('rejects turn pages that are not full item views', async () => {
+    const historyClient = createHistoryClient([historyThread({ id: 'thread-1' })])
+    vi.mocked(historyClient.listTurns).mockResolvedValue({
+      data: [
+        {
+          id: 'turn_1',
+          items: [],
+          itemsView: 'summary',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
+        }
+      ],
+      nextCursor: null,
+      backwardsCursor: null
+    })
+    const client = new AppServerThreadClient({ historyClient })
+
+    await expect(client.readThreadWithFullTurns('thread-1')).rejects.toThrow(
+      'expected full turn items'
+    )
   })
 
   it('forwards archive, unarchive, rename, and read requests', async () => {

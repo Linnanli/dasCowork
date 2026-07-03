@@ -1,6 +1,7 @@
 import {
   createCodexHistoryClient,
   mapCodexThreadToUiMessages,
+  type CodexTurnListParams,
   type CodexHistoryClient,
   type CodexThreadForUi
 } from '@janole/ai-sdk-provider-codex-asp'
@@ -31,6 +32,12 @@ export type AppServerThreadRow = {
   messages?: UIMessage[]
 }
 
+type AppServerTurnsPage = {
+  data: CodexThreadForUi['turns']
+  nextCursor?: string | null
+  backwardsCursor?: string | null
+}
+
 export type AppServerHistoryClientLike = {
   listAllThreads(input: {
     archived?: boolean
@@ -39,6 +46,7 @@ export type AppServerHistoryClientLike = {
     modelProviders?: string[]
   }): Promise<AppServerHistoryThread[]>
   readThread(threadId: string, input?: { includeTurns?: boolean }): Promise<AppServerHistoryThread>
+  listTurns(threadId: string, input?: CodexTurnListParams): Promise<AppServerTurnsPage>
   archiveThread(threadId: string): Promise<void>
   unarchiveThread(threadId: string): Promise<void>
   renameThread(threadId: string, name: string): Promise<void>
@@ -82,6 +90,17 @@ export class AppServerThreadClient {
     })
   }
 
+  async readThreadWithFullTurns(
+    threadId: string,
+    input: { limit?: number } = {}
+  ): Promise<AppServerThreadRow> {
+    return this.withHistoryClient(async (client) => {
+      const thread = await client.readThread(threadId, { includeTurns: false })
+      const turns = await listAllFullTurns(client, threadId, { limit: input.limit })
+      return toThreadRow({ ...thread, turns }, false, { includeMessages: true })
+    })
+  }
+
   async archiveThread(threadId: string): Promise<void> {
     await this.withHistoryClient((client) => client.archiveThread(threadId))
   }
@@ -122,6 +141,43 @@ export class AppServerThreadClient {
       }
     }) satisfies CodexHistoryClient
   }
+}
+
+async function listAllFullTurns(
+  client: AppServerHistoryClientLike,
+  threadId: string,
+  input: { limit?: number }
+): Promise<CodexThreadForUi['turns']> {
+  const turns: CodexThreadForUi['turns'] = []
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+
+  do {
+    const page = await client.listTurns(threadId, {
+      ...(cursor ? { cursor } : {}),
+      limit: input.limit ?? 100,
+      sortDirection: 'desc',
+      itemsView: 'full'
+    })
+    assertFullTurnsPage(threadId, page)
+    turns.push(...page.data)
+
+    const nextCursor = page.nextCursor ?? undefined
+    if (!nextCursor || seenCursors.has(nextCursor)) break
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
+  } while (cursor)
+
+  return turns.reverse()
+}
+
+function assertFullTurnsPage(threadId: string, page: AppServerTurnsPage): void {
+  const partialTurn = page.data.find((turn) => turn.itemsView !== 'full')
+  if (!partialTurn) return
+
+  throw new Error(
+    `App server returned ${partialTurn.itemsView} items for ${threadId}/${partialTurn.id}; expected full turn items`
+  )
 }
 
 function toThreadRow(
