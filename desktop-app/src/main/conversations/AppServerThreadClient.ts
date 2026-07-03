@@ -1,7 +1,22 @@
-import { AppServerClient, StdioTransport } from '@janole/ai-sdk-provider-codex-asp'
-import { z } from 'zod'
+import {
+  createCodexHistoryClient,
+  mapCodexThreadToUiMessages,
+  type CodexHistoryClient,
+  type CodexThreadForUi
+} from '@janole/ai-sdk-provider-codex-asp'
+import type { UIMessage } from 'ai'
 
 import type { CodexAppServerLaunchOptions } from '../codexAppServerLaunch'
+
+type AppServerHistoryThread = CodexThreadForUi & {
+  id: string
+  name: string | null
+  preview: string
+  createdAt: number
+  updatedAt: number
+  status: { type: string }
+  cwd: string | null
+}
 
 export type AppServerThreadRow = {
   id: string
@@ -12,49 +27,28 @@ export type AppServerThreadRow = {
   archived: boolean
   running: boolean
   cwd: string | null
-  turns?: unknown[]
+  turns?: CodexThreadForUi['turns']
+  messages?: UIMessage[]
 }
 
-export type AppServerJsonRpcClientLike = {
-  connect(): Promise<void>
-  disconnect(): Promise<void>
-  notification(method: string, params?: unknown): Promise<void>
-  request<T = unknown>(method: string, params?: unknown): Promise<T>
+export type AppServerHistoryClientLike = {
+  listAllThreads(input: {
+    archived?: boolean
+    sortKey?: 'updated_at' | 'created_at'
+    sortDirection?: 'asc' | 'desc'
+    modelProviders?: string[]
+  }): Promise<AppServerHistoryThread[]>
+  readThread(threadId: string, input?: { includeTurns?: boolean }): Promise<AppServerHistoryThread>
+  archiveThread(threadId: string): Promise<void>
+  unarchiveThread(threadId: string): Promise<void>
+  renameThread(threadId: string, name: string): Promise<void>
 }
 
 export type AppServerThreadClientOptions = {
   launch?: CodexAppServerLaunchOptions
-  createClient?: () => AppServerJsonRpcClientLike
+  historyClient?: AppServerHistoryClientLike
+  createHistoryClient?: () => AppServerHistoryClientLike
 }
-
-const threadStatusSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('notLoaded') }).passthrough(),
-  z.object({ type: z.literal('idle') }).passthrough(),
-  z.object({ type: z.literal('systemError') }).passthrough(),
-  z.object({ type: z.literal('active'), activeFlags: z.array(z.unknown()) }).passthrough()
-])
-
-const appServerThreadSchema = z
-  .object({
-    id: z.string().min(1),
-    name: z.string().nullable(),
-    preview: z.string(),
-    createdAt: z.number(),
-    updatedAt: z.number(),
-    status: threadStatusSchema,
-    cwd: z.string().nullable(),
-    turns: z.array(z.unknown()).optional()
-  })
-  .catchall(z.unknown())
-
-const threadListResponseSchema = z.object({
-  data: z.array(appServerThreadSchema),
-  nextCursor: z.string().nullable().optional()
-})
-
-const threadReadResponseSchema = z.object({
-  thread: appServerThreadSchema
-})
 
 export class AppServerThreadClient {
   constructor(private readonly options: AppServerThreadClientOptions) {}
@@ -63,28 +57,16 @@ export class AppServerThreadClient {
     includeArchived: boolean
     sortKey?: 'updated_at' | 'created_at'
   }): Promise<AppServerThreadRow[]> {
-    return this.withClient(async (client) => {
-      const rows: AppServerThreadRow[] = []
-      let cursor: string | undefined
-
-      do {
-        const response = threadListResponseSchema.parse(
-          await client.request('thread/list', {
-            cursor,
-            limit: 100,
-            // Empty means all providers; omitting this would filter to the
-            // sidebar app-server process's default provider.
-            modelProviders: [],
-            sortKey: input.sortKey === 'created_at' ? 'created_at' : 'updated_at',
-            sortDirection: 'desc',
-            ...(input.includeArchived ? { archived: true } : {})
-          })
-        )
-        rows.push(...response.data.map((thread) => toThreadRow(thread, input.includeArchived)))
-        cursor = response.nextCursor ?? undefined
-      } while (cursor)
-
-      return rows
+    return this.withHistoryClient(async (client) => {
+      const threads = await client.listAllThreads({
+        // Empty means all providers; omitting this would filter to the
+        // sidebar app-server process's default provider.
+        modelProviders: [],
+        sortKey: input.sortKey === 'created_at' ? 'created_at' : 'updated_at',
+        sortDirection: 'desc',
+        ...(input.includeArchived ? { archived: true } : {})
+      })
+      return threads.map((thread) => toThreadRow(thread, input.includeArchived))
     })
   }
 
@@ -92,64 +74,60 @@ export class AppServerThreadClient {
     threadId: string,
     input: { includeTurns?: boolean } = {}
   ): Promise<AppServerThreadRow> {
-    return this.withClient(async (client) => {
-      const response = threadReadResponseSchema.parse(
-        await client.request('thread/read', { threadId, includeTurns: input.includeTurns ?? false })
-      )
-      return toThreadRow(response.thread, false)
+    return this.withHistoryClient(async (client) => {
+      const thread = await client.readThread(threadId, {
+        includeTurns: input.includeTurns ?? false
+      })
+      return toThreadRow(thread, false, { includeMessages: input.includeTurns ?? false })
     })
   }
 
   async archiveThread(threadId: string): Promise<void> {
-    await this.withClient((client) => client.request('thread/archive', { threadId }))
+    await this.withHistoryClient((client) => client.archiveThread(threadId))
   }
 
   async unarchiveThread(threadId: string): Promise<void> {
-    await this.withClient((client) => client.request('thread/unarchive', { threadId }))
+    await this.withHistoryClient((client) => client.unarchiveThread(threadId))
   }
 
   async renameThread(threadId: string, name: string): Promise<void> {
-    await this.withClient((client) => client.request('thread/name/set', { threadId, name }))
+    await this.withHistoryClient((client) => client.renameThread(threadId, name))
   }
 
-  private async withClient<T>(
-    callback: (client: AppServerJsonRpcClientLike) => Promise<T>
+  private async withHistoryClient<T>(
+    callback: (client: AppServerHistoryClientLike) => Promise<T>
   ): Promise<T> {
-    const client = this.createClient()
-    await client.connect()
-    try {
-      await client.request('initialize', {
-        clientInfo: {
-          name: 'dascowork_desktop_sidebar',
-          title: 'dasCowork Desktop Sidebar',
-          version: '1.0.0'
-        },
-        capabilities: { experimentalApi: true }
-      })
-      await client.notification('initialized')
-      return await callback(client)
-    } finally {
-      await client.disconnect()
-    }
+    return callback(this.createHistoryClient())
   }
 
-  private createClient(): AppServerJsonRpcClientLike {
-    if (this.options.createClient) return this.options.createClient()
+  private createHistoryClient(): AppServerHistoryClientLike {
+    if (this.options.historyClient) return this.options.historyClient
+    if (this.options.createHistoryClient) return this.options.createHistoryClient()
     if (!this.options.launch) throw new Error('Codex app-server launch options are required')
-    return new AppServerClient(
-      new StdioTransport({
-        command: this.options.launch.command,
-        args: this.options.launch.args,
-        cwd: this.options.launch.cwd,
-        env: this.options.launch.env
-      })
-    )
+    return createCodexHistoryClient({
+      clientInfo: {
+        name: 'dascowork_desktop_sidebar',
+        title: 'dasCowork Desktop Sidebar',
+        version: '1.0.0'
+      },
+      experimentalApi: true,
+      transport: {
+        type: 'stdio',
+        stdio: {
+          command: this.options.launch.command,
+          args: this.options.launch.args,
+          cwd: this.options.launch.cwd,
+          env: this.options.launch.env
+        }
+      }
+    }) satisfies CodexHistoryClient
   }
 }
 
 function toThreadRow(
-  thread: z.infer<typeof appServerThreadSchema>,
-  archived: boolean
+  thread: AppServerHistoryThread,
+  archived: boolean,
+  options: { includeMessages?: boolean } = {}
 ): AppServerThreadRow {
   const title = cleanTitle(thread.name) ?? cleanTitle(thread.preview) ?? null
   return {
@@ -161,7 +139,8 @@ function toThreadRow(
     archived,
     running: thread.status.type === 'active',
     cwd: thread.cwd,
-    ...(thread.turns ? { turns: thread.turns } : {})
+    ...(thread.turns.length > 0 ? { turns: thread.turns } : {}),
+    ...(options.includeMessages ? { messages: mapCodexThreadToUiMessages(thread) } : {})
   }
 }
 

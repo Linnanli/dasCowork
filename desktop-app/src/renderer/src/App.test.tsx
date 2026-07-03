@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement, type ReactNode } from 'react'
+import { act, createElement, type ElementType, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,12 +9,23 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 import type { CodexApprovalRequest, DesktopProjectsApi } from '../../shared/codexIpcApi'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 
+type MockMessagePart =
+  | { type: 'reasoning' | 'text'; text: string }
+  | {
+      type: 'tool-call'
+      toolCallId: string
+      toolName: string
+      argsText: string
+      result?: unknown
+      status?: { type: 'complete' } | { type: 'running' }
+    }
+
 type MockThreadMessageState = {
   message: {
     composer: {
       isEditing: boolean
     }
-    content: Array<{ type: 'reasoning' | 'text'; text: string }>
+    content: MockMessagePart[]
     role: 'assistant' | 'user'
     status: { type: 'complete' } | { type: 'running' }
   }
@@ -235,16 +246,26 @@ type PrimitiveProps = {
 }
 
 function messagePartComponentFor(
-  part: { type: 'reasoning' | 'text' },
+  part: MockMessagePart,
   components: Record<string, unknown> | undefined
-): React.ComponentType<{ text: string }> | undefined {
+): ElementType<Record<string, unknown>> | undefined {
   if (part.type === 'reasoning' && typeof components?.Reasoning === 'function') {
-    return components.Reasoning as React.ComponentType<{ text: string }>
+    return components.Reasoning as ElementType<Record<string, unknown>>
   }
   if (part.type === 'text' && typeof components?.Text === 'function') {
-    return components.Text as React.ComponentType<{ text: string }>
+    return components.Text as ElementType<Record<string, unknown>>
+  }
+  if (part.type === 'tool-call' && isToolFallbackComponents(components)) {
+    return components.tools.Fallback
   }
   return undefined
+}
+
+function isToolFallbackComponents(
+  components: Record<string, unknown> | undefined
+): components is { tools: { Fallback: ElementType<Record<string, unknown>> } } {
+  const tools = components?.tools as { Fallback?: unknown } | undefined
+  return Boolean(tools && typeof tools === 'object' && tools.Fallback)
 }
 
 vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
@@ -384,13 +405,6 @@ vi.mock('@assistant-ui/react', () => {
         typeof condition === 'function' ? condition(currentAssistantState()) : condition
       return visible ? <>{renderChildren(children)}</> : null
     },
-    BranchPickerPrimitive: {
-      Count: primitive('BranchPicker.Count'),
-      Next: primitive('BranchPicker.Next'),
-      Number: primitive('BranchPicker.Number'),
-      Previous: primitive('BranchPicker.Previous'),
-      Root: primitive('BranchPicker.Root')
-    },
     ComposerPrimitive: {
       Cancel: primitive('Composer.Cancel'),
       Input: (props: PrimitiveProps) => (
@@ -443,6 +457,59 @@ vi.mock('@assistant-ui/react', () => {
           </div>
         )
       },
+      GroupedParts: ({
+        children: render
+      }: {
+        groupBy?: unknown
+        children: (info: { part: unknown; children: ReactNode }) => ReactNode
+      }) => {
+        const parts = threadMessageState.message.content
+        const result: ReactNode[] = []
+
+        let i = 0
+        while (i < parts.length) {
+          const part = parts[i]
+          const isToolCall = part.type === 'tool-call'
+
+          if (isToolCall) {
+            const groupIndices: number[] = []
+            const groupChildren: ReactNode[] = []
+
+            while (i < parts.length && parts[i].type === 'tool-call') {
+              const enrichedPart = {
+                ...parts[i],
+                toolUI: null,
+                addResult: () => {},
+                resume: () => {},
+                respondToApproval: () => {}
+              }
+              groupIndices.push(i)
+              groupChildren.push(
+                <div key={`tool-${i}`}>{render({ part: enrichedPart, children: null })}</div>
+              )
+              i++
+            }
+
+            result.push(
+              <div key={`group-${groupIndices[0]}`}>
+                {render({
+                  part: { type: 'group-tool', indices: groupIndices },
+                  children: groupChildren
+                })}
+              </div>
+            )
+          } else {
+            result.push(
+              <div key={`part-${i}`}>
+                {render({ part, children: null })}
+              </div>
+            )
+            i++
+          }
+        }
+
+        return <div data-primitive="Message.GroupedParts">{result}</div>
+      },
       Quote: primitive('Message.Quote'),
       Root: primitive('Message.Root')
     },
@@ -483,6 +550,8 @@ vi.mock('@assistant-ui/react', () => {
       return { adapter: {}, directive: {} }
     },
     unstable_useSlashCommandAdapter: () => ({ action: { onExecute: vi.fn() }, adapter: {} }),
+    groupPartByType: () => () => undefined,
+    useScrollLock: () => vi.fn(),
     useAui: () => ({
       composer: () => ({
         getState: () => ({ runConfig: undefined })
@@ -772,6 +841,37 @@ describe('App composer', () => {
         cjk: { plugin: 'cjk' }
       }
     })
+  })
+
+  it('renders assistant tool parts with the shared tool fallback', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'subagent-1',
+        toolName: 'codex_sub_agent_activity',
+        argsText: JSON.stringify({
+          kind: 'started',
+          agentThreadId: 'agent-thread',
+          agentPath: '/repo'
+        }),
+        status: { type: 'complete' },
+        result: {
+          item: {
+            id: 'subagent-1',
+            type: 'subAgentActivity'
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('Used tool')
+    expect(container.textContent).toContain('codex_sub_agent_activity')
   })
 
   it('keeps the thinking placeholder while only reasoning streams', () => {

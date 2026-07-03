@@ -1,3 +1,7 @@
+import {
+  type CodexTurnInputItem,
+  userInputText as codexUserInputText
+} from '@janole/ai-sdk-provider-codex-asp'
 import type {
   SidebarConversationActionPayload,
   SidebarConversationListState,
@@ -117,7 +121,7 @@ export class ConversationApiService {
       conversationId: thread.id,
       threadId: thread.id,
       title: thread.title,
-      messages: mapThreadTurnsToUiMessages(thread),
+      messages: thread.messages ?? [],
       projectAssignment: resolveAssignment(projectState, thread),
       cwd: thread.cwd
     }
@@ -252,76 +256,42 @@ function resolveAssignment(
   return undefined
 }
 
-function mapThreadTurnsToUiMessages(
-  thread: AppServerThreadRow
-): SidebarConversationOpenResult['messages'] {
-  const turns = thread.turns ?? []
-  const messages: SidebarConversationOpenResult['messages'] = []
-
-  for (const turn of turns) {
-    const items = isRecord(turn) && Array.isArray(turn.items) ? turn.items : []
-    for (const item of items) {
-      if (!isRecord(item) || typeof item.id !== 'string') continue
-
-      if (item.type === 'userMessage') {
-        const text = userInputText(item.content)
-        if (text) {
-          messages.push({
-            id: typeof item.clientId === 'string' ? item.clientId : item.id,
-            role: 'user',
-            parts: [{ type: 'text', text }]
-          })
-        }
-        continue
-      }
-
-      if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim()) {
-        messages.push({
-          id: item.id,
-          role: 'assistant',
-          parts: [{ type: 'text', text: item.text }]
-        })
-        continue
-      }
-
-      if (item.type === 'reasoning' && Array.isArray(item.summary) && item.summary.length > 0) {
-        messages.push({
-          id: item.id,
-          role: 'assistant',
-          parts: [{ type: 'text', text: item.summary.filter(isString).join('\n') }]
-        })
-        continue
-      }
-
-      if (item.type === 'plan' && typeof item.text === 'string' && item.text.trim()) {
-        messages.push({
-          id: item.id,
-          role: 'assistant',
-          parts: [{ type: 'text', text: item.text }]
-        })
-      }
-    }
-  }
-
-  return messages
-}
-
 function userInputText(value: unknown): string {
   if (!Array.isArray(value)) return ''
-  return value
-    .map((entry) =>
-      isRecord(entry) && entry.type === 'text' && typeof entry.text === 'string' ? entry.text : ''
-    )
-    .filter(Boolean)
-    .join('\n')
+  const inputs = value
+    .map(toCodexTurnInputItem)
+    .filter((entry): entry is CodexTurnInputItem => Boolean(entry))
+  return codexUserInputText(inputs)
+}
+
+function toCodexTurnInputItem(entry: unknown): CodexTurnInputItem | null {
+  if (!isRecord(entry)) return null
+
+  switch (entry.type) {
+    case 'text':
+      return typeof entry.text === 'string'
+        ? {
+            type: 'text',
+            text: entry.text,
+            text_elements: Array.isArray(entry.text_elements) ? entry.text_elements : []
+          }
+        : null
+    case 'skill':
+    case 'mention':
+      return typeof entry.name === 'string'
+        ? {
+            type: entry.type,
+            name: entry.name,
+            path: typeof entry.path === 'string' ? entry.path : ''
+          }
+        : null
+    default:
+      return null
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
 }
 
 function errorMessage(error: unknown): string {

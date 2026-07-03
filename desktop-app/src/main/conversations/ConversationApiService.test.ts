@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ConversationApiService, type ConversationThreadClientLike } from './ConversationApiService'
+import type { AppServerThreadRow } from './AppServerThreadClient'
 import type { ProjectState } from '../../shared/projects/projectTypes'
 
 const baseProjectState: ProjectState = {
@@ -158,13 +159,21 @@ describe('ConversationApiService', () => {
       cwd: '/repo/desktop-app',
       turns: [
         {
+          id: 'turn-fresh',
           items: [
             {
               id: 'user-fresh',
               type: 'userMessage',
-              content: [{ type: 'text', text: 'Fresh sidebar prompt' }]
+              clientId: null,
+              content: [{ type: 'text', text: 'Fresh sidebar prompt', text_elements: [] }]
             }
-          ]
+          ],
+          itemsView: 'full',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
         }
       ]
     })
@@ -189,6 +198,59 @@ describe('ConversationApiService', () => {
     expect(threadClient.readThread).toHaveBeenCalledWith('thread-fresh', { includeTurns: true })
   })
 
+  it('uses provider user input formatting for skill and mention sidebar titles', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([])
+    vi.mocked(threadClient.readThread).mockResolvedValue({
+      id: 'thread-skill',
+      title: null,
+      preview: '',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      turns: [
+        {
+          id: 'turn-skill',
+          items: [
+            {
+              id: 'user-skill',
+              type: 'userMessage',
+              clientId: null,
+              content: [
+                { type: 'skill', name: 'review', path: '/repo/.codex/skills/review/SKILL.md' },
+                { type: 'mention', name: 'thread-123', path: 'codex://thread/thread-123' }
+              ]
+            }
+          ],
+          itemsView: 'full',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
+        }
+      ]
+    })
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await expect(
+      service.refreshConversationList({ ensureThreadIds: ['thread-skill'] })
+    ).resolves.toMatchObject({
+      loaded: true,
+      conversations: [
+        {
+          id: 'thread-skill',
+          title: '$review\n@thread-123'
+        }
+      ]
+    })
+  })
+
   it('keeps getConversationList authoritative after an ensured sidebar broadcast', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])
@@ -203,13 +265,21 @@ describe('ConversationApiService', () => {
       cwd: '/repo/desktop-app',
       turns: [
         {
+          id: 'turn-fresh',
           items: [
             {
               id: 'user-fresh',
               type: 'userMessage',
-              content: [{ type: 'text', text: 'Fresh sidebar prompt' }]
+              clientId: null,
+              content: [{ type: 'text', text: 'Fresh sidebar prompt', text_elements: [] }]
             }
-          ]
+          ],
+          itemsView: 'full',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
         }
       ]
     })
@@ -264,13 +334,21 @@ describe('ConversationApiService', () => {
       cwd: '/repo/desktop-app',
       turns: [
         {
+          id: 'turn-local',
           items: [
             {
               id: 'user-local',
               type: 'userMessage',
-              content: [{ type: 'text', text: 'Reloaded sidebar prompt' }]
+              clientId: null,
+              content: [{ type: 'text', text: 'Reloaded sidebar prompt', text_elements: [] }]
             }
-          ]
+          ],
+          itemsView: 'full',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
         }
       ]
     })
@@ -289,6 +367,56 @@ describe('ConversationApiService', () => {
     })
     expect(threadClient.archiveThread).toHaveBeenCalledWith('thread-local')
     expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('opens historical conversations with provider-rendered tool parts intact', async () => {
+    const threadClient = createClient()
+    const messages: NonNullable<AppServerThreadRow['messages']> = [
+      {
+        id: 'turn-1:assistant',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'codex_sub_agent_activity',
+            toolCallId: 'subagent-1',
+            state: 'output-available',
+            input: {
+              kind: 'started',
+              agentThreadId: 'agent-thread',
+              agentPath: '/repo/desktop-app'
+            },
+            output: { item: { id: 'subagent-1', type: 'subAgentActivity' } },
+            providerExecuted: true
+          }
+        ]
+      }
+    ]
+    vi.mocked(threadClient.readThread).mockResolvedValue({
+      id: 'thread-local',
+      title: 'History with tools',
+      preview: 'History with tools',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      messages
+    })
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await expect(
+      service.openConversation({ conversationId: 'thread-local' })
+    ).resolves.toMatchObject({
+      conversationId: 'thread-local',
+      threadId: 'thread-local',
+      title: 'History with tools',
+      messages
+    })
+    expect(threadClient.readThread).toHaveBeenCalledWith('thread-local', { includeTurns: true })
   })
 
   it('does not preserve missing known threads without an explicit ensure request', async () => {

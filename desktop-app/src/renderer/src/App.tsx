@@ -3,9 +3,9 @@ import {
   AssistantRuntimeProvider,
   AttachmentPrimitive,
   AuiIf,
-  BranchPickerPrimitive,
   ComposerPrimitive,
   type AssistantState,
+  groupPartByType,
   MessagePrimitive,
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
@@ -26,6 +26,12 @@ import { code } from '@streamdown/code'
 import { math } from '@streamdown/math'
 import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
+import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
+import {
+  ToolGroupRoot,
+  ToolGroupTrigger,
+  ToolGroupContent
+} from '@/components/assistant-ui/tool-group'
 import {
   ActivityIcon,
   ArrowDownIcon,
@@ -558,6 +564,10 @@ function ThreadScrollToBottom(): React.JSX.Element {
   )
 }
 
+const toolGroupBy = groupPartByType({
+  'tool-call': ['group-tool']
+})
+
 function AssistantMessage(): React.JSX.Element {
   const isThinking = useAuiState(
     (state) =>
@@ -581,7 +591,28 @@ function AssistantMessage(): React.JSX.Element {
         {isThinking ? (
           pendingAssistantMessageText
         ) : (
-          <MessagePrimitive.Parts components={{ Text: AssistantText }} />
+          <MessagePrimitive.GroupedParts groupBy={toolGroupBy}>
+            {({ part, children }) => {
+              switch (part.type) {
+                case 'group-tool':
+                  if (part.indices.length === 1) return <>{children}</>
+                  return (
+                    <ToolGroupRoot variant="ghost">
+                      <ToolGroupTrigger count={part.indices.length} />
+                      <ToolGroupContent>{children}</ToolGroupContent>
+                    </ToolGroupRoot>
+                  )
+                case 'text':
+                  return <AssistantText />
+                case 'tool-call':
+                  return part.toolUI ?? <ToolFallback {...part} />
+                case 'indicator':
+                  return null
+                default:
+                  return null
+              }
+            }}
+          </MessagePrimitive.GroupedParts>
         )}
         <MessagePrimitive.Error />
       </div>
@@ -590,7 +621,6 @@ function AssistantMessage(): React.JSX.Element {
           data-slot="aui_assistant-message-footer"
           className="ml-2 flex min-h-7.5 items-center pt-1.5 -mb-7.5"
         >
-          <BranchPicker />
           <AssistantActionBar />
         </div>
       )}
@@ -616,11 +646,6 @@ function UserMessage(): React.JSX.Element {
           <UserActionBar />
         </div>
       </div>
-
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="col-span-full col-start-1 row-start-3 -mr-1 justify-end"
-      />
     </MessagePrimitive.Root>
   )
 }
@@ -771,36 +796,6 @@ function AssistantActionBar(): React.JSX.Element {
       </ActionBarPrimitive.Copy>
       <MessageTiming />
     </ActionBarPrimitive.Root>
-  )
-}
-
-function BranchPicker({
-  className,
-  ...props
-}: BranchPickerPrimitive.Root.Props): React.JSX.Element {
-  return (
-    <BranchPickerPrimitive.Root
-      hideWhenSingleBranch
-      className={cn(
-        'inline-flex items-center gap-0.5 text-xs font-medium text-muted-foreground',
-        className
-      )}
-      {...props}
-    >
-      <BranchPickerPrimitive.Previous asChild>
-        <IconButton label="上一条" title="上一条">
-          <ChevronLeftIcon className="size-3.5" />
-        </IconButton>
-      </BranchPickerPrimitive.Previous>
-      <span className="px-1">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next asChild>
-        <IconButton label="下一条" title="下一条">
-          <ChevronRightIcon className="size-3.5" />
-        </IconButton>
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
   )
 }
 

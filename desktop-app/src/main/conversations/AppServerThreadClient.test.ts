@@ -1,45 +1,39 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { AppServerThreadClient, type AppServerJsonRpcClientLike } from './AppServerThreadClient'
+import type { ThreadItem } from '@janole/ai-sdk-provider-codex-asp'
 
-function createJsonRpcClient(responses: Record<string, unknown>): AppServerJsonRpcClientLike {
-  const request = vi.fn(async (method: string) => {
-    const response = responses[method]
-    if (response === undefined) throw new Error(`unexpected method ${method}`)
-    return response
-  }) as AppServerJsonRpcClientLike['request']
-  const client: AppServerJsonRpcClientLike = {
-    connect: vi.fn(async () => undefined),
-    disconnect: vi.fn(async () => undefined),
-    notification: vi.fn(async () => undefined),
-    request
+import { AppServerThreadClient, type AppServerHistoryClientLike } from './AppServerThreadClient'
+
+type HistoryThread = Awaited<ReturnType<AppServerHistoryClientLike['readThread']>>
+
+function createHistoryClient(threads: HistoryThread[] = []): AppServerHistoryClientLike {
+  return {
+    listAllThreads: vi.fn(async () => threads),
+    readThread: vi.fn(async (threadId: string) => {
+      const thread = threads.find((candidate) => candidate.id === threadId)
+      if (!thread) throw new Error(`unexpected thread ${threadId}`)
+      return thread
+    }),
+    archiveThread: vi.fn(async () => undefined),
+    unarchiveThread: vi.fn(async () => undefined),
+    renameThread: vi.fn(async () => undefined)
   }
-  return client
 }
 
 describe('AppServerThreadClient', () => {
-  it('initializes the app-server client before listing threads', async () => {
-    const jsonRpc = createJsonRpcClient({
-      initialize: {},
-      'thread/list': {
-        data: [
-          {
-            id: 'thread-1',
-            sessionId: 'thread-1',
-            name: 'Provider work',
-            preview: 'Investigate provider',
-            createdAt: 1782777600,
-            updatedAt: 1782777900,
-            status: { type: 'idle' },
-            cwd: '/repo/app'
-          }
-        ],
-        nextCursor: null
-      }
-    })
-    const client = new AppServerThreadClient({
-      createClient: () => jsonRpc
-    })
+  it('lists threads through the provider history client', async () => {
+    const historyClient = createHistoryClient([
+      historyThread({
+        id: 'thread-1',
+        name: 'Provider work',
+        preview: 'Investigate provider',
+        createdAt: 1782777600,
+        updatedAt: 1782777900,
+        status: { type: 'idle' },
+        cwd: '/repo/app'
+      })
+    ])
+    const client = new AppServerThreadClient({ historyClient })
 
     await expect(client.listThreads({ includeArchived: false })).resolves.toEqual([
       {
@@ -54,66 +48,39 @@ describe('AppServerThreadClient', () => {
       }
     ])
 
-    expect(jsonRpc.connect).toHaveBeenCalledOnce()
-    expect(jsonRpc.request).toHaveBeenNthCalledWith(
-      1,
-      'initialize',
-      expect.objectContaining({
-        clientInfo: expect.objectContaining({ name: 'dascowork_desktop_sidebar' })
-      })
-    )
-    expect(jsonRpc.notification).toHaveBeenCalledWith('initialized')
-    expect(jsonRpc.request).toHaveBeenCalledWith(
-      'thread/list',
-      expect.objectContaining({
-        modelProviders: [],
-        sortKey: 'updated_at',
-        sortDirection: 'desc'
-      })
-    )
-    expect(jsonRpc.disconnect).toHaveBeenCalledOnce()
+    expect(historyClient.listAllThreads).toHaveBeenCalledWith({
+      modelProviders: [],
+      sortKey: 'updated_at',
+      sortDirection: 'desc'
+    })
   })
 
-  it('falls back from empty names to previews and paginates thread/list', async () => {
-    const jsonRpc: AppServerJsonRpcClientLike = {
-      connect: vi.fn(async () => undefined),
-      disconnect: vi.fn(async () => undefined),
-      notification: vi.fn(async () => undefined),
-      request: vi
-        .fn()
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({
-          data: [
-            {
-              id: 'thread-1',
-              name: null,
-              preview: 'First prompt',
-              createdAt: 1782777600,
-              updatedAt: 1782777800,
-              status: { type: 'active', activeFlags: [] },
-              cwd: '/repo/a'
-            }
-          ],
-          nextCursor: 'cursor-1'
-        })
-        .mockResolvedValueOnce({
-          data: [
-            {
-              id: 'thread-2',
-              name: '',
-              preview: '',
-              createdAt: 1782777900,
-              updatedAt: 1782777900,
-              status: { type: 'idle' },
-              cwd: null
-            }
-          ],
-          nextCursor: null
-        })
-    }
-    const client = new AppServerThreadClient({ createClient: () => jsonRpc })
+  it('falls back from empty names to previews and forwards archive filters', async () => {
+    const historyClient = createHistoryClient([
+      historyThread({
+        id: 'thread-1',
+        name: null,
+        preview: 'First prompt',
+        createdAt: 1782777600,
+        updatedAt: 1782777800,
+        status: { type: 'active' },
+        cwd: '/repo/a'
+      }),
+      historyThread({
+        id: 'thread-2',
+        name: '',
+        preview: '',
+        createdAt: 1782777900,
+        updatedAt: 1782777900,
+        status: { type: 'idle' },
+        cwd: null
+      })
+    ])
+    const client = new AppServerThreadClient({ historyClient })
 
-    await expect(client.listThreads({ includeArchived: true })).resolves.toEqual([
+    await expect(
+      client.listThreads({ includeArchived: true, sortKey: 'created_at' })
+    ).resolves.toEqual([
       {
         id: 'thread-1',
         title: 'First prompt',
@@ -136,46 +103,113 @@ describe('AppServerThreadClient', () => {
       }
     ])
 
-    expect(jsonRpc.request).toHaveBeenCalledWith(
-      'thread/list',
-      expect.objectContaining({ cursor: 'cursor-1', modelProviders: [], archived: true })
-    )
+    expect(historyClient.listAllThreads).toHaveBeenCalledWith({
+      modelProviders: [],
+      sortKey: 'created_at',
+      sortDirection: 'desc',
+      archived: true
+    })
   })
 
-  it('sends archive, unarchive, set name, and read requests', async () => {
-    const jsonRpc = createJsonRpcClient({
-      initialize: {},
-      'thread/archive': {},
-      'thread/unarchive': {},
-      'thread/name/set': {},
-      'thread/read': {
-        thread: {
-          id: 'thread-1',
-          name: 'Renamed',
-          preview: 'Prompt',
-          createdAt: 1782777600,
-          updatedAt: 1782777900,
-          status: { type: 'idle' },
-          cwd: '/repo/app'
+  it('maps read threads with provider-generated UI messages when turns are requested', async () => {
+    const commandItem = {
+      id: 'cmd_1',
+      type: 'commandExecution',
+      command: 'npm test',
+      cwd: '/repo/app',
+      processId: null,
+      source: 'agent',
+      status: 'completed',
+      commandActions: [],
+      aggregatedOutput: 'ok',
+      exitCode: 0,
+      durationMs: 1200
+    } satisfies Extract<ThreadItem, { type: 'commandExecution' }>
+    const historyClient = createHistoryClient([
+      historyThread({
+        id: 'thread-1',
+        name: 'History',
+        preview: 'Run tests',
+        cwd: '/repo/app',
+        turns: [
+          {
+            id: 'turn_1',
+            items: [
+              {
+                id: 'user_1',
+                type: 'userMessage',
+                clientId: 'client_1',
+                content: [{ type: 'text', text: 'Run tests', text_elements: [] }]
+              },
+              commandItem
+            ],
+            itemsView: 'full',
+            status: 'completed',
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            durationMs: null
+          }
+        ]
+      })
+    ])
+    const client = new AppServerThreadClient({ historyClient })
+
+    await expect(client.readThread('thread-1', { includeTurns: true })).resolves.toMatchObject({
+      id: 'thread-1',
+      title: 'History',
+      turns: expect.any(Array),
+      messages: [
+        {
+          id: 'client_1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Run tests', state: 'done' }]
+        },
+        {
+          id: 'turn_1:assistant',
+          role: 'assistant',
+          parts: [
+            {
+              type: 'dynamic-tool',
+              toolName: 'codex_command_execution',
+              toolCallId: 'cmd_1',
+              input: { command: 'npm test', cwd: '/repo/app' },
+              state: 'output-available',
+              providerExecuted: true
+            }
+          ]
         }
-      }
+      ]
     })
-    const client = new AppServerThreadClient({ createClient: () => jsonRpc })
+    expect(historyClient.readThread).toHaveBeenCalledWith('thread-1', { includeTurns: true })
+  })
+
+  it('forwards archive, unarchive, rename, and read requests', async () => {
+    const historyClient = createHistoryClient([historyThread({ id: 'thread-1', name: 'Renamed' })])
+    const client = new AppServerThreadClient({ historyClient })
 
     await client.archiveThread('thread-1')
     await client.unarchiveThread('thread-1')
     await client.renameThread('thread-1', 'Renamed')
     await client.readThread('thread-1')
 
-    expect(jsonRpc.request).toHaveBeenCalledWith('thread/archive', { threadId: 'thread-1' })
-    expect(jsonRpc.request).toHaveBeenCalledWith('thread/unarchive', { threadId: 'thread-1' })
-    expect(jsonRpc.request).toHaveBeenCalledWith('thread/name/set', {
-      threadId: 'thread-1',
-      name: 'Renamed'
-    })
-    expect(jsonRpc.request).toHaveBeenCalledWith('thread/read', {
-      threadId: 'thread-1',
-      includeTurns: false
-    })
+    expect(historyClient.archiveThread).toHaveBeenCalledWith('thread-1')
+    expect(historyClient.unarchiveThread).toHaveBeenCalledWith('thread-1')
+    expect(historyClient.renameThread).toHaveBeenCalledWith('thread-1', 'Renamed')
+    expect(historyClient.readThread).toHaveBeenCalledWith('thread-1', { includeTurns: false })
   })
 })
+
+function historyThread(overrides: Partial<HistoryThread> = {}): HistoryThread {
+  return {
+    id: 'thread',
+    name: null,
+    preview: 'Prompt',
+    createdAt: 1782777600,
+    updatedAt: 1782777900,
+    status: { type: 'idle' },
+    cwd: '/repo',
+    turns: [],
+    ...overrides
+  }
+}
