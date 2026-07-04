@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+coverage/
+
+# generated codex app-server protocol types (regenerate with: npm run codex:generate-types)
+src/protocol/app-server-protocol/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
