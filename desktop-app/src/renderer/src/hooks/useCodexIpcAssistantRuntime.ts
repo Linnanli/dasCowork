@@ -143,6 +143,7 @@ export function useCodexIpcAssistantRuntime(
     async (input: SidebarConversationActionPayload) => {
       const result = await window.desktopApp.conversations.openConversation(input)
       chat.setMessages(result.messages)
+      chat.clearError()
       setConversationRuntime((prev) => {
         return {
           activeConversation: {
@@ -161,6 +162,7 @@ export function useCodexIpcAssistantRuntime(
 
   const startNewConversation = useCallback(() => {
     chat.setMessages([])
+    chat.clearError()
     setConversationRuntime((prev) => ({
       activeConversation: undefined,
       revision: prev.revision + 1

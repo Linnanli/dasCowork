@@ -387,6 +387,41 @@ describe('CodexChatRuntimeService', () => {
     ])
   })
 
+  it('forwards model stream error messages as terminal IPC errors', async () => {
+    const port = new FakePort()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => ({
+        toUIMessageStream: (options: { onError?: (error: unknown) => string } = {}) =>
+          (async function* () {
+            yield {
+              type: 'error',
+              errorText:
+                options.onError?.(new Error('The free quota has been exhausted.')) ??
+                'missing error'
+            }
+          })()
+      })
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(port.messages).toEqual([{ type: 'error', error: 'The free quota has been exhausted.' }])
+  })
+
   it('normalizes project assignment to the app-server thread id from stream metadata', async () => {
     const port = new FakePort()
     const projectStore = ProjectStore.inMemory(createDefaultProjectState())

@@ -27,9 +27,16 @@ type MockBackend = {
   close(): Promise<void>
 }
 
-type ResponsesStep = {
+type ResponsesStreamStep = {
   events: ResponseEvent[]
 }
+
+type ResponsesErrorStep = {
+  status: number
+  body: unknown
+}
+
+type ResponsesStep = ResponsesStreamStep | ResponsesErrorStep
 
 type ResponseEvent = {
   type: string
@@ -72,6 +79,46 @@ test('sends a real desktop chat turn through the admin backend model provider', 
     expect(
       backend.requests.some((request) => request.url === '/compatible-mode/v1/chat/completions')
     ).toBe(false)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
+test('shows upstream quota errors returned by the admin backend model provider', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [
+      {
+        status: 403,
+        body: {
+          request_id: 'req-quota-exhausted',
+          code: 'PERMISSION_DENIED',
+          message: 'The free quota has been exhausted.'
+        }
+      }
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, '你好')
+
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'The free quota has been exhausted.'
+    )
+    expect(
+      backend.requests.some((request) => request.method === 'POST' && request.url === '/responses')
+    ).toBe(true)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await app?.close().catch(() => undefined)
@@ -544,6 +591,11 @@ async function startMockBackend(options: { responses: ResponsesStep[] }): Promis
         response.end(JSON.stringify({ error: 'No scripted /responses payload remaining' }))
         return
       }
+      if ('status' in nextResponse) {
+        response.writeHead(nextResponse.status, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(nextResponse.body))
+        return
+      }
       writeResponsesStream(response, nextResponse)
       return
     }
@@ -579,7 +631,7 @@ function writeJson(response: ServerResponse, payload: unknown): void {
   response.end(JSON.stringify(payload))
 }
 
-function writeResponsesStream(response: ServerResponse, step: ResponsesStep): void {
+function writeResponsesStream(response: ServerResponse, step: ResponsesStreamStep): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
@@ -593,7 +645,7 @@ function assistantMessageResponse(
   responseId: string,
   messageId: string,
   text: string
-): ResponsesStep {
+): ResponsesStreamStep {
   return {
     events: [
       responseCreated(responseId),
@@ -615,7 +667,7 @@ function shellCommandResponse(
   responseId: string,
   callId: string,
   args: Record<string, unknown>
-): ResponsesStep {
+): ResponsesStreamStep {
   return {
     events: [
       responseCreated(responseId),

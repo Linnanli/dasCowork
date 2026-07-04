@@ -4,6 +4,7 @@ import {
   AttachmentPrimitive,
   AuiIf,
   ComposerPrimitive,
+  ErrorPrimitive,
   type AssistantState,
   groupPartByType,
   MessagePrimitive,
@@ -614,7 +615,14 @@ function AssistantMessage(): React.JSX.Element {
             }}
           </MessagePrimitive.GroupedParts>
         )}
-        <MessagePrimitive.Error />
+        <MessagePrimitive.Error>
+          <ErrorPrimitive.Root
+            data-slot="aui_assistant-message-error"
+            className="border-destructive/20 bg-destructive/5 text-destructive mt-2 rounded-md border px-3 py-2 text-sm"
+          >
+            <ErrorPrimitive.Message />
+          </ErrorPrimitive.Root>
+        </MessagePrimitive.Error>
       </div>
       {isThinking ? null : (
         <div

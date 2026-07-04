@@ -47,6 +47,7 @@ type StreamTextLikeResult = {
     originalMessages?: CodexChatRequest['messages']
     sendReasoning?: boolean
     sendSources?: boolean
+    onError?: (error: unknown) => string
   }): AsyncIterable<UIMessageChunk>
 }
 
@@ -244,11 +245,23 @@ export class CodexChatRuntimeService {
         binary: this.launch.displayBinary,
         startedAt: new Date().toISOString()
       }
+      let streamFailed = false
       for await (const chunk of result.toUIMessageStream({
         originalMessages: request.messages,
         sendReasoning: true,
-        sendSources: true
+        sendSources: true,
+        onError: errorMessage
       })) {
+        if (chunk.type === 'error') {
+          streamFailed = true
+          this.status = {
+            state: 'failed',
+            binary: this.launch.displayBinary,
+            lastError: chunk.errorText
+          }
+          port.postMessage({ type: 'error', error: chunk.errorText })
+          break
+        }
         const threadId = extractCodexThreadId(chunk)
         const turnId = extractCodexTurnId(chunk)
         let threadIdChanged = false
@@ -272,7 +285,7 @@ export class CodexChatRuntimeService {
       }
       if (abortController.signal.aborted) {
         port.postMessage({ type: 'aborted' })
-      } else {
+      } else if (!streamFailed) {
         port.postMessage({ type: 'finish', threadId: activeRun.threadId })
       }
     } catch (error) {

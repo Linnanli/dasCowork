@@ -537,7 +537,15 @@ provider 通过 `CodexEventMapper` 把 app-server notifications 映射为 AI SDK
 | `item/tool/call` 被路由进 mapper 时 | dynamic tool-call；主链路的 server request 由 tool dispatcher / cross-call handler 处理 |
 | `thread/tokenUsage/updated` | cache latest usage for final `finish` |
 | `item/completed` + `imageGeneration` | `file` part, `mediaType: "image/png"` |
-| `turn/completed` | close open text/reasoning/tool parts, emit `finish` |
+| `error` | 当前不直接 emit AI SDK error；等待 terminal `turn/completed.turn.error` |
+| `turn/completed` | close open text/reasoning/tool parts；失败时 emit `error`，随后 emit `finish` |
+
+Error mapping：
+
+- App Server Protocol 的 mid-turn `error` notification 形态是 `{ error: TurnError, willRetry, threadId, turnId }`，其中 `TurnError` 为 `{ message, codexErrorInfo, additionalDetails }`。该 notification 可能先于 terminal `turn/completed` 到达，并且 `willRetry` 为 true 时不一定代表本 turn 已终止。
+- 当前 provider 不把 mid-turn `error` notification 直接映射为 AI SDK error part，避免 retry 中间态在 UI 上重复或过早报错。
+- 当前 provider 以 terminal `turn/completed.turn.error` 为准：当 `turn.status === "failed"` 且 `turn.error.message` 非空时，emit AI SDK `LanguageModelV3StreamPart`：`{ type: "error", error: new Error(turn.error.message) }`。
+- AI SDK `toUIMessageStream()` 会把该 provider error part 转成 UI chunk：`{ type: "error", errorText }`；调用方需要通过 `onError` 决定暴露给 renderer 的错误文本。
 
 Finish reason mapping：
 
@@ -557,6 +565,7 @@ Finish reason mapping：
 - `codex/event/mcp_tool_call_end`
 - `item/commandExecution/outputDelta`
 - `item/fileChange/outputDelta`
+- `error`（mid-turn error / retry notification；当前等待 terminal `turn/completed.turn.error`）
 - `turn/diff/updated`
 - `codex/event/turn_diff`
 
