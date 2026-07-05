@@ -1,5 +1,4 @@
 import type { ProjectStateController } from '../projects/useProjectState'
-import { Button } from '../components/ui/button'
 import { ScrollArea } from '../components/ui/scroll-area'
 import { buildSidebarViewModel } from './sidebarModel'
 import { SidebarChatsSection } from './SidebarChatsSection'
@@ -27,17 +26,6 @@ export function SidebarRoot({
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col gap-3">
       <SidebarPrimaryActions nativeBackdrop={nativeBackdrop} onNewChat={onNewChat} />
-      {conversationState.state.error ? (
-        <Button
-          className="h-auto min-w-0 shrink-0 justify-start px-2 py-1 text-left text-xs font-normal text-destructive hover:bg-destructive/10 hover:text-destructive"
-          size="xs"
-          type="button"
-          variant="ghost"
-          onClick={() => void conversationState.refresh()}
-        >
-          {conversationState.state.error}
-        </Button>
-      ) : null}
       <ScrollArea className="min-h-0 w-full min-w-0 flex-1" aria-label="Projects and quick chats">
         <div className="w-full min-w-0 space-y-3 px-3 pb-3 pt-0">
           <SidebarProjectsSection

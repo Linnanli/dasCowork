@@ -97,6 +97,14 @@ const modelB = codex.chat("gpt-5.5");
 const modelC = codex.languageModel("gpt-5.5");
 
 const models = await codex.listModels();
+const thread = await codex.startThread({
+  modelId: "gpt-5.5",
+  system: "You are a concise assistant.",
+  callOptions: {
+    cwd: "/absolute/project",
+    runtimeWorkspaceRoots: ["/absolute/project"]
+  }
+});
 await codex.shutdown();
 ```
 
@@ -106,6 +114,7 @@ await codex.shutdown();
 - `chat(modelId, settings?)`：返回 `CodexLanguageModel`。
 - `languageModel(modelId)`：返回 `CodexLanguageModel`。
 - `listModels(params?)`：连接 app-server，执行 `initialize` / `initialized`，分页调用 `model/list`。
+- `startThread(options?)`：连接 app-server，执行 `initialize` / `initialized` / `thread/start`，返回 `CodexStartedThread`（`{ threadId, threadPath? }`）；适合显式创建空线程或由调用方自己管理后续 resume 生命周期。首轮聊天要在用户发送后立刻拿到会话 id 时，优先使用 `codexCallOptions({ onThreadStarted })`，让 `thread/start` 和首个 `turn/start` 保持在同一个 app-server 会话内。
 - `shutdown()`：关闭 persistent worker pool；非 persistent 模式下为空操作。
 - `embeddingModel()` / `imageModel()`：显式抛 `NoSuchModelError`。
 
@@ -303,6 +312,33 @@ stream 输出会在 `providerMetadata[CODEX_PROVIDER_ID]` 放入：
 ```
 
 dasCowork 主进程用这个 metadata 提取 `threadId` / `turnId`，同步 conversation 状态。
+
+### 5.3 首轮立即创建会话入口
+
+当 UI 需要用户一发送消息就显示会话入口，而不是等到 LLM 首个 stream chunk 返回后再显示，应把回调挂在同一次 `streamText()` 的 provider options 上：
+
+```ts
+const result = streamText({
+  model: codex.chat(modelId, modelSettings),
+  messages,
+  providerOptions: codexCallOptions({
+    cwd,
+    runtimeWorkspaceRoots,
+    approvalPolicy,
+    approvalsReviewer,
+    sandbox,
+    model: modelId,
+    summary: "auto",
+    onThreadStarted: ({ threadId, threadPath }) => {
+      // 这里已经拿到 app-server 真实 threadId；
+      // provider 随后会在同一条连接上发送首个 turn/start。
+      showConversationInSidebar({ threadId, threadPath });
+    }
+  })
+});
+```
+
+`onThreadStarted` 会在 provider 收到 `thread/start` 结果后、发送首个 `turn/start` 前触发。provider 会执行回调的同步部分，但不会等待它返回的 Promise；异步保存、广播等 host 侧副作用应自行捕获错误，不能阻塞首个 `turn/start`。这样 UI 可以立即使用真实 `threadId` 创建入口，同时避免“独立 `startThread()` 连接创建空线程，再由另一条连接 `thread/resume` 首轮消息”导致刚创建的 rollout 不在当前 app-server worker 中的问题。
 
 ## 6. JSON-RPC 生命周期
 

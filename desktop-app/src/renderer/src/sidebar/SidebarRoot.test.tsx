@@ -216,6 +216,33 @@ describe('SidebarRoot', () => {
     root.unmount()
   })
 
+  it('does not render conversation list errors below the new chat action', async () => {
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    const erroredConversationState: ConversationStateController = {
+      ...conversationState,
+      state: {
+        ...conversationState.state,
+        error: 'The free quota has been exhausted.'
+      }
+    }
+
+    await act(async () => {
+      root.render(
+        <SidebarRoot
+          nativeBackdrop={false}
+          projectState={projectState}
+          conversationState={erroredConversationState}
+          onNewChat={onNewChat}
+        />
+      )
+    })
+
+    expect(container.textContent).toContain('新对话')
+    expect(container.textContent).not.toContain('The free quota has been exhausted.')
+    root.unmount()
+  })
+
   it('toggles a project group when the project toggle is clicked', async () => {
     const container = document.createElement('div')
     const root = createRoot(container)
@@ -270,6 +297,52 @@ describe('SidebarRoot', () => {
     expect(conversationState.openConversation).toHaveBeenCalledWith({
       conversationId: 'thread-quick'
     })
+    root.unmount()
+  })
+
+  it('shows a spinning loading icon instead of an interrupt button for running conversations', async () => {
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    const runningConversationState: ConversationStateController = {
+      ...conversationState,
+      state: {
+        ...conversationState.state,
+        conversations: [
+          ...conversationState.state.conversations,
+          {
+            id: 'thread-running',
+            title: 'Running thread',
+            projectAssignment: {
+              projectKind: 'projectless',
+              cwd: '/tmp/thread-running',
+              workspaceRoot: '/tmp/thread-running',
+              outputDirectory: '/tmp/thread-running/out'
+            },
+            updatedAt: '2026-06-30T05:00:00.000Z',
+            cwd: '/tmp/thread-running',
+            running: true
+          }
+        ]
+      }
+    }
+
+    await act(async () => {
+      root.render(
+        <SidebarRoot
+          nativeBackdrop={false}
+          projectState={projectState}
+          conversationState={runningConversationState}
+          onNewChat={onNewChat}
+        />
+      )
+    })
+
+    expect(container.querySelector('[aria-label="Interrupt Running thread"]')).toBeNull()
+    const runningIndicator = container.querySelector('[aria-label="Running thread is running"]')
+    const loaderIcon = runningIndicator?.querySelector('.lucide-loader')
+    expect(runningIndicator?.tagName).toBe('SPAN')
+    expect(loaderIcon).not.toBeNull()
+    expect(loaderIcon?.getAttribute('class')).toContain('animate-spin')
     root.unmount()
   })
 

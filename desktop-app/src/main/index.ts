@@ -5,7 +5,10 @@ import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
 import { AppServerThreadClient } from './conversations/AppServerThreadClient'
-import { ConversationApiService } from './conversations/ConversationApiService'
+import {
+  ConversationApiService,
+  type ObservedStartedThread
+} from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
 import { createModelCatalogService } from './modelCatalogService'
 import type { ProjectApiService } from './projects/ProjectApiService'
@@ -105,7 +108,12 @@ async function broadcastProjectState(): Promise<void> {
   }
 }
 
-async function broadcastConversationState(options: { awaitThreadId?: string } = {}): Promise<void> {
+async function broadcastConversationState(
+  options: {
+    awaitThreadId?: string
+    discardStartedObservationOnConvergenceFailure?: boolean
+  } = {}
+): Promise<void> {
   if (!conversationApi) return
   if (options.awaitThreadId) {
     // Immediately broadcast with ensure so the sidebar shows the thread right away,
@@ -116,11 +124,28 @@ async function broadcastConversationState(options: { awaitThreadId?: string } = 
     sendConversationState(ensuredState)
     // In the background, wait for thread/list to converge (include the thread
     // naturally), then broadcast the converged state.
-    startConversationListConvergence(options.awaitThreadId)
+    startConversationListConvergence(options.awaitThreadId, {
+      discardStartedObservationOnFailure:
+        options.discardStartedObservationOnConvergenceFailure ?? false
+    })
   } else {
     const state = await conversationApi.refreshConversationList()
     sendConversationState(state)
   }
+}
+
+function broadcastStartedConversation(threadId: string, thread: ObservedStartedThread): void {
+  if (!conversationApi) return
+  const api = conversationApi
+  sendConversationState(api.observeStartedThreadSnapshot(thread))
+  void api
+    .observeStartedThread(thread)
+    .then(sendConversationState)
+    .catch((error: unknown) => {
+      console.error(`failed to publish started thread ${threadId}`, error)
+      void broadcastConversationState({ awaitThreadId: threadId })
+    })
+  startConversationListConvergence(threadId, { discardStartedObservationOnFailure: false })
 }
 
 function sendConversationState(
@@ -131,10 +156,13 @@ function sendConversationState(
   }
 }
 
-function startConversationListConvergence(threadId: string): void {
+function startConversationListConvergence(
+  threadId: string,
+  options: { discardStartedObservationOnFailure: boolean }
+): void {
   if (convergingConversationThreadIds.has(threadId)) return
   convergingConversationThreadIds.add(threadId)
-  void convergeConversationList(threadId)
+  void convergeConversationList(threadId, options)
     .catch((error: unknown) => {
       console.error(`failed to converge thread/list for ${threadId}`, error)
     })
@@ -143,7 +171,10 @@ function startConversationListConvergence(threadId: string): void {
     })
 }
 
-async function convergeConversationList(awaitThreadId: string): Promise<void> {
+async function convergeConversationList(
+  awaitThreadId: string,
+  options: { discardStartedObservationOnFailure: boolean }
+): Promise<void> {
   if (!conversationApi) return
   const maxAttempts = 8
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -155,6 +186,9 @@ async function convergeConversationList(awaitThreadId: string): Promise<void> {
     }
   }
   console.warn(`thread/list did not include ${awaitThreadId} after ${maxAttempts} attempts`)
+  if (!options.discardStartedObservationOnFailure) return
+  const state = await conversationApi.discardStartedThreadObservation(awaitThreadId)
+  sendConversationState(state)
 }
 
 function delay(ms: number): Promise<void> {
@@ -302,11 +336,20 @@ app.whenReady().then(() => {
     const request = codexChatRequestSchema.parse(payload)
     void runtime
       .startChatStream(request, port, {
-        onThreadIdAvailable: (threadId) => {
+        onThreadIdAvailable: (threadId, thread) => {
+          if (thread) {
+            broadcastStartedConversation(threadId, thread)
+            return
+          }
           void broadcastConversationState({ awaitThreadId: threadId })
         }
       })
-      .then((result) => broadcastConversationState({ awaitThreadId: result.threadId }))
+      .then((result) =>
+        broadcastConversationState({
+          awaitThreadId: result.threadId,
+          discardStartedObservationOnConvergenceFailure: true
+        })
+      )
       .catch((error: unknown) => {
         console.error('failed to complete codex chat stream', error)
       })

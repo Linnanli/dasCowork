@@ -33,6 +33,15 @@ export type ConversationApiServiceOptions = {
   projectStore: ConversationProjectStoreLike
 }
 
+export type ObservedStartedThread = {
+  threadId: string
+  title?: string | null
+  cwd?: string | null
+  createdAt?: string
+  updatedAt?: string
+  projectAssignment?: ThreadProjectAssignment
+}
+
 const defaultPreferences: SidebarPreferences = {
   organizeMode: 'project',
   sortKey: 'updated_at',
@@ -40,8 +49,27 @@ const defaultPreferences: SidebarPreferences = {
   collapsedGroupIds: []
 }
 
+const emptyProjectState: ProjectState = {
+  workspaceRootOptions: [],
+  localProjects: {},
+  remoteProjects: [],
+  projectOrder: [],
+  pinnedProjectIds: [],
+  projectWritableRoots: {},
+  threadProjectAssignments: {},
+  threadWritableRoots: {},
+  threadWorkspaceRootHints: {},
+  threadProjectlessOutputDirectories: {},
+  projectlessThreadIds: [],
+  projectlessHints: {}
+}
+
 export class ConversationApiService {
   private preferences: SidebarPreferences = defaultPreferences
+  private authoritativeThreadRows: AppServerThreadRow[] = []
+  private readonly observedStartedThreads = new Map<string, AppServerThreadRow>()
+  private readonly observedStartedThreadAssignments = new Map<string, ThreadProjectAssignment>()
+  private lastProjectState: ProjectState = emptyProjectState
   private lastState: SidebarConversationListState = {
     conversations: [],
     archivedConversationIds: [],
@@ -49,6 +77,24 @@ export class ConversationApiService {
   }
 
   constructor(private readonly options: ConversationApiServiceOptions) {}
+
+  observeStartedThreadSnapshot(input: ObservedStartedThread): SidebarConversationListState {
+    this.storeObservedStartedThread(input)
+    return this.updateLastState({
+      projectState: this.lastProjectState,
+      threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
+    })
+  }
+
+  async observeStartedThread(input: ObservedStartedThread): Promise<SidebarConversationListState> {
+    this.storeObservedStartedThread(input)
+    const projectState = await this.options.projectStore.getState()
+    this.lastProjectState = projectState
+    return this.updateLastState({
+      projectState,
+      threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
+    })
+  }
 
   async getConversationList(): Promise<SidebarConversationListState> {
     return this.refreshConversationList()
@@ -67,6 +113,20 @@ export class ConversationApiService {
     return threads.some((thread) => thread.id === threadId)
   }
 
+  async discardStartedThreadObservation(threadId: string): Promise<SidebarConversationListState> {
+    if (!this.observedStartedThreads.delete(threadId)) {
+      return this.lastState
+    }
+    this.observedStartedThreadAssignments.delete(threadId)
+
+    const projectState = await this.options.projectStore.getState()
+    this.lastProjectState = projectState
+    return this.updateLastState({
+      projectState,
+      threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
+    })
+  }
+
   async refreshConversationList(
     input: { ensureThreadIds?: string[] } = {}
   ): Promise<SidebarConversationListState> {
@@ -78,28 +138,15 @@ export class ConversationApiService {
           sortKey: this.preferences.sortKey
         })
       ])
-      const conversations = await this.includeRequiredThreads({
+      this.lastProjectState = projectState
+      this.authoritativeThreadRows = await this.includeRequiredThreads({
         threads,
         requiredThreadIds: input.ensureThreadIds
       })
-      this.lastState = {
-        conversations: conversations.map((thread) => ({
-          id: thread.id,
-          threadId: thread.id,
-          title: conversationTitle(thread),
-          projectAssignment: resolveAssignment(projectState, thread),
-          createdAt: thread.createdAt,
-          updatedAt: thread.updatedAt,
-          archived: thread.archived,
-          running: thread.running,
-          cwd: thread.cwd
-        })),
-        archivedConversationIds: conversations
-          .filter((thread) => thread.archived)
-          .map((thread) => thread.id),
-        loaded: true,
-        error: undefined
-      }
+      this.lastState = this.createListState({
+        projectState,
+        threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
+      })
       return this.lastState
     } catch (error) {
       this.lastState = {
@@ -132,6 +179,8 @@ export class ConversationApiService {
     input: SidebarConversationActionPayload
   ): Promise<SidebarConversationListState> {
     await this.options.threadClient.archiveThread(input.conversationId)
+    this.observedStartedThreads.delete(input.conversationId)
+    this.observedStartedThreadAssignments.delete(input.conversationId)
     return this.refreshConversationList()
   }
 
@@ -163,6 +212,24 @@ export class ConversationApiService {
     return this.preferences
   }
 
+  private storeObservedStartedThread(input: ObservedStartedThread): void {
+    const now = new Date().toISOString()
+    const existing = this.observedStartedThreads.get(input.threadId)
+    if (input.projectAssignment) {
+      this.observedStartedThreadAssignments.set(input.threadId, input.projectAssignment)
+    }
+    this.observedStartedThreads.set(input.threadId, {
+      id: input.threadId,
+      title: input.title ?? existing?.title ?? null,
+      preview: input.title ?? existing?.preview ?? '',
+      createdAt: input.createdAt ?? existing?.createdAt ?? now,
+      updatedAt: input.updatedAt ?? now,
+      archived: false,
+      running: true,
+      cwd: input.cwd ?? existing?.cwd ?? null
+    })
+  }
+
   private async includeRequiredThreads({
     threads,
     requiredThreadIds = []
@@ -177,15 +244,85 @@ export class ConversationApiService {
     )
 
     for (const threadId of requiredMissingThreadIds) {
-      const thread = await this.options.threadClient.readThreadWithFullTurns(threadId)
+      let thread: AppServerThreadRow
+      try {
+        thread = await this.options.threadClient.readThreadWithFullTurns(threadId)
+      } catch (error) {
+        if (this.observedStartedThreads.has(threadId)) continue
+        throw error
+      }
       if (rowsById.has(thread.id)) continue
       if (thread.archived) continue
+      this.observedStartedThreads.delete(thread.id)
+      this.observedStartedThreadAssignments.delete(thread.id)
       rowsById.set(thread.id, thread)
       rows.unshift(thread)
     }
 
     return rows
   }
+
+  private mergeObservedStartedThreads(threads: AppServerThreadRow[]): AppServerThreadRow[] {
+    const rowsById = new Map(threads.map((thread) => [thread.id, thread]))
+    for (const thread of threads) {
+      if (this.observedStartedThreads.has(thread.id)) {
+        this.observedStartedThreads.delete(thread.id)
+        this.observedStartedThreadAssignments.delete(thread.id)
+      }
+    }
+
+    const observedRows = [...this.observedStartedThreads.values()]
+      .filter((thread) => !rowsById.has(thread.id) && !thread.archived)
+      .sort((left, right) => compareIsoDescending(left.updatedAt, right.updatedAt))
+
+    return [...observedRows, ...threads]
+  }
+
+  private updateLastState({
+    projectState,
+    threads
+  }: {
+    projectState: ProjectState
+    threads: AppServerThreadRow[]
+  }): SidebarConversationListState {
+    this.lastState = this.createListState({ projectState, threads })
+    return this.lastState
+  }
+
+  private createListState({
+    projectState,
+    threads
+  }: {
+    projectState: ProjectState
+    threads: AppServerThreadRow[]
+  }): SidebarConversationListState {
+    return {
+      conversations: threads.map((thread) => ({
+        id: thread.id,
+        threadId: thread.id,
+        title: conversationTitle(thread),
+        projectAssignment:
+          this.observedStartedThreadAssignments.get(thread.id) ??
+          resolveAssignment(projectState, thread),
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        archived: thread.archived,
+        running: thread.running,
+        cwd: thread.cwd
+      })),
+      archivedConversationIds: threads
+        .filter((thread) => thread.archived)
+        .map((thread) => thread.id),
+      loaded: true,
+      error: undefined
+    }
+  }
+}
+
+function compareIsoDescending(left: string | undefined, right: string | undefined): number {
+  const leftTime = Date.parse(left ?? '')
+  const rightTime = Date.parse(right ?? '')
+  return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
 }
 
 function uniqueThreadIds(threadIds: (string | undefined)[]): string[] {

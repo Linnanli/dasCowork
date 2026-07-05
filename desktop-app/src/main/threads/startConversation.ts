@@ -3,7 +3,10 @@ import type { UIMessage } from 'ai'
 import type { ProjectStore } from '../projects/ProjectStore'
 import type { ProjectService } from '../projects/ProjectService'
 import type { CodexChatRequest } from '../../shared/codexIpcApi'
-import type { ResolvedExecutionTarget } from '../../shared/projects/projectTypes'
+import type {
+  ResolvedExecutionTarget,
+  ThreadProjectAssignment
+} from '../../shared/projects/projectTypes'
 
 export type ProjectServiceLike = Pick<
   ProjectService,
@@ -19,26 +22,24 @@ export type ConversationExecutionTarget = {
 
 export type StartConversationResult = {
   executionTarget?: ConversationExecutionTarget
+  projectAssignment?: ThreadProjectAssignment
 }
 
 export async function startConversation({
   request,
-  projectService,
-  projectStore
+  projectService
 }: {
   request: CodexChatRequest
   projectService?: ProjectServiceLike
-  projectStore?: ProjectStoreLike
 }): Promise<StartConversationResult> {
   if (!projectService) return {}
 
   const resolvedTarget = await resolveExecutionTarget({ request, projectService })
   if (!resolvedTarget) return {}
 
-  await persistProjectAssignment({ request, projectStore, resolvedTarget })
-
   return {
-    executionTarget: toConversationExecutionTarget(resolvedTarget)
+    executionTarget: toConversationExecutionTarget(resolvedTarget),
+    projectAssignment: resolvedTarget.projectAssignment
   }
 }
 
@@ -49,13 +50,12 @@ async function resolveExecutionTarget({
   request: CodexChatRequest
   projectService: ProjectServiceLike
 }): Promise<ResolvedExecutionTarget | null> {
-  const conversationId = request.body?.conversationId
   const threadId = request.body?.threadId
 
-  if (conversationId || threadId) {
+  if (threadId) {
     return projectService.resolveExistingThreadTarget({
-      conversationId: conversationId ?? request.chatId,
-      threadId: threadId ?? null
+      conversationId: request.body?.conversationId ?? threadId,
+      threadId
     })
   }
 
@@ -65,28 +65,23 @@ async function resolveExecutionTarget({
   })
 }
 
-async function persistProjectAssignment({
-  request,
+export async function persistProjectAssignmentForThread({
+  threadId,
   projectStore,
-  resolvedTarget
+  projectAssignment
 }: {
-  request: CodexChatRequest
+  threadId: string
   projectStore?: ProjectStoreLike
-  resolvedTarget: ResolvedExecutionTarget
+  projectAssignment?: ThreadProjectAssignment
 }): Promise<void> {
-  if (!projectStore || !resolvedTarget.projectAssignment) return
+  if (!projectStore || !projectAssignment) return
 
-  // The provider stream wrapper does not currently expose the app-server thread id here.
-  // Persist against the renderer conversation id when present, otherwise the request chat id.
-  // When provider metadata extraction is added, this key should be normalized to the app-server
-  // thread id at the same boundary.
-  const conversationId = request.body?.conversationId ?? request.chatId
   const state = await projectStore.getState()
   await projectStore.setState({
     ...state,
     threadProjectAssignments: {
       ...state.threadProjectAssignments,
-      [conversationId]: resolvedTarget.projectAssignment
+      [threadId]: state.threadProjectAssignments[threadId] ?? projectAssignment
     }
   })
 }

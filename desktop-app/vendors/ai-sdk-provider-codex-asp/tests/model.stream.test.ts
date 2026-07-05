@@ -192,6 +192,22 @@ async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
     return parts;
 }
 
+function deferred<T = void>(): {
+    promise: Promise<T>;
+    resolve: (value: T | PromiseLike<T>) => void;
+    reject: (reason?: unknown) => void;
+}
+{
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((nextResolve, nextReject) =>
+    {
+        resolve = nextResolve;
+        reject = nextReject;
+    });
+    return { promise, resolve, reject };
+}
+
 describe("CodexLanguageModel.doStream", () => 
 {
     it("runs initialize -> thread/start -> turn/start and maps notifications to stream parts", async () => 
@@ -264,6 +280,88 @@ describe("CodexLanguageModel.doStream", () =>
         expect(turnStartMessage?.params).toMatchObject({
             input: [{ type: "text", text: "hi", text_elements: [] }],
         });
+    });
+
+    it("calls onThreadStarted after thread/start and before the first turn/start", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const events: string[] = [];
+        const onThreadStarted = vi.fn((thread: { threadId: string; threadPath?: string }) =>
+        {
+            events.push(`callback:${thread.threadId}`);
+            const methods = transport.sentMessages
+                .filter((message): message is { method: string } => "method" in message)
+                .map((message) => message.method);
+            expect(methods).toEqual(["initialize", "initialized", "thread/start"]);
+        });
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ onThreadStarted }),
+        });
+
+        await readAll(stream);
+
+        expect(onThreadStarted).toHaveBeenCalledWith({ threadId: "thr_1" });
+        expect(events).toEqual(["callback:thr_1"]);
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+        expect(methods).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
+    });
+
+    it("waits for async onThreadStarted work before turn/start", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const callbackBlocker = deferred();
+        const events: string[] = [];
+        const onThreadStarted = vi.fn(async (thread: { threadId: string; threadPath?: string }) =>
+        {
+            events.push(`callback:${thread.threadId}:start`);
+            await callbackBlocker.promise;
+            events.push(`callback:${thread.threadId}:done`);
+        });
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+
+        const resultPromise = model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ onThreadStarted }),
+        });
+
+        await vi.waitFor(() =>
+        {
+            expect(events).toEqual(["callback:thr_1:start"]);
+        });
+
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+        expect(methods).toEqual(["initialize", "initialized", "thread/start"]);
+
+        callbackBlocker.resolve();
+        const { stream } = await resultPromise;
+        await readAll(stream);
+        expect(events).toEqual(["callback:thr_1:start", "callback:thr_1:done"]);
+
+        const completedMethods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+        expect(completedMethods).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
     });
 
     it("passes configured custom model providers through thread/start config", async () =>

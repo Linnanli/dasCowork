@@ -29,11 +29,13 @@ type MockBackend = {
 
 type ResponsesStreamStep = {
   events: ResponseEvent[]
+  beforeResponse?: () => void | Promise<void>
 }
 
 type ResponsesErrorStep = {
   status: number
   body: unknown
+  beforeResponse?: () => void | Promise<void>
 }
 
 type ResponsesStep = ResponsesStreamStep | ResponsesErrorStep
@@ -86,6 +88,55 @@ test('sends a real desktop chat turn through the admin backend model provider', 
   }
 })
 
+test('creates a sidebar conversation entry before the provider response returns', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const releaseProviderResponse = deferred()
+  const runId = Date.now().toString(36)
+  const prompt = `immediate-sidebar-${runId}`
+  const responseText = `immediate sidebar response ${runId}`
+  const backend = await startMockBackend({
+    responses: [
+      {
+        ...assistantMessageResponse(
+          'resp-immediate-sidebar',
+          'msg-immediate-sidebar',
+          responseText
+        ),
+        beforeResponse: () => releaseProviderResponse.promise
+      }
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, prompt)
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    await expect(sidebar.getByText(prompt, { exact: true })).toBeVisible()
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: responseText })
+    ).toHaveCount(0)
+
+    releaseProviderResponse.resolve()
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: responseText })
+    ).toBeVisible()
+  } finally {
+    releaseProviderResponse.resolve()
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await app?.close().catch(() => undefined)
+    await backend.close()
+  }
+})
+
 test('shows upstream quota errors returned by the admin backend model provider', async ({
   browserName
 }, testInfo) => {
@@ -114,6 +165,9 @@ test('shows upstream quota errors returned by the admin backend model provider',
     await sendMessage(page, '你好')
 
     await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'The free quota has been exhausted.'
+    )
+    await expect(page.locator('[data-slot="codex-sidebar"]')).not.toContainText(
       'The free quota has been exhausted.'
     )
     expect(
@@ -591,6 +645,7 @@ async function startMockBackend(options: { responses: ResponsesStep[] }): Promis
         response.end(JSON.stringify({ error: 'No scripted /responses payload remaining' }))
         return
       }
+      await nextResponse.beforeResponse?.()
       if ('status' in nextResponse) {
         response.writeHead(nextResponse.status, { 'content-type': 'application/json' })
         response.end(JSON.stringify(nextResponse.body))
@@ -726,6 +781,20 @@ function functionCallOutputText(providerBody: unknown, callId: string): string |
   )
   if (!isRecord(outputItem) || typeof outputItem.output !== 'string') return undefined
   return outputItem.output
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

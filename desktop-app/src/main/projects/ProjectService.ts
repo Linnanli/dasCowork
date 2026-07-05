@@ -115,7 +115,9 @@ export class ProjectService {
     input: ResolveExistingThreadTargetInput
   ): Promise<ResolvedExecutionTarget | null> {
     const state = await this.dependencies.store.getState()
-    const assignment = state.threadProjectAssignments[input.conversationId]
+    const assignment =
+      (input.threadId ? state.threadProjectAssignments[input.threadId] : undefined) ??
+      state.threadProjectAssignments[input.conversationId]
 
     if (assignment) {
       return this.resolveAssignmentTarget(assignment, state)

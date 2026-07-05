@@ -8,6 +8,7 @@ import {
 import {
   CODEX_PROVIDER_ID,
   codexCallOptions,
+  type CodexCallOptions,
   type CodexLanguageModelSettings,
   type CodexModelProviderInfo,
   type CodexProvider,
@@ -24,7 +25,11 @@ import {
 import { createCodexAspProvider } from './codexAspProvider'
 import type { ModelCatalogService } from './modelCatalogService'
 import type { ProjectStoreLike, ProjectServiceLike } from './threads/startConversation'
-import { startConversation, type ConversationExecutionTarget } from './threads/startConversation'
+import {
+  persistProjectAssignmentForThread,
+  startConversation,
+  type ConversationExecutionTarget
+} from './threads/startConversation'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
@@ -34,6 +39,7 @@ import type {
   CodexModelList,
   CodexStatus
 } from '../shared/codexIpcApi'
+import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
 
 export type CodexPortLike = {
   postMessage(message: CodexChatStreamEvent): void
@@ -58,6 +64,8 @@ type StreamTextLike = (input: {
   abortSignal: AbortSignal
   clientModel?: AdminBackendClientModel
   executionTarget?: ConversationExecutionTarget
+  resumeThreadId?: string
+  onThreadStarted?: CodexCallOptions['onThreadStarted']
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 type ActiveConversationRun = {
@@ -86,8 +94,17 @@ export type CodexChatRunResult = {
   threadId?: string
 }
 
+export type StartedConversationThread = {
+  threadId: string
+  title?: string | null
+  cwd?: string | null
+  createdAt?: string
+  updatedAt?: string
+  projectAssignment?: ThreadProjectAssignment
+}
+
 export type StartChatStreamCallbacks = {
-  onThreadIdAvailable?: (threadId: string) => void
+  onThreadIdAvailable?: (threadId: string, thread?: StartedConversationThread) => void
 }
 
 export class CodexChatRuntimeService {
@@ -227,18 +244,85 @@ export class CodexChatRuntimeService {
       const streamModelId = clientModel?.model_id ?? modelId
       const conversation = await startConversation({
         request,
-        projectService: this.projectService,
-        projectStore: this.projectStore
+        projectService: this.projectService
       })
       const projectAssignmentKey = request.body?.conversationId ?? request.chatId
       let normalizedProjectAssignmentThreadId: string | undefined
+      let projectAssignmentQueue = Promise.resolve()
+      const enqueueProjectAssignmentOperation = (
+        label: string,
+        operation: () => Promise<void>
+      ): Promise<void> => {
+        const runOperation = async (): Promise<void> => {
+          try {
+            await operation()
+          } catch (error) {
+            console.error(`failed to ${label}`, error)
+          }
+        }
+        projectAssignmentQueue = projectAssignmentQueue.then(runOperation, runOperation)
+        return projectAssignmentQueue
+      }
+      const persistStartedProjectAssignment = (threadId: string): Promise<void> => {
+        normalizedProjectAssignmentThreadId = threadId
+        return enqueueProjectAssignmentOperation(`persist project assignment for ${threadId}`, () =>
+          persistProjectAssignmentForThread({
+            projectStore: this.projectStore,
+            threadId,
+            projectAssignment: conversation.projectAssignment
+          })
+        )
+      }
+      const persistOrNormalizeProjectAssignment = (threadId: string): void => {
+        const fromId = normalizedProjectAssignmentThreadId ?? projectAssignmentKey
+        normalizedProjectAssignmentThreadId = threadId
+        enqueueProjectAssignmentOperation(
+          `normalize project assignment for ${threadId}`,
+          async () => {
+            await normalizeProjectAssignmentThreadId({
+              projectStore: this.projectStore,
+              fromId,
+              toId: threadId
+            })
+            await persistProjectAssignmentForThread({
+              projectStore: this.projectStore,
+              threadId,
+              projectAssignment: conversation.projectAssignment
+            })
+          }
+        )
+      }
+      const onThreadStarted = request.body?.threadId
+        ? undefined
+        : async (thread: { threadId: string; threadPath?: string }) => {
+            const startedAt = new Date().toISOString()
+            const startedThread: StartedConversationThread = {
+              threadId: thread.threadId,
+              title: conversationTitleFromRequest(request),
+              cwd: conversation.executionTarget?.cwd ?? null,
+              createdAt: startedAt,
+              updatedAt: startedAt,
+              projectAssignment: conversation.projectAssignment
+            }
+            activeRun.threadId = thread.threadId
+            this.activeConversationRuns.set(activeRun.conversationId, activeRun)
+            this.activeConversationRuns.set(thread.threadId, activeRun)
+            await persistStartedProjectAssignment(thread.threadId)
+            try {
+              callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
+            } catch (error) {
+              console.error(`failed to publish started thread ${thread.threadId}`, error)
+            }
+          }
       const result = await this.streamText({
         request,
         modelId: streamModelId,
         provider: this.provider,
         abortSignal: abortController.signal,
         clientModel,
-        executionTarget: conversation.executionTarget
+        executionTarget: conversation.executionTarget,
+        resumeThreadId: activeRun.threadId,
+        onThreadStarted
       })
       this.status = {
         state: 'ready',
@@ -273,16 +357,18 @@ export class CodexChatRuntimeService {
           if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
         }
         if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
-          await normalizeProjectAssignmentThreadId({
-            projectStore: this.projectStore,
-            fromId: projectAssignmentKey,
-            toId: threadId
-          })
-          normalizedProjectAssignmentThreadId = threadId
+          persistOrNormalizeProjectAssignment(threadId)
         }
-        if (threadIdChanged) callbacks?.onThreadIdAvailable?.(threadId!)
+        if (threadIdChanged) {
+          try {
+            callbacks?.onThreadIdAvailable?.(threadId!)
+          } catch (error) {
+            console.error(`failed to publish thread metadata ${threadId}`, error)
+          }
+        }
         port.postMessage({ type: 'chunk', chunk })
       }
+      await projectAssignmentQueue
       if (abortController.signal.aborted) {
         port.postMessage({ type: 'aborted' })
       } else if (!streamFailed) {
@@ -389,7 +475,9 @@ async function defaultStreamText({
   provider,
   abortSignal,
   clientModel,
-  executionTarget
+  executionTarget,
+  resumeThreadId,
+  onThreadStarted
 }: {
   request: CodexChatRequest
   modelId: string
@@ -397,21 +485,20 @@ async function defaultStreamText({
   abortSignal: AbortSignal
   clientModel?: AdminBackendClientModel
   executionTarget?: ConversationExecutionTarget
+  resumeThreadId?: string
+  onThreadStarted?: CodexCallOptions['onThreadStarted']
 }): Promise<StreamTextLikeResult> {
   const modelMessages = await convertToModelMessages(request.messages)
   const system = typeof request.body?.system === 'string' ? request.body.system : undefined
   const model = resolveLanguageModel({ provider, modelId, clientModel })
-  const providerOptions = codexCallOptions({
-    model: modelId,
-    summary: 'auto',
-    ...(typeof request.body?.threadId === 'string'
-      ? { resumeThreadId: request.body.threadId }
-      : {}),
-    ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
-    ...(executionTarget?.runtimeWorkspaceRoots
-      ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
-      : {})
-  })
+  const providerOptions = codexCallOptions(
+    codexCallOptionsInput({
+      modelId,
+      executionTarget,
+      resumeThreadId: resumeThreadId ?? request.body?.threadId,
+      onThreadStarted
+    })
+  )
 
   return aiStreamText({
     model,
@@ -420,6 +507,45 @@ async function defaultStreamText({
     abortSignal,
     ...(providerOptions ? { providerOptions } : {})
   })
+}
+
+function codexCallOptionsInput({
+  modelId,
+  executionTarget,
+  resumeThreadId,
+  onThreadStarted
+}: {
+  modelId: string
+  executionTarget?: ConversationExecutionTarget
+  resumeThreadId?: string
+  onThreadStarted?: CodexCallOptions['onThreadStarted']
+}): CodexCallOptions {
+  return {
+    model: modelId,
+    summary: 'auto' as const,
+    ...(resumeThreadId ? { resumeThreadId } : {}),
+    ...(onThreadStarted ? { onThreadStarted } : {}),
+    ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
+    ...(executionTarget?.runtimeWorkspaceRoots
+      ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
+      : {})
+  }
+}
+
+function conversationTitleFromRequest(request: CodexChatRequest): string | null {
+  const latestUserMessage = request.messages.findLast((message) => message.role === 'user')
+  if (!latestUserMessage) return null
+
+  const title = latestUserMessage.parts
+    .map((part) => {
+      if (part.type !== 'text') return ''
+      return typeof part.text === 'string' ? part.text : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+
+  return title ? title : null
 }
 
 async function normalizeProjectAssignmentThreadId({

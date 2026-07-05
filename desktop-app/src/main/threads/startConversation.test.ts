@@ -1,14 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const providerState = vi.hoisted(() => ({
   listModels: vi.fn(),
-  shutdown: vi.fn()
+  shutdown: vi.fn(),
+  startThread: vi.fn()
 }))
 
 vi.mock('../codexAspProvider', () => ({
   createCodexAspProvider: vi.fn(() => ({
     listModels: providerState.listModels,
     shutdown: providerState.shutdown,
+    startThread: providerState.startThread,
     chat: vi.fn()
   }))
 }))
@@ -51,11 +53,22 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
   }
 }
 
+type RuntimeStreamTextInput = {
+  onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
+}
+
 describe('startConversation', () => {
+  beforeEach(() => {
+    providerState.listModels.mockReset()
+    providerState.shutdown.mockReset()
+    providerState.startThread.mockReset()
+    providerState.startThread.mockResolvedValue({ threadId: 'thread-prestarted' })
+  })
+
   it('ignores renderer supplied cwd and uses resolved target', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async (input: unknown) => {
-      void input
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
       return {
         toUIMessageStream: () => emptyUiMessageStream()
       }
@@ -112,10 +125,10 @@ describe('startConversation', () => {
     expect(streamTextInput?.executionTarget).not.toMatchObject({
       cwd: '/malicious'
     })
-    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
   })
 
-  it('persists project assignment by request chat id when no conversation id is available', async () => {
+  it('returns project assignment for the runtime to persist against the app-server thread id', async () => {
     const projectStore = ProjectStore.inMemory(createDefaultProjectState())
     const projectService = {
       resolveNewThreadTarget: vi.fn().mockResolvedValue({
@@ -133,7 +146,7 @@ describe('startConversation', () => {
       resolveExistingThreadTarget: vi.fn()
     }
 
-    await startConversation({
+    const result = await startConversation({
       request: {
         chatId: 'chat-fallback',
         trigger: 'submit-message',
@@ -143,19 +156,23 @@ describe('startConversation', () => {
           projectSelection: { projectKind: 'path', path: '/repo' }
         }
       },
-      projectService,
-      projectStore
+      projectService
     })
 
-    await expect(projectStore.getState()).resolves.toMatchObject({
-      threadProjectAssignments: {
-        'chat-fallback': {
-          projectKind: 'local',
-          projectId: '/repo',
-          path: '/repo',
-          cwd: '/repo'
-        }
+    expect(result).toMatchObject({
+      executionTarget: {
+        cwd: '/repo',
+        runtimeWorkspaceRoots: ['/repo']
+      },
+      projectAssignment: {
+        projectKind: 'local',
+        projectId: '/repo',
+        path: '/repo',
+        cwd: '/repo'
       }
+    })
+    await expect(projectStore.getState()).resolves.toMatchObject({
+      threadProjectAssignments: {}
     })
   })
 

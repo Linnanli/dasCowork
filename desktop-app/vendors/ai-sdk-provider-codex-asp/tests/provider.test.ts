@@ -173,6 +173,53 @@ describe("createCodexAppServer", () =>
         expect(viaChat).toBeInstanceOf(CodexLanguageModel);
     });
 
+    it("starts a thread without starting a turn", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+            defaultThreadSettings: {
+                approvalPolicy: "on-request",
+                approvalsReviewer: "user",
+                sandbox: "workspace-write",
+            },
+        });
+
+        const result = await provider.startThread({
+            modelId: "gpt-5.5",
+            system: "Be concise.",
+            callOptions: {
+                cwd: "/repo",
+                runtimeWorkspaceRoots: ["/repo"],
+            },
+        });
+
+        expect(result).toEqual({ threadId: "thr_1" });
+
+        const methods = transport.sentMessages
+            .filter((message) => "method" in message)
+            .map((message) => message.method);
+        expect(methods).toEqual(["initialize", "initialized", "thread/start"]);
+
+        const threadStart = transport.sentMessages.find(
+            (message) => "method" in message && message.method === "thread/start",
+        );
+        expect(threadStart).toMatchObject({
+            method: "thread/start",
+            params: {
+                model: "gpt-5.5",
+                developerInstructions: "Be concise.",
+                cwd: "/repo",
+                runtimeWorkspaceRoots: ["/repo"],
+                approvalPolicy: "on-request",
+                approvalsReviewer: "user",
+                sandbox: "workspace-write",
+            },
+        });
+    });
+
     it("throws NoSuchModelError for embedding and image models", () => 
     {
         const provider = createCodexAppServer();

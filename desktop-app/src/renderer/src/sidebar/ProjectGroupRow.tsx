@@ -14,8 +14,7 @@ export function ProjectGroupRow({
   onToggleCollapsed,
   onNewChat,
   onRemoveProject,
-  onOpenConversation,
-  onInterruptConversation
+  onOpenConversation
 }: {
   group: SidebarProjectGroup
   nativeBackdrop: boolean
@@ -23,7 +22,6 @@ export function ProjectGroupRow({
   onNewChat: () => void
   onRemoveProject: () => void
   onOpenConversation: (conversationId: string) => void
-  onInterruptConversation: (conversationId: string) => void
 }): React.JSX.Element {
   return (
     <div className="min-w-0 space-y-0.5">
@@ -90,7 +88,6 @@ export function ProjectGroupRow({
         group={group}
         nativeBackdrop={nativeBackdrop}
         onOpenConversation={onOpenConversation}
-        onInterruptConversation={onInterruptConversation}
       />
     </div>
   )
@@ -100,14 +97,12 @@ function ProjectGroupConversations({
   collapsed,
   group,
   nativeBackdrop,
-  onOpenConversation,
-  onInterruptConversation
+  onOpenConversation
 }: {
   collapsed: boolean
   group: SidebarProjectGroup
   nativeBackdrop: boolean
   onOpenConversation: (conversationId: string) => void
-  onInterruptConversation: (conversationId: string) => void
 }): React.JSX.Element | null {
   const [shouldRender, setShouldRender] = useState(!collapsed)
   const [expanded, setExpanded] = useState(!collapsed)
@@ -184,7 +179,6 @@ function ProjectGroupConversations({
                 conversation={conversation}
                 nativeBackdrop={nativeBackdrop}
                 onOpen={() => onOpenConversation(conversation.id)}
-                onInterrupt={() => onInterruptConversation(conversation.id)}
               />
             ))
           )}

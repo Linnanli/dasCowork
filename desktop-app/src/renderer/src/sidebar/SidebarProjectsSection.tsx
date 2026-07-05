@@ -69,9 +69,6 @@ export function SidebarProjectsSection({
               onOpenConversation={(conversationId) =>
                 void conversationState.openConversation({ conversationId })
               }
-              onInterruptConversation={(conversationId) =>
-                void conversationState.interruptConversation({ conversationId })
-              }
             />
           ))
         )}

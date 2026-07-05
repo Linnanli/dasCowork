@@ -13,6 +13,7 @@ import type { ModelListResponse } from "./protocol/app-server-protocol/v2/ModelL
 import { CODEX_PROVIDER_ID } from "./protocol/provider-metadata";
 import type { CodexInitializeParams, CodexInitializeResult } from "./protocol/types";
 import type { CodexProviderSettings, TransportContext } from "./provider-settings";
+import { type CodexStartedThread, CodexThreadClient, type CodexThreadStartOptions } from "./thread-client";
 import { stripUndefined } from "./utils/object";
 export type { Model as CodexModel } from "./protocol/app-server-protocol/v2/Model";
 export type {
@@ -27,6 +28,7 @@ export interface CodexProvider extends ProviderV3
     (modelId: string, settings?: CodexLanguageModelSettings): CodexLanguageModel;
     chat(modelId: string, settings?: CodexLanguageModelSettings): CodexLanguageModel;
     listModels(params?: ModelListParams): Promise<Model[]>;
+    startThread(options?: CodexThreadStartOptions): Promise<CodexStartedThread>;
     readonly settings: Readonly<CodexProviderSettings>;
     shutdown(): Promise<void>;
 }
@@ -203,6 +205,10 @@ export function createCodexAppServer(
             {
                 await client.disconnect();
             }
+        },
+        startThread(options: CodexThreadStartOptions = {}): Promise<CodexStartedThread>
+        {
+            return new CodexThreadClient(resolvedSettings).startThread(options);
         },
         async shutdown(): Promise<void>
         {

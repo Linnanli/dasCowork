@@ -59,9 +59,6 @@ export function SidebarChatsSection({
               onOpen={() =>
                 void conversationState.openConversation({ conversationId: conversation.id })
               }
-              onInterrupt={() =>
-                void conversationState.interruptConversation({ conversationId: conversation.id })
-              }
             />
           ))
         )}

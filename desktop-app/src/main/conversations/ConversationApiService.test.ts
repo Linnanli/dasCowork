@@ -200,6 +200,233 @@ describe('ConversationApiService', () => {
     expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
+  it('publishes an observed started thread without waiting for thread/list', async () => {
+    const threadClient = createClient()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: {
+        getState: async () => ({
+          ...baseProjectState,
+          threadProjectAssignments: {
+            ...baseProjectState.threadProjectAssignments,
+            'thread-prestarted': {
+              projectKind: 'local',
+              projectId: 'local',
+              cwd: '/repo/desktop-app'
+            }
+          }
+        })
+      }
+    })
+
+    await expect(
+      service.observeStartedThread({
+        threadId: 'thread-prestarted',
+        title: '你好,你是什么模型?',
+        cwd: '/repo/desktop-app',
+        createdAt: '2026-06-30T04:00:00.000Z',
+        updatedAt: '2026-06-30T04:00:00.000Z'
+      })
+    ).resolves.toMatchObject({
+      loaded: true,
+      error: undefined,
+      conversations: [
+        {
+          id: 'thread-prestarted',
+          threadId: 'thread-prestarted',
+          title: '你好,你是什么模型?',
+          projectAssignment: { projectKind: 'local', projectId: 'local' },
+          cwd: '/repo/desktop-app',
+          running: true
+        }
+      ]
+    })
+    expect(threadClient.listThreads).not.toHaveBeenCalled()
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
+    expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('publishes an immediate observed started snapshot without reading stores', () => {
+    const threadClient = createClient()
+    const projectStore = { getState: vi.fn(async () => baseProjectState) }
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore
+    })
+
+    expect(
+      service.observeStartedThreadSnapshot({
+        threadId: 'thread-prestarted',
+        title: '你好,你是什么模型?',
+        cwd: '/repo/desktop-app',
+        createdAt: '2026-06-30T04:00:00.000Z',
+        updatedAt: '2026-06-30T04:00:00.000Z',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: 'local',
+          cwd: '/repo/desktop-app'
+        }
+      })
+    ).toMatchObject({
+      loaded: true,
+      error: undefined,
+      conversations: [
+        {
+          id: 'thread-prestarted',
+          threadId: 'thread-prestarted',
+          title: '你好,你是什么模型?',
+          cwd: '/repo/desktop-app',
+          projectAssignment: { projectKind: 'local', projectId: 'local' },
+          running: true
+        }
+      ]
+    })
+    expect(projectStore.getState).not.toHaveBeenCalled()
+    expect(threadClient.listThreads).not.toHaveBeenCalled()
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
+    expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an observed started thread before thread/read history is available', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([])
+    vi.mocked(threadClient.readThreadWithFullTurns).mockRejectedValue(
+      new Error('history not ready')
+    )
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: {
+        getState: async () => ({
+          ...baseProjectState,
+          threadProjectAssignments: {
+            ...baseProjectState.threadProjectAssignments,
+            'thread-prestarted': {
+              projectKind: 'local',
+              projectId: 'local',
+              cwd: '/repo/desktop-app'
+            }
+          }
+        })
+      }
+    })
+
+    await service.observeStartedThread({
+      threadId: 'thread-prestarted',
+      title: '你好,你是什么模型?',
+      cwd: '/repo/desktop-app',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:00:00.000Z'
+    })
+
+    await expect(
+      service.refreshConversationList({ ensureThreadIds: ['thread-prestarted'] })
+    ).resolves.toMatchObject({
+      loaded: true,
+      error: undefined,
+      conversations: [
+        {
+          id: 'thread-prestarted',
+          threadId: 'thread-prestarted',
+          title: '你好,你是什么模型?',
+          projectAssignment: { projectKind: 'local', projectId: 'local' },
+          cwd: '/repo/desktop-app',
+          running: true
+        }
+      ]
+    })
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-prestarted')
+    expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('reconciles an observed started thread with authoritative thread/read data', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([])
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
+      id: 'thread-prestarted',
+      title: null,
+      preview: '',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      turns: [
+        {
+          id: 'turn-prestarted',
+          items: [
+            {
+              id: 'user-prestarted',
+              type: 'userMessage',
+              clientId: null,
+              content: [{ type: 'text', text: 'Authoritative prompt', text_elements: [] }]
+            }
+          ],
+          itemsView: 'full',
+          status: 'completed',
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null
+        }
+      ]
+    })
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await service.observeStartedThread({
+      threadId: 'thread-prestarted',
+      title: 'Optimistic prompt',
+      cwd: '/repo/desktop-app',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:00:00.000Z'
+    })
+
+    await expect(
+      service.refreshConversationList({ ensureThreadIds: ['thread-prestarted'] })
+    ).resolves.toMatchObject({
+      loaded: true,
+      error: undefined,
+      conversations: [
+        {
+          id: 'thread-prestarted',
+          threadId: 'thread-prestarted',
+          title: 'Authoritative prompt',
+          running: false,
+          cwd: '/repo/desktop-app'
+        }
+      ]
+    })
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-prestarted')
+  })
+
+  it('can discard an unconfirmed observed started thread', async () => {
+    const threadClient = createClient()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await service.observeStartedThread({
+      threadId: 'thread-prestarted',
+      title: 'Optimistic prompt',
+      cwd: '/repo/desktop-app',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:00:00.000Z'
+    })
+
+    await expect(
+      service.discardStartedThreadObservation('thread-prestarted')
+    ).resolves.toMatchObject({
+      loaded: true,
+      error: undefined,
+      conversations: []
+    })
+    expect(threadClient.listThreads).not.toHaveBeenCalled()
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
+  })
+
   it('uses provider user input formatting for skill and mention sidebar titles', async () => {
     const threadClient = createClient()
     vi.mocked(threadClient.listThreads).mockResolvedValue([])

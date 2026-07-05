@@ -1,21 +1,18 @@
-import { SquareIcon } from 'lucide-react'
+import { LoaderIcon } from 'lucide-react'
 
 import type { SidebarConversation } from '../../../shared/codexIpcApi'
-import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
 
 export function ConversationRow({
   conversation,
   projectLabel,
   nativeBackdrop,
-  onOpen,
-  onInterrupt
+  onOpen
 }: {
   conversation: SidebarConversation
   projectLabel?: string
   nativeBackdrop: boolean
   onOpen: () => void
-  onInterrupt: () => void
 }): React.JSX.Element {
   const title = conversation.title ?? 'New Chat'
   return (
@@ -42,20 +39,13 @@ export function ConversationRow({
         </span>
       </div>
       {conversation.running ? (
-        <Button
-          className="shrink-0 text-muted-foreground"
-          size="icon-xs"
-          type="button"
-          variant="ghost"
-          aria-label={`Interrupt ${title}`}
-          title={`Interrupt ${title}`}
-          onClick={(event) => {
-            event.stopPropagation()
-            onInterrupt()
-          }}
+        <span
+          className="grid size-6 shrink-0 place-items-center text-muted-foreground"
+          aria-label={`${title} is running`}
+          title={`${title} is running`}
         >
-          <SquareIcon className="size-3.5" />
-        </Button>
+          <LoaderIcon className="size-3.5 animate-spin [animation-duration:1.4s]" />
+        </span>
       ) : null}
     </div>
   )

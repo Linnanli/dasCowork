@@ -438,6 +438,10 @@ vi.mock('@assistant-ui/react', () => {
       ),
       Unstable_TriggerPopoverRoot: primitive('Composer.TriggerPopoverRoot')
     },
+    ErrorPrimitive: {
+      Message: primitive('Error.Message'),
+      Root: primitive('Error.Root')
+    },
     MessagePrimitive: {
       Attachments: primitive('Message.Attachments'),
       Content: primitive('Message.Content'),
@@ -499,11 +503,7 @@ vi.mock('@assistant-ui/react', () => {
               </div>
             )
           } else {
-            result.push(
-              <div key={`part-${i}`}>
-                {render({ part, children: null })}
-              </div>
-            )
+            result.push(<div key={`part-${i}`}>{render({ part, children: null })}</div>)
             i++
           }
         }

@@ -314,6 +314,59 @@ describe('ProjectService', () => {
     expect(validateLocalRoot).toHaveBeenCalledWith('/assigned/cwd')
   })
 
+  it('prefers stored assignment keyed by app-server thread id over conversation id', async () => {
+    const { service, readThread } = makeProjectService({
+      threadProjectAssignments: {
+        'conversation-temp': {
+          projectKind: 'local',
+          projectId: 'old',
+          cwd: '/old/cwd'
+        },
+        'thread-real': {
+          projectKind: 'local',
+          projectId: 'current',
+          cwd: '/current/cwd'
+        }
+      },
+      localProjects: {
+        old: {
+          id: 'old',
+          kind: 'local',
+          name: 'Old',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/old/cwd']
+        },
+        current: {
+          id: 'current',
+          kind: 'local',
+          name: 'Current',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/current/cwd']
+        }
+      }
+    })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'conversation-temp',
+        threadId: 'thread-real'
+      })
+    ).resolves.toMatchObject({
+      cwd: '/current/cwd',
+      workspaceRoots: ['/current/cwd'],
+      projectAssignment: {
+        projectKind: 'local',
+        projectId: 'current',
+        cwd: '/current/cwd'
+      }
+    })
+    expect(readThread).not.toHaveBeenCalled()
+  })
+
   it('validates and canonicalizes local assignments for existing threads', async () => {
     const { service, validateLocalRoot } = makeProjectService({
       threadProjectAssignments: {

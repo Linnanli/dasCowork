@@ -117,6 +117,12 @@ export interface CodexCallOptions
     sandbox?: SandboxMode;
     /** Start the thread without writing rollout/session files. Only applies to `thread/start`. */
     ephemeral?: boolean;
+    /**
+     * Invoked after `thread/start` returns a new thread id and before the first
+     * `turn/start` on that thread. The callback's returned promise is awaited so
+     * host-side persistence can prepare local UI state before the first turn.
+     */
+    onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>;
 
     // — Turn-level —
 

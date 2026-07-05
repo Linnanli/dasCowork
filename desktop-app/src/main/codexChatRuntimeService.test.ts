@@ -1,14 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const providerState = vi.hoisted(() => ({
   listModels: vi.fn(),
-  shutdown: vi.fn()
+  shutdown: vi.fn(),
+  startThread: vi.fn()
 }))
 
 vi.mock('./codexAspProvider', () => ({
   createCodexAspProvider: vi.fn(() => ({
     listModels: providerState.listModels,
     shutdown: providerState.shutdown,
+    startThread: providerState.startThread,
     chat: vi.fn()
   }))
 }))
@@ -23,6 +25,7 @@ vi.mock('electron', () => ({
 import {
   CodexChatRuntimeService,
   type CodexPortLike,
+  type CodexChatRuntimeServiceOptions,
   type ModelCatalogLike
 } from './codexChatRuntimeService'
 import { ProjectStore, createDefaultProjectState } from './projects/ProjectStore'
@@ -58,6 +61,22 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
   }
 }
 
+type RuntimeStreamTextInput = {
+  resumeThreadId?: string
+  onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
+}
+
+function streamTextWithStartedThread(
+  threadId = 'thread-prestarted'
+): NonNullable<CodexChatRuntimeServiceOptions['streamText']> {
+  return vi.fn(async (input: RuntimeStreamTextInput) => {
+    await input.onThreadStarted?.({ threadId })
+    return {
+      toUIMessageStream: () => emptyUiMessageStream()
+    }
+  }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+}
+
 function deferred<T = void>(): {
   promise: Promise<T>
   resolve: (value: T | PromiseLike<T>) => void
@@ -72,7 +91,18 @@ function deferred<T = void>(): {
   return { promise, resolve, reject }
 }
 
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 describe('CodexChatRuntimeService', () => {
+  beforeEach(() => {
+    providerState.listModels.mockReset()
+    providerState.shutdown.mockReset()
+    providerState.startThread.mockReset()
+    providerState.startThread.mockResolvedValue({ threadId: 'thread-prestarted' })
+  })
+
   it('returns catalog unavailability instead of provider fallback when catalog is configured', async () => {
     providerState.listModels.mockResolvedValue([])
     const modelCatalog: ModelCatalogLike = {
@@ -186,9 +216,7 @@ describe('CodexChatRuntimeService', () => {
 
   it('uses the catalog selected model when chat requests omit modelId', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = streamTextWithStartedThread()
     const modelCatalog: ModelCatalogLike = {
       listModels: vi.fn().mockResolvedValue({
         models: [
@@ -206,10 +234,13 @@ describe('CodexChatRuntimeService', () => {
         model_id: 'backend-default',
         display_name: 'Backend Default',
         description: null,
+        provider: 'openai',
         capabilities: ['text'],
         is_default: true,
         api_base_url: 'https://models.example.test',
-        api_key: 'secret'
+        api_key: 'secret',
+        api_format: 'openai',
+        source: 'admin'
       })
     }
     const service = new CodexChatRuntimeService({
@@ -239,7 +270,7 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'backend-default'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
   })
 
   it('rejects chat request modelId values that are not in the catalog', async () => {
@@ -279,9 +310,7 @@ describe('CodexChatRuntimeService', () => {
 
   it('streams with the canonical catalog model id after resolving padded request values', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = streamTextWithStartedThread()
     const modelCatalog: ModelCatalogLike = {
       listModels: vi.fn(),
       setSelectedModel: vi.fn(),
@@ -325,7 +354,7 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'canonical-model'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish', threadId: undefined }])
+    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
   })
 
   it('delegates selected model validation to the catalog', async () => {
@@ -359,14 +388,17 @@ describe('CodexChatRuntimeService', () => {
         args: ['--listen', 'stdio://'],
         displayBinary: '/bin/codex-app-server --listen stdio://'
       },
-      streamText: async () => ({
-        toUIMessageStream: () =>
-          (async function* () {
-            yield { type: 'text-start', id: 'text-1' }
-            yield { type: 'text-delta', id: 'text-1', delta: 'hello' }
-            yield { type: 'text-end', id: 'text-1' }
-          })()
-      })
+      streamText: async (input: RuntimeStreamTextInput) => {
+        await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield { type: 'text-start', id: 'text-1' }
+              yield { type: 'text-delta', id: 'text-1', delta: 'hello' }
+              yield { type: 'text-end', id: 'text-1' }
+            })()
+        }
+      }
     })
 
     await service.startChatStream(
@@ -383,7 +415,7 @@ describe('CodexChatRuntimeService', () => {
       { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
       { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } },
       { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } },
-      { type: 'finish', threadId: undefined }
+      { type: 'finish', threadId: 'thread-prestarted' }
     ])
   })
 
@@ -448,20 +480,23 @@ describe('CodexChatRuntimeService', () => {
       },
       projectService,
       projectStore,
-      streamText: async () => ({
-        toUIMessageStream: () =>
-          (async function* () {
-            yield {
-              type: 'text-start',
-              id: 'text-1',
-              providerMetadata: {
-                '@janole/ai-sdk-provider-codex-asp': {
-                  threadId: 'thread-real'
+      streamText: async (input: RuntimeStreamTextInput) => {
+        await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield {
+                type: 'text-start',
+                id: 'text-1',
+                providerMetadata: {
+                  '@janole/ai-sdk-provider-codex-asp': {
+                    threadId: 'thread-real'
+                  }
                 }
-              }
-            } as never
-          })()
-      })
+              } as never
+            })()
+        }
+      }
     })
 
     await service.startChatStream(
@@ -477,6 +512,7 @@ describe('CodexChatRuntimeService', () => {
       port
     )
 
+    await flushAsyncWork()
     await expect(projectStore.getState()).resolves.toMatchObject({
       threadProjectAssignments: {
         'thread-real': {
@@ -487,9 +523,153 @@ describe('CodexChatRuntimeService', () => {
       }
     })
     expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty('chat-temp')
+    expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty(
+      'thread-prestarted'
+    )
   })
 
-  it('fires onThreadIdAvailable when the thread id is first extracted from stream metadata', async () => {
+  it('does not fail the chat stream when project assignment persistence fails', async () => {
+    const port = new FakePort()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const projectService = {
+      resolveNewThreadTarget: vi.fn().mockResolvedValue({
+        hostId: 'local',
+        cwd: '/repo',
+        workspaceRoots: ['/repo'],
+        workspaceKind: 'project',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: 'project-1',
+          cwd: '/repo'
+        }
+      }),
+      resolveExistingThreadTarget: vi.fn()
+    }
+    const projectStore = {
+      getState: vi.fn(async () => createDefaultProjectState()),
+      setState: vi.fn(async () => {
+        throw new Error('project store unavailable')
+      })
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      projectService,
+      projectStore,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield { type: 'text-start', id: 'text-1' } as never
+            })()
+        }
+      }
+    })
+
+    try {
+      await service.startChatStream(
+        {
+          chatId: 'chat-1',
+          trigger: 'submit-message',
+          messages: [],
+          modelId: 'gpt-test',
+          body: {
+            projectSelection: { projectKind: 'local', projectId: 'project-1' }
+          }
+        },
+        port
+      )
+      await flushAsyncWork()
+
+      expect(projectStore.setState).toHaveBeenCalled()
+      expect(consoleError).toHaveBeenCalledWith(
+        'failed to persist project assignment for thread-prestarted',
+        expect.any(Error)
+      )
+      expect(port.messages).toEqual([
+        { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
+        { type: 'finish', threadId: 'thread-prestarted' }
+      ])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('publishes the provider-started thread before streaming first-turn chunks', async () => {
+    const port = new FakePort()
+    const events: string[] = []
+    const onThreadIdAvailable = vi.fn((threadId: string) => {
+      events.push(`callback:${threadId}`)
+    })
+    const streamText = vi.fn(
+      async ({ resumeThreadId, onThreadStarted }: RuntimeStreamTextInput) => {
+        expect(resumeThreadId).toBeUndefined()
+        events.push('streamText')
+        await onThreadStarted?.({ threadId: 'thread-prestarted' })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              events.push('chunk')
+              yield { type: 'text-start', id: 'text-1' } as never
+            })()
+        }
+      }
+    )
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    const result = await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [
+          {
+            id: 'user-1',
+            role: 'user',
+            parts: [{ type: 'text', text: '你好,你是什么模型?' }]
+          }
+        ],
+        modelId: 'gpt-test'
+      },
+      port,
+      { onThreadIdAvailable }
+    )
+
+    expect(events).toEqual(['streamText', 'callback:thread-prestarted', 'chunk'])
+    expect(providerState.startThread).not.toHaveBeenCalled()
+    expect(onThreadIdAvailable).toHaveBeenCalledWith(
+      'thread-prestarted',
+      expect.objectContaining({
+        threadId: 'thread-prestarted',
+        title: '你好,你是什么模型?'
+      })
+    )
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeThreadId: undefined,
+        onThreadStarted: expect.any(Function)
+      })
+    )
+    expect(result.threadId).toBe('thread-prestarted')
+    expect(port.messages).toEqual([
+      { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
+      { type: 'finish', threadId: 'thread-prestarted' }
+    ])
+  })
+
+  it('fires onThreadIdAvailable when resumed stream metadata reports a different thread id', async () => {
     const port = new FakePort()
     const onThreadIdAvailable = vi.fn()
     const service = new CodexChatRuntimeService({
@@ -522,12 +702,14 @@ describe('CodexChatRuntimeService', () => {
         chatId: 'chat-1',
         trigger: 'submit-message',
         messages: [],
-        modelId: 'gpt-test'
+        modelId: 'gpt-test',
+        body: { threadId: 'thread-old' }
       },
       port,
       { onThreadIdAvailable }
     )
 
+    expect(providerState.startThread).not.toHaveBeenCalled()
     expect(onThreadIdAvailable).toHaveBeenCalledTimes(1)
     expect(onThreadIdAvailable).toHaveBeenCalledWith('thread-real')
     expect(result.threadId).toBe('thread-real')
