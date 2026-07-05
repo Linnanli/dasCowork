@@ -2,7 +2,7 @@
 'use client'
 
 import { memo, useCallback, useRef, useState } from 'react'
-import { AlertCircleIcon, CheckIcon, ChevronDownIcon, LoaderIcon, XCircleIcon } from 'lucide-react'
+import { AlertCircleIcon, ChevronDownIcon, XCircleIcon } from 'lucide-react'
 import {
   useScrollLock,
   type ToolCallMessagePart,
@@ -74,9 +74,7 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus['type']
 
-const statusIconMap: Record<ToolStatus, React.ElementType> = {
-  running: LoaderIcon,
-  complete: CheckIcon,
+const statusIconMap: Partial<Record<ToolStatus, React.ElementType>> = {
   incomplete: XCircleIcon,
   'requires-action': AlertCircleIcon
 }
@@ -119,14 +117,15 @@ function ToolFallbackTrigger({
       )}
       {...props}
     >
-      <Icon
-        data-slot="tool-fallback-trigger-icon"
-        className={cn(
-          'aui-tool-fallback-trigger-icon size-4 shrink-0',
-          isCancelled && 'text-muted-foreground',
-          isRunning && 'animate-spin [animation-duration:0.6s]'
-        )}
-      />
+      {Icon && (
+        <Icon
+          data-slot="tool-fallback-trigger-icon"
+          className={cn(
+            'aui-tool-fallback-trigger-icon size-4 shrink-0',
+            isCancelled && 'text-muted-foreground'
+          )}
+        />
+      )}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
