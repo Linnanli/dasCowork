@@ -9,15 +9,20 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 import type { CodexApprovalRequest, DesktopProjectsApi } from '../../shared/codexIpcApi'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 
+type MockPartStatus =
+  | { type: 'complete' }
+  | { type: 'running' }
+  | { type: 'requires-action'; reason: 'interrupt' }
+
 type MockMessagePart =
-  | { type: 'reasoning' | 'text'; text: string }
+  | { type: 'reasoning' | 'text'; text: string; status?: MockPartStatus }
   | {
       type: 'tool-call'
       toolCallId: string
       toolName: string
       argsText: string
       result?: unknown
-      status?: { type: 'complete' } | { type: 'running' }
+      status?: MockPartStatus
     }
 
 type MockThreadMessageState = {
@@ -26,6 +31,7 @@ type MockThreadMessageState = {
       isEditing: boolean
     }
     content: MockMessagePart[]
+    parts?: MockMessagePart[]
     role: 'assistant' | 'user'
     status: { type: 'complete' } | { type: 'running' }
   }
@@ -116,6 +122,7 @@ const projectHookState = vi.hoisted(() => ({
 function resetThreadMessageState(): void {
   threadMessageState.message.composer.isEditing = false
   threadMessageState.message.content = [{ type: 'text', text: '正在思考' }]
+  delete threadMessageState.message.parts
   threadMessageState.message.role = 'user'
   threadMessageState.message.status = { type: 'complete' }
   streamdownPropsState.lastProps = null
@@ -268,6 +275,33 @@ function isToolFallbackComponents(
   return Boolean(tools && typeof tools === 'object' && tools.Fallback)
 }
 
+function currentMessageParts(): MockMessagePart[] {
+  if (threadMessageState.message.parts) return threadMessageState.message.parts
+
+  const lastIndex = Math.max(0, threadMessageState.message.content.length - 1)
+
+  return threadMessageState.message.content.map((part, index) => {
+    if (part.status) return part
+
+    if (threadMessageState.message.role !== 'assistant') {
+      return { ...part, status: { type: 'complete' as const } }
+    }
+
+    if (part.type === 'tool-call') {
+      return {
+        ...part,
+        status: part.result ? { type: 'complete' as const } : threadMessageState.message.status
+      }
+    }
+
+    const isLastPart = index === lastIndex
+    return {
+      ...part,
+      status: isLastPart ? threadMessageState.message.status : { type: 'complete' as const }
+    }
+  })
+}
+
 vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
   return {
     useCodexIpcAssistantRuntime: () => ({
@@ -340,6 +374,7 @@ vi.mock('@assistant-ui/react', () => {
     },
     message: {
       ...threadMessageState.message,
+      parts: currentMessageParts(),
       isCopied: false
     },
     thread: {
@@ -361,6 +396,7 @@ vi.mock('@assistant-ui/react', () => {
     ...assistantState,
     message: {
       ...threadMessageState.message,
+      parts: currentMessageParts(),
       isCopied: false
     }
   })
@@ -467,7 +503,7 @@ vi.mock('@assistant-ui/react', () => {
         groupBy?: unknown
         children: (info: { part: unknown; children: ReactNode }) => ReactNode
       }) => {
-        const parts = threadMessageState.message.content
+        const parts = currentMessageParts()
         const result: ReactNode[] = []
 
         let i = 0
@@ -872,6 +908,78 @@ describe('App composer', () => {
 
     expect(container.textContent).toContain('Used tool')
     expect(container.textContent).toContain('codex_sub_agent_activity')
+  })
+
+  it('summarizes grouped assistant tool parts with Codex actions', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = Array.from({ length: 3 }, (_, index) => ({
+      type: 'tool-call' as const,
+      toolCallId: `read-${index}`,
+      toolName: 'codex_command_execution',
+      argsText: JSON.stringify({ command: `sed -n '${index + 1}p' file.ts`, cwd: '/repo' }),
+      result: {
+        item: {
+          id: `read-${index}`,
+          type: 'commandExecution',
+          command: `sed -n '${index + 1}p' file.ts`,
+          cwd: '/repo',
+          processId: null,
+          source: { type: 'exec' },
+          status: 'completed',
+          commandActions: [
+            {
+              type: 'read',
+              command: `sed -n '${index + 1}p' file.ts`,
+              name: 'sed',
+              path: `/repo/file-${index}.ts`
+            }
+          ],
+          aggregatedOutput: '',
+          exitCode: 0,
+          durationMs: 1
+        }
+      }
+    }))
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('已读取 3 个文件')
+    expect(container.textContent).not.toContain('3 tool calls')
+  })
+
+  it('summarizes grouped running tool parts from derived assistant-ui part state', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '先查一下' },
+      ...Array.from({ length: 2 }, (_, index) => ({
+        type: 'tool-call' as const,
+        toolCallId: `search-${index}`,
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({
+          command: `rg needle-${index}`,
+          cwd: '/repo',
+          commandActions: [
+            {
+              type: 'search',
+              command: `rg needle-${index}`,
+              query: `needle-${index}`,
+              path: null
+            }
+          ]
+        })
+      }))
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('正在搜索 2 次代码')
+    expect(container.textContent).not.toContain('已搜索 2 次代码')
   })
 
   it('keeps the thinking placeholder while only reasoning streams', () => {

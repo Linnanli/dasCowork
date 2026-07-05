@@ -80,14 +80,16 @@ function ToolGroupRoot({
 
 function ToolGroupTrigger({
   count,
+  label,
   active = false,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   count: number
+  label?: string
   active?: boolean
 }) {
-  const label = `${count} tool ${count === 1 ? 'call' : 'calls'}`
+  const displayLabel = label ?? `${count} tool ${count === 1 ? 'call' : 'calls'}`
 
   return (
     <CollapsibleTrigger
@@ -116,14 +118,14 @@ function ToolGroupTrigger({
           'group-data-[variant=muted]/tool-group-root:grow'
         )}
       >
-        <span className="text-xs">{label}</span>
+        <span className="text-xs">{displayLabel}</span>
         {active && (
           <span
             aria-hidden
             data-slot="tool-group-trigger-shimmer"
             className="aui-tool-group-trigger-shimmer shimmer pointer-events-none absolute inset-0 text-xs motion-reduce:animate-none"
           >
-            {label}
+            {displayLabel}
           </span>
         )}
       </span>

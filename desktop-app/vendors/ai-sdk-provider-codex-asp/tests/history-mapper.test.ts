@@ -12,6 +12,9 @@ describe("history mapper", () =>
 {
     it("maps a full thread history to UI messages without dropping tool items", () =>
     {
+        const commandActions = [
+            { type: "read" as const, command: "cat package.json", name: "cat", path: "/repo/package.json" },
+        ];
         const commandItem = {
             type: "commandExecution",
             id: "cmd_1",
@@ -20,7 +23,7 @@ describe("history mapper", () =>
             processId: null,
             source: "agent",
             status: "completed",
-            commandActions: [],
+            commandActions,
             aggregatedOutput: "ok",
             exitCode: 0,
             durationMs: 1200,
@@ -71,7 +74,7 @@ describe("history mapper", () =>
                         toolName: "codex_command_execution",
                         toolCallId: "cmd_1",
                         state: "output-available",
-                        input: { command: "npm test", cwd: "/repo" },
+                        input: { command: "npm test", cwd: "/repo", commandActions },
                         output: { item: commandItem },
                         providerExecuted: true,
                     },

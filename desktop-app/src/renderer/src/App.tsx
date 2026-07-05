@@ -77,6 +77,7 @@ import {
   hasVisibleAssistantTextContent,
   pendingAssistantMessageText
 } from './lib/assistantMessages'
+import { summarizeToolGroup } from './lib/toolGroupSummary'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
@@ -570,6 +571,7 @@ const toolGroupBy = groupPartByType({
 })
 
 function AssistantMessage(): React.JSX.Element {
+  const messageParts = useAuiState((state) => state.message.parts)
   const isThinking = useAuiState(
     (state) =>
       state.message.status?.type === 'running' &&
@@ -595,14 +597,22 @@ function AssistantMessage(): React.JSX.Element {
           <MessagePrimitive.GroupedParts groupBy={toolGroupBy}>
             {({ part, children }) => {
               switch (part.type) {
-                case 'group-tool':
+                case 'group-tool': {
                   if (part.indices.length === 1) return <>{children}</>
+                  const toolSummary = summarizeToolGroup(
+                    part.indices.map((index) => messageParts[index])
+                  )
                   return (
                     <ToolGroupRoot variant="ghost">
-                      <ToolGroupTrigger count={part.indices.length} />
+                      <ToolGroupTrigger
+                        count={part.indices.length}
+                        label={toolSummary.label}
+                        active={toolSummary.active}
+                      />
                       <ToolGroupContent>{children}</ToolGroupContent>
                     </ToolGroupRoot>
                   )
+                }
                 case 'text':
                   return <AssistantText />
                 case 'tool-call':

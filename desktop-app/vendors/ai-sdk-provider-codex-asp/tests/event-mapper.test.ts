@@ -195,6 +195,9 @@ describe("CodexEventMapper", () =>
     it("maps commandExecution to provider-executed tool-call and tool-result stream", () =>
     {
         const mapper = new CodexEventMapper();
+        const commandActions = [
+            { type: "search" as const, command: "rg test", query: "test", path: null },
+        ];
 
         const events = [
             { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
@@ -208,7 +211,7 @@ describe("CodexEventMapper", () =>
                         cwd: "/project",
                         processId: null,
                         status: "inProgress",
-                        commandActions: [],
+                        commandActions,
                         aggregatedOutput: null,
                         exitCode: null,
                         durationMs: null,
@@ -227,7 +230,7 @@ describe("CodexEventMapper", () =>
                         cwd: "/project",
                         processId: "123",
                         status: "completed",
-                        commandActions: [],
+                        commandActions,
                         aggregatedOutput: "PASS src/test.ts",
                         exitCode: 0,
                         durationMs: 1500,
@@ -253,7 +256,7 @@ describe("CodexEventMapper", () =>
                 type: "tool-call",
                 toolCallId: "cmd_1",
                 toolName: "codex_command_execution",
-                input: JSON.stringify({ command: "npm test", cwd: "/project" }),
+                input: JSON.stringify({ command: "npm test", cwd: "/project", commandActions }),
                 providerExecuted: true,
                 dynamic: true,
             },
@@ -269,7 +272,7 @@ describe("CodexEventMapper", () =>
                         cwd: "/project",
                         processId: "123",
                         status: "completed",
-                        commandActions: [],
+                        commandActions,
                         aggregatedOutput: "PASS src/test.ts",
                         exitCode: 0,
                         durationMs: 1500,

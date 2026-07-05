@@ -129,6 +129,9 @@ export function toolInputForItem(item: CodexRenderableThreadItem): unknown
             return stripUndefined({
                 command: item.command,
                 cwd: item.cwd,
+                commandActions: Array.isArray(item.commandActions) && item.commandActions.length > 0
+                    ? item.commandActions
+                    : undefined,
             });
         case "fileChange":
             return { changes: item.changes, status: item.status };
