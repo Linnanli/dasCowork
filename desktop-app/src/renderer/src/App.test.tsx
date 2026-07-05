@@ -934,6 +934,52 @@ describe('App composer', () => {
     expect(container.textContent).not.toContain('codex_command_execution')
   })
 
+  it('renders semantic icons for single assistant tool summaries', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'search-1',
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({
+          command: 'rg needle',
+          cwd: '/repo',
+          commandActions: [
+            { type: 'search', command: 'rg needle', query: 'needle', path: null },
+            { type: 'search', command: 'rg other', query: 'other', path: null }
+          ]
+        }),
+        status: { type: 'complete' },
+        result: {
+          item: {
+            id: 'search-1',
+            type: 'commandExecution',
+            command: 'rg needle',
+            cwd: '/repo',
+            processId: null,
+            source: { type: 'exec' },
+            status: 'completed',
+            commandActions: [
+              { type: 'search', command: 'rg needle', query: 'needle', path: null },
+              { type: 'search', command: 'rg other', query: 'other', path: null }
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 1
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('已搜索 2 次代码')
+    expect(container.querySelector('[data-slot="tool-fallback-trigger-icon"]')).not.toBeNull()
+  })
+
   it('summarizes grouped assistant tool parts with Codex actions', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
@@ -972,6 +1018,7 @@ describe('App composer', () => {
 
     expect(container.textContent).toContain('已读取 3 个文件')
     expect(container.textContent).not.toContain('3 tool calls')
+    expect(container.querySelector('[data-slot="tool-group-trigger-icon"]')).not.toBeNull()
   })
 
   it('summarizes grouped running tool parts from derived assistant-ui part state', () => {

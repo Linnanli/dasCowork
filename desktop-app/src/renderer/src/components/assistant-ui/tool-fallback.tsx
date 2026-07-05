@@ -13,6 +13,8 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { toolGroupIconMap } from './tool-group'
+import type { ToolGroupIconName } from '@/lib/toolGroupSummary'
 
 const ANIMATION_DURATION = 200
 
@@ -81,24 +83,28 @@ const statusIconMap: Partial<Record<ToolStatus, React.ElementType>> = {
 
 type ToolFallbackProps = ToolCallMessagePartProps & {
   summaryLabel?: string
+  summaryIcon?: ToolGroupIconName
 }
 
 function ToolFallbackTrigger({
   toolName,
   summaryLabel,
+  summaryIcon,
   status,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string
   summaryLabel?: string
+  summaryIcon?: ToolGroupIconName
   status?: ToolCallMessagePartStatus
 }) {
   const statusType = status?.type ?? 'complete'
   const isRunning = statusType === 'running'
   const isCancelled = status?.type === 'incomplete' && status.reason === 'cancelled'
 
-  const Icon = statusIconMap[statusType]
+  const Icon =
+    statusIconMap[statusType] ?? (summaryIcon ? toolGroupIconMap[summaryIcon] : undefined)
   const label = isCancelled ? 'Cancelled tool' : 'Used tool'
   const labelContent = summaryLabel ? (
     <span>{summaryLabel}</span>
@@ -338,6 +344,7 @@ function ToolFallbackApproval({
 const ToolFallbackImpl = ({
   toolName,
   summaryLabel,
+  summaryIcon,
   argsText,
   result,
   status,
@@ -358,7 +365,12 @@ const ToolFallbackImpl = ({
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolFallbackTrigger toolName={toolName} summaryLabel={summaryLabel} status={status} />
+      <ToolFallbackTrigger
+        toolName={toolName}
+        summaryLabel={summaryLabel}
+        summaryIcon={summaryIcon}
+        status={status}
+      />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs argsText={argsText} className={cn(isCancelled && 'opacity-60')} />

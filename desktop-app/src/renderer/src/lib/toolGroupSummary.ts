@@ -15,6 +15,21 @@ type ToolGroupCounterKey =
   | 'reviewModeChanges'
   | 'genericTools'
 
+export type ToolGroupIconName =
+  | 'read-files'
+  | 'list-files'
+  | 'code-searching'
+  | 'run-command'
+  | 'edit-files'
+  | 'web-search'
+  | 'mcp-tools'
+  | 'sub-agent'
+  | 'image-view'
+  | 'context-compaction'
+  | 'hook-prompt'
+  | 'review-mode'
+  | 'generic-tool'
+
 type ToolGroupCounter = {
   active: number
   completed: number
@@ -22,6 +37,7 @@ type ToolGroupCounter = {
 
 export type ToolGroupSummary = {
   label?: string
+  icon?: ToolGroupIconName
   active: boolean
 }
 
@@ -98,6 +114,7 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
 
   return {
     label: renderSummaryLabel(state),
+    icon: renderSummaryIcon(state),
     active
   }
 }
@@ -310,6 +327,34 @@ function renderSummaryLabel(state: ToolGroupSummaryState): string | undefined {
   return segments.length > 0 ? segments.join('，') : undefined
 }
 
+function renderSummaryIcon(state: ToolGroupSummaryState): ToolGroupIconName | undefined {
+  if (counterTotal(state.webSearches) > 0) return 'web-search'
+  if (counterTotal(state.searchCode) > 0) return 'code-searching'
+  if (counterTotal(state.listFiles) > 0) return 'list-files'
+  if (counterTotal(state.readFiles) > 0) return 'read-files'
+
+  const fileChangeCount =
+    counterTotal(state.createFiles) +
+    counterTotal(state.editFiles) +
+    counterTotal(state.deleteFiles)
+  if (fileChangeCount > 0) return 'edit-files'
+
+  if (counterTotal(state.runCommands) > 0) return 'run-command'
+  if (counterTotal(state.mcpTools) > 0) return 'mcp-tools'
+  if (counterTotal(state.subAgentActivities) > 0) return 'sub-agent'
+  if (counterTotal(state.imageViews) > 0) return 'image-view'
+  if (counterTotal(state.contextCompactions) > 0) return 'context-compaction'
+  if (counterTotal(state.hookPrompts) > 0) return 'hook-prompt'
+  if (counterTotal(state.reviewModeChanges) > 0) return 'review-mode'
+  if (counterTotal(state.genericTools) > 0) return 'generic-tool'
+
+  return undefined
+}
+
+function counterTotal(counter: ToolGroupCounter): number {
+  return counter.active + counter.completed
+}
+
 function extractThreadItem(part: ToolPartRecord): ToolPartRecord | undefined {
   const resultItem = recordProperty(part.result, 'item')
   if (resultItem && typeof resultItem.type === 'string') return resultItem
@@ -343,9 +388,7 @@ function isActiveStatus(status: unknown): boolean {
   if (status === 'inProgress' || status === 'running') return true
   if (!isRecord(status)) return false
   return (
-    status.type === 'inProgress' ||
-    status.type === 'running' ||
-    status.type === 'requires-action'
+    status.type === 'inProgress' || status.type === 'running' || status.type === 'requires-action'
   )
 }
 

@@ -607,6 +607,7 @@ function AssistantMessage(): React.JSX.Element {
                       <ToolGroupTrigger
                         count={part.indices.length}
                         label={toolSummary.label}
+                        icon={toolSummary.icon}
                         active={toolSummary.active}
                       />
                       <ToolGroupContent>{children}</ToolGroupContent>
@@ -617,7 +618,15 @@ function AssistantMessage(): React.JSX.Element {
                   return <AssistantText />
                 case 'tool-call': {
                   const toolSummary = summarizeToolGroup([part])
-                  return part.toolUI ?? <ToolFallback {...part} summaryLabel={toolSummary.label} />
+                  return (
+                    part.toolUI ?? (
+                      <ToolFallback
+                        {...part}
+                        summaryLabel={toolSummary.label}
+                        summaryIcon={toolSummary.icon}
+                      />
+                    )
+                  )
                 }
                 case 'indicator':
                   return null

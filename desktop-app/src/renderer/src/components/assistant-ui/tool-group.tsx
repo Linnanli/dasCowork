@@ -2,13 +2,46 @@
 'use client'
 
 import { memo, useCallback, useRef, useState, type FC, type PropsWithChildren } from 'react'
-import { ChevronDownIcon } from 'lucide-react'
+import {
+  BookOpenIcon,
+  BotIcon,
+  ChevronDownIcon,
+  CombineIcon,
+  FilePenIcon,
+  FileTextIcon,
+  FolderIcon,
+  GlobeIcon,
+  ImageIcon,
+  PlugIcon,
+  SearchIcon,
+  ShieldCheckIcon,
+  TerminalIcon,
+  WrenchIcon,
+  type LucideIcon
+} from 'lucide-react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { useScrollLock } from '@assistant-ui/react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import type { ToolGroupIconName } from '@/lib/toolGroupSummary'
 
 const ANIMATION_DURATION = 200
+
+export const toolGroupIconMap: Record<ToolGroupIconName, LucideIcon> = {
+  'read-files': FileTextIcon,
+  'list-files': FolderIcon,
+  'code-searching': SearchIcon,
+  'run-command': TerminalIcon,
+  'edit-files': FilePenIcon,
+  'web-search': GlobeIcon,
+  'mcp-tools': PlugIcon,
+  'sub-agent': BotIcon,
+  'image-view': ImageIcon,
+  'context-compaction': CombineIcon,
+  'hook-prompt': BookOpenIcon,
+  'review-mode': ShieldCheckIcon,
+  'generic-tool': WrenchIcon
+}
 
 const toolGroupVariants = cva('aui-tool-group-root group/tool-group w-full', {
   variants: {
@@ -81,15 +114,18 @@ function ToolGroupRoot({
 function ToolGroupTrigger({
   count,
   label,
+  icon,
   active = false,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   count: number
   label?: string
+  icon?: ToolGroupIconName
   active?: boolean
 }) {
   const displayLabel = label ?? `${count} tool ${count === 1 ? 'call' : 'calls'}`
+  const Icon = icon ? toolGroupIconMap[icon] : undefined
 
   return (
     <CollapsibleTrigger
@@ -103,10 +139,17 @@ function ToolGroupTrigger({
       )}
       {...props}
     >
+      {Icon ? (
+        <Icon
+          aria-hidden
+          data-slot="tool-group-trigger-icon"
+          className="aui-tool-group-trigger-icon size-3.5 shrink-0"
+        />
+      ) : null}
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
-          'aui-tool-group-trigger-label-wrapper relative inline-block text-start leading-none font-medium',
+          'aui-tool-group-trigger-label-wrapper relative inline-block min-w-0 text-start leading-none font-medium',
           'group-data-[variant=ghost]/tool-group-root:font-normal',
           'group-data-[variant=outline]/tool-group-root:grow',
           'group-data-[variant=muted]/tool-group-root:grow'
