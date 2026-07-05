@@ -81,13 +81,19 @@ const statusIconMap: Record<ToolStatus, React.ElementType> = {
   'requires-action': AlertCircleIcon
 }
 
+type ToolFallbackProps = ToolCallMessagePartProps & {
+  summaryLabel?: string
+}
+
 function ToolFallbackTrigger({
   toolName,
+  summaryLabel,
   status,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string
+  summaryLabel?: string
   status?: ToolCallMessagePartStatus
 }) {
   const statusType = status?.type ?? 'complete'
@@ -96,6 +102,13 @@ function ToolFallbackTrigger({
 
   const Icon = statusIconMap[statusType]
   const label = isCancelled ? 'Cancelled tool' : 'Used tool'
+  const labelContent = summaryLabel ? (
+    <span>{summaryLabel}</span>
+  ) : (
+    <span>
+      {label}: <b>{toolName}</b>
+    </span>
+  )
 
   return (
     <CollapsibleTrigger
@@ -121,16 +134,14 @@ function ToolFallbackTrigger({
           isCancelled && 'text-muted-foreground line-through'
         )}
       >
-        <span>
-          {label}: <b>{toolName}</b>
-        </span>
+        {labelContent}
         {isRunning && (
           <span
             aria-hidden
             data-slot="tool-fallback-trigger-shimmer"
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            {label}: <b>{toolName}</b>
+            {labelContent}
           </span>
         )}
       </span>
@@ -325,8 +336,9 @@ function ToolFallbackApproval({
   )
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+const ToolFallbackImpl = ({
   toolName,
+  summaryLabel,
   argsText,
   result,
   status,
@@ -347,7 +359,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolFallbackTrigger toolName={toolName} status={status} />
+      <ToolFallbackTrigger toolName={toolName} summaryLabel={summaryLabel} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs argsText={argsText} className={cn(isCancelled && 'opacity-60')} />
@@ -366,6 +378,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 }
 
 const ToolFallback = memo(ToolFallbackImpl) as unknown as ToolCallMessagePartComponent & {
+  (props: ToolFallbackProps): React.ReactElement | null
   Root: typeof ToolFallbackRoot
   Trigger: typeof ToolFallbackTrigger
   Content: typeof ToolFallbackContent

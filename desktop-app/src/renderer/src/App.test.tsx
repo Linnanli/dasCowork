@@ -879,24 +879,47 @@ describe('App composer', () => {
     })
   })
 
-  it('renders assistant tool parts with the shared tool fallback', () => {
+  it('renders semantic labels for single assistant tool parts', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
       {
         type: 'tool-call',
-        toolCallId: 'subagent-1',
-        toolName: 'codex_sub_agent_activity',
+        toolCallId: 'read-1',
+        toolName: 'codex_command_execution',
         argsText: JSON.stringify({
-          kind: 'started',
-          agentThreadId: 'agent-thread',
-          agentPath: '/repo'
+          command: "sed -n '1,20p' file.ts",
+          cwd: '/repo',
+          commandActions: [
+            {
+              type: 'read',
+              command: "sed -n '1,20p' file.ts",
+              name: 'sed',
+              path: '/repo/file.ts'
+            }
+          ]
         }),
         status: { type: 'complete' },
         result: {
           item: {
-            id: 'subagent-1',
-            type: 'subAgentActivity'
+            id: 'read-1',
+            type: 'commandExecution',
+            command: "sed -n '1,20p' file.ts",
+            cwd: '/repo',
+            processId: null,
+            source: { type: 'exec' },
+            status: 'completed',
+            commandActions: [
+              {
+                type: 'read',
+                command: "sed -n '1,20p' file.ts",
+                name: 'sed',
+                path: '/repo/file.ts'
+              }
+            ],
+            aggregatedOutput: '',
+            exitCode: 0,
+            durationMs: 1
           }
         }
       }
@@ -906,8 +929,9 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('Used tool')
-    expect(container.textContent).toContain('codex_sub_agent_activity')
+    expect(container.textContent).toContain('已读取 1 个文件')
+    expect(container.textContent).not.toContain('Used tool')
+    expect(container.textContent).not.toContain('codex_command_execution')
   })
 
   it('summarizes grouped assistant tool parts with Codex actions', () => {

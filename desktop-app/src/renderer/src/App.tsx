@@ -615,8 +615,10 @@ function AssistantMessage(): React.JSX.Element {
                 }
                 case 'text':
                   return <AssistantText />
-                case 'tool-call':
-                  return part.toolUI ?? <ToolFallback {...part} />
+                case 'tool-call': {
+                  const toolSummary = summarizeToolGroup([part])
+                  return part.toolUI ?? <ToolFallback {...part} summaryLabel={toolSummary.label} />
+                }
                 case 'indicator':
                   return null
                 default:
