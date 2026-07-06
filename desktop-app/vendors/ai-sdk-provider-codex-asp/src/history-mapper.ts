@@ -100,6 +100,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi): UIMessage[]
             case "subAgentActivity":
             case "webSearch":
             case "imageView":
+            case "sleep":
             case "enteredReviewMode":
             case "exitedReviewMode":
             case "contextCompaction":
@@ -149,6 +150,7 @@ export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiM
         case "subAgentActivity":
         case "webSearch":
         case "imageView":
+        case "sleep":
         case "enteredReviewMode":
         case "exitedReviewMode":
         case "contextCompaction":

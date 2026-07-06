@@ -169,6 +169,7 @@ function thread(overrides: Partial<Thread> = {}): Thread
         modelProvider: "openai",
         createdAt: 1782777600,
         updatedAt: 1782777900,
+        recencyAt: 1782777900,
         status: { type: "idle" },
         path: null,
         cwd: "/repo",

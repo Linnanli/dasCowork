@@ -39,6 +39,7 @@ export const THREAD_ITEM_TYPE_COVERAGE: Record<ThreadItem["type"], true> = {
     subAgentActivity: true,
     webSearch: true,
     imageView: true,
+    sleep: true,
     imageGeneration: true,
     enteredReviewMode: true,
     exitedReviewMode: true,
@@ -69,6 +70,7 @@ export function classifyThreadItem(item: CodexRenderableThreadItem): ThreadItemC
         case "subAgentActivity":
         case "webSearch":
         case "imageView":
+        case "sleep":
         case "enteredReviewMode":
         case "exitedReviewMode":
         case "contextCompaction":
@@ -100,6 +102,8 @@ export function toolNameForItem(item: CodexRenderableThreadItem): string | null
             return "codex_collab_agent";
         case "imageView":
             return "codex_image_view";
+        case "sleep":
+            return "codex_sleep";
         case "contextCompaction":
             return "codex_context_compaction";
         case "hookPrompt":
@@ -154,6 +158,8 @@ export function toolInputForItem(item: CodexRenderableThreadItem): unknown
             });
         case "imageView":
             return { path: item.path };
+        case "sleep":
+            return { durationMs: item.durationMs };
         case "contextCompaction":
             return {};
         case "hookPrompt":

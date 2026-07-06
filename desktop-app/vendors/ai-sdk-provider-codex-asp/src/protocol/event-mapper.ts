@@ -1,11 +1,15 @@
 import type {
+    JSONValue,
     LanguageModelV3FinishReason,
     LanguageModelV3StreamPart,
     LanguageModelV3Usage,
 } from "@ai-sdk/provider";
 
+import { stripUndefined } from "../utils/object";
 import type { AgentMessageDeltaNotification } from "./app-server-protocol/v2/AgentMessageDeltaNotification";
 import type { ItemCompletedNotification } from "./app-server-protocol/v2/ItemCompletedNotification";
+import type { ItemGuardianApprovalReviewCompletedNotification } from "./app-server-protocol/v2/ItemGuardianApprovalReviewCompletedNotification";
+import type { ItemGuardianApprovalReviewStartedNotification } from "./app-server-protocol/v2/ItemGuardianApprovalReviewStartedNotification";
 import type { ItemStartedNotification } from "./app-server-protocol/v2/ItemStartedNotification";
 import type { McpToolCallProgressNotification } from "./app-server-protocol/v2/McpToolCallProgressNotification";
 import type { ReasoningSummaryPartAddedNotification } from "./app-server-protocol/v2/ReasoningSummaryPartAddedNotification";
@@ -38,6 +42,22 @@ interface DeltaParams
 
 type DynamicToolCallItem = CodexDynamicToolCallItem;
 type CodexThreadItemToolStart = Pick<CodexThreadItemToolInvocation, "toolCallId" | "toolName" | "input">;
+type AutoApprovalReviewItem = Record<string, unknown> & {
+    id: string;
+    type: "automaticApprovalReview";
+    status: "inProgress" | "completed";
+    outcome: string | null;
+    startedAtMs: number;
+    completedAtMs?: number;
+    targetItemId: string | null;
+    review: ItemGuardianApprovalReviewStartedNotification["review"];
+    action: ItemGuardianApprovalReviewStartedNotification["action"];
+    decisionSource?: ItemGuardianApprovalReviewCompletedNotification["decisionSource"];
+};
+
+type AutoApprovalReviewNotification =
+    | ItemGuardianApprovalReviewStartedNotification
+    | ItemGuardianApprovalReviewCompletedNotification;
 
 const EMPTY_USAGE: LanguageModelV3Usage = {
     inputTokens: {
@@ -74,6 +94,49 @@ function turnErrorMessage(completed: TurnCompletedNotification): string | undefi
     return message || undefined;
 }
 
+function autoApprovalReviewItem(
+    notification: AutoApprovalReviewNotification,
+    status: AutoApprovalReviewItem["status"],
+): AutoApprovalReviewItem
+{
+    return stripUndefined({
+        id: notification.reviewId,
+        type: "automaticApprovalReview" as const,
+        status,
+        outcome: notification.review.status,
+        startedAtMs: notification.startedAtMs,
+        completedAtMs: "completedAtMs" in notification ? notification.completedAtMs : undefined,
+        targetItemId: notification.targetItemId,
+        review: notification.review,
+        action: notification.action,
+        decisionSource: "decisionSource" in notification ? notification.decisionSource : undefined,
+    });
+}
+
+function autoApprovalReviewInvocation(item: AutoApprovalReviewItem): CodexThreadItemToolStart & {
+    result: { item: AutoApprovalReviewItem };
+}
+{
+    return {
+        toolCallId: item.id,
+        toolName: "codex_automatic_approval_review",
+        input: stripUndefined({
+            targetItemId: item.targetItemId,
+            review: item.review,
+            action: item.action,
+            startedAtMs: item.startedAtMs,
+            completedAtMs: item.completedAtMs,
+            decisionSource: item.decisionSource,
+        }),
+        result: { item },
+    };
+}
+
+function asToolResult(value: unknown): NonNullable<JSONValue>
+{
+    return value as NonNullable<JSONValue>;
+}
+
 export interface CodexEventMapperOptions
 {
     /** Emit plan updates as tool-call/tool-result parts. Default: true. */
@@ -104,7 +167,7 @@ export class CodexEventMapper
     private readonly openTextParts = new Set<string>();
     private readonly textDeltaReceived = new Set<string>();
     private readonly openReasoningParts = new Set<string>();
-    private readonly openToolCalls = new Map<string, { toolName: string }>();
+    private readonly openToolCalls = new Map<string, { toolName: string; item?: Record<string, unknown> }>();
     /**
      * Item IDs for dynamicToolCall items seen in cross-call mode — tracked so
      * item/tool/call dedup fires without adding them to openToolCalls (which
@@ -136,6 +199,8 @@ export class CodexEventMapper
             "item/started": (p) => this.handleItemStarted(p),
             "item/agentMessage/delta": (p) => this.handleAgentMessageDelta(p),
             "item/completed": (p) => this.handleItemCompleted(p),
+            "item/autoApprovalReview/started": (p) => this.handleAutoApprovalReviewStarted(p),
+            "item/autoApprovalReview/completed": (p) => this.handleAutoApprovalReviewCompleted(p),
             "item/reasoning/textDelta": (p) => this.handleReasoningDelta(p),
             "item/reasoning/summaryTextDelta": (p) => this.handleReasoningDelta(p),
             "item/plan/delta": (p) => this.handleReasoningDelta(p),
@@ -310,6 +375,7 @@ export class CodexEventMapper
             }
             case "fileChange":
             case "mcpToolCall":
+            case "sleep":
             case "collabAgentToolCall":
             case "collabToolCall":
             case "imageView":
@@ -318,7 +384,9 @@ export class CodexEventMapper
             case "exitedReviewMode":
             case "hookPrompt":
             case "subAgentActivity":
-                this.startProviderToolCall(parts, item);
+                this.startProviderToolCall(parts, item, {
+                    emitPreliminaryItem: item.type === "mcpToolCall" || item.type === "sleep",
+                });
                 break;
             case "webSearch":
                 this.ensureStreamStarted(parts);
@@ -558,9 +626,55 @@ export class CodexEventMapper
             type: "tool-result",
             toolCallId: p.itemId,
             toolName: tracked.toolName,
-            result: { output: p.message },
+            result: asToolResult(stripUndefined({ output: p.message, item: tracked.item })),
             preliminary: true,
         })];
+    }
+
+    // item/autoApprovalReview/started
+    private handleAutoApprovalReviewStarted(params: unknown): LanguageModelV3StreamPart[]
+    {
+        const p = (params ?? {}) as ItemGuardianApprovalReviewStartedNotification;
+        if (!p.reviewId)
+        {
+            return [];
+        }
+
+        const parts: LanguageModelV3StreamPart[] = [];
+        const item = autoApprovalReviewItem(p, "inProgress");
+        this.startProviderToolCall(parts, autoApprovalReviewInvocation(item), {
+            item,
+            emitPreliminaryItem: true,
+        });
+        return parts;
+    }
+
+    // item/autoApprovalReview/completed
+    private handleAutoApprovalReviewCompleted(params: unknown): LanguageModelV3StreamPart[]
+    {
+        const p = (params ?? {}) as ItemGuardianApprovalReviewCompletedNotification;
+        if (!p.reviewId)
+        {
+            return [];
+        }
+
+        const parts: LanguageModelV3StreamPart[] = [];
+        const item = autoApprovalReviewItem(p, "completed");
+        const invocation = autoApprovalReviewInvocation(item);
+        if (!this.openToolCalls.has(invocation.toolCallId))
+        {
+            this.startProviderToolCall(parts, invocation, { item });
+        }
+
+        this.ensureStreamStarted(parts);
+        parts.push(this.withMeta({
+            type: "tool-result",
+            toolCallId: invocation.toolCallId,
+            toolName: invocation.toolName,
+            result: asToolResult(invocation.result),
+        }));
+        this.openToolCalls.delete(invocation.toolCallId);
+        return parts;
     }
 
     // item/tool/callStarted
@@ -645,6 +759,7 @@ export class CodexEventMapper
     private startProviderToolCall(
         parts: LanguageModelV3StreamPart[],
         itemOrInvocation: CodexRenderableThreadItem | CodexThreadItemToolStart,
+        options: { item?: Record<string, unknown>; emitPreliminaryItem?: boolean } = {},
     ): void
     {
         const invocation = "toolCallId" in itemOrInvocation
@@ -656,7 +771,11 @@ export class CodexEventMapper
         }
 
         this.ensureStreamStarted(parts);
-        this.openToolCalls.set(invocation.toolCallId, { toolName: invocation.toolName });
+        const item = options.item ?? (!("toolCallId" in itemOrInvocation) ? itemOrInvocation : undefined);
+        this.openToolCalls.set(
+            invocation.toolCallId,
+            item ? { toolName: invocation.toolName, item } : { toolName: invocation.toolName },
+        );
         parts.push(this.withMeta({
             type: "tool-call",
             toolCallId: invocation.toolCallId,
@@ -665,6 +784,17 @@ export class CodexEventMapper
             providerExecuted: true,
             dynamic: true,
         }));
+
+        if (options.emitPreliminaryItem && item)
+        {
+            parts.push(this.withMeta({
+                type: "tool-result",
+                toolCallId: invocation.toolCallId,
+                toolName: invocation.toolName,
+                result: asToolResult({ item }),
+                preliminary: true,
+            }));
+        }
     }
 
     // thread/tokenUsage/updated

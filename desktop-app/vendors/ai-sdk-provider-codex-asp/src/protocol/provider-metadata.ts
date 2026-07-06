@@ -25,7 +25,7 @@ export function withProviderMetadata<T extends LanguageModelV3StreamPart>(
     threadId: string | undefined,
     turnId?: string,
     threadPath?: string,
-    extra?: Record<string, string>,
+    extra?: Record<string, unknown>,
 ): T
 {
     const hasExtra = extra !== null && extra !== undefined && Object.keys(extra).length > 0;

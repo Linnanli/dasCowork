@@ -12,7 +12,15 @@ import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 type MockPartStatus =
   | { type: 'complete' }
   | { type: 'running' }
+  | { type: 'incomplete'; reason?: 'cancelled'; error?: string }
+  | { type: 'error'; error?: string }
   | { type: 'requires-action'; reason: 'interrupt' }
+
+type MockMessageStatus =
+  | { type: 'complete' }
+  | { type: 'running' }
+  | { type: 'incomplete'; reason?: 'cancelled'; error?: string }
+  | { type: 'error'; error?: string }
 
 type MockMessagePart =
   | { type: 'reasoning' | 'text'; text: string; status?: MockPartStatus }
@@ -24,6 +32,24 @@ type MockMessagePart =
       result?: unknown
       status?: MockPartStatus
     }
+  | {
+      type: 'dynamic-tool'
+      toolCallId: string
+      toolName: string
+      state:
+        | 'input-streaming'
+        | 'input-available'
+        | 'approval-requested'
+        | 'approval-responded'
+        | 'output-available'
+        | 'output-error'
+        | 'output-denied'
+      input?: unknown
+      output?: unknown
+      preliminary?: boolean
+      providerExecuted?: boolean
+      status?: MockPartStatus
+    }
 
 type MockThreadMessageState = {
   message: {
@@ -33,7 +59,7 @@ type MockThreadMessageState = {
     content: MockMessagePart[]
     parts?: MockMessagePart[]
     role: 'assistant' | 'user'
-    status: { type: 'complete' } | { type: 'running' }
+    status: MockMessageStatus
   }
 }
 
@@ -347,6 +373,13 @@ vi.mock('@assistant-ui/react-streamdown', () => ({
   StreamdownTextPrimitive: (props: Record<string, unknown>) => {
     streamdownPropsState.lastProps = props
     return <div data-testid="streamdown-text" />
+  }
+}))
+
+vi.mock('streamdown', () => ({
+  Streamdown: (props: Record<string, unknown>) => {
+    streamdownPropsState.lastProps = props
+    return <div data-testid="streamdown-text">{props.children as ReactNode}</div>
   }
 }))
 
@@ -869,7 +902,7 @@ describe('App composer', () => {
     expect(container.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
     expect(streamdownPropsState.lastProps).toMatchObject({
       caret: 'block',
-      defer: true,
+      mode: 'streaming',
       plugins: {
         code: { plugin: 'code' },
         math: { plugin: 'math' },
@@ -877,6 +910,7 @@ describe('App composer', () => {
         cjk: { plugin: 'cjk' }
       }
     })
+    expect(streamdownPropsState.lastProps?.children).toBe('# 标题\n\n- 条目')
   })
 
   it('renders semantic labels for single assistant tool parts', () => {
@@ -1019,6 +1053,60 @@ describe('App composer', () => {
     expect(container.textContent).toContain('已读取 3 个文件')
     expect(container.textContent).not.toContain('3 tool calls')
     expect(container.querySelector('[data-slot="tool-group-trigger-icon"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="collapsed-tool-activity-unit"]')).not.toBeNull()
+  })
+
+  it('uses dedicated renderers for web dynamic MCP and multi-agent groups', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('web-1', 'codex_web_search', 'webSearch'),
+      genericToolPart('web-2', 'codex_web_search', 'webSearch'),
+      { type: 'text', text: '继续处理' },
+      genericToolPart('dyn-1', 'dynamicToolCall', 'dynamicToolCall', {
+        completedSummaryKey: 'dyn:search',
+        registryMetadata: { completedSummaryKey: 'dyn:search' }
+      }),
+      genericToolPart('dyn-2', 'dynamicToolCall', 'dynamicToolCall', {
+        completedSummaryKey: 'dyn:search',
+        registryMetadata: { completedSummaryKey: 'dyn:search' }
+      }),
+      genericToolPart('mcp-1', 'mcp:github/read', 'mcpToolCall', {
+        server: 'github',
+        tool: 'read'
+      }),
+      genericToolPart('mcp-2', 'mcp:github/write', 'mcpToolCall', {
+        server: 'github',
+        tool: 'write'
+      }),
+      genericToolPart('mcp-node', 'mcp:node_repl/js', 'mcpToolCall', {
+        server: 'node_repl',
+        tool: 'js'
+      }),
+      genericToolPart('mcp-browser', 'mcp:browser/open', 'mcpToolCall', {
+        server: 'browser',
+        tool: 'open'
+      }),
+      genericToolPart('agent-1', 'codex_collab_agent', 'collabAgentToolCall', {
+        action: 'review'
+      }),
+      genericToolPart('agent-2', 'codex_collab_agent', 'collabAgentToolCall', {
+        action: 'review'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="web-search-group-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="dynamic-tool-call-group-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="pending-mcp-tool-calls-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="multi-agent-group-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('已调用 github 2 次')
+    expect(container.textContent).toContain('已运行 Node REPL')
+    expect(container.textContent).toContain('已使用 Browser')
+    expect(container.textContent).toContain('已运行 2 个 review 协作任务')
   })
 
   it('summarizes grouped running tool parts from derived assistant-ui part state', () => {
@@ -1053,6 +1141,31 @@ describe('App composer', () => {
     expect(container.textContent).not.toContain('已搜索 2 次代码')
   })
 
+  it('renders preliminary dynamic-tool outputs as running activity', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = []
+    threadMessageState.message.parts = [
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'sleep-running',
+        toolName: 'codex_sleep',
+        state: 'output-available',
+        preliminary: true,
+        providerExecuted: true,
+        input: { durationMs: 1000 },
+        output: { item: { id: 'sleep-running', type: 'sleep', durationMs: 1000 } }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('正在等待 1 次')
+    expect(container.textContent).not.toContain('已等待 1 次')
+  })
+
   it('keeps the thinking placeholder while only reasoning streams', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
@@ -1069,6 +1182,76 @@ describe('App composer', () => {
     expect(assistantContent?.textContent).toContain('正在思考')
     expect(reasoning).toBeNull()
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).toBeNull()
+  })
+
+  it('shows thinking inside the latest completed tool activity while waiting for text', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      commandToolPart('read-1', 'read', { status: { type: 'complete' } }),
+      {
+        type: 'tool-call',
+        toolCallId: 'file-1',
+        toolName: 'codex_file_change',
+        argsText: JSON.stringify({ changes: [] }),
+        status: { type: 'complete' },
+        result: {
+          item: {
+            id: 'file-1',
+            type: 'fileChange',
+            status: 'completed',
+            changes: [{ path: '/repo/edit.ts', kind: { type: 'update' }, diff: '' }]
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('正在思考')
+    expect(
+      container.querySelector('[data-slot="aui_assistant-message-content"]')?.className
+    ).not.toContain('shimmer')
+    expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
+  })
+
+  it('only lets the latest eligible tool group own thinking fallback', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      commandToolPart('read-1', 'read', { status: { type: 'complete' } }),
+      { type: 'text', text: '先查到一部分' },
+      commandToolPart('search-1', 'search', { status: { type: 'complete' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const thinkingTriggers = Array.from(
+      container.querySelectorAll('[data-slot="tool-fallback-trigger-label"]')
+    ).filter((trigger) => trigger.textContent?.includes('正在思考'))
+
+    expect(thinkingTriggers).toHaveLength(1)
+    expect(container.textContent).toContain('先查到一部分')
+  })
+
+  it('shows active latest tool summary instead of generic thinking', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      commandToolPart('search-1', 'search', { status: { type: 'running' } }),
+      commandToolPart('search-2', 'search', { status: { type: 'running' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('正在搜索 2 次代码')
+    expect(container.textContent).not.toContain('正在思考')
   })
 
   it('hides the thinking placeholder once assistant text is visible', () => {
@@ -1088,18 +1271,55 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
   })
 
-  it('does not render reasoning summary parts after the assistant finishes', () => {
+  it.each([
+    ['finished', { type: 'complete' } satisfies MockMessageStatus],
+    ['cancelled', { type: 'incomplete', reason: 'cancelled' } satisfies MockMessageStatus],
+    ['errored', { type: 'error', error: 'boom' } satisfies MockMessageStatus]
+  ])('does not show thinking for %s assistant messages', (_label, status) => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = status
+    threadMessageState.message.content = [
+      commandToolPart('read-finished', 'read', { status: { type: 'complete' } }),
+      commandToolPart('search-finished', 'search', { status: { type: 'complete' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).not.toContain('正在思考')
+    expect(
+      container.querySelector('[data-slot="aui_assistant-message-content"]')?.className
+    ).not.toContain('shimmer')
+  })
+
+  it('renders completed reasoning parts as renderable entry text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [{ type: 'reasoning', text: '推理内容' }]
+    threadMessageState.message.content = [
+      { type: 'reasoning', text: '推理内容', status: { type: 'complete' } }
+    ]
 
     act(() => {
       root.render(<App />)
     })
 
     expect(container.querySelector('[data-slot="aui_reasoning-part"]')).toBeNull()
-    expect(container.textContent).not.toContain('推理摘要')
-    expect(container.textContent).not.toContain('推理内容')
+    expect(container.textContent).toContain('推理内容')
+    expect(container.querySelector('[data-slot="entry-unit"]')).toBeNull()
+  })
+
+  it('does not show thinking for a finished empty assistant message', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = []
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).not.toContain('正在思考')
+    expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
   })
 
   it('does not render the server request panel when there is no queued request', () => {
@@ -1193,6 +1413,64 @@ function modelSelectorItemWithText(text: string): HTMLElement | undefined {
   return Array.from(
     document.querySelectorAll<HTMLElement>('[data-slot="model-selector-item"]')
   ).find((item) => item.textContent?.includes(text))
+}
+
+function commandToolPart(
+  id: string,
+  actionType: string,
+  options: { status: MockPartStatus }
+): MockMessagePart {
+  return {
+    type: 'tool-call',
+    toolCallId: id,
+    toolName: 'codex_command_execution',
+    argsText: JSON.stringify({
+      command: `${actionType} ${id}`,
+      cwd: '/repo',
+      commandActions: [{ type: actionType, command: `${actionType} ${id}`, path: `/repo/${id}.ts` }]
+    }),
+    status: options.status,
+    result: {
+      item: {
+        id,
+        type: 'commandExecution',
+        command: `${actionType} ${id}`,
+        cwd: '/repo',
+        processId: null,
+        source: { type: 'exec' },
+        status: options.status.type === 'running' ? 'inProgress' : 'completed',
+        commandActions: [
+          { type: actionType, command: `${actionType} ${id}`, name: id, path: `/repo/${id}.ts` }
+        ],
+        aggregatedOutput: '',
+        exitCode: 0,
+        durationMs: 1
+      }
+    }
+  }
+}
+
+function genericToolPart(
+  id: string,
+  toolName: string,
+  itemType: string,
+  itemOverrides: Record<string, unknown> = {}
+): MockMessagePart {
+  return {
+    type: 'tool-call',
+    toolCallId: id,
+    toolName,
+    argsText: JSON.stringify({ id }),
+    status: { type: 'complete' },
+    result: {
+      item: {
+        id,
+        type: itemType,
+        status: 'completed',
+        ...itemOverrides
+      }
+    }
+  }
 }
 
 function fileChangeApprovalRequest(requestId: string): CodexApprovalRequest {

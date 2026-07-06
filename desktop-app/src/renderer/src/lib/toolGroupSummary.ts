@@ -3,6 +3,7 @@ type ToolGroupCounterKey =
   | 'listFiles'
   | 'searchCode'
   | 'runCommands'
+  | 'createFolders'
   | 'createFiles'
   | 'editFiles'
   | 'deleteFiles'
@@ -13,6 +14,12 @@ type ToolGroupCounterKey =
   | 'contextCompactions'
   | 'hookPrompts'
   | 'reviewModeChanges'
+  | 'loadedTools'
+  | 'sleeps'
+  | 'approvalDenied'
+  | 'approvalTimedOut'
+  | 'approvalApproved'
+  | 'approvalInProgress'
   | 'genericTools'
 
 export type ToolGroupIconName =
@@ -39,6 +46,9 @@ export type ToolGroupSummary = {
   label?: string
   icon?: ToolGroupIconName
   active: boolean
+  count: number
+  expandable: boolean
+  sourceSummary?: string
 }
 
 type ToolGroupSummaryState = Record<ToolGroupCounterKey, ToolGroupCounter>
@@ -56,6 +66,7 @@ const counterKeys: ToolGroupCounterKey[] = [
   'listFiles',
   'searchCode',
   'runCommands',
+  'createFolders',
   'createFiles',
   'editFiles',
   'deleteFiles',
@@ -66,6 +77,12 @@ const counterKeys: ToolGroupCounterKey[] = [
   'contextCompactions',
   'hookPrompts',
   'reviewModeChanges',
+  'loadedTools',
+  'sleeps',
+  'approvalDenied',
+  'approvalTimedOut',
+  'approvalApproved',
+  'approvalInProgress',
   'genericTools'
 ]
 
@@ -74,6 +91,7 @@ const counterLabels: Record<ToolGroupCounterKey, CounterLabels> = {
   listFiles: { active: '正在列出', completed: '已列出', unit: '个目录' },
   searchCode: { active: '正在搜索', completed: '已搜索', unit: '次代码' },
   runCommands: { active: '正在运行', completed: '已运行', unit: '条命令' },
+  createFolders: { active: '正在创建', completed: '已创建', unit: '个文件夹' },
   createFiles: { active: '正在创建', completed: '已创建', unit: '个文件' },
   editFiles: { active: '正在编辑', completed: '已编辑', unit: '个文件' },
   deleteFiles: { active: '正在删除', completed: '已删除', unit: '个文件' },
@@ -84,12 +102,21 @@ const counterLabels: Record<ToolGroupCounterKey, CounterLabels> = {
   contextCompactions: { active: '正在压缩', completed: '已压缩', unit: '次上下文' },
   hookPrompts: { active: '正在读取', completed: '已读取', unit: '条项目指令' },
   reviewModeChanges: { active: '正在切换', completed: '已切换', unit: '次审查模式' },
+  loadedTools: { active: '正在加载', completed: '已加载', unit: '个工具定义' },
+  sleeps: { active: '正在等待', completed: '已等待', unit: '次' },
+  approvalDenied: { active: '正在审核', completed: '已拒绝', unit: '次自动审批' },
+  approvalTimedOut: { active: '正在等待', completed: '已超时', unit: '次自动审批' },
+  approvalApproved: { active: '正在审核', completed: '已通过', unit: '次自动审批' },
+  approvalInProgress: { active: '正在审核', completed: '已审核', unit: '次自动审批' },
   genericTools: { active: '正在调用', completed: '已调用', unit: '个工具' }
 }
+
+const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 
 export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary {
   const state = createSummaryState()
   let knownPartCount = 0
+  const sourceNames = new Set<string>()
 
   for (const part of parts) {
     if (!isRecord(part)) continue
@@ -97,12 +124,14 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
     const item = extractThreadItem(part)
     if (item) {
       knownPartCount += 1
+      addSourceName(sourceNames, item, part)
       addThreadItemToSummary(state, item, isToolPartActive(part))
       continue
     }
 
     if (addToolInputToSummary(state, part)) {
       knownPartCount += 1
+      addSourceName(sourceNames, undefined, part)
     }
   }
 
@@ -115,7 +144,10 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
   return {
     label: renderSummaryLabel(state),
     icon: renderSummaryIcon(state),
-    active
+    active,
+    count: knownPartCount || parts.length,
+    expandable: parts.length > 0,
+    sourceSummary: renderSourceSummary(sourceNames)
   }
 }
 
@@ -130,7 +162,7 @@ function addThreadItemToSummary(
   item: ToolPartRecord,
   partActive: boolean
 ): void {
-  const type = stringValue(item.type)
+  const type = canonicalItemType(stringValue(item.type))
   const active = partActive || isActiveStatus(item.status)
 
   switch (type) {
@@ -149,6 +181,7 @@ function addThreadItemToSummary(
     case 'dynamicToolCall':
     case 'collabAgentToolCall':
     case 'collabToolCall':
+    case 'multi-agent-action':
       addCounter(state, 'genericTools', active)
       break
     case 'subAgentActivity':
@@ -166,6 +199,15 @@ function addThreadItemToSummary(
     case 'enteredReviewMode':
     case 'exitedReviewMode':
       addCounter(state, 'reviewModeChanges', active)
+      break
+    case 'loadedTool':
+      addCounter(state, 'loadedTools', active)
+      break
+    case 'sleep':
+      addCounter(state, 'sleeps', active)
+      break
+    case 'automaticApprovalReview':
+      addAutomaticApprovalToSummary(state, item, active)
       break
     default:
       addCounter(state, 'genericTools', active)
@@ -225,6 +267,21 @@ function addToolInputToSummary(state: ToolGroupSummaryState, part: ToolPartRecor
     return true
   }
 
+  if (toolName === 'codex_loaded_tool') {
+    addCounter(state, 'loadedTools', active)
+    return true
+  }
+
+  if (toolName === 'codex_sleep') {
+    addCounter(state, 'sleeps', active)
+    return true
+  }
+
+  if (toolName === 'codex_automatic_approval_review') {
+    addAutomaticApprovalToSummary(state, isRecord(input) ? input : part, active)
+    return true
+  }
+
   if (toolName) {
     addCounter(state, 'genericTools', active)
     return true
@@ -259,11 +316,46 @@ function addCommandActionsToSummary(
       case 'search':
         addCounter(state, 'searchCode', active)
         break
+      case 'createFolder':
+      case 'mkdir':
+        addCounter(state, 'createFolders', active)
+        break
       default:
         addCounter(state, 'runCommands', active)
         break
     }
   }
+}
+
+function addAutomaticApprovalToSummary(
+  state: ToolGroupSummaryState,
+  item: ToolPartRecord,
+  active: boolean
+): void {
+  const outcome =
+    stringValue(item.outcome) ?? stringValue(item.result) ?? stringValue(item.decision)
+
+  if (outcome === 'denied' || outcome === 'rejected') {
+    addCounter(state, 'approvalDenied', active)
+    return
+  }
+
+  if (outcome === 'timedOut' || outcome === 'timed-out' || outcome === 'timeout') {
+    addCounter(state, 'approvalTimedOut', active)
+    return
+  }
+
+  if (outcome === 'approved' || outcome === 'allowed') {
+    addCounter(state, 'approvalApproved', active)
+    return
+  }
+
+  if (outcome === 'inProgress' || outcome === 'in-progress' || active) {
+    addCounter(state, 'approvalInProgress', true)
+    return
+  }
+
+  addCounter(state, 'genericTools', active)
 }
 
 function addFileChangesToSummary(
@@ -334,6 +426,7 @@ function renderSummaryIcon(state: ToolGroupSummaryState): ToolGroupIconName | un
   if (counterTotal(state.readFiles) > 0) return 'read-files'
 
   const fileChangeCount =
+    counterTotal(state.createFolders) +
     counterTotal(state.createFiles) +
     counterTotal(state.editFiles) +
     counterTotal(state.deleteFiles)
@@ -346,6 +439,16 @@ function renderSummaryIcon(state: ToolGroupSummaryState): ToolGroupIconName | un
   if (counterTotal(state.contextCompactions) > 0) return 'context-compaction'
   if (counterTotal(state.hookPrompts) > 0) return 'hook-prompt'
   if (counterTotal(state.reviewModeChanges) > 0) return 'review-mode'
+  if (counterTotal(state.loadedTools) > 0) return 'generic-tool'
+  if (counterTotal(state.sleeps) > 0) return 'generic-tool'
+  if (
+    counterTotal(state.approvalDenied) > 0 ||
+    counterTotal(state.approvalTimedOut) > 0 ||
+    counterTotal(state.approvalApproved) > 0 ||
+    counterTotal(state.approvalInProgress) > 0
+  ) {
+    return 'review-mode'
+  }
   if (counterTotal(state.genericTools) > 0) return 'generic-tool'
 
   return undefined
@@ -355,7 +458,9 @@ function counterTotal(counter: ToolGroupCounter): number {
   return counter.active + counter.completed
 }
 
-function extractThreadItem(part: ToolPartRecord): ToolPartRecord | undefined {
+export function extractThreadItem(part: unknown): ToolPartRecord | undefined {
+  if (!isRecord(part)) return undefined
+
   const resultItem = recordProperty(part.result, 'item')
   if (resultItem && typeof resultItem.type === 'string') return resultItem
 
@@ -368,7 +473,74 @@ function extractThreadItem(part: ToolPartRecord): ToolPartRecord | undefined {
   const output = recordValue(part.output)
   if (output && typeof output.type === 'string') return output
 
+  const providerMetadata = recordValue(part.providerMetadata)
+  const codexMetadata = recordValue(providerMetadata?.[CODEX_PROVIDER_ID])
+  const providerItem = recordValue(codexMetadata?.item)
+  if (providerItem && typeof providerItem.type === 'string') return providerItem
+
   return undefined
+}
+
+function addSourceName(
+  sourceNames: Set<string>,
+  item: ToolPartRecord | undefined,
+  part: ToolPartRecord
+): void {
+  const invocation = recordValue(item?.invocation)
+  const appContext = recordValue(item?.appContext)
+  const appName =
+    stringValue(appContext?.displayName) ??
+    stringValue(appContext?.appName) ??
+    stringValue(appContext?.name)
+  const source = recordValue(item?.source)
+  const sourceName =
+    appName ??
+    stringValue(item?.server) ??
+    stringValue(invocation?.server) ??
+    stringValue(source?.type) ??
+    mcpServerFromToolName(stringValue(part.toolName))
+
+  if (sourceName) sourceNames.add(sourceName)
+}
+
+function renderSourceSummary(sourceNames: Set<string>): string | undefined {
+  const names = [...sourceNames]
+  if (names.length === 0) return undefined
+  if (names.length === 1) return names[0]
+  return `${names[0]} 等 ${names.length} 个来源`
+}
+
+function mcpServerFromToolName(toolName: string | undefined): string | undefined {
+  if (!toolName?.startsWith('mcp:')) return undefined
+  const body = toolName.slice('mcp:'.length)
+  return body.split('/')[0] || undefined
+}
+
+function canonicalItemType(itemType: string | undefined): string | undefined {
+  switch (itemType) {
+    case 'web-search':
+      return 'webSearch'
+    case 'mcp-tool-call':
+      return 'mcpToolCall'
+    case 'dynamic-tool-call':
+      return 'dynamicToolCall'
+    case 'exec':
+      return 'commandExecution'
+    case 'patch':
+      return 'fileChange'
+    case 'subagent-activity':
+      return 'subAgentActivity'
+    case 'context-compaction':
+      return 'contextCompaction'
+    case 'hook-prompt':
+      return 'hookPrompt'
+    case 'automatic-approval-review':
+      return 'automaticApprovalReview'
+    case 'loaded-tool':
+      return 'loadedTool'
+    default:
+      return itemType
+  }
 }
 
 function extractToolInput(part: ToolPartRecord): unknown {
@@ -378,13 +550,25 @@ function extractToolInput(part: ToolPartRecord): unknown {
   return undefined
 }
 
-function isToolPartActive(part: unknown): boolean {
+export function isToolPartActive(part: unknown): boolean {
   if (!isRecord(part)) return false
 
-  return isActiveStatus(part.status)
+  if (isActiveStatus(part.status)) return true
+  if (part.preliminary === true) return true
+
+  return isActiveToolState(part.state)
 }
 
-function isActiveStatus(status: unknown): boolean {
+function isActiveToolState(state: unknown): boolean {
+  return (
+    state === 'input-streaming' ||
+    state === 'input-available' ||
+    state === 'approval-requested' ||
+    state === 'approval-responded'
+  )
+}
+
+export function isActiveStatus(status: unknown): boolean {
   if (status === 'inProgress' || status === 'running') return true
   if (!isRecord(status)) return false
   return (

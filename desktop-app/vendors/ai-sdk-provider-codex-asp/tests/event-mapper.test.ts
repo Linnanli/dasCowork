@@ -912,23 +912,31 @@ describe("CodexEventMapper", () =>
     it("maps mcpToolCall item/started and item/completed with nested shape", () =>
     {
         const mapper = new CodexEventMapper();
+        const startedItem = {
+            type: "mcpToolCall",
+            id: "mcp_1",
+            server: "docs-server",
+            tool: "search",
+            status: "inProgress",
+            arguments: { query: "test" },
+            appContext: {
+                connectorId: "docs-connector",
+                linkId: null,
+                resourceUri: "app://docs",
+            },
+            mcpAppResourceUri: "app://docs",
+            pluginId: "docs-plugin",
+            result: null,
+            error: null,
+            durationMs: null,
+        };
 
         const events = [
             { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
             {
                 method: "item/started",
                 params: {
-                    item: {
-                        type: "mcpToolCall",
-                        id: "mcp_1",
-                        server: "docs-server",
-                        tool: "search",
-                        status: "inProgress",
-                        arguments: { query: "test" },
-                        result: null,
-                        error: null,
-                        durationMs: null,
-                    },
+                    item: startedItem,
                     threadId: "thr",
                     turnId: "turn",
                 },
@@ -947,6 +955,13 @@ describe("CodexEventMapper", () =>
                         tool: "search",
                         status: "completed",
                         arguments: { query: "test" },
+                        appContext: {
+                            connectorId: "docs-connector",
+                            linkId: null,
+                            resourceUri: "app://docs",
+                        },
+                        mcpAppResourceUri: "app://docs",
+                        pluginId: "docs-plugin",
                         result: { content: [{ type: "text", text: "found" }], isError: false },
                         error: null,
                         durationMs: 250,
@@ -980,7 +995,14 @@ describe("CodexEventMapper", () =>
                 type: "tool-result",
                 toolCallId: "mcp_1",
                 toolName: "mcp:docs-server/search",
-                result: { output: "Searching..." },
+                result: { item: startedItem },
+                preliminary: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "mcp_1",
+                toolName: "mcp:docs-server/search",
+                result: { output: "Searching...", item: startedItem },
                 preliminary: true,
             },
             {
@@ -995,11 +1017,179 @@ describe("CodexEventMapper", () =>
                         tool: "search",
                         status: "completed",
                         arguments: { query: "test" },
+                        appContext: {
+                            connectorId: "docs-connector",
+                            linkId: null,
+                            resourceUri: "app://docs",
+                        },
+                        mcpAppResourceUri: "app://docs",
+                        pluginId: "docs-plugin",
                         result: { content: [{ type: "text", text: "found" }], isError: false },
                         error: null,
                         durationMs: 250,
                     },
                 },
+            },
+            {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "completed" },
+                usage: EMPTY_USAGE,
+            },
+        ]);
+    });
+
+    it("maps sleep item lifecycle to provider-executed tool parts", () =>
+    {
+        const mapper = new CodexEventMapper();
+        const item = { type: "sleep", id: "sleep_1", durationMs: 5000 };
+
+        const events = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
+            { method: "item/started", params: { item, threadId: "thr", turnId: "turn" } },
+            { method: "item/completed", params: { item, threadId: "thr", turnId: "turn" } },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ];
+
+        const parts = events.flatMap((event) => mapper.map(event));
+
+        expect(parts).toEqual([
+            { type: "stream-start", warnings: [] },
+            {
+                type: "tool-call",
+                toolCallId: "sleep_1",
+                toolName: "codex_sleep",
+                input: JSON.stringify({ durationMs: 5000 }),
+                providerExecuted: true,
+                dynamic: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "sleep_1",
+                toolName: "codex_sleep",
+                result: { item },
+                preliminary: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "sleep_1",
+                toolName: "codex_sleep",
+                result: { item },
+            },
+            {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "completed" },
+                usage: EMPTY_USAGE,
+            },
+        ]);
+    });
+
+    it("maps automatic approval review notifications to provider-executed tool parts", () =>
+    {
+        const mapper = new CodexEventMapper();
+        const review = {
+            status: "inProgress",
+            riskLevel: "high",
+            userAuthorization: "low",
+            rationale: "Command can delete files",
+        };
+        const action = {
+            type: "command",
+            source: "shell",
+            command: "rm -rf build",
+            cwd: "/repo",
+        };
+        const startedItem = {
+            id: "review_1",
+            type: "automaticApprovalReview",
+            status: "inProgress",
+            outcome: "inProgress",
+            startedAtMs: 1,
+            targetItemId: "cmd_1",
+            review,
+            action,
+        };
+        const completedReview = { ...review, status: "denied" };
+        const completedItem = {
+            ...startedItem,
+            status: "completed",
+            outcome: "denied",
+            completedAtMs: 2,
+            review: completedReview,
+            decisionSource: "agent",
+        };
+
+        const events = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
+            {
+                method: "item/autoApprovalReview/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn",
+                    startedAtMs: 1,
+                    reviewId: "review_1",
+                    targetItemId: "cmd_1",
+                    review,
+                    action,
+                },
+            },
+            {
+                method: "item/autoApprovalReview/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn",
+                    startedAtMs: 1,
+                    completedAtMs: 2,
+                    reviewId: "review_1",
+                    targetItemId: "cmd_1",
+                    decisionSource: "agent",
+                    review: completedReview,
+                    action,
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ];
+
+        const parts = events.flatMap((event) => mapper.map(event));
+
+        expect(parts).toEqual([
+            { type: "stream-start", warnings: [] },
+            {
+                type: "tool-call",
+                toolCallId: "review_1",
+                toolName: "codex_automatic_approval_review",
+                input: JSON.stringify({
+                    targetItemId: "cmd_1",
+                    review,
+                    action,
+                    startedAtMs: 1,
+                }),
+                providerExecuted: true,
+                dynamic: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "review_1",
+                toolName: "codex_automatic_approval_review",
+                result: { item: startedItem },
+                preliminary: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "review_1",
+                toolName: "codex_automatic_approval_review",
+                result: { item: completedItem },
             },
             {
                 type: "finish",

@@ -6,12 +6,12 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   type AssistantState,
-  groupPartByType,
   MessagePrimitive,
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
   type QuoteMessagePartProps,
   type TextMessagePartProps,
+  type ToolCallMessagePartStatus,
   type Unstable_SlashCommand,
   type Unstable_TriggerItem,
   unstable_defaultDirectiveFormatter,
@@ -21,7 +21,7 @@ import {
   useAuiState
 } from '@assistant-ui/react'
 import { LexicalComposerInput, type DirectiveChipProps } from '@assistant-ui/react-lexical'
-import { StreamdownTextPrimitive } from '@assistant-ui/react-streamdown'
+import { Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
 import { math } from '@streamdown/math'
@@ -73,11 +73,8 @@ import {
   type ConversationStateController
 } from './sidebar/useConversationState'
 import { cn } from './lib/utils'
-import {
-  hasVisibleAssistantTextContent,
-  pendingAssistantMessageText
-} from './lib/assistantMessages'
-import { summarizeToolGroup } from './lib/toolGroupSummary'
+import { pendingAssistantMessageText } from './lib/assistantMessages'
+import { buildAssistantRenderUnits, type AssistantRenderUnit } from './lib/assistantRenderUnits'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
@@ -566,17 +563,20 @@ function ThreadScrollToBottom(): React.JSX.Element {
   )
 }
 
-const toolGroupBy = groupPartByType({
-  'tool-call': ['group-tool']
-})
-
 function AssistantMessage(): React.JSX.Element {
+  const messageContent = useAuiState((state) => state.message.content)
   const messageParts = useAuiState((state) => state.message.parts)
-  const isThinking = useAuiState(
-    (state) =>
-      state.message.status?.type === 'running' &&
-      !hasVisibleAssistantTextContent(state.message.content)
+  const messageStatus = useAuiState((state) => state.message.status)
+  const renderModel = useMemo(
+    () =>
+      buildAssistantRenderUnits({
+        content: messageContent,
+        parts: messageParts,
+        status: messageStatus
+      }),
+    [messageContent, messageParts, messageStatus]
   )
+  const isThinkingOnly = renderModel.isThinkingOnly
 
   return (
     <MessagePrimitive.Root
@@ -588,54 +588,12 @@ function AssistantMessage(): React.JSX.Element {
         data-slot="aui_assistant-message-content"
         className={cn(
           'wrap-break-word px-2 leading-relaxed text-foreground',
-          isThinking && 'shimmer text-foreground/60 motion-reduce:animate-none'
+          isThinkingOnly && 'shimmer text-foreground/60 motion-reduce:animate-none'
         )}
       >
-        {isThinking ? (
-          pendingAssistantMessageText
-        ) : (
-          <MessagePrimitive.GroupedParts groupBy={toolGroupBy}>
-            {({ part, children }) => {
-              switch (part.type) {
-                case 'group-tool': {
-                  if (part.indices.length === 1) return <>{children}</>
-                  const toolSummary = summarizeToolGroup(
-                    part.indices.map((index) => messageParts[index])
-                  )
-                  return (
-                    <ToolGroupRoot variant="ghost">
-                      <ToolGroupTrigger
-                        count={part.indices.length}
-                        label={toolSummary.label}
-                        icon={toolSummary.icon}
-                        active={toolSummary.active}
-                      />
-                      <ToolGroupContent>{children}</ToolGroupContent>
-                    </ToolGroupRoot>
-                  )
-                }
-                case 'text':
-                  return <AssistantText />
-                case 'tool-call': {
-                  const toolSummary = summarizeToolGroup([part])
-                  return (
-                    part.toolUI ?? (
-                      <ToolFallback
-                        {...part}
-                        summaryLabel={toolSummary.label}
-                        summaryIcon={toolSummary.icon}
-                      />
-                    )
-                  )
-                }
-                case 'indicator':
-                  return null
-                default:
-                  return null
-              }
-            }}
-          </MessagePrimitive.GroupedParts>
-        )}
+        {isThinkingOnly
+          ? pendingAssistantMessageText
+          : renderModel.units.map((unit) => <AssistantRenderUnitView key={unit.key} unit={unit} />)}
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
             data-slot="aui_assistant-message-error"
@@ -645,7 +603,7 @@ function AssistantMessage(): React.JSX.Element {
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {isThinking ? null : (
+      {isThinkingOnly ? null : (
         <div
           data-slot="aui_assistant-message-footer"
           className="ml-2 flex min-h-7.5 items-center pt-1.5 -mb-7.5"
@@ -749,8 +707,383 @@ function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
   )
 }
 
-function AssistantText(): React.JSX.Element {
-  return <StreamdownTextPrimitive caret="block" defer plugins={streamdownPlugins} />
+function AssistantRenderUnitView({
+  unit
+}: {
+  unit: AssistantRenderUnit
+}): React.JSX.Element | null {
+  switch (unit.type) {
+    case 'message-thinking':
+      return <span>{pendingAssistantMessageText}</span>
+    case 'text':
+      return <AssistantText text={unit.text} unit={unit} />
+    case 'entry':
+      return <EntryUnit unit={unit} />
+    case 'collapsed-tool-activity':
+      return <CollapsedToolActivityUnit unit={unit} />
+    case 'pending-mcp-tool-calls':
+      return <PendingMcpToolCallsUnit unit={unit} />
+    case 'dynamic-tool-call-group':
+      return <DynamicToolCallGroupUnit unit={unit} />
+    case 'web-search-group':
+      return <WebSearchGroupUnit unit={unit} />
+    case 'multi-agent-group':
+      return <MultiAgentGroupUnit unit={unit} />
+    case 'unknown':
+      return <UnknownUnit unit={unit} />
+  }
+}
+
+function AssistantText({
+  text,
+  unit
+}: {
+  text: string
+  unit?: AssistantRenderUnit
+}): React.JSX.Element {
+  return (
+    <div data-slot="assistant-render-text" {...renderUnitAttributes(unit)}>
+      <Streamdown caret="block" mode="streaming" plugins={streamdownPlugins}>
+        {text}
+      </Streamdown>
+    </div>
+  )
+}
+
+function CollapsedToolActivityUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'collapsed-tool-activity' }>
+}): React.JSX.Element {
+  return (
+    <AssistantToolGroupShell
+      unit={unit}
+      slot="collapsed-tool-activity-unit"
+      label={unit.showThinkingFallback ? pendingAssistantMessageText : unit.summary?.label}
+      icon={unit.summary?.icon}
+      active={Boolean(unit.active || unit.showThinkingFallback)}
+      defaultOpen={false}
+    >
+      <ToolGroupSourceSummary summary={unit.summary?.sourceSummary} />
+      {unit.parts.map((part, index) => renderToolPart(part, index))}
+    </AssistantToolGroupShell>
+  )
+}
+
+function PendingMcpToolCallsUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'pending-mcp-tool-calls' }>
+}): React.JSX.Element {
+  const sourceLabel = unit.mcpSource?.label
+  const label = mcpGroupLabel(unit, sourceLabel)
+
+  return (
+    <AssistantToolGroupShell
+      unit={unit}
+      slot="pending-mcp-tool-calls-unit"
+      label={label}
+      icon="mcp-tools"
+      active={Boolean(unit.active || unit.showThinkingFallback)}
+      defaultOpen={unit.mcpSource?.sourceType === 'app'}
+    >
+      <ToolGroupSourceSummary summary={unit.summary?.sourceSummary ?? sourceLabel} />
+      {unit.parts.map((part, index) => renderToolPart(part, index))}
+    </AssistantToolGroupShell>
+  )
+}
+
+function DynamicToolCallGroupUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'dynamic-tool-call-group' }>
+}): React.JSX.Element {
+  return (
+    <AssistantToolGroupShell
+      unit={unit}
+      slot="dynamic-tool-call-group-unit"
+      label={dynamicGroupLabel(unit)}
+      icon={unit.summary?.icon ?? 'generic-tool'}
+      active={Boolean(unit.active || unit.showThinkingFallback)}
+      defaultOpen={unit.dynamicMetadata?.standaloneInConversation}
+    >
+      {unit.dynamicMetadata?.hasRegistryMetadata === false ? (
+        <p className="text-xs text-muted-foreground">动态工具缺少完整显示元数据</p>
+      ) : null}
+      {unit.parts.map((part, index) => renderToolPart(part, index))}
+    </AssistantToolGroupShell>
+  )
+}
+
+function WebSearchGroupUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'web-search-group' }>
+}): React.JSX.Element {
+  return (
+    <AssistantToolGroupShell
+      unit={unit}
+      slot="web-search-group-unit"
+      label={webSearchGroupLabel(unit)}
+      icon="web-search"
+      active={Boolean(unit.active || unit.showThinkingFallback)}
+    >
+      {unit.parts.map((part, index) => renderToolPart(part, index))}
+    </AssistantToolGroupShell>
+  )
+}
+
+function MultiAgentGroupUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'multi-agent-group' }>
+}): React.JSX.Element {
+  const actionLabel = unit.action ? `${unit.action} ` : ''
+  const label = unit.showThinkingFallback
+    ? pendingAssistantMessageText
+    : `已运行 ${unit.partIndices.length} 个 ${actionLabel}协作任务`
+
+  return (
+    <AssistantToolGroupShell
+      unit={unit}
+      slot="multi-agent-group-unit"
+      label={label}
+      icon="sub-agent"
+      active={Boolean(unit.active || unit.showThinkingFallback)}
+    >
+      {unit.parts.map((part, index) => renderToolPart(part, index))}
+    </AssistantToolGroupShell>
+  )
+}
+
+function AssistantToolGroupShell({
+  unit,
+  slot,
+  label,
+  icon,
+  active,
+  defaultOpen = false,
+  children
+}: {
+  unit: Extract<
+    AssistantRenderUnit,
+    {
+      type:
+        | 'collapsed-tool-activity'
+        | 'pending-mcp-tool-calls'
+        | 'dynamic-tool-call-group'
+        | 'web-search-group'
+        | 'multi-agent-group'
+    }
+  >
+  slot: string
+  label?: string
+  icon?: React.ComponentProps<typeof ToolGroupTrigger>['icon']
+  active: boolean
+  defaultOpen?: boolean
+  children: ReactNode
+}): React.JSX.Element {
+  return (
+    <ToolGroupRoot
+      variant="ghost"
+      data-slot={slot}
+      defaultOpen={defaultOpen}
+      {...renderUnitAttributes(unit)}
+    >
+      <ToolGroupTrigger count={unit.partIndices.length} label={label} icon={icon} active={active} />
+      <ToolGroupContent>{children}</ToolGroupContent>
+    </ToolGroupRoot>
+  )
+}
+
+function ToolGroupSourceSummary({ summary }: { summary?: string }): React.JSX.Element | null {
+  if (!summary) return null
+  return <p className="text-xs text-muted-foreground">来源：{summary}</p>
+}
+
+function EntryUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'entry' }>
+}): React.JSX.Element | null {
+  if (unit.renderMode === 'known-null') return null
+
+  if (unit.renderMode === 'text') {
+    const text = entryText(unit)
+    return text ? <AssistantText text={text} unit={unit} /> : null
+  }
+
+  return (
+    <div data-slot="entry-unit" {...renderUnitAttributes(unit)}>
+      <AssistantToolPart part={unit.part} unit={unit} />
+    </div>
+  )
+}
+
+function UnknownUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'unknown' }>
+}): React.JSX.Element {
+  return (
+    <div
+      aria-hidden="true"
+      className="hidden"
+      data-slot="unknown-render-unit"
+      {...renderUnitAttributes(unit)}
+    />
+  )
+}
+
+function mcpGroupLabel(
+  unit: Extract<AssistantRenderUnit, { type: 'pending-mcp-tool-calls' }>,
+  sourceLabel: string | undefined
+): string | undefined {
+  if (unit.showThinkingFallback) return pendingAssistantMessageText
+
+  const sourceType = unit.mcpSource?.sourceType
+  if (sourceType === 'node-repl') {
+    return unit.active ? '正在运行 Node REPL' : '已运行 Node REPL'
+  }
+  if (sourceType === 'browser') {
+    return unit.active ? '正在使用 Browser' : '已使用 Browser'
+  }
+  if (sourceType === 'app' && sourceLabel) {
+    return unit.active
+      ? `正在使用 ${sourceLabel}`
+      : `已调用 ${sourceLabel} ${unit.partIndices.length} 次`
+  }
+
+  if (unit.active) {
+    return sourceLabel ? `正在调用 ${sourceLabel}` : (unit.summary?.label ?? '正在调用 MCP 工具')
+  }
+  if (sourceLabel) return `已调用 ${sourceLabel} ${unit.partIndices.length} 次`
+  return unit.summary?.label
+}
+
+function dynamicGroupLabel(
+  unit: Extract<AssistantRenderUnit, { type: 'dynamic-tool-call-group' }>
+): string {
+  if (unit.showThinkingFallback) return pendingAssistantMessageText
+
+  const baseLabel = unit.summary?.label ?? `已调用 ${unit.partIndices.length} 个动态工具`
+  const repeatCount = unit.dynamicMetadata?.repeatCount ?? 1
+  if (repeatCount <= 1 || !unit.dynamicMetadata?.completedSummaryKey) return baseLabel
+
+  return `${baseLabel}（重复 ${repeatCount} 次）`
+}
+
+function webSearchGroupLabel(
+  unit: Extract<AssistantRenderUnit, { type: 'web-search-group' }>
+): string {
+  if (unit.showThinkingFallback) return pendingAssistantMessageText
+  return unit.summary?.label ?? `已搜索 ${unit.partIndices.length} 次网页`
+}
+
+function entryText(unit: Extract<AssistantRenderUnit, { type: 'entry' }>): string | undefined {
+  const item = unit.item
+  return (
+    stringRecordValue(item, 'message') ??
+    stringRecordValue(item, 'text') ??
+    stringRecordValue(item, 'content') ??
+    stringRecordValue(unit.part, 'text')
+  )
+}
+
+function renderUnitAttributes(
+  unit: AssistantRenderUnit | undefined
+): Record<string, string> | undefined {
+  if (!unit) return undefined
+  return {
+    'data-render-unit-key': unit.key,
+    'data-render-target-id': unit.target.id,
+    'data-render-target-ids': unit.target.itemIds.join(' ')
+  }
+}
+
+function AssistantToolPart({
+  part,
+  unit
+}: {
+  part: Record<string, unknown>
+  unit: Extract<AssistantRenderUnit, { type: 'entry' }>
+}): ReactNode {
+  return renderToolPart(part, unit.partIndex, unit)
+}
+
+function renderToolPart(
+  part: Record<string, unknown>,
+  index: number,
+  unit?: Extract<AssistantRenderUnit, { type: 'entry' }>
+): ReactNode {
+  const toolUI = part.toolUI as ReactNode | undefined
+  if (toolUI) return toolUI
+
+  const summaryLabel = unit?.showThinkingFallback
+    ? pendingAssistantMessageText
+    : unit?.summary?.label
+  const activeStatus = toolStatusForPart(part, unit)
+
+  return (
+    <ToolFallback
+      {...(part as React.ComponentProps<typeof ToolFallback>)}
+      key={String(part.toolCallId ?? index)}
+      toolName={stringRecordValue(part, 'toolName') ?? unit?.itemType ?? 'unknown_tool'}
+      status={activeStatus ?? { type: 'complete' }}
+      summaryLabel={summaryLabel}
+      summaryIcon={unit?.summary?.icon}
+    />
+  )
+}
+
+function toolStatusForPart(
+  part: Record<string, unknown>,
+  unit: Extract<AssistantRenderUnit, { type: 'entry' }> | undefined
+): ToolCallMessagePartStatus | undefined {
+  if (unit?.showThinkingFallback && isRecord(part.status) && part.status.type === 'complete') {
+    return { type: 'running' }
+  }
+
+  if (isToolCallStatus(part.status)) return part.status
+  if (part.preliminary === true) return { type: 'running' }
+
+  return toolStatusForAiSdkState(part.state)
+}
+
+function toolStatusForAiSdkState(state: unknown): ToolCallMessagePartStatus | undefined {
+  if (state === 'approval-requested') return { type: 'requires-action', reason: 'interrupt' }
+  if (
+    state === 'input-streaming' ||
+    state === 'input-available' ||
+    state === 'approval-responded'
+  ) {
+    return { type: 'running' }
+  }
+  if (state === 'output-error') return { type: 'incomplete', reason: 'error' }
+  if (state === 'output-available' || state === 'output-denied') return { type: 'complete' }
+  return undefined
+}
+
+function stringRecordValue(
+  value: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const result = value?.[key]
+  return typeof result === 'string' ? result : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isToolCallStatus(value: unknown): value is ToolCallMessagePartStatus {
+  if (!isRecord(value)) return false
+  return (
+    value.type === 'running' ||
+    value.type === 'complete' ||
+    value.type === 'requires-action' ||
+    value.type === 'incomplete'
+  )
 }
 
 function UserActionBar(): React.JSX.Element {

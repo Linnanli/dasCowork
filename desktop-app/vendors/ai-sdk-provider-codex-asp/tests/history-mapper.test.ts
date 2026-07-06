@@ -107,6 +107,25 @@ describe("history mapper", () =>
         });
     });
 
+    it("maps sleep history items through the shared dynamic-tool contract", () =>
+    {
+        const item = {
+            type: "sleep",
+            id: "sleep_1",
+            durationMs: 1500,
+        } satisfies Extract<ThreadItem, { type: "sleep" }>;
+
+        expect(mapCodexThreadItemToUiPart(item)).toEqual({
+            type: "dynamic-tool",
+            toolName: "codex_sleep",
+            toolCallId: "sleep_1",
+            state: "output-available",
+            input: { durationMs: 1500 },
+            output: { item },
+            providerExecuted: true,
+        });
+    });
+
     it("maps imageGeneration history items to file UI parts", () =>
     {
         const item = {

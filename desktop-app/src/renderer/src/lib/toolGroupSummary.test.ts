@@ -10,7 +10,13 @@ describe('summarizeToolGroup', () => {
       commandResultPart('read-c', 'read')
     ])
 
-    expect(summary).toEqual({ label: '已读取 3 个文件', icon: 'read-files', active: false })
+    expect(summary).toMatchObject({
+      label: '已读取 3 个文件',
+      icon: 'read-files',
+      active: false,
+      count: 3,
+      expandable: true
+    })
   })
 
   it('summarizes running command actions from tool input', () => {
@@ -27,7 +33,13 @@ describe('summarizeToolGroup', () => {
       }
     ])
 
-    expect(summary).toEqual({ label: '正在搜索 1 次代码', icon: 'code-searching', active: true })
+    expect(summary).toMatchObject({
+      label: '正在搜索 1 次代码',
+      icon: 'code-searching',
+      active: true,
+      count: 1,
+      expandable: true
+    })
   })
 
   it('treats assistant-ui requires-action tool status as active', () => {
@@ -44,7 +56,13 @@ describe('summarizeToolGroup', () => {
       }
     ])
 
-    expect(summary).toEqual({ label: '正在运行 1 条命令', icon: 'run-command', active: true })
+    expect(summary).toMatchObject({
+      label: '正在运行 1 条命令',
+      icon: 'run-command',
+      active: true,
+      count: 1,
+      expandable: true
+    })
   })
 
   it('summarizes file change actions by patch kind', () => {
@@ -66,10 +84,12 @@ describe('summarizeToolGroup', () => {
       }
     ])
 
-    expect(summary).toEqual({
+    expect(summary).toMatchObject({
       label: '已创建 1 个文件，已编辑 1 个文件，已删除 1 个文件',
       icon: 'edit-files',
-      active: false
+      active: false,
+      count: 1,
+      expandable: true
     })
   })
 
@@ -79,10 +99,12 @@ describe('summarizeToolGroup', () => {
       commandResultPart('read-a', 'read')
     ])
 
-    expect(summary).toEqual({
+    expect(summary).toMatchObject({
       label: '已读取 1 个文件，正在搜索 1 次网页',
       icon: 'web-search',
-      active: true
+      active: true,
+      count: 2,
+      expandable: true
     })
   })
 
@@ -92,7 +114,142 @@ describe('summarizeToolGroup', () => {
       { type: 'tool-call', toolName: 'unknown_tool_b' }
     ])
 
-    expect(summary).toEqual({ label: '已调用 2 个工具', icon: 'generic-tool', active: false })
+    expect(summary).toMatchObject({
+      label: '已调用 2 个工具',
+      icon: 'generic-tool',
+      active: false,
+      count: 2,
+      expandable: true
+    })
+  })
+
+  it('summarizes folder creation loaded tools and automatic approval denials', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_command_execution',
+        result: {
+          item: {
+            id: 'mkdir-1',
+            type: 'commandExecution',
+            status: 'completed',
+            commandActions: [{ type: 'mkdir', command: 'mkdir src/new' }]
+          }
+        }
+      },
+      {
+        type: 'tool-call',
+        toolName: 'codex_loaded_tool',
+        result: { item: { id: 'load-1', type: 'loadedTool', status: 'completed' } }
+      },
+      {
+        type: 'tool-call',
+        toolName: 'codex_automatic_approval_review',
+        result: {
+          item: {
+            id: 'approval-1',
+            type: 'automaticApprovalReview',
+            status: 'completed',
+            outcome: 'denied'
+          }
+        }
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      label: '已创建 1 个文件夹，已加载 1 个工具定义，已拒绝 1 次自动审批',
+      icon: 'edit-files',
+      active: false,
+      count: 3,
+      expandable: true
+    })
+  })
+
+  it('summarizes sleep and automatic approval approved/in-progress states', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_sleep',
+        result: { item: { id: 'sleep-1', type: 'sleep', durationMs: 1000 } }
+      },
+      {
+        type: 'tool-call',
+        toolName: 'codex_automatic_approval_review',
+        result: {
+          item: {
+            id: 'approval-approved',
+            type: 'automaticApprovalReview',
+            status: 'completed',
+            outcome: 'approved'
+          }
+        }
+      },
+      {
+        type: 'tool-call',
+        toolName: 'codex_automatic_approval_review',
+        status: { type: 'running' },
+        result: {
+          item: {
+            id: 'approval-running',
+            type: 'automaticApprovalReview',
+            status: 'inProgress',
+            outcome: 'inProgress'
+          }
+        }
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      label: '已等待 1 次，已通过 1 次自动审批，正在审核 1 次自动审批',
+      icon: 'generic-tool',
+      active: true,
+      count: 3,
+      expandable: true
+    })
+  })
+
+  it('treats AI SDK preliminary dynamic-tool outputs as active', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'dynamic-tool',
+        toolName: 'codex_sleep',
+        toolCallId: 'sleep-running',
+        state: 'output-available',
+        preliminary: true,
+        output: { item: { id: 'sleep-running', type: 'sleep', durationMs: 1000 } },
+        providerExecuted: true
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      label: '正在等待 1 次',
+      icon: 'generic-tool',
+      active: true,
+      count: 1
+    })
+  })
+
+  it('records MCP source summaries when source metadata is available', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'mcp:github/read',
+        result: {
+          item: {
+            id: 'mcp-1',
+            type: 'mcpToolCall',
+            status: 'completed',
+            server: 'github'
+          }
+        }
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      label: '已调用 1 个 MCP 工具',
+      icon: 'mcp-tools',
+      sourceSummary: 'github'
+    })
   })
 })
 
