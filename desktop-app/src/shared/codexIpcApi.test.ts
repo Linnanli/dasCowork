@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   codexChatRequestSchema,
   codexOpenExternalHttpUrlPayloadSchema,
+  codexOpenLocalPathPayloadSchema,
   codexSetSelectedModelPayloadSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
@@ -62,6 +63,24 @@ describe('codex IPC schemas', () => {
     expect(
       codexOpenExternalHttpUrlPayloadSchema.safeParse({ url: 'ftp://example.com' }).success
     ).toBe(false)
+  })
+
+  it('allows only absolute local paths for local file opening', () => {
+    expect(codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/report.md' }).success).toBe(true)
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({ path: 'C:\\Users\\me\\report.md', line: 4 })
+        .success
+    ).toBe(true)
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/report.md', line: 0 }).success
+    ).toBe(false)
+    expect(codexOpenLocalPathPayloadSchema.safeParse({ path: 'relative/report.md' }).success).toBe(
+      false
+    )
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({ path: 'file:///tmp/report.md' }).success
+    ).toBe(false)
+    expect(codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/a\0b' }).success).toBe(false)
   })
 
   it('validates conversation action payloads', () => {

@@ -1,12 +1,13 @@
 import { once } from 'node:events'
-import { writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import {
   createServer,
   type IncomingHttpHeaders,
   type IncomingMessage,
   type ServerResponse
 } from 'node:http'
-import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { test, expect, type Page, type TestInfo } from '@playwright/test'
 import electronExecutable from 'electron'
 import { _electron as electron, type ElectronApplication } from 'playwright'
@@ -27,6 +28,17 @@ type MockBackend = {
   close(): Promise<void>
 }
 
+type LaunchAppOptions = {
+  configureCodexHome?: (codexHomeDir: string) => Promise<void>
+}
+
+type MockBackendOptions = {
+  responses: ResponsesStep[]
+  searchResponses?: unknown[]
+  modelApiBasePath?: string
+  modelProvider?: string
+}
+
 type ResponsesStreamStep = {
   events: ResponseEvent[]
   beforeResponse?: () => void | Promise<void>
@@ -44,6 +56,8 @@ type ResponseEvent = {
   type: string
   [key: string]: unknown
 }
+
+const appTempDirs = new WeakMap<ElectronApplication, string[]>()
 
 test('sends a real desktop chat turn through the admin backend model provider', async ({
   browserName
@@ -83,7 +97,7 @@ test('sends a real desktop chat turn through the admin backend model provider', 
     ).toBe(false)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -132,7 +146,7 @@ test('creates a sidebar conversation entry before the provider response returns'
   } finally {
     releaseProviderResponse.resolve()
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -175,7 +189,7 @@ test('shows upstream quota errors returned by the admin backend model provider',
     ).toBe(true)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -228,7 +242,7 @@ test('approves a command request through the desktop approval panel', async ({
     expect(toolOutput).toContain('E2E_APPROVED_COMMAND')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -281,7 +295,81 @@ test('rejects a command request through the desktop approval panel', async ({
     expect(toolOutput).not.toContain('E2E_REJECTED_COMMAND_SHOULD_NOT_RUN')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('renders web search and exploration render units through the real desktop chat flow', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const query = 'render unit parity e2e'
+  const backend = await startMockBackend({
+    modelApiBasePath: '/api/codex',
+    modelProvider: 'OpenAI',
+    responses: [
+      webSearchResponse('resp-web-search-tool', 'web-run-1', query),
+      shellCommandResponse('resp-exploration-tool', 'call-read-package', {
+        command: 'cat package.json',
+        timeout_ms: 5000
+      }),
+      assistantMessageResponse(
+        'resp-render-unit-final',
+        'msg-render-unit-final',
+        'Web search and exploration render units complete'
+      )
+    ],
+    searchResponses: [{ encrypted_output: 'ciphertext', output: 'Search result' }]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs, {
+      configureCodexHome: async (codexHomeDir) => {
+        await writeStandaloneWebSearchConfig(codexHomeDir, backend)
+        await writeFakeChatGptAuth(codexHomeDir)
+      }
+    })
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, '搜索 render unit parity，然后总结。')
+
+    const webSearchGroup = page.locator('[data-slot="web-search-group-unit"]')
+    await expect(webSearchGroup).toBeVisible()
+    await expect(webSearchGroup).toContainText('已搜索')
+
+    await webSearchGroup.locator('[data-slot="tool-group-trigger"]').click()
+    await expect(page.locator('[data-slot="web-search-details"]')).toContainText(query)
+    await expect(page.locator('[data-slot="web-search-details"]')).toContainText('已搜索 · search')
+
+    const explorationCard = page.locator('[data-slot="exploration-entry-unit"]')
+    await expect(explorationCard).toBeVisible()
+    await expect(explorationCard).toContainText('已探索')
+    await expect(explorationCard).toContainText('package.json')
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'Web search and exploration render units complete'
+    )
+
+    const searchRequest = backend.requests.find(
+      (request) => request.method === 'POST' && request.url === '/api/codex/alpha/search'
+    )
+    expect(searchRequest).toBeDefined()
+    if (!searchRequest) throw new Error('Expected standalone web search request')
+
+    const searchBody = JSON.parse(searchRequest.body) as {
+      commands?: { search_query?: Array<{ q?: string }> }
+    }
+    expect(searchBody.commands?.search_query?.[0]?.q).toBe(query)
+    expect(
+      backend.requests.filter((request) => request.method === 'POST' && isResponsesUrl(request.url))
+    ).toHaveLength(3)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -315,7 +403,7 @@ test('switches projects from the left sidebar project list', async ({ browserNam
     await expect(page.locator('body')).toContainText(`Working in: ${firstProjectName}`)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -385,7 +473,7 @@ test('opens a sidebar conversation and continues the same desktop thread', async
     expect(resumedInput).toContain(secondPrompt)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -431,7 +519,7 @@ test('keeps sidebar projects and conversations after a renderer reload', async (
     await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
@@ -476,30 +564,59 @@ test('preserves a new conversation across reload and restores its history', asyn
     ).toBeVisible()
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
-    await app?.close().catch(() => undefined)
+    await closeApp(app)
     await backend.close()
   }
 })
 
-async function launchApp(backend: MockBackend, logs: string[]): Promise<ElectronApplication> {
-  const app = await electron.launch({
-    executablePath: electronExecutable,
-    args: ['.'],
-    cwd: appRoot,
-    env: {
-      ...process.env,
-      ADMIN_BACKEND_URL: backend.baseUrl,
-      ADMIN_BACKEND_MODEL_USER_ID: 'e2e-user',
-      ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '1000',
-      CODEX_ASP_DEBUG_PACKETS: '1',
-      CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
-      ELECTRON_ENABLE_LOGGING: '1'
-    }
-  })
+async function launchApp(
+  backend: MockBackend,
+  logs: string[],
+  options: LaunchAppOptions = {}
+): Promise<ElectronApplication> {
+  const userDataDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-user-data-'))
+  const codexHomeDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-codex-home-'))
+  let app: ElectronApplication | undefined
 
+  try {
+    await options.configureCodexHome?.(codexHomeDir)
+    app = await electron.launch({
+      executablePath: electronExecutable,
+      args: ['.'],
+      cwd: appRoot,
+      env: {
+        ...process.env,
+        ADMIN_BACKEND_URL: backend.baseUrl,
+        ADMIN_BACKEND_MODEL_USER_ID: 'e2e-user',
+        ADMIN_BACKEND_MODEL_CACHE_TTL_MS: '1000',
+        CODEX_ASP_DEBUG_PACKETS: '1',
+        CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
+        CODEX_HOME: codexHomeDir,
+        DASCOWORK_E2E_USER_DATA_DIR: userDataDir,
+        ELECTRON_ENABLE_LOGGING: '1'
+      }
+    })
+  } catch (error) {
+    await cleanupTempDirs([userDataDir, codexHomeDir])
+    throw error
+  }
+
+  appTempDirs.set(app, [userDataDir, codexHomeDir])
   app.process().stdout?.on('data', (chunk) => logs.push(`[main:stdout] ${String(chunk)}`))
   app.process().stderr?.on('data', (chunk) => logs.push(`[main:stderr] ${String(chunk)}`))
   return app
+}
+
+async function closeApp(app: ElectronApplication | undefined): Promise<void> {
+  if (!app) return
+  const tempDirs = appTempDirs.get(app) ?? []
+  await app.close().catch(() => undefined)
+  appTempDirs.delete(app)
+  await cleanupTempDirs(tempDirs)
+}
+
+async function cleanupTempDirs(paths: string[]): Promise<void> {
+  await Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })))
 }
 
 async function sendMessage(page: Page, message: string): Promise<void> {
@@ -597,9 +714,10 @@ async function attachDiagnostics(
   })
 }
 
-async function startMockBackend(options: { responses: ResponsesStep[] }): Promise<MockBackend> {
+async function startMockBackend(options: MockBackendOptions): Promise<MockBackend> {
   const requests: MockRequest[] = []
   const responses = [...options.responses]
+  const searchResponses = [...(options.searchResponses ?? [])]
   const server = createServer(async (request, response) => {
     const capturedRequest: MockRequest = {
       method: request.method ?? 'GET',
@@ -618,10 +736,10 @@ async function startMockBackend(options: { responses: ResponsesStep[] }): Promis
           model_id: 'qwen3.7-plus',
           display_name: 'qwen3.7-plus',
           description: null,
-          provider: 'qwen',
+          provider: options.modelProvider ?? 'qwen',
           is_default: true,
           capabilities: ['text'],
-          api_base_url: serverBaseUrl(server),
+          api_base_url: `${serverBaseUrl(server)}${options.modelApiBasePath ?? ''}`,
           api_key: 'sk-e2e-test-key',
           api_format: 'openai',
           source: 'admin'
@@ -638,7 +756,15 @@ async function startMockBackend(options: { responses: ResponsesStep[] }): Promis
       return
     }
 
-    if (request.method === 'POST' && request.url === '/responses') {
+    if (request.method === 'POST' && request.url === '/api/codex/alpha/search') {
+      writeJson(
+        response,
+        searchResponses.shift() ?? { encrypted_output: 'ciphertext', output: 'Search result' }
+      )
+      return
+    }
+
+    if (request.method === 'POST' && isResponsesUrl(request.url)) {
       const nextResponse = responses.shift()
       if (!nextResponse) {
         response.writeHead(500, { 'content-type': 'application/json' })
@@ -676,6 +802,10 @@ function serverBaseUrl(server: ReturnType<typeof createServer>): string {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('mock backend is not listening')
   return `http://127.0.0.1:${address.port}`
+}
+
+function isResponsesUrl(url: string | undefined): boolean {
+  return url === '/responses' || url === '/api/codex/responses'
 }
 
 function writeJson(response: ServerResponse, payload: unknown): void {
@@ -740,6 +870,82 @@ function shellCommandResponse(
   }
 }
 
+function webSearchResponse(responseId: string, callId: string, query: string): ResponsesStreamStep {
+  return {
+    events: [
+      responseCreated(responseId),
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'function_call',
+          call_id: callId,
+          namespace: 'web',
+          name: 'run',
+          arguments: JSON.stringify({
+            search_query: [{ q: query }]
+          })
+        }
+      },
+      responseCompleted(responseId)
+    ]
+  }
+}
+
+async function writeStandaloneWebSearchConfig(
+  codexHomeDir: string,
+  backend: MockBackend
+): Promise<void> {
+  await writeFile(
+    join(codexHomeDir, 'config.toml'),
+    `chatgpt_base_url = "${backend.baseUrl}"
+
+[features]
+standalone_web_search = true
+`,
+    'utf8'
+  )
+}
+
+async function writeFakeChatGptAuth(codexHomeDir: string): Promise<void> {
+  await writeFile(
+    join(codexHomeDir, 'auth.json'),
+    JSON.stringify(
+      {
+        auth_mode: 'chatgpt',
+        OPENAI_API_KEY: null,
+        tokens: {
+          id_token: fakeChatGptIdToken(),
+          access_token: 'access-chatgpt',
+          refresh_token: 'refresh-token',
+          account_id: 'e2e-account'
+        },
+        last_refresh: '2099-01-01T00:00:00Z'
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+}
+
+function fakeChatGptIdToken(): string {
+  return [
+    base64UrlJson({ alg: 'none', typ: 'JWT' }),
+    base64UrlJson({
+      email: 'e2e@example.test',
+      'https://api.openai.com/auth': {
+        chatgpt_plan_type: 'pro',
+        chatgpt_account_id: 'e2e-account'
+      }
+    }),
+    Buffer.from('signature').toString('base64url')
+  ].join('.')
+}
+
+function base64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64url')
+}
+
 function responseCreated(responseId: string): ResponseEvent {
   return {
     type: 'response.created',
@@ -770,7 +976,7 @@ function writeSse(response: ServerResponse, payload: ResponseEvent): void {
 
 function providerResponseBodies(backend: MockBackend): unknown[] {
   return backend.requests
-    .filter((request) => request.method === 'POST' && request.url === '/responses')
+    .filter((request) => request.method === 'POST' && isResponsesUrl(request.url))
     .map((request) => JSON.parse(request.body) as unknown)
 }
 

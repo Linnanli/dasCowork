@@ -1,18 +1,23 @@
 import { pendingAssistantMessageText } from './assistantMessages'
 import {
+  extractToolInput,
   extractThreadItem,
   isActiveStatus,
   isToolPartActive,
   summarizeToolGroup,
   type ToolGroupSummary
 } from './toolGroupSummary'
+import { ENTRY_ITEM_RENDER_MODES, type EntryRenderMode } from './renderUnitCapabilityMatrix'
 
 type AssistantMessagePart = Record<string, unknown>
+
+export type AssistantRenderDetailLevel = 'default' | 'stepsProse'
 
 type AssistantMessageLike = {
   status?: { type?: string }
   content: readonly AssistantMessagePart[]
   parts?: readonly AssistantMessagePart[]
+  detailLevel?: AssistantRenderDetailLevel
 }
 
 export type AssistantRenderTarget = {
@@ -40,41 +45,6 @@ export type DynamicToolMetadata = {
   completedSummaryKey?: string
   repeatCount: number
   hasRegistryMetadata: boolean
-}
-
-export type EntryRenderMode = 'text' | 'tool' | 'known-null' | 'fallback'
-
-export const ENTRY_ITEM_RENDER_MODES: Record<string, EntryRenderMode> = {
-  'assistant-message': 'text',
-  reasoning: 'text',
-  'worked-for': 'fallback',
-  'todo-list': 'fallback',
-  'user-input-response': 'fallback',
-  'mcp-server-elicitation': 'fallback',
-  exploration: 'fallback',
-  'permission-request': 'fallback',
-  'stream-error': 'fallback',
-  'system-error': 'fallback',
-  'turn-diff': 'fallback',
-  turnDiff: 'fallback',
-  'remote-task-created': 'fallback',
-  'personality-changed': 'fallback',
-  'model-changed': 'fallback',
-  'model-rerouted': 'fallback',
-  'context-compaction': 'fallback',
-  contextCompaction: 'fallback',
-  'worktree-init': 'fallback',
-  'automation-update': 'fallback',
-  'automatic-approval-review': 'fallback',
-  automaticApprovalReview: 'fallback',
-  sleep: 'fallback',
-  'subagent-activity': 'fallback',
-  subAgentActivity: 'fallback',
-  'generated-image': 'known-null',
-  'plan-implementation': 'known-null',
-  'proposed-plan': 'known-null',
-  userInput: 'known-null',
-  'realtime-transcript': 'known-null'
 }
 
 export type AssistantRenderUnitBase = {
@@ -203,6 +173,18 @@ type ToolGroupableUnit = GroupableUnit & {
   parts?: readonly AssistantMessagePart[]
 }
 
+type EntryGroupableUnit = Extract<GroupableUnit, { type: 'entry' }>
+
+type ExplorationActionKind = 'read' | 'list' | 'search'
+
+type ExplorationAction = {
+  type: ExplorationActionKind
+  label?: string
+  path?: string
+  query?: string
+  command?: string
+}
+
 const ACTIVITY_ITEM_TYPES = new Set([
   'commandExecution',
   'exec',
@@ -225,6 +207,16 @@ const ACTIVITY_ITEM_TYPES = new Set([
   'worktree-init'
 ])
 
+const STEPS_PROSE_HIDDEN_ACTIVITY_TYPES = new Set([
+  'contextCompaction',
+  'context-compaction',
+  'hookPrompt',
+  'hook-prompt',
+  'loadedTool',
+  'loaded-tool',
+  'sleep'
+])
+
 const WEB_SEARCH_ITEM_TYPES = new Set(['webSearch', 'web-search'])
 const DYNAMIC_ITEM_TYPES = new Set(['dynamicToolCall', 'dynamic-tool-call'])
 const MCP_ITEM_TYPES = new Set(['mcpToolCall', 'mcp-tool-call'])
@@ -237,9 +229,11 @@ const MULTI_AGENT_ITEM_TYPES = new Set([
 export function buildAssistantRenderUnits(message: AssistantMessageLike): AssistantRenderModel {
   const parts = message.parts ?? message.content
   const isRunning = message.status?.type === 'running'
+  const detailLevel = message.detailLevel ?? 'default'
   const normalized = normalizeParts(parts, isRunning)
   const preGrouped = groupWebSearchAndMultiAgent(normalized)
-  const activityCollapsed = collapseToolActivity(preGrouped)
+  const explorationGrouped = groupExplorationActivity(preGrouped)
+  const activityCollapsed = collapseToolActivity(explorationGrouped, { detailLevel })
   const dynamicGrouped = groupDynamicToolCalls(activityCollapsed)
   const mcpGrouped = groupPendingMcpToolCalls(dynamicGrouped)
   const units = assignThinkingOwnership(
@@ -300,9 +294,10 @@ function normalizeParts(
     if (type === 'indicator' || type === 'step-start') return []
 
     if (isToolLikePartType(type)) {
-      const item = extractThreadItem(part)
-      const itemType = canonicalItemType(typeof item?.type === 'string' ? item.type : undefined)
       const toolName = stringValue(part.toolName)
+      const item =
+        extractThreadItem(part) ?? inferredItemForToolPart(part, toolName, isMessageRunning)
+      const itemType = canonicalItemType(typeof item?.type === 'string' ? item.type : undefined)
       return [
         {
           kind: 'tool',
@@ -387,23 +382,91 @@ function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): Groupabl
   return units
 }
 
-function collapseToolActivity(units: readonly GroupableUnit[]): GroupableUnit[] {
+function collapseToolActivity(
+  units: readonly GroupableUnit[],
+  options: { detailLevel: AssistantRenderDetailLevel }
+): GroupableUnit[] {
+  const visibleUnits =
+    options.detailLevel === 'stepsProse'
+      ? units.filter((unit) => !isLowValueStepsProseActivityUnit(unit))
+      : units
   const result: GroupableUnit[] = []
 
-  for (let index = 0; index < units.length; index += 1) {
-    const group = collectConsecutive(units, index, isCollapsibleActivityUnit)
+  for (let index = 0; index < visibleUnits.length; index += 1) {
+    const group = collectConsecutive(visibleUnits, index, isCollapsibleActivityUnit)
 
-    if (group.length > 1) {
-      result.push({
-        type: 'collapsed-tool-activity',
-        partIndices: group.flatMap((unit) => [...unit.partIndices]),
-        parts: group.flatMap(partsForUnit)
-      } as GroupableUnit)
-      index += group.length - 1
+    if (group.length === 0) {
+      result.push(visibleUnits[index]!)
       continue
     }
 
-    result.push(units[index]!)
+    for (const activityGroup of splitActivityRuns(group)) {
+      pushCollapsedActivityGroup(result, activityGroup)
+    }
+    index += group.length - 1
+  }
+
+  return result
+}
+
+function pushCollapsedActivityGroup(
+  result: GroupableUnit[],
+  group: readonly GroupableUnit[]
+): void {
+  if (group.length > 1) {
+    result.push({
+      type: 'collapsed-tool-activity',
+      partIndices: group.flatMap((unit) => [...unit.partIndices]),
+      parts: group.flatMap(partsForUnit)
+    } as GroupableUnit)
+    return
+  }
+
+  const first = group[0]
+  if (first) result.push(first)
+}
+
+function splitActivityRuns(group: readonly GroupableUnit[]): GroupableUnit[][] {
+  const runs: GroupableUnit[][] = []
+  let current: GroupableUnit[] = []
+  let currentActive: boolean | undefined
+
+  for (const unit of group) {
+    const active = isGroupableUnitActive(unit)
+    if (current.length > 0 && active !== currentActive) {
+      runs.push(current)
+      current = []
+    }
+    current.push(unit)
+    currentActive = active
+  }
+
+  if (current.length > 0) runs.push(current)
+  return runs
+}
+
+function groupExplorationActivity(units: readonly GroupableUnit[]): GroupableUnit[] {
+  const result: GroupableUnit[] = []
+
+  for (let index = 0; index < units.length; index += 1) {
+    const first = units[index]
+    if (!first || !isExplorationActivityUnit(first)) {
+      first && result.push(first)
+      continue
+    }
+
+    const group = [first]
+    let nextIndex = index + 1
+
+    while (nextIndex < units.length) {
+      const next = units[nextIndex]
+      if (!next || !isExplorationActivityUnit(next)) break
+      group.push(next)
+      nextIndex += 1
+    }
+
+    result.push(explorationUnitFromGroup(group))
+    index = nextIndex - 1
   }
 
   return result
@@ -683,6 +746,135 @@ function isCollapsibleActivityUnit(unit: GroupableUnit): boolean {
   return ACTIVITY_ITEM_TYPES.has(unit.itemType)
 }
 
+function isLowValueStepsProseActivityUnit(unit: GroupableUnit): boolean {
+  if (isGroupableUnitActive(unit) || unit.type !== 'entry') return false
+  if (!unit.itemType) return false
+  return STEPS_PROSE_HIDDEN_ACTIVITY_TYPES.has(unit.itemType)
+}
+
+function isGroupableUnitActive(unit: GroupableUnit): boolean {
+  if (unit.type === 'entry') {
+    return isToolPartActive(unit.part) || isActiveStatus(unit.item?.status)
+  }
+  return partsForUnit(unit).some(isToolPartActive)
+}
+
+function isExplorationActivityUnit(unit: GroupableUnit): unit is EntryGroupableUnit {
+  return unit.type === 'entry' && explorationActionsForUnit(unit).length > 0
+}
+
+function explorationUnitFromGroup(group: readonly EntryGroupableUnit[]): GroupableUnit {
+  const first = group[0]!
+  const actions = group.flatMap(explorationActionsForUnit)
+  const items = group.map((unit) => unit.item).filter(isDefined)
+  const active = group.some(
+    (unit) => isToolPartActive(unit.part) || isActiveStatus(unit.item?.status)
+  )
+  const firstId =
+    stringValue(items[0]?.callId) ?? stringValue(items[0]?.id) ?? String(first.partIndex)
+
+  return {
+    type: 'entry',
+    partIndex: first.partIndex,
+    partIndices: group.flatMap((unit) => [...unit.partIndices]),
+    part: first.part,
+    item: {
+      id: `exploration:${firstId}`,
+      type: 'exploration',
+      status: active ? 'inProgress' : 'completed',
+      actions,
+      items
+    },
+    itemType: 'exploration'
+  }
+}
+
+function explorationActionsForUnit(unit: EntryGroupableUnit): ExplorationAction[] {
+  if (unit.itemType === 'exploration') return []
+  if (!isCommandExecutionUnit(unit)) return []
+
+  const itemActions = explorationActionsForItem(unit.item)
+  if (itemActions.length > 0) return itemActions
+
+  return explorationActionsFromRecord(recordValue(extractToolInput(unit.part)))
+}
+
+function isCommandExecutionUnit(unit: EntryGroupableUnit): boolean {
+  return (
+    unit.itemType === 'commandExecution' ||
+    canonicalItemType(stringValue(unit.item?.type)) === 'commandExecution' ||
+    unit.toolName === 'codex_command_execution'
+  )
+}
+
+function explorationActionsForItem(item: Record<string, unknown> | undefined): ExplorationAction[] {
+  const record = recordValue(item)
+  if (!record) return []
+  return explorationActionsFromRecord(record)
+}
+
+function explorationActionsFromRecord(
+  record: Record<string, unknown> | undefined
+): ExplorationAction[] {
+  if (!record) return []
+
+  const commandActions = arrayValue(record.commandActions)
+    .map((action) => explorationActionFromRecord(recordValue(action)))
+    .filter(isDefined)
+  if (commandActions.length > 0) return commandActions
+
+  const parsedCommand = explorationActionFromRecord(recordValue(record.parsedCmd))
+  return parsedCommand ? [parsedCommand] : []
+}
+
+function explorationActionFromRecord(
+  record: Record<string, unknown> | undefined
+): ExplorationAction | undefined {
+  if (!record) return undefined
+
+  const type = explorationActionKind(stringValue(record.type))
+  if (!type) return undefined
+
+  return {
+    type,
+    label:
+      stringValue(record.name) ??
+      stringValue(record.label) ??
+      stringValue(record.path) ??
+      stringValue(record.query) ??
+      stringValue(record.command),
+    path:
+      stringValue(record.path) ??
+      stringValue(record.file) ??
+      stringValue(record.filename) ??
+      stringValue(record.directory),
+    query: stringValue(record.query) ?? stringValue(record.pattern),
+    command: stringValue(record.command)
+  }
+}
+
+function explorationActionKind(value: string | undefined): ExplorationActionKind | undefined {
+  switch (value) {
+    case 'read':
+    case 'readFile':
+    case 'read_file':
+      return 'read'
+    case 'list':
+    case 'listFiles':
+    case 'list_files':
+    case 'ls':
+      return 'list'
+    case 'search':
+    case 'searchCode':
+    case 'search_code':
+    case 'grep':
+    case 'rg':
+      return 'search'
+    default:
+      return undefined
+  }
+}
+
 function isDynamicToolUnit(unit: GroupableUnit): boolean {
   return unit.type === 'entry' && DYNAMIC_ITEM_TYPES.has(unit.itemType ?? '')
 }
@@ -699,7 +891,7 @@ function shouldRenderSingleMcpGroup(unit: GroupableUnit): boolean {
   if (unit.type !== 'entry') return false
 
   const sourceType = unit.mcpSource?.sourceType
-  return sourceType === 'app' || sourceType === 'browser' || sourceType === 'node-repl'
+  return sourceType !== 'computer-use'
 }
 
 function isToolLikeUnit(unit: AssistantRenderUnit): boolean {
@@ -759,9 +951,11 @@ function itemKey(
 function explorationKey(item: Record<string, unknown> | undefined, partIndex: number): string {
   const firstItem = arrayValue(item?.items).map(recordValue).find(isDefined)
   const firstType = canonicalItemType(stringValue(firstItem?.type))
-  const callId = stringValue(firstItem?.callId)
+  const callId = stringValue(firstItem?.callId) ?? stringValue(firstItem?.id)
 
   if (firstType === 'commandExecution' && callId) return `exploration:${callId}`
+  const id = stringValue(item?.id)
+  if (id) return id
   return `exploration:${firstType ?? `unknown-${partIndex}`}`
 }
 
@@ -850,21 +1044,96 @@ function canonicalItemType(itemType: string | undefined): string | undefined {
       return 'commandExecution'
     case 'patch':
       return 'fileChange'
+    case 'todo-list':
+      return 'todoList'
+    case 'user-input-response':
+      return 'userInputResponse'
+    case 'mcp-server-elicitation':
+      return 'mcpServerElicitation'
+    case 'permission-request':
+      return 'permissionRequest'
+    case 'stream-error':
+      return 'streamError'
+    case 'system-error':
+      return 'systemError'
+    case 'remote-task-created':
+      return 'remoteTaskCreated'
+    case 'personality-changed':
+      return 'personalityChanged'
+    case 'model-changed':
+      return 'modelChanged'
+    case 'model-rerouted':
+      return 'modelRerouted'
     case 'subagent-activity':
       return 'subAgentActivity'
     case 'context-compaction':
       return 'contextCompaction'
+    case 'worktree-init':
+      return 'worktreeInit'
+    case 'automation-update':
+      return 'automationUpdate'
     case 'hook-prompt':
       return 'hookPrompt'
     case 'automatic-approval-review':
       return 'automaticApprovalReview'
     case 'turn-diff':
       return 'turnDiff'
+    case 'generated-image':
+      return 'imageGeneration'
+    case 'review-comments':
+      return 'reviewComments'
     case 'loaded-tool':
       return 'loadedTool'
     default:
       return itemType
   }
+}
+
+function inferredItemForToolPart(
+  part: AssistantMessagePart,
+  toolName: string | undefined,
+  isMessageRunning: boolean
+): Record<string, unknown> | undefined {
+  if (toolName !== 'codex_web_search') return undefined
+  if (!isMessageRunning && !isToolPartActive(part)) return undefined
+
+  const input = extractToolInput(part)
+  const query = webSearchQueryFromInput(input)
+  const action = webSearchActionFromInput(input) ?? (query ? { type: 'search' } : undefined)
+
+  return {
+    id: stringValue(part.toolCallId) ?? stringValue(part.id) ?? 'web-search',
+    type: 'webSearch',
+    status: isToolPartActive(part) ? 'inProgress' : 'completed',
+    ...(query ? { query } : {}),
+    ...(action ? { action } : {})
+  }
+}
+
+function webSearchQueryFromInput(input: unknown): string | undefined {
+  const record = recordValue(input)
+  if (!record) return undefined
+
+  const directQuery = stringValue(record.query)
+  if (directQuery) return directQuery
+
+  const action = recordValue(record.action)
+  const actionQuery = stringValue(action?.query)
+  if (actionQuery) return actionQuery
+
+  const firstSearchQuery = arrayValue(record.search_query).map(recordValue).find(isDefined)
+  const searchQuery = stringValue(firstSearchQuery?.q) ?? stringValue(firstSearchQuery?.query)
+  if (searchQuery) return searchQuery
+
+  const commands = recordValue(record.commands)
+  const commandSearchQuery = arrayValue(commands?.search_query).map(recordValue).find(isDefined)
+  return stringValue(commandSearchQuery?.q) ?? stringValue(commandSearchQuery?.query)
+}
+
+function webSearchActionFromInput(input: unknown): unknown {
+  const record = recordValue(input)
+  if (!record) return undefined
+  return record.action ?? record.actionType
 }
 
 function isToolLikePartType(type: string | undefined): boolean {

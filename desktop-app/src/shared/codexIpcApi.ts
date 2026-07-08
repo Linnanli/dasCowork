@@ -149,6 +149,11 @@ export type CodexApprovalResponse =
   | { action: 'decline'; reason?: string }
   | { action: 'answer'; answers: Record<string, string[]> }
 
+export type CodexOpenLocalPathPayload = {
+  path: string
+  line?: number
+}
+
 export const codexChatRequestSchema = z.object({
   chatId: z.string().min(1),
   trigger: z.enum(['submit-message', 'regenerate-message']),
@@ -179,6 +184,11 @@ export const codexSetSelectedModelPayloadSchema = z.object({
 export const codexOpenExternalHttpUrlPayloadSchema = z.object({
   url: z.string().url().refine(isExternalHttpUrl, 'external URL must be http(s)')
 })
+
+export const codexOpenLocalPathPayloadSchema = z.object({
+  path: z.string().min(1).refine(isSafeLocalOpenPath, 'path must be an absolute local path'),
+  line: z.number().int().min(1).optional()
+}) satisfies z.ZodType<CodexOpenLocalPathPayload>
 
 export const workspaceFileSearchPayloadSchema = z.object({
   query: z.string().optional(),
@@ -225,6 +235,7 @@ export type DesktopCodexApi = {
   setSelectedModel(modelId: string): Promise<{ selectedModelId: string }>
   respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void>
   openExternalHttpUrl(url: string): Promise<void>
+  openLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
   onStatusChange(callback: (status: CodexStatus) => void): () => void
   onApprovalRequest(callback: (request: CodexApprovalRequest) => void): () => void
 }
@@ -283,6 +294,12 @@ export function isExternalHttpUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+export function isSafeLocalOpenPath(value: string): boolean {
+  if (value.includes('\0')) return false
+  if (value.startsWith('/')) return true
+  return /^[A-Za-z]:[\\/]/.test(value)
 }
 
 function isUiMessage(value: unknown): value is UIMessage {

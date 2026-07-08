@@ -48,6 +48,8 @@ export type ToolGroupSummary = {
   active: boolean
   count: number
   expandable: boolean
+  activeSummary?: string
+  details: readonly string[]
   sourceSummary?: string
 }
 
@@ -117,6 +119,8 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
   const state = createSummaryState()
   let knownPartCount = 0
   const sourceNames = new Set<string>()
+  const details: string[] = []
+  let activeSummary: string | undefined
 
   for (const part of parts) {
     if (!isRecord(part)) continue
@@ -126,12 +130,17 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
       knownPartCount += 1
       addSourceName(sourceNames, item, part)
       addThreadItemToSummary(state, item, isToolPartActive(part))
+      pushUniqueDetails(details, threadItemDetails(item, part))
+      activeSummary ??= activeThreadItemSummary(item, part)
       continue
     }
 
     if (addToolInputToSummary(state, part)) {
       knownPartCount += 1
       addSourceName(sourceNames, undefined, part)
+      const input = extractToolInput(part)
+      pushUniqueDetails(details, toolInputDetails(part, input))
+      activeSummary ??= activeToolInputSummary(part, input)
     }
   }
 
@@ -147,6 +156,8 @@ export function summarizeToolGroup(parts: readonly unknown[]): ToolGroupSummary 
     active,
     count: knownPartCount || parts.length,
     expandable: parts.length > 0,
+    activeSummary,
+    details,
     sourceSummary: renderSourceSummary(sourceNames)
   }
 }
@@ -510,10 +521,231 @@ function renderSourceSummary(sourceNames: Set<string>): string | undefined {
   return `${names[0]} 等 ${names.length} 个来源`
 }
 
+function threadItemDetails(item: ToolPartRecord, part: ToolPartRecord): readonly string[] {
+  const type = canonicalItemType(stringValue(item.type))
+
+  switch (type) {
+    case 'commandExecution': {
+      const command = commandFromItem(item)
+      return command ? [`命令：${truncateMiddle(command, 96)}`] : []
+    }
+    case 'fileChange': {
+      const changes = arrayValue(item.changes).map(recordValue).filter(isDefined)
+      const lineSummary = fileChangeLineSummary(changes)
+      const stopped = stoppedCreationSummary(item, changes)
+      return [lineSummary, stopped].filter(isDefined)
+    }
+    case 'webSearch': {
+      const query = stringValue(item.query)
+      const action = webSearchActionLabel(item.action)
+      if (!query) return action ? [`网页搜索：${action}`] : []
+      return [`网页搜索：${action ? `${action} ` : ''}${truncateMiddle(query, 96)}`]
+    }
+    case 'mcpToolCall': {
+      const label = mcpSourceLabel(item, part)
+      const tool = stringValue(item.tool) ?? mcpToolFromToolName(stringValue(part.toolName))
+      if (!label && !tool) return []
+      return [`MCP：${[label, tool].filter(Boolean).join(' / ')}`]
+    }
+    case 'loadedTool': {
+      const name = loadedToolName(item, part)
+      return name ? [`已加载工具：${name}`] : []
+    }
+    default:
+      return []
+  }
+}
+
+function toolInputDetails(part: ToolPartRecord, input: unknown): readonly string[] {
+  const toolName = stringValue(part.toolName)
+  const inputRecord = recordValue(input)
+
+  if (toolName === 'codex_command_execution') {
+    const command =
+      stringValue(inputRecord?.command) ??
+      arrayValue(inputRecord?.commandActions)
+        .map(recordValue)
+        .filter(isDefined)
+        .map((action) => stringValue(action.command))
+        .find(isDefined)
+    return command ? [`命令：${truncateMiddle(command, 96)}`] : []
+  }
+
+  if (toolName === 'codex_file_change') {
+    const changes = arrayValue(inputRecord?.changes).map(recordValue).filter(isDefined)
+    const lineSummary = fileChangeLineSummary(changes)
+    return lineSummary ? [lineSummary] : []
+  }
+
+  if (toolName === 'codex_web_search') {
+    const query = stringValue(inputRecord?.query)
+    return query ? [`网页搜索：${truncateMiddle(query, 96)}`] : []
+  }
+
+  if (toolName?.startsWith('mcp:')) {
+    const server = mcpServerFromToolName(toolName)
+    const tool = mcpToolFromToolName(toolName)
+    return [`MCP：${[server, tool].filter(Boolean).join(' / ')}`]
+  }
+
+  if (toolName === 'codex_loaded_tool') {
+    const name = loadedToolName(inputRecord, part)
+    return name ? [`已加载工具：${name}`] : []
+  }
+
+  return []
+}
+
+function activeThreadItemSummary(item: ToolPartRecord, part: ToolPartRecord): string | undefined {
+  if (!isActiveStatus(item.status) && !isToolPartActive(part)) return undefined
+
+  const type = canonicalItemType(stringValue(item.type))
+  if (type === 'webSearch') {
+    const query = stringValue(item.query)
+    return query ? `正在搜索：${truncateMiddle(query, 72)}` : '正在搜索网页'
+  }
+  if (type === 'mcpToolCall') {
+    const label = mcpSourceLabel(item, part)
+    const tool = stringValue(item.tool) ?? mcpToolFromToolName(stringValue(part.toolName))
+    return `正在调用 ${[label, tool].filter(Boolean).join(' / ') || 'MCP 工具'}`
+  }
+  if (type === 'commandExecution') {
+    const command = commandFromItem(item)
+    return command ? `正在运行：${truncateMiddle(command, 72)}` : '正在运行命令'
+  }
+  if (type === 'fileChange') return '正在修改文件'
+  if (type === 'loadedTool') {
+    const name = loadedToolName(item, part)
+    return name ? `正在加载工具：${name}` : '正在加载工具定义'
+  }
+
+  return undefined
+}
+
+function activeToolInputSummary(part: ToolPartRecord, input: unknown): string | undefined {
+  if (!isToolPartActive(part)) return undefined
+
+  const toolName = stringValue(part.toolName)
+  const inputRecord = recordValue(input)
+
+  if (toolName === 'codex_web_search') {
+    const query = stringValue(inputRecord?.query)
+    return query ? `正在搜索：${truncateMiddle(query, 72)}` : '正在搜索网页'
+  }
+  if (toolName === 'codex_command_execution') {
+    const command = stringValue(inputRecord?.command)
+    return command ? `正在运行：${truncateMiddle(command, 72)}` : '正在运行命令'
+  }
+  if (toolName?.startsWith('mcp:')) {
+    const server = mcpServerFromToolName(toolName)
+    const tool = mcpToolFromToolName(toolName)
+    return `正在调用 ${[server, tool].filter(Boolean).join(' / ') || 'MCP 工具'}`
+  }
+  if (toolName === 'codex_loaded_tool') {
+    const name = loadedToolName(inputRecord, part)
+    return name ? `正在加载工具：${name}` : '正在加载工具定义'
+  }
+
+  return undefined
+}
+
 function mcpServerFromToolName(toolName: string | undefined): string | undefined {
   if (!toolName?.startsWith('mcp:')) return undefined
   const body = toolName.slice('mcp:'.length)
   return body.split('/')[0] || undefined
+}
+
+function mcpToolFromToolName(toolName: string | undefined): string | undefined {
+  if (!toolName?.startsWith('mcp:')) return undefined
+  const slashIndex = toolName.indexOf('/')
+  if (slashIndex < 0) return undefined
+  return toolName.slice(slashIndex + 1) || undefined
+}
+
+function mcpSourceLabel(item: ToolPartRecord, part: ToolPartRecord): string | undefined {
+  const invocation = recordValue(item.invocation)
+  const appContext = recordValue(item.appContext)
+  return (
+    stringValue(appContext?.displayName) ??
+    stringValue(appContext?.appName) ??
+    stringValue(appContext?.name) ??
+    stringValue(item.server) ??
+    stringValue(invocation?.server) ??
+    mcpServerFromToolName(stringValue(part.toolName))
+  )
+}
+
+function loadedToolName(
+  item: ToolPartRecord | undefined,
+  part: ToolPartRecord
+): string | undefined {
+  return (
+    stringValue(item?.name) ??
+    stringValue(item?.toolName) ??
+    stringValue(item?.title) ??
+    stringValue(part.toolName)
+  )
+}
+
+function commandFromItem(item: ToolPartRecord): string | undefined {
+  return (
+    stringValue(item.command) ??
+    arrayValue(item.commandActions)
+      .map(recordValue)
+      .filter(isDefined)
+      .map((action) => stringValue(action.command))
+      .find(isDefined)
+  )
+}
+
+function fileChangeLineSummary(changes: readonly ToolPartRecord[]): string | undefined {
+  let added = 0
+  let removed = 0
+
+  for (const change of changes) {
+    const diff = stringValue(change.diff)
+    if (!diff) continue
+
+    for (const line of diff.split('\n')) {
+      if (line.startsWith('+++') || line.startsWith('---')) continue
+      if (line.startsWith('+')) added += 1
+      if (line.startsWith('-')) removed += 1
+    }
+  }
+
+  if (added === 0 && removed === 0) return undefined
+  return `变更 +${added}/-${removed} 行`
+}
+
+function stoppedCreationSummary(
+  item: ToolPartRecord,
+  changes: readonly ToolPartRecord[]
+): string | undefined {
+  const status = stringValue(item.status)
+  if (status !== 'cancelled' && status !== 'stopped' && status !== 'failed') return undefined
+
+  const created = changes.filter((change) => recordValue(change.kind)?.type === 'add').length
+  if (created === 0) return undefined
+  return `已停止创建 ${created} 个文件`
+}
+
+function webSearchActionLabel(action: unknown): string | undefined {
+  if (typeof action === 'string') return action
+  const actionRecord = recordValue(action)
+  return stringValue(actionRecord?.type) ?? stringValue(actionRecord?.query)
+}
+
+function pushUniqueDetails(details: string[], nextDetails: readonly string[]): void {
+  for (const detail of nextDetails) {
+    if (detail && !details.includes(detail)) details.push(detail)
+  }
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const headLength = Math.max(1, Math.floor((maxLength - 1) * 0.6))
+  const tailLength = Math.max(1, maxLength - headLength - 1)
+  return `${value.slice(0, headLength)}…${value.slice(-tailLength)}`
 }
 
 function canonicalItemType(itemType: string | undefined): string | undefined {
@@ -543,7 +775,7 @@ function canonicalItemType(itemType: string | undefined): string | undefined {
   }
 }
 
-function extractToolInput(part: ToolPartRecord): unknown {
+export function extractToolInput(part: ToolPartRecord): unknown {
   if (part.input !== undefined) return parseJsonIfNeeded(part.input)
   if (part.args !== undefined) return parseJsonIfNeeded(part.args)
   if (part.argsText !== undefined) return parseJsonIfNeeded(part.argsText)
@@ -609,4 +841,8 @@ function parseJsonIfNeeded(value: unknown): unknown {
 
 function isRecord(value: unknown): value is ToolPartRecord {
   return typeof value === 'object' && value !== null
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined
 }

@@ -154,17 +154,15 @@ describe('SidebarRoot', () => {
     expect(container.querySelector('button[aria-label="Open folder"]')).not.toBeNull()
     expect(container.textContent).toContain('Desktop App')
     expect(container.textContent).toContain('Path Repo')
-    const desktopProjectLabel = container.querySelector('.lucide-folder')?.parentElement
+    const desktopProjectLabel = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Select Desktop App"]'
+    )
     const desktopProjectToggleButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Collapse Desktop App"]'
     )
-    expect(
-      [...container.querySelectorAll('button')].some(
-        (candidate) => candidate.textContent?.trim() === 'Desktop App'
-      )
-    ).toBe(false)
     expect(desktopProjectLabel).not.toBeUndefined()
-    expect(desktopProjectLabel?.tagName).toBe('DIV')
+    expect(desktopProjectLabel?.tagName).toBe('BUTTON')
+    expect(desktopProjectLabel?.getAttribute('aria-current')).toBe('page')
     expect(desktopProjectLabel?.className).toContain('px-2')
     expect(desktopProjectLabel?.querySelector('.lucide-folder')).not.toBeNull()
     expect(desktopProjectToggleButton).not.toBeNull()
@@ -213,6 +211,34 @@ describe('SidebarRoot', () => {
     expect(container.textContent).not.toContain('Archive')
     expect(container.querySelector('[aria-label*="Archive"]')).toBeNull()
     expect(container.textContent).not.toContain('Delete')
+    root.unmount()
+  })
+
+  it('selects a project when the project label is clicked', async () => {
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    vi.mocked(projectState.selectProject).mockClear()
+
+    await act(async () => {
+      root.render(
+        <SidebarRoot
+          nativeBackdrop={false}
+          projectState={projectState}
+          conversationState={conversationState}
+          onNewChat={onNewChat}
+        />
+      )
+    })
+
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Select Desktop App"]'
+    )
+    await act(async () => button?.click())
+
+    expect(projectState.selectProject).toHaveBeenCalledWith({
+      projectKind: 'local',
+      projectId: 'local'
+    })
     root.unmount()
   })
 

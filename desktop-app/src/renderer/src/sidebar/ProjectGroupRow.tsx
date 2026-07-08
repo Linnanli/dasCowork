@@ -11,6 +11,7 @@ const collapseTransitionMs = 200
 export function ProjectGroupRow({
   group,
   nativeBackdrop,
+  onSelectProject,
   onToggleCollapsed,
   onNewChat,
   onRemoveProject,
@@ -18,6 +19,7 @@ export function ProjectGroupRow({
 }: {
   group: SidebarProjectGroup
   nativeBackdrop: boolean
+  onSelectProject: () => void
   onToggleCollapsed: () => void
   onNewChat: () => void
   onRemoveProject: () => void
@@ -32,10 +34,16 @@ export function ProjectGroupRow({
           nativeBackdrop ? 'hover:bg-background/40 dark:hover:bg-foreground/8' : 'hover:bg-muted'
         )}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left text-sm">
+        <button
+          aria-current={group.active ? 'page' : undefined}
+          aria-label={`Select ${group.label}`}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          type="button"
+          onClick={onSelectProject}
+        >
           <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 truncate text-foreground">{group.label}</span>
-        </div>
+        </button>
         <Button
           className="pointer-events-none shrink-0 text-muted-foreground opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
           size="icon-xs"

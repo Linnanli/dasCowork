@@ -34,6 +34,14 @@ import {
   ToolGroupContent
 } from '@/components/assistant-ui/tool-group'
 import {
+  CollapsedActivityDetails,
+  McpToolCallDetails,
+  SpecialEntryRenderer,
+  UnknownPartRenderer,
+  WebSearchDetails
+} from '@/components/render-units/renderUnitDetails'
+import { renderUnitAttributes } from '@/components/render-units/renderUnitAttributes'
+import {
   ActivityIcon,
   ArrowDownIcon,
   ArrowUpIcon,
@@ -75,6 +83,7 @@ import {
 import { cn } from './lib/utils'
 import { pendingAssistantMessageText } from './lib/assistantMessages'
 import { buildAssistantRenderUnits, type AssistantRenderUnit } from './lib/assistantRenderUnits'
+import { scrollToRenderTarget } from './lib/renderUnitNavigation'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
@@ -100,6 +109,10 @@ type ComposerProps = {
   modelSelectionError?: string
   onSelectedModelChange: (modelId: string) => void
   projectState: ProjectStateController
+}
+
+type ChatThreadProps = ComposerProps & {
+  hasBlockingRequest: boolean
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -141,6 +154,12 @@ type ComposerTriggerPopoverProps = ComposerTriggerPopoverBaseProps &
         directive?: never
       }
   )
+
+type RenderTargetScrollEventDetail = {
+  targetId?: unknown
+  behavior?: ScrollBehavior
+  focus?: boolean
+}
 
 const noopSlashCommand = (): void => {}
 
@@ -210,6 +229,21 @@ function App(): React.JSX.Element {
   const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
 
+  useEffect(() => {
+    const handleRenderTargetScroll = (event: Event): void => {
+      const detail = (event as CustomEvent<RenderTargetScrollEventDetail>).detail
+      if (typeof detail?.targetId !== 'string' || detail.targetId.length === 0) return
+
+      void scrollToRenderTarget(detail.targetId, {
+        behavior: detail.behavior,
+        focus: detail.focus
+      })
+    }
+
+    window.addEventListener('codex:scroll-render-target', handleRenderTargetScroll)
+    return () => window.removeEventListener('codex:scroll-render-target', handleRenderTargetScroll)
+  }, [])
+
   const toggleSidebar = (): void => {
     setSidebarCollapsed((collapsed) => !collapsed)
   }
@@ -251,6 +285,7 @@ function App(): React.JSX.Element {
             />
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatThread
+                hasBlockingRequest={serverRequests.length > 0}
                 models={models}
                 selectedModelId={selectedModelId}
                 modelSelectionError={modelSelectionError}
@@ -388,12 +423,13 @@ function isNewChatView(state: AssistantState): boolean {
 }
 
 function ChatThread({
+  hasBlockingRequest,
   models,
   selectedModelId,
   modelSelectionError,
   onSelectedModelChange,
   projectState
-}: ComposerProps): React.JSX.Element {
+}: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
   const showProjectGate = isEmpty && !projectState.hasSelection
 
@@ -424,7 +460,7 @@ function ChatThread({
             {({ message }) => {
               if (message.composer.isEditing) return <EditComposer />
               if (message.role === 'user') return <UserMessage />
-              return <AssistantMessage />
+              return <AssistantMessage hasBlockingRequest={hasBlockingRequest} />
             }}
           </ThreadPrimitive.Messages>
         </div>
@@ -563,7 +599,11 @@ function ThreadScrollToBottom(): React.JSX.Element {
   )
 }
 
-function AssistantMessage(): React.JSX.Element {
+function AssistantMessage({
+  hasBlockingRequest
+}: {
+  hasBlockingRequest: boolean
+}): React.JSX.Element {
   const messageContent = useAuiState((state) => state.message.content)
   const messageParts = useAuiState((state) => state.message.parts)
   const messageStatus = useAuiState((state) => state.message.status)
@@ -577,6 +617,13 @@ function AssistantMessage(): React.JSX.Element {
     [messageContent, messageParts, messageStatus]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
+  const isRunning = messageStatus?.type === 'running'
+  const liveFooterUnits =
+    isRunning && !hasBlockingRequest ? latestLiveFooterUnits(renderModel.units) : []
+  const visibleUnits =
+    liveFooterUnits.length > 0
+      ? renderModel.units.filter((unit) => !isLiveFooterUnit(unit))
+      : renderModel.units
 
   return (
     <MessagePrimitive.Root
@@ -591,9 +638,16 @@ function AssistantMessage(): React.JSX.Element {
           isThinkingOnly && 'shimmer text-foreground/60 motion-reduce:animate-none'
         )}
       >
-        {isThinkingOnly
-          ? pendingAssistantMessageText
-          : renderModel.units.map((unit) => <AssistantRenderUnitView key={unit.key} unit={unit} />)}
+        {isThinkingOnly ? (
+          pendingAssistantMessageText
+        ) : (
+          <>
+            {visibleUnits.map((unit) => (
+              <AssistantRenderUnitView key={unit.key} unit={unit} />
+            ))}
+            <LiveRenderUnitFooter units={liveFooterUnits} />
+          </>
+        )}
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
             data-slot="aui_assistant-message-error"
@@ -612,6 +666,48 @@ function AssistantMessage(): React.JSX.Element {
         </div>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+function LiveRenderUnitFooter({
+  units
+}: {
+  units: readonly AssistantRenderUnit[]
+}): React.JSX.Element | null {
+  if (units.length === 0) return null
+
+  return (
+    <div
+      data-slot="live-render-unit-footer"
+      className="mt-3 space-y-1 rounded-md border border-border/50 bg-background/80 p-1.5 shadow-sm"
+    >
+      {units.map((unit) => (
+        <AssistantRenderUnitView key={unit.key} unit={unit} />
+      ))}
+    </div>
+  )
+}
+
+function latestLiveFooterUnits(
+  units: readonly AssistantRenderUnit[]
+): readonly AssistantRenderUnit[] {
+  const latestByType = new Map<string, AssistantRenderUnit>()
+
+  for (const unit of units) {
+    if (!isLiveFooterUnit(unit)) continue
+    latestByType.set(unit.itemType, unit)
+  }
+
+  return [...latestByType.values()]
+}
+
+function isLiveFooterUnit(
+  unit: AssistantRenderUnit
+): unit is Extract<AssistantRenderUnit, { type: 'entry' }> & { itemType: 'todoList' | 'turnDiff' } {
+  return (
+    unit.type === 'entry' &&
+    unit.active === true &&
+    (unit.itemType === 'todoList' || unit.itemType === 'turnDiff')
   )
 }
 
@@ -764,7 +860,7 @@ function CollapsedToolActivityUnit({
       active={Boolean(unit.active || unit.showThinkingFallback)}
       defaultOpen={false}
     >
-      <ToolGroupSourceSummary summary={unit.summary?.sourceSummary} />
+      <CollapsedActivityDetails summary={unit.summary} />
       {unit.parts.map((part, index) => renderToolPart(part, index))}
     </AssistantToolGroupShell>
   )
@@ -787,8 +883,7 @@ function PendingMcpToolCallsUnit({
       active={Boolean(unit.active || unit.showThinkingFallback)}
       defaultOpen={unit.mcpSource?.sourceType === 'app'}
     >
-      <ToolGroupSourceSummary summary={unit.summary?.sourceSummary ?? sourceLabel} />
-      {unit.parts.map((part, index) => renderToolPart(part, index))}
+      <McpToolCallDetails parts={unit.parts} mcpSource={unit.mcpSource} />
     </AssistantToolGroupShell>
   )
 }
@@ -828,7 +923,7 @@ function WebSearchGroupUnit({
       icon="web-search"
       active={Boolean(unit.active || unit.showThinkingFallback)}
     >
-      {unit.parts.map((part, index) => renderToolPart(part, index))}
+      <WebSearchDetails parts={unit.parts} />
     </AssistantToolGroupShell>
   )
 }
@@ -896,11 +991,6 @@ function AssistantToolGroupShell({
   )
 }
 
-function ToolGroupSourceSummary({ summary }: { summary?: string }): React.JSX.Element | null {
-  if (!summary) return null
-  return <p className="text-xs text-muted-foreground">来源：{summary}</p>
-}
-
 function EntryUnit({
   unit
 }: {
@@ -911,6 +1001,10 @@ function EntryUnit({
   if (unit.renderMode === 'text') {
     const text = entryText(unit)
     return text ? <AssistantText text={text} unit={unit} /> : null
+  }
+
+  if (unit.renderMode === 'custom') {
+    return <SpecialEntryRenderer unit={unit} />
   }
 
   return (
@@ -925,6 +1019,10 @@ function UnknownUnit({
 }: {
   unit: Extract<AssistantRenderUnit, { type: 'unknown' }>
 }): React.JSX.Element {
+  if (isRenderableUnknownPart(unit.part)) {
+    return <UnknownPartRenderer part={unit.part} unit={unit} />
+  }
+
   return (
     <div
       aria-hidden="true"
@@ -933,6 +1031,10 @@ function UnknownUnit({
       {...renderUnitAttributes(unit)}
     />
   )
+}
+
+function isRenderableUnknownPart(part: Record<string, unknown>): boolean {
+  return part.type === 'file' && stringRecordValue(part, 'mediaType')?.startsWith('image/') === true
 }
 
 function mcpGroupLabel(
@@ -988,17 +1090,6 @@ function entryText(unit: Extract<AssistantRenderUnit, { type: 'entry' }>): strin
     stringRecordValue(item, 'content') ??
     stringRecordValue(unit.part, 'text')
   )
-}
-
-function renderUnitAttributes(
-  unit: AssistantRenderUnit | undefined
-): Record<string, string> | undefined {
-  if (!unit) return undefined
-  return {
-    'data-render-unit-key': unit.key,
-    'data-render-target-id': unit.target.id,
-    'data-render-target-ids': unit.target.itemIds.join(' ')
-  }
 }
 
 function AssistantToolPart({

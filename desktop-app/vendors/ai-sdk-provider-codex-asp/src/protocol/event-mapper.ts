@@ -15,6 +15,8 @@ import type { McpToolCallProgressNotification } from "./app-server-protocol/v2/M
 import type { ReasoningSummaryPartAddedNotification } from "./app-server-protocol/v2/ReasoningSummaryPartAddedNotification";
 import type { ThreadTokenUsageUpdatedNotification } from "./app-server-protocol/v2/ThreadTokenUsageUpdatedNotification";
 import type { TurnCompletedNotification } from "./app-server-protocol/v2/TurnCompletedNotification";
+import type { TurnDiffUpdatedNotification } from "./app-server-protocol/v2/TurnDiffUpdatedNotification";
+import type { TurnPlanUpdatedNotification } from "./app-server-protocol/v2/TurnPlanUpdatedNotification";
 import type { TurnStartedNotification } from "./app-server-protocol/v2/TurnStartedNotification";
 import type { TurnStatus } from "./app-server-protocol/v2/TurnStatus";
 import { withProviderMetadata } from "./provider-metadata";
@@ -72,6 +74,8 @@ const EMPTY_USAGE: LanguageModelV3Usage = {
         reasoning: undefined,
     },
 };
+
+const TURN_DIFF_PREVIEW_CHAR_LIMIT = 50_000;
 
 function toFinishReason(status: TurnStatus | undefined): LanguageModelV3FinishReason
 {
@@ -137,6 +141,47 @@ function asToolResult(value: unknown): NonNullable<JSONValue>
     return value as NonNullable<JSONValue>;
 }
 
+function normalizePlanStatus(status: string): string
+{
+    if (status === "in_progress")
+    {
+        return "inProgress";
+    }
+    return status;
+}
+
+function todoListItemForPlanUpdate(notification: TurnPlanUpdatedNotification, itemId: string): Record<string, unknown>
+{
+    return stripUndefined({
+        id: itemId,
+        type: "todoList",
+        status: "inProgress",
+        explanation: notification.explanation ?? undefined,
+        items: notification.plan.map((step) => ({
+            label: step.step,
+            status: normalizePlanStatus(step.status),
+        })),
+    });
+}
+
+function turnDiffItemForNotification(
+    notification: TurnDiffUpdatedNotification,
+    itemId: string,
+    cwd?: string,
+): Record<string, unknown>
+{
+    const truncated = notification.diff.length > TURN_DIFF_PREVIEW_CHAR_LIMIT;
+    return stripUndefined({
+        id: itemId,
+        type: "turnDiff",
+        status: "inProgress",
+        cwd,
+        diff: truncated ? notification.diff.slice(0, TURN_DIFF_PREVIEW_CHAR_LIMIT) : notification.diff,
+        truncated,
+        originalLength: truncated ? notification.diff.length : undefined,
+    });
+}
+
 export interface CodexEventMapperOptions
 {
     /** Emit plan updates as tool-call/tool-result parts. Default: true. */
@@ -184,6 +229,7 @@ export class CodexEventMapper
     private threadId: string | undefined;
     private turnId: string | undefined;
     private threadPath: string | undefined;
+    private threadCwd: string | undefined;
     private latestUsage: LanguageModelV3Usage | undefined;
 
     private readonly handlers: Record<string, (params: unknown) => LanguageModelV3StreamPart[]>;
@@ -206,6 +252,7 @@ export class CodexEventMapper
             "item/plan/delta": (p) => this.handleReasoningDelta(p),
             "item/reasoning/summaryPartAdded": (p) => this.handleSummaryPartAdded(p),
             "turn/plan/updated": (p) => this.handlePlanUpdated(p),
+            "turn/diff/updated": (p) => this.handleTurnDiffUpdated(p),
             "item/mcpToolCall/progress": (p) => this.handleMcpToolCallProgress(p),
             "item/tool/callStarted": (p) => this.handleToolCallStarted(p),
             "item/tool/callDelta": (p) => this.handleToolCallDelta(p),
@@ -229,9 +276,6 @@ export class CodexEventMapper
             "item/commandExecution/outputDelta": NOOP,
             "item/fileChange/outputDelta": NOOP,
 
-            // Intentionally ignored: full diffs (often 50-100 KB) crash/freeze frontend renderers.
-            // If these need to surface, they should use a dedicated part type with lazy rendering.
-            "turn/diff/updated": NOOP,
             "codex/event/turn_diff": NOOP,
         };
     }
@@ -254,6 +298,11 @@ export class CodexEventMapper
     setThreadPath(threadPath: string | null | undefined): void
     {
         this.threadPath = threadPath ?? undefined;
+    }
+
+    setThreadCwd(threadCwd: string | null | undefined): void
+    {
+        this.threadCwd = threadCwd ?? undefined;
     }
 
     setTurnId(turnId: string): void
@@ -569,11 +618,7 @@ export class CodexEventMapper
             return [];
         }
 
-        const p = (params ?? {}) as {
-            turnId?: string;
-            explanation?: string | null;
-            plan?: Array<{ step: string; status: string }>;
-        };
+        const p = (params ?? {}) as TurnPlanUpdatedNotification;
         const turnId = p.turnId;
         const plan = p.plan;
         if (!turnId || !plan)
@@ -585,13 +630,14 @@ export class CodexEventMapper
         this.ensureStreamStarted(parts);
         const planSequence = this.nextPlanSequence(turnId);
         const toolCallId = `plan:${turnId}:${planSequence}`;
-        const toolName = "codex_plan_update";
+        const toolName = "codex_todo_list";
+        const item = todoListItemForPlanUpdate(p, toolCallId);
 
         parts.push(this.withMeta({
             type: "tool-call",
             toolCallId,
             toolName,
-            input: JSON.stringify({}),
+            input: JSON.stringify({ explanation: p.explanation ?? undefined }),
             providerExecuted: true,
             dynamic: true,
         }));
@@ -600,7 +646,41 @@ export class CodexEventMapper
             type: "tool-result",
             toolCallId,
             toolName,
-            result: { plan, explanation: p.explanation ?? undefined },
+            result: asToolResult({ item }),
+        }));
+
+        return parts;
+    }
+
+    // turn/diff/updated
+    private handleTurnDiffUpdated(params: unknown): LanguageModelV3StreamPart[]
+    {
+        const p = (params ?? {}) as TurnDiffUpdatedNotification;
+        if (!p.turnId || typeof p.diff !== "string")
+        {
+            return [];
+        }
+
+        const parts: LanguageModelV3StreamPart[] = [];
+        this.ensureStreamStarted(parts);
+        const toolCallId = `turn-diff:${p.turnId}:${this.nextPlanSequence(`diff:${p.turnId}`)}`;
+        const toolName = "codex_turn_diff";
+        const item = turnDiffItemForNotification(p, toolCallId, this.threadCwd);
+
+        parts.push(this.withMeta({
+            type: "tool-call",
+            toolCallId,
+            toolName,
+            input: JSON.stringify({ turnId: p.turnId }),
+            providerExecuted: true,
+            dynamic: true,
+        }));
+
+        parts.push(this.withMeta({
+            type: "tool-result",
+            toolCallId,
+            toolName,
+            result: asToolResult({ item }),
         }));
 
         return parts;
@@ -881,6 +961,7 @@ export class CodexEventMapper
         if (completed.turn?.id)
         {
             this.planSequenceByTurnId.delete(completed.turn.id);
+            this.planSequenceByTurnId.delete(`diff:${completed.turn.id}`);
         }
         const usage = this.latestUsage ?? EMPTY_USAGE;
         const errorMessage = turnErrorMessage(completed);

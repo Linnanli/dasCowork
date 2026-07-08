@@ -92,6 +92,67 @@ describe('buildAssistantRenderUnits', () => {
     })
   })
 
+  it('keeps completed activity outside the current active activity group', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        toolPart('cmd-complete', 'commandExecution'),
+        toolPart('file-active', 'fileChange', { status: { type: 'running' } })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'commandExecution',
+        active: false,
+        showThinkingFallback: false
+      },
+      {
+        type: 'entry',
+        itemType: 'fileChange',
+        active: true,
+        showThinkingFallback: false
+      }
+    ])
+  })
+
+  it('hides completed low-value internals in steps prose detail level', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      detailLevel: 'stepsProse',
+      content: [
+        toolPart('sleep-complete', 'sleep'),
+        toolPart('loaded-tool-complete', 'loadedTool'),
+        toolPart('file-visible', 'fileChange')
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'fileChange'
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+  })
+
+  it('keeps active low-value internals visible in steps prose detail level', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      detailLevel: 'stepsProse',
+      content: [toolPart('sleep-running', 'sleep', { status: { type: 'running' } })]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'sleep',
+        active: true
+      }
+    ])
+  })
+
   it('groups consecutive web searches', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'complete' },
@@ -119,6 +180,119 @@ describe('buildAssistantRenderUnits', () => {
     })
 
     expect(model.units).toMatchObject([{ type: 'web-search-group', partIndices: [0, 1] }])
+  })
+
+  it('normalizes read list and search command activity into an exploration entry', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('read-1', 'commandExecution', {
+          commandActions: [{ type: 'read', path: '/repo/src/a.ts', command: 'sed -n 1,80p' }]
+        }),
+        toolPart('list-1', 'commandExecution', {
+          commandActions: [{ type: 'listFiles', path: '/repo/src', command: 'ls src' }]
+        }),
+        toolPart('search-1', 'commandExecution', {
+          commandActions: [{ type: 'search', query: 'needle', command: 'rg needle' }]
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'exploration',
+        renderMode: 'custom',
+        partIndices: [0, 1, 2]
+      }
+    ])
+    expect(model.units[0]?.target.itemIds).toEqual(
+      expect.arrayContaining(['read-1', 'list-1', 'search-1'])
+    )
+    expect(model.units[0]?.type === 'entry' ? model.units[0].item?.actions : undefined).toEqual([
+      { type: 'read', label: '/repo/src/a.ts', path: '/repo/src/a.ts', command: 'sed -n 1,80p' },
+      { type: 'list', label: '/repo/src', path: '/repo/src', command: 'ls src' },
+      { type: 'search', label: 'needle', query: 'needle', command: 'rg needle' }
+    ])
+  })
+
+  it('recognizes reference exec parsed command exploration actions', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('exec-read', 'exec', {
+          parsedCmd: { type: 'read', path: '/repo/README.md' }
+        }),
+        toolPart('exec-search', 'exec', {
+          parsedCmd: { type: 'search', query: 'renderUnit' }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'exploration',
+        renderMode: 'custom',
+        partIndices: [0, 1]
+      }
+    ])
+    expect(model.units[0]?.target.itemIds).toEqual(
+      expect.arrayContaining(['exec-read', 'exec-search'])
+    )
+  })
+
+  it('groups live web search tool input before a result item is available', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'web-live',
+          toolName: 'codex_web_search',
+          state: 'input-available',
+          input: { query: 'live render unit query', action: { type: 'search' } },
+          providerExecuted: true
+        }
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'web-search-group',
+        active: true,
+        partIndices: [0],
+        target: { itemIds: ['web-live'] },
+        summary: {
+          activeSummary: '正在搜索：live render unit query',
+          details: ['网页搜索：live render unit query']
+        }
+      }
+    ])
+  })
+
+  it('does not claim final web search support from completed input-only tool parts', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'web-input-only',
+          toolName: 'codex_web_search',
+          state: 'output-available',
+          input: { query: 'input only query', action: { type: 'search' } },
+          providerExecuted: true
+        }
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: undefined,
+        renderMode: 'tool'
+      }
+    ])
   })
 
   it('groups historical dynamic-tool MCP parts by app context source metadata', () => {
@@ -264,6 +438,24 @@ describe('buildAssistantRenderUnits', () => {
     expect(model.units).toMatchObject([{ type: 'pending-mcp-tool-calls', partIndices: [0, 1] }])
   })
 
+  it('renders a single regular MCP server call through the MCP group renderer', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [toolPart('mcp-1', 'mcpToolCall', { server: 'github', tool: 'read' })]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'pending-mcp-tool-calls',
+        partIndices: [0],
+        mcpSource: {
+          sourceType: 'server',
+          label: 'github'
+        }
+      }
+    ])
+  })
+
   it('groups consecutive collab agent calls as multi-agent groups', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'complete' },
@@ -377,7 +569,7 @@ describe('buildAssistantRenderUnits', () => {
     ])
   })
 
-  it('maps provider sleep events through real AI SDK UI parts into fallback entries', async () => {
+  it('maps provider sleep events through real AI SDK UI parts into custom entries', async () => {
     const mapper = new CodexEventMapper()
     const item = { type: 'sleep', id: 'sleep-chain', durationMs: 1000 }
     const streamParts = [
@@ -386,7 +578,10 @@ describe('buildAssistantRenderUnits', () => {
       { method: 'item/completed', params: { threadId: 'thr', turnId: 'turn', item } },
       {
         method: 'turn/completed',
-        params: { threadId: 'thr', turn: { id: 'turn', items: [], status: 'completed', error: null } }
+        params: {
+          threadId: 'thr',
+          turn: { id: 'turn', items: [], status: 'completed', error: null }
+        }
       }
     ].flatMap((event) => mapper.map(event))
 
@@ -406,8 +601,105 @@ describe('buildAssistantRenderUnits', () => {
       {
         type: 'entry',
         itemType: 'sleep',
-        renderMode: 'fallback',
+        renderMode: 'custom',
         summary: { label: '已等待 1 次' }
+      }
+    ])
+  })
+
+  it('maps provider plan updates into live todoList custom entries', async () => {
+    const mapper = new CodexEventMapper()
+    const streamParts = [
+      { method: 'turn/started', params: { threadId: 'thr', turn: { id: 'turn-plan' } } },
+      {
+        method: 'turn/plan/updated',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-plan',
+          explanation: 'Working',
+          plan: [
+            { step: 'Read files', status: 'completed' },
+            { step: 'Patch renderer', status: 'inProgress' }
+          ]
+        }
+      },
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr',
+          turn: { id: 'turn-plan', items: [], status: 'completed', error: null }
+        }
+      }
+    ].flatMap((event) => mapper.map(event))
+
+    const aiSdkParts = await messagePartsFromProviderStreamParts(streamParts)
+    const model = buildAssistantRenderUnits({ status: { type: 'running' }, content: aiSdkParts })
+
+    expect(aiSdkParts).toMatchObject([
+      { type: 'step-start' },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'plan:turn-plan:1',
+        toolName: 'codex_todo_list',
+        state: 'output-available',
+        output: {
+          item: {
+            type: 'todoList',
+            items: [
+              { label: 'Read files', status: 'completed' },
+              { label: 'Patch renderer', status: 'inProgress' }
+            ]
+          }
+        }
+      }
+    ])
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'todoList',
+        renderMode: 'custom',
+        active: true
+      }
+    ])
+  })
+
+  it('maps provider turn diff updates into capped turnDiff custom entries', async () => {
+    const mapper = new CodexEventMapper()
+    const diff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
+    const streamParts = [
+      { method: 'turn/started', params: { threadId: 'thr', turn: { id: 'turn-diff' } } },
+      {
+        method: 'turn/diff/updated',
+        params: { threadId: 'thr', turnId: 'turn-diff', diff }
+      },
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr',
+          turn: { id: 'turn-diff', items: [], status: 'completed', error: null }
+        }
+      }
+    ].flatMap((event) => mapper.map(event))
+
+    const aiSdkParts = await messagePartsFromProviderStreamParts(streamParts)
+    const model = buildAssistantRenderUnits({ status: { type: 'running' }, content: aiSdkParts })
+
+    expect(aiSdkParts).toMatchObject([
+      { type: 'step-start' },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'turn-diff:turn-diff:1',
+        toolName: 'codex_turn_diff',
+        state: 'output-available',
+        output: { item: { type: 'turnDiff', diff } }
+      }
+    ])
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'turnDiff',
+        renderMode: 'custom',
+        active: true
       }
     ])
   })

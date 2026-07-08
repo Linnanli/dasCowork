@@ -50,6 +50,15 @@ type MockMessagePart =
       providerExecuted?: boolean
       status?: MockPartStatus
     }
+  | {
+      type: 'file'
+      mediaType: string
+      data?: string
+      url?: string
+      name?: string
+      providerMetadata?: unknown
+      status?: MockPartStatus
+    }
 
 type MockThreadMessageState = {
   message: {
@@ -185,7 +194,10 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
         platform: 'darwin'
       }
     },
-    codex: {},
+    codex: {
+      openExternalHttpUrl: vi.fn(async () => undefined),
+      openLocalPath: vi.fn(async () => undefined)
+    },
     chat: {},
     projects: {
       getState: vi.fn(),
@@ -673,6 +685,7 @@ describe('App composer', () => {
     installDesktopApp()
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
+    window.HTMLElement.prototype.focus = vi.fn()
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -913,7 +926,7 @@ describe('App composer', () => {
     expect(streamdownPropsState.lastProps?.children).toBe('# 标题\n\n- 条目')
   })
 
-  it('renders semantic labels for single assistant tool parts', () => {
+  it('renders semantic exploration labels for single assistant read tool parts', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -963,12 +976,13 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('已读取 1 个文件')
+    expect(container.textContent).toContain('已探索')
+    expect(container.textContent).toContain('1 个文件')
     expect(container.textContent).not.toContain('Used tool')
     expect(container.textContent).not.toContain('codex_command_execution')
   })
 
-  it('renders semantic icons for single assistant tool summaries', () => {
+  it('renders semantic exploration cards for assistant search summaries', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1010,11 +1024,12 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('已搜索 2 次代码')
-    expect(container.querySelector('[data-slot="tool-fallback-trigger-icon"]')).not.toBeNull()
+    expect(container.textContent).toContain('已探索')
+    expect(container.textContent).toContain('2 次搜索')
+    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
   })
 
-  it('summarizes grouped assistant tool parts with Codex actions', () => {
+  it('summarizes grouped assistant exploration tool parts with Codex actions', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = Array.from({ length: 3 }, (_, index) => ({
@@ -1050,10 +1065,54 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('已读取 3 个文件')
+    expect(container.textContent).toContain('已探索')
+    expect(container.textContent).toContain('3 个文件')
     expect(container.textContent).not.toContain('3 tool calls')
-    expect(container.querySelector('[data-slot="tool-group-trigger-icon"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="collapsed-tool-activity-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="collapsed-tool-activity-unit"]')).toBeNull()
+  })
+
+  it('keeps collapsed tool activity closed until expanded', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('edit-a', 'codex_file_change', 'fileChange', {
+        changes: [
+          {
+            path: 'src/a.ts',
+            diff: '--- a/src/a.ts\n+++ b/src/a.ts\n+new line\n'
+          }
+        ]
+      }),
+      genericToolPart('edit-b', 'codex_file_change', 'fileChange', {
+        changes: [
+          {
+            path: 'src/b.ts',
+            diff: '--- a/src/b.ts\n+++ b/src/b.ts\n-old line\n+new line\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = container.querySelector<HTMLElement>('[data-slot="collapsed-tool-activity-unit"]')
+    expect(group).not.toBeNull()
+    expect(group?.dataset.state).toBe('closed')
+    expect(group?.textContent).toContain('已编辑 2 个文件')
+    expect(container.querySelector('[data-slot="collapsed-activity-details"]')).toBeNull()
+    expect(container.querySelectorAll('[data-slot="tool-fallback-root"]')).toHaveLength(0)
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(group?.dataset.state).toBe('open')
+    expect(container.querySelector('[data-slot="collapsed-activity-details"]')).not.toBeNull()
+    expect(container.textContent).toContain('变更 +1/-1 行')
+    expect(container.querySelectorAll('[data-slot="tool-fallback-root"]')).toHaveLength(2)
   })
 
   it('uses dedicated renderers for web dynamic MCP and multi-agent groups', () => {
@@ -1109,6 +1168,545 @@ describe('App composer', () => {
     expect(container.textContent).toContain('已运行 2 个 review 协作任务')
   })
 
+  it('renders rich MCP content blocks and web search query details', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('mcp-rich', 'mcp:docs/search', 'mcpToolCall', {
+        server: 'docs',
+        tool: 'search',
+        arguments: { query: 'render unit parity' },
+        result: {
+          content: [
+            { type: 'text', text: 'found docs' },
+            {
+              type: 'image',
+              data: 'iVBORw0KGgo=',
+              mimeType: 'image/png',
+              altText: 'diagram'
+            },
+            { type: 'audio', data: 'UklGRg==', mimeType: 'audio/wav' },
+            { type: 'resource_link', title: 'Docs resource', uri: 'app://docs/1' },
+            { type: 'resource', resource: { uri: 'file:///docs/canonical.md', text: 'canonical' } },
+            { type: 'embedded_resource', resource: { title: 'Embedded doc', text: 'inside' } },
+            { type: 'custom_block', value: 1 }
+          ],
+          structuredContent: { count: 1 },
+          isError: false
+        }
+      }),
+      genericToolPart('web-1', 'codex_web_search', 'webSearch', {
+        query: 'render unit parity',
+        action: { type: 'search' },
+        faviconUrl: 'https://example.test/favicon.ico'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    act(() => {
+      container
+        .querySelector('[data-slot="pending-mcp-tool-calls-unit"] [data-slot="tool-group-trigger"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      container
+        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(container.querySelector('[data-slot="mcp-rich-output"]')).not.toBeNull()
+    expect(container.textContent).toContain('docs / search')
+    expect(container.textContent).toContain('found docs')
+    expect(container.textContent).toContain('Docs resource')
+    expect(container.textContent).toContain('file:///docs/canonical.md')
+    expect(container.textContent).toContain('canonical')
+    expect(container.textContent).toContain('Embedded doc')
+    expect(container.textContent).toContain('未知内容：custom_block')
+    expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
+    expect(container.textContent).toContain('render unit parity')
+    expect(container.textContent).toContain('已搜索 · search')
+    expect(container.querySelector('img[src="https://example.test/favicon.ico"]')).not.toBeNull()
+  })
+
+  it('renders live web search details from tool input before result item exists', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'web-live',
+        toolName: 'codex_web_search',
+        state: 'input-available',
+        input: { query: 'live render unit query', action: { type: 'search' } },
+        providerExecuted: true
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    act(() => {
+      container
+        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
+    expect(container.textContent).toContain('live render unit query')
+    expect(container.textContent).toContain('正在搜索 · search')
+  })
+
+  it('renders only safe web search favicons', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('web-data', 'codex_web_search', 'webSearch', {
+        query: 'safe data favicon',
+        action: { type: 'search' },
+        faviconUrl: 'data:image/png;base64,iVBORw0KGgo='
+      }),
+      genericToolPart('web-js', 'codex_web_search', 'webSearch', {
+        query: 'unsafe js favicon',
+        action: { type: 'search' },
+        faviconUrl: 'javascript:alert(1)'
+      }),
+      genericToolPart('web-file', 'codex_web_search', 'webSearch', {
+        query: 'unsafe file favicon',
+        action: { type: 'search' },
+        faviconUrl: 'file:///tmp/favicon.ico'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    act(() => {
+      container
+        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(container.querySelector('img[src="data:image/png;base64,iVBORw0KGgo="]')).not.toBeNull()
+    expect(container.querySelector('img[src^="javascript:"]')).toBeNull()
+    expect(container.querySelector('img[src^="file:"]')).toBeNull()
+  })
+
+  it('renders fixture-backed custom entry units for todo diff generated resources comments and approval review', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('todo-1', 'todo-list', 'todo-list', {
+        items: [
+          { text: '锁定现有行为', status: 'completed' },
+          { text: '实现 rich renderer', status: 'inProgress' }
+        ]
+      }),
+      genericToolPart('diff-1', 'turn-diff', 'turn-diff', {
+        files: [
+          {
+            path: '/repo/src/App.tsx',
+            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
+          }
+        ]
+      }),
+      genericToolPart('image-1', 'generated-image', 'generated-image', {
+        result: 'iVBORw0KGgo=',
+        revisedPrompt: 'a render unit gallery'
+      }),
+      genericToolPart('resources-1', 'endResources', 'endResources', {
+        resources: [
+          { type: 'file', path: '/repo/report.pdf', title: 'Report' },
+          { type: 'google-drive', url: 'https://drive.example/doc', title: 'Drive doc' },
+          { type: 'appgen-app', id: 'app-1', title: 'Generated app' },
+          { type: 'website', url: 'https://example.test', title: 'Website' }
+        ]
+      }),
+      genericToolPart('comments-1', 'reviewComments', 'reviewComments', {
+        comments: [
+          { priority: 'P2', file: '/repo/a.ts', line: 20, title: 'Second', body: 'later' },
+          { priority: 'P1', file: '/repo/b.ts', line: 10, title: 'First', body: 'fix this' }
+        ]
+      }),
+      genericToolPart('approval-1', 'codex_automatic_approval_review', 'automaticApprovalReview', {
+        outcome: 'approved',
+        rationale: 'safe command'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('待办进度 1/2')
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('代码变更 1 个文件')
+    expect(container.textContent).toContain('+1/-1 行')
+    expect(container.querySelector('[data-slot="generated-image-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('已生成 1 张图片')
+    expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('Report')
+    expect(container.textContent).toContain('显示更多 1 条')
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 Report"]')?.click()
+    })
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: '/repo/report.pdf',
+      line: undefined
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 Drive doc"]')?.click()
+    })
+    expect(window.desktopApp.codex.openExternalHttpUrl).toHaveBeenCalledWith(
+      'https://drive.example/doc'
+    )
+    expect(container.querySelector('[data-slot="review-comments-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('First')
+    expect(container.textContent).toContain('/repo/b.ts:10')
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 /repo/b.ts:10"]')?.click()
+    })
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: '/repo/b.ts',
+      line: 10
+    })
+    expect(
+      container.querySelector('[data-slot="automatic-approval-review-entry-unit"]')
+    ).not.toBeNull()
+    expect(container.textContent).toContain('自动审批已通过')
+  })
+
+  it('opens absolute turn diff file paths from the diff card', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-open', 'codex_turn_diff', 'turnDiff', {
+        files: [
+          {
+            path: '/repo/src/App.tsx',
+            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="打开 /repo/src/App.tsx"]')
+        ?.click()
+    })
+
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: '/repo/src/App.tsx'
+    })
+  })
+
+  it('opens relative turn diff file paths when cwd metadata is available', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-relative-open', 'codex_turn_diff', 'turnDiff', {
+        cwd: '/repo',
+        files: [
+          {
+            path: 'src/App.tsx',
+            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 src/App.tsx"]')?.click()
+    })
+
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: '/repo/src/App.tsx'
+    })
+  })
+
+  it('disables relative turn diff file opening when cwd metadata is missing', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-relative-disabled', 'codex_turn_diff', 'turnDiff', {
+        files: [
+          {
+            path: 'src/App.tsx',
+            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="无法打开 src/App.tsx"]'
+    )
+    expect(button?.disabled).toBe(true)
+
+    await act(async () => {
+      button?.click()
+    })
+
+    expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
+  })
+
+  it('expands turn diff file lists beyond the first five files', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-many-files', 'codex_turn_diff', 'turnDiff', {
+        cwd: '/repo',
+        files: Array.from({ length: 6 }, (_, index) => ({
+          path: `src/file-${index + 1}.ts`,
+          added: index + 1,
+          removed: 0,
+          diff: `--- a/src/file-${index + 1}.ts\n+++ b/src/file-${index + 1}.ts\n+new\n`
+        }))
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('src/file-5.ts')
+    expect(container.textContent).not.toContain('src/file-6.ts')
+
+    await act(async () => {
+      buttonWithText('显示更多 1 条')?.click()
+    })
+
+    expect(container.textContent).toContain('src/file-6.ts')
+    expect(container.textContent).toContain('收起')
+  })
+
+  it('keeps large turn diffs collapsed to file summaries', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-large', 'codex_turn_diff', 'turnDiff', {
+        originalLength: 75_000,
+        diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('大 diff 已折叠，只显示文件摘要')
+    expect(container.textContent).toContain('src/a.ts')
+  })
+
+  it('renders command read search and list activity as an exploration card', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      commandToolPart('read-exploration', 'read', { status: { type: 'complete' } }),
+      commandToolPart('search-exploration', 'search', { status: { type: 'complete' } }),
+      commandToolPart('list-exploration', 'listFiles', { status: { type: 'complete' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('已探索')
+    expect(container.textContent).toContain('1 个文件')
+    expect(container.textContent).toContain('1 次搜索')
+    expect(container.textContent).toContain('1 个目录')
+    expect(container.textContent).toContain('read-exploration')
+    expect(container.textContent).toContain('search-exploration')
+    expect(container.textContent).toContain('list-exploration')
+  })
+
+  it('moves active todo and diff entries into a running-turn live footer only while running', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      genericToolPart('todo-live', 'codex_todo_list', 'todoList', {
+        status: 'inProgress',
+        items: [
+          { label: 'Inspect contract', status: 'completed' },
+          { label: 'Patch footer', status: 'inProgress' }
+        ]
+      }),
+      genericToolPart('diff-live', 'codex_turn_diff', 'turnDiff', {
+        status: 'inProgress',
+        diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).not.toBeNull()
+    expect(container.textContent).toContain('待办进度 1/2')
+    expect(container.textContent).toContain('代码变更 1 个文件')
+
+    threadMessageState.message.status = { type: 'complete' }
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+  })
+
+  it('keeps active todo and diff entries in the message body while a server request is blocking', () => {
+    runtimeState.serverRequests = [fileChangeApprovalRequest('blocking-request')]
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      genericToolPart('todo-blocked-live', 'codex_todo_list', 'todoList', {
+        status: 'inProgress',
+        items: [
+          { label: 'Inspect contract', status: 'completed' },
+          { label: 'Wait for approval', status: 'inProgress' }
+        ]
+      }),
+      genericToolPart('diff-blocked-live', 'codex_turn_diff', 'turnDiff', {
+        status: 'inProgress',
+        diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="server-request-panel"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+  })
+
+  it('renders generated image file parts as an image gallery card', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: 'iVBORw0KGgo=',
+        providerMetadata: {
+          '@janole/ai-sdk-provider-codex-asp': {
+            revisedPrompt: 'a generated reference image',
+            savedPath: '/tmp/image.png'
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="generated-image-file-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('已生成图片')
+    expect(container.textContent).toContain('a generated reference image')
+  })
+
+  it('keeps hidden render target metadata for unknown non-image file parts', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'file',
+        mediaType: 'application/pdf',
+        data: 'JVBERi0xLjQ=',
+        name: 'report.pdf'
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const target = container.querySelector('[data-slot="unknown-render-unit"]')
+    expect(target).not.toBeNull()
+    expect(target?.getAttribute('data-render-unit-key')).toBe('unknown:0')
+  })
+
+  it('scrolls to a render target when the app receives a render-target event', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      commandToolPart('scroll-target-command', 'search', { status: { type: 'complete' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const target = container.querySelector<HTMLElement>(
+      '[data-render-target-ids~="scroll-target-command"]'
+    )
+    expect(target).not.toBeNull()
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('codex:scroll-render-target', {
+          detail: { targetId: 'scroll-target-command', behavior: 'auto' }
+        })
+      )
+      await Promise.resolve()
+    })
+
+    expect(target?.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' })
+    expect(target?.focus).toHaveBeenCalledWith({ preventScroll: true })
+  })
+
+  it('expands a real tool group root before scrolling to its render target', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('web-scroll', 'codex_web_search', 'webSearch', {
+        query: 'timeline target query',
+        action: { type: 'search' }
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = container.querySelector<HTMLElement>('[data-slot="web-search-group-unit"]')
+    expect(group).not.toBeNull()
+    expect(group?.dataset.state).toBe('closed')
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('codex:scroll-render-target', {
+          detail: { targetId: 'web-scroll', behavior: 'auto' }
+        })
+      )
+      await Promise.resolve()
+    })
+
+    expect(group?.dataset.state).toBe('open')
+    expect(group?.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' })
+  })
+
   it('summarizes grouped running tool parts from derived assistant-ui part state', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
@@ -1137,8 +1735,9 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('正在搜索 2 次代码')
-    expect(container.textContent).not.toContain('已搜索 2 次代码')
+    expect(container.textContent).toContain('正在探索')
+    expect(container.textContent).toContain('2 次搜索')
+    expect(container.textContent).not.toContain('已探索')
   })
 
   it('renders preliminary dynamic-tool outputs as running activity', () => {
@@ -1230,11 +1829,11 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const thinkingTriggers = Array.from(
-      container.querySelectorAll('[data-slot="tool-fallback-trigger-label"]')
+    const thinkingExplorationCards = Array.from(
+      container.querySelectorAll('[data-slot="exploration-entry-unit"]')
     ).filter((trigger) => trigger.textContent?.includes('正在思考'))
 
-    expect(thinkingTriggers).toHaveLength(1)
+    expect(thinkingExplorationCards).toHaveLength(1)
     expect(container.textContent).toContain('先查到一部分')
   })
 
@@ -1250,7 +1849,8 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('正在搜索 2 次代码')
+    expect(container.textContent).toContain('正在探索')
+    expect(container.textContent).toContain('2 次搜索')
     expect(container.textContent).not.toContain('正在思考')
   })
 

@@ -61,6 +61,7 @@ export interface CodexModelConfig
 interface ThreadStartResultLike extends CodexThreadStartResult
 {
     thread?: Partial<Thread>;
+    cwd?: string;
 }
 
 interface TurnStartResultLike extends CodexTurnStartResult
@@ -558,6 +559,7 @@ export class CodexLanguageModel implements LanguageModelV3
 
         let activeThreadId: string | undefined;
         let activeTurnId: string | undefined;
+        let activeThreadCwd: string | undefined;
         let session: CodexSessionImpl | undefined;
         let detachApprovals: (() => void) | undefined;
         let detachDynamicTools: (() => void) | undefined;
@@ -945,6 +947,8 @@ export class CodexLanguageModel implements LanguageModelV3
                             );
                             threadId = resumeResult.thread.id;
                             mapper.setThreadPath(resumeResult.thread.path);
+                            activeThreadCwd = resumeResult.cwd ?? resumeResult.thread.cwd ?? resumeParams.cwd ?? undefined;
+                            mapper.setThreadCwd(activeThreadCwd);
 
                             const strictCompaction = this.config.providerSettings.compaction?.strict === true;
                             const shouldCompactOnResume = this.config.providerSettings.compaction?.shouldCompactOnResume;
@@ -1040,6 +1044,11 @@ export class CodexLanguageModel implements LanguageModelV3
                             );
                             threadId = extractThreadId(threadStartResult);
                             mapper.setThreadPath(threadStartResult.thread?.path);
+                            activeThreadCwd = threadStartResult.cwd
+                                ?? threadStartResult.thread?.cwd
+                                ?? threadStartParams.cwd
+                                ?? undefined;
+                            mapper.setThreadCwd(activeThreadCwd);
                             await notifyThreadStarted({
                                 callOptions,
                                 debugLog,
@@ -1081,6 +1090,7 @@ export class CodexLanguageModel implements LanguageModelV3
                                 ? options.responseFormat.schema as JsonValue | undefined
                                 : undefined,
                         });
+                        mapper.setThreadCwd(turnStartParams.cwd ?? activeThreadCwd);
 
                         debugLog?.("outbound", "turn/start", turnStartParams);
 

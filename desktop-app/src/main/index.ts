@@ -10,6 +10,7 @@ import {
   type ObservedStartedThread
 } from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
+import { createOpenLocalPathHandler } from './localPathOpen'
 import { createModelCatalogService } from './modelCatalogService'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
@@ -37,6 +38,9 @@ let projectApi: ProjectApiService | undefined
 let workspaceFileSearch: WorkspaceFileSearchService | undefined
 let conversationApi: ConversationApiService | undefined
 const convergingConversationThreadIds = new Set<string>()
+
+const e2eUserDataPath = process.env.DASCOWORK_E2E_USER_DATA_DIR?.trim()
+if (e2eUserDataPath) app.setPath('userData', e2eUserDataPath)
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
@@ -249,6 +253,10 @@ app.whenReady().then(() => {
     const request = codexOpenExternalHttpUrlPayloadSchema.parse(payload)
     return openExternalHttpUrl(request.url)
   })
+  ipcMain.handle(
+    'codex:open-local-path',
+    createOpenLocalPathHandler((path) => shell.openPath(path))
+  )
   ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
   ipcMain.handle('codex:projects:pick-workspace-root', async () => {
     const option = await requireProjectApi().pickWorkspaceRoot()

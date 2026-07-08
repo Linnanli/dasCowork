@@ -1199,24 +1199,12 @@ describe("CodexEventMapper", () =>
         ]);
     });
 
-    // Turn diffs are intentionally ignored — they carry full unified diffs
-    // (often 50-100 KB) that crash/freeze the frontend markdown renderer when
-    // emitted as reasoning. If re-enabling, use a dedicated part type with
-    // lazy/collapsed rendering instead of emitReasoningDelta.
-    it("ignores turn diff notifications", () =>
+    it("ignores legacy turn diff wrapper notifications", () =>
     {
         const mapper = new CodexEventMapper();
 
         const events = [
             { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_1" } } },
-            {
-                method: "turn/diff/updated",
-                params: {
-                    threadId: "thr",
-                    turnId: "turn_1",
-                    diff: "diff --git a/a.ts b/a.ts",
-                },
-            },
             {
                 method: "codex/event/turn_diff",
                 params: {
@@ -1236,7 +1224,6 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        // No reasoning parts — diffs are silently dropped.
         expect(parts).toEqual([
             { type: "stream-start", warnings: [] },
             {
@@ -1415,7 +1402,7 @@ describe("CodexEventMapper", () =>
                     explanation: "Updating files",
                     plan: [
                         { step: "Read config", status: "completed" },
-                        { step: "Update mapper", status: "in_progress" },
+                        { step: "Update mapper", status: "inProgress" },
                     ],
                 },
             },
@@ -1457,45 +1444,114 @@ describe("CodexEventMapper", () =>
             {
                 type: "tool-call",
                 toolCallId: "plan:turn_plan:1",
-                toolName: "codex_plan_update",
-                input: JSON.stringify({}),
+                toolName: "codex_todo_list",
+                input: JSON.stringify({ explanation: "Updating files" }),
                 providerExecuted: true,
                 dynamic: true,
             },
             {
                 type: "tool-result",
                 toolCallId: "plan:turn_plan:1",
-                toolName: "codex_plan_update",
+                toolName: "codex_todo_list",
                 result: {
-                    plan: [
-                        { step: "Read config", status: "completed" },
-                        { step: "Update mapper", status: "in_progress" },
-                    ],
-                    explanation: "Updating files",
+                    item: {
+                        id: "plan:turn_plan:1",
+                        type: "todoList",
+                        status: "inProgress",
+                        explanation: "Updating files",
+                        items: [
+                            { label: "Read config", status: "completed" },
+                            { label: "Update mapper", status: "inProgress" },
+                        ],
+                    },
                 },
             },
             // Second plan update: new tool-call + tool-result pair
             {
                 type: "tool-call",
                 toolCallId: "plan:turn_plan:2",
-                toolName: "codex_plan_update",
-                input: JSON.stringify({}),
+                toolName: "codex_todo_list",
+                input: JSON.stringify({ explanation: "Almost done" }),
                 providerExecuted: true,
                 dynamic: true,
             },
             {
                 type: "tool-result",
                 toolCallId: "plan:turn_plan:2",
-                toolName: "codex_plan_update",
+                toolName: "codex_todo_list",
                 result: {
-                    plan: [
-                        { step: "Read config", status: "completed" },
-                        { step: "Update mapper", status: "completed" },
-                    ],
-                    explanation: "Almost done",
+                    item: {
+                        id: "plan:turn_plan:2",
+                        type: "todoList",
+                        status: "inProgress",
+                        explanation: "Almost done",
+                        items: [
+                            { label: "Read config", status: "completed" },
+                            { label: "Update mapper", status: "completed" },
+                        ],
+                    },
                 },
             },
             // codex/event/plan_update wrapper produces nothing.
+            {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "completed" },
+                usage: EMPTY_USAGE,
+            },
+        ]);
+    });
+
+    it("maps turn diff updates to capped turnDiff tool items with thread cwd", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const diff = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n${"+new\n".repeat(12_000)}`;
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_diff" } } },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_diff",
+                    diff,
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn_diff", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        expect(parts).toEqual([
+            { type: "stream-start", warnings: [] },
+            {
+                type: "tool-call",
+                toolCallId: "turn-diff:turn_diff:1",
+                toolName: "codex_turn_diff",
+                input: JSON.stringify({ turnId: "turn_diff" }),
+                providerExecuted: true,
+                dynamic: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "turn-diff:turn_diff:1",
+                toolName: "codex_turn_diff",
+                result: {
+                    item: {
+                        id: "turn-diff:turn_diff:1",
+                        type: "turnDiff",
+                        status: "inProgress",
+                        cwd: "/repo",
+                        diff: diff.slice(0, 50_000),
+                        truncated: true,
+                        originalLength: diff.length,
+                    },
+                },
+            },
             {
                 type: "finish",
                 finishReason: { unified: "stop", raw: "completed" },
@@ -1516,7 +1572,7 @@ describe("CodexEventMapper", () =>
                     threadId: "thr",
                     turnId: "turn_plan2",
                     explanation: "Planning",
-                    plan: [{ step: "Do stuff", status: "in_progress" }],
+                    plan: [{ step: "Do stuff", status: "inProgress" }],
                 },
             },
             {

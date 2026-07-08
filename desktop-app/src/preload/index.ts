@@ -39,6 +39,7 @@ const desktopCodex: DesktopCodexApi = {
     ipcRenderer.invoke('codex:respond-approval', { requestId, response }) as Promise<void>,
   openExternalHttpUrl: (url: string) =>
     ipcRenderer.invoke('codex:open-external-http-url', { url }) as Promise<void>,
+  openLocalPath: (input) => ipcRenderer.invoke('codex:open-local-path', input) as Promise<void>,
   onStatusChange: (callback: (status: CodexStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: CodexStatus): void =>
       callback(status)

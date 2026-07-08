@@ -60,6 +60,7 @@ export function SidebarProjectsSection({
               key={group.id}
               group={group}
               nativeBackdrop={nativeBackdrop}
+              onSelectProject={() => void projectState.selectProject(group.selection)}
               onToggleCollapsed={() => toggleGroupCollapsed(group)}
               onNewChat={() => {
                 onNewChat()

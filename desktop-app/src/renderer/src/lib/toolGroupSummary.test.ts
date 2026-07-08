@@ -248,8 +248,74 @@ describe('summarizeToolGroup', () => {
     expect(summary).toMatchObject({
       label: '已调用 1 个 MCP 工具',
       icon: 'mcp-tools',
-      sourceSummary: 'github'
+      sourceSummary: 'github',
+      details: ['MCP：github / read']
     })
+  })
+
+  it('records active web search command details', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_web_search',
+        status: { type: 'running' },
+        argsText: JSON.stringify({ query: 'render unit parity' })
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      activeSummary: '正在搜索：render unit parity',
+      details: ['网页搜索：render unit parity']
+    })
+  })
+
+  it('records changed line counts and stopped file creation details', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_file_change',
+        result: {
+          item: {
+            id: 'patch-1',
+            type: 'fileChange',
+            status: 'stopped',
+            changes: [
+              {
+                path: '/repo/new.ts',
+                kind: { type: 'add' },
+                diff: '--- /dev/null\n+++ b/new.ts\n+const a = 1\n+const b = 2\n'
+              },
+              {
+                path: '/repo/edit.ts',
+                kind: { type: 'update' },
+                diff: '--- a/edit.ts\n+++ b/edit.ts\n-old\n+new\n'
+              }
+            ]
+          }
+        }
+      }
+    ])
+
+    expect(summary.details).toEqual(['变更 +3/-1 行', '已停止创建 1 个文件'])
+  })
+
+  it('records loaded tool source names', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_loaded_tool',
+        result: {
+          item: {
+            id: 'load-1',
+            type: 'loadedTool',
+            status: 'completed',
+            name: 'browser.open'
+          }
+        }
+      }
+    ])
+
+    expect(summary.details).toEqual(['已加载工具：browser.open'])
   })
 })
 
