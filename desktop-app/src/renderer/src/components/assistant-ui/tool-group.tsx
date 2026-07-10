@@ -43,7 +43,7 @@ export const toolGroupIconMap: Record<ToolGroupIconName, LucideIcon> = {
   'generic-tool': WrenchIcon
 }
 
-const toolGroupVariants = cva('aui-tool-group-root group/tool-group w-full', {
+const toolGroupVariants = cva('aui-tool-group-root group/tool-group my-2 w-full', {
   variants: {
     variant: {
       outline: 'rounded-lg border py-3',
