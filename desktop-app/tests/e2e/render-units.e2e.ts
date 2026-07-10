@@ -59,25 +59,19 @@ test('renders web search and exploration render units through the real desktop c
 
     await sendMessage(page, '搜索 render unit parity，然后总结。')
 
-    const webSearchGroup = page.locator(
-      '[data-slot="tool-group-unit"][data-tool-group-kind="web-search"]'
+    const activityGroup = page.locator(
+      '[data-slot="tool-group-unit"][data-tool-group-kind="composite"]'
     )
-    await expect(webSearchGroup).toBeVisible()
-    await expect(webSearchGroup).toContainText('已搜索')
+    await expect(activityGroup).toBeVisible()
+    await expect(activityGroup).toContainText('已搜索')
+    await expect(activityGroup).toContainText('已读取')
 
-    await webSearchGroup.locator('[data-slot="tool-group-trigger"]').click()
+    await activityGroup.locator('[data-slot="tool-group-trigger"]').click()
     await expect(page.locator('[data-slot="web-search-details"]')).toContainText(query)
     await expect(page.locator('[data-slot="web-search-details"]')).toContainText(
       '已搜索网页 · 搜索'
     )
-
-    const explorationCard = page.locator(
-      '[data-slot="tool-group-unit"][data-tool-group-kind="exploration"]'
-    )
-    await expect(explorationCard).toBeVisible()
-    await expect(explorationCard).toContainText(/正在探索|已探索/)
-    await explorationCard.locator('[data-slot="tool-group-trigger"]').click()
-    await expect(explorationCard).toContainText('package.json')
+    await expect(activityGroup).toContainText('package.json')
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Web search and exploration render units complete'
     )

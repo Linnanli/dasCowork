@@ -9,8 +9,11 @@ import type { MockBackend } from './mockBackend'
 export const appRoot = resolve(__dirname, '..', '..', '..')
 export const repoRoot = resolve(appRoot, '..')
 
-type LaunchAppOptions = {
+export type LaunchAppOptions = {
   configureCodexHome?: (codexHomeDir: string) => Promise<void>
+  userDataDir?: string
+  codexHomeDir?: string
+  preserveDataDirectories?: boolean
 }
 
 const appTempDirs = new WeakMap<ElectronApplication, string[]>()
@@ -20,8 +23,11 @@ export async function launchApp(
   logs: string[],
   options: LaunchAppOptions = {}
 ): Promise<ElectronApplication> {
-  const userDataDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-user-data-'))
-  const codexHomeDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-codex-home-'))
+  const userDataDir =
+    options.userDataDir ?? (await mkdtemp(join(tmpdir(), 'dascowork-e2e-user-data-')))
+  const codexHomeDir =
+    options.codexHomeDir ?? (await mkdtemp(join(tmpdir(), 'dascowork-e2e-codex-home-')))
+  const dataDirectories = [userDataDir, codexHomeDir]
   let app: ElectronApplication | undefined
 
   try {
@@ -43,11 +49,11 @@ export async function launchApp(
       }
     })
   } catch (error) {
-    await cleanupTempDirs([userDataDir, codexHomeDir])
+    if (!options.preserveDataDirectories) await cleanupTempDirs(dataDirectories)
     throw error
   }
 
-  appTempDirs.set(app, [userDataDir, codexHomeDir])
+  appTempDirs.set(app, options.preserveDataDirectories ? [] : dataDirectories)
   app.process().stdout?.on('data', (chunk) => logs.push(`[main:stdout] ${String(chunk)}`))
   app.process().stderr?.on('data', (chunk) => logs.push(`[main:stderr] ${String(chunk)}`))
   return app

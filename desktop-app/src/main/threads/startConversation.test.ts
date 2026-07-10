@@ -29,13 +29,26 @@ import { startConversation } from './startConversation'
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
+  private handler: ((event: { data: unknown }) => void) | undefined
 
   postMessage(message: unknown): void {
     this.messages.push(message)
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'thread-bound' &&
+      'threadId' in message &&
+      typeof message.threadId === 'string'
+    ) {
+      this.handler?.({
+        data: { type: 'thread-bound-ack', threadId: message.threadId }
+      })
+    }
   }
 
-  on(): void {
-    return undefined
+  on(_event: 'message', handler: (event: { data: unknown }) => void): void {
+    this.handler = handler
   }
 
   start(): void {
@@ -125,7 +138,10 @@ describe('startConversation', () => {
     expect(streamTextInput?.executionTarget).not.toMatchObject({
       cwd: '/malicious'
     })
-    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
+    expect(port.messages).toEqual([
+      { type: 'thread-bound', threadId: 'thread-prestarted' },
+      { type: 'finish', threadId: 'thread-prestarted' }
+    ])
   })
 
   it('returns project assignment for the runtime to persist against the app-server thread id', async () => {
@@ -176,7 +192,7 @@ describe('startConversation', () => {
     })
   })
 
-  it('rejects direct chat payloads that forge an unselected path project', async () => {
+  it('rejects direct chat payloads that forge an unregistered path project', async () => {
     const port = new FakePort()
     const streamText = vi.fn(async () => ({
       toUIMessageStream: () => emptyUiMessageStream()
@@ -231,7 +247,7 @@ describe('startConversation', () => {
     expect(port.messages).toEqual([
       {
         type: 'error',
-        error: 'Workspace root is not the active registered project: /malicious'
+        error: 'Workspace root is not a registered project: /malicious'
       }
     ])
   })

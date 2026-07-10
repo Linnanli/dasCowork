@@ -60,7 +60,7 @@ export function createCodexAspProviderSettings(
     },
     persistent: {
       scope: 'provider',
-      poolSize: 1,
+      poolSize: 4,
       idleTimeoutMs: 300_000
     },
     toolTimeoutMs: 120_000,

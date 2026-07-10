@@ -1,32 +1,44 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useChat } from '@ai-sdk/react'
-import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
   CodexModelList,
-  SidebarConversationActionPayload,
-  SidebarConversationOpenResult
+  SidebarConversation,
+  SidebarConversationActionPayload
 } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 import type { ModelOption } from '../components/assistant-ui'
 import {
-  ElectronIpcChatTransport,
-  type ActiveConversationContext,
-  type StreamFinishedContext
-} from '../lib/ElectronIpcChatTransport'
+  ConversationChatRegistry,
+  type ConversationChatEntry,
+  type ConversationScrollSnapshot
+} from '../runtime/ConversationChatRegistry'
+import type { ActiveConversationContext } from '../lib/ElectronIpcChatTransport'
+
+export type ConversationRuntimeIndicator = {
+  active: boolean
+  attention: boolean
+  running: boolean
+  unread: boolean
+}
 
 export type CodexIpcAssistantRuntimeState = {
-  runtime: ReturnType<typeof useAISDKRuntime>
+  activeEntry: ConversationChatEntry
+  activeConversation: ActiveConversationContext | undefined
+  activeServerRequests: readonly CodexApprovalRequest[]
   serverRequests: readonly CodexApprovalRequest[]
   models: readonly ModelOption[]
   selectedModelId: string | undefined
-  activeConversation: ActiveConversationContext | undefined
-  conversationNavigationBlocked: boolean
+  modelSelectionError: string | undefined
   startNewConversation: () => void
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
   setSelectedModelId: (modelId: string) => Promise<void>
+  setActiveDraft: (draft: string) => void
+  setActiveScroll: (scroll: ConversationScrollSnapshot) => void
+  syncConversationMetadata: (conversations: readonly SidebarConversation[]) => void
+  getConversationIndicator: (conversation: SidebarConversation) => ConversationRuntimeIndicator
+  getConversationTitle: (threadId: string | undefined) => string | undefined
   respondToServerRequest: (
     request: CodexApprovalRequest,
     response: CodexApprovalResponse
@@ -38,75 +50,32 @@ export type CodexIpcAssistantRuntimeOptions = {
   projectSelection?: ProjectSelection
 }
 
-export type ConversationRuntimeState = {
-  activeConversation: ActiveConversationContext | undefined
-  revision: number
-}
-
-class TransportStateHolder {
-  private activeConversation: ActiveConversationContext | undefined
-  private projectSelection: ProjectSelection | undefined
-  private conversationRevision = 0
-  private selectedModelId: string | undefined
-
-  set(input: {
-    activeConversation: ActiveConversationContext | undefined
-    projectSelection: ProjectSelection | undefined
-    conversationRevision: number
-    selectedModelId: string | undefined
-  }): void {
-    this.activeConversation = input.activeConversation
-    this.projectSelection = input.projectSelection
-    this.conversationRevision = input.conversationRevision
-    this.selectedModelId = input.selectedModelId
-  }
-
-  getActiveConversation(): ActiveConversationContext | undefined {
-    return this.activeConversation
-  }
-
-  getProjectSelection(): ProjectSelection | undefined {
-    return this.projectSelection
-  }
-
-  getConversationRevision(): number {
-    return this.conversationRevision
-  }
-
-  getSelectedModelId(): string | undefined {
-    return this.selectedModelId
-  }
-}
-
 export function useCodexIpcAssistantRuntime(
   options: CodexIpcAssistantRuntimeOptions = {}
 ): CodexIpcAssistantRuntimeState {
   const [serverRequests, setServerRequests] = useState<CodexApprovalRequest[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModelId, setSelectedModelIdState] = useState<string | undefined>()
-  const [conversationRuntime, setConversationRuntime] = useState<ConversationRuntimeState>({
-    activeConversation: undefined,
-    revision: 0
-  })
-  const activeConversation = conversationRuntime.activeConversation
-  const { projectSelection } = options
-  const latestTransportState = useMemo(() => new TransportStateHolder(), [])
-  const latestNavigationId = useRef(0)
 
-  useEffect(() => {
-    latestTransportState.set({
-      activeConversation,
-      projectSelection,
-      conversationRevision: conversationRuntime.revision,
-      selectedModelId
-    })
-  }, [
-    activeConversation,
-    conversationRuntime.revision,
-    latestTransportState,
-    projectSelection,
-    selectedModelId
-  ])
+  const [registry] = useState(
+    () =>
+      new ConversationChatRegistry({
+        chatBridge: window.desktopApp.chat,
+        selectedModelId
+      })
+  )
+  const registrySnapshot = useSyncExternalStore(
+    registry.subscribe,
+    registry.getSnapshot,
+    registry.getSnapshot
+  )
+  const activeEntry = registrySnapshot.activeEntry
+  const activeConversation =
+    activeEntry.newConversation && !activeEntry.context.threadId ? undefined : activeEntry.context
+
+  useLayoutEffect(() => {
+    registry.updateActiveProjectSelection(options.projectSelection)
+  }, [options.projectSelection, registry])
 
   useEffect(() => {
     let cancelled = false
@@ -114,87 +83,106 @@ export function useCodexIpcAssistantRuntime(
       if (cancelled) return
       setModels(toModelOptions(list))
       setSelectedModelIdState(list.selectedModelId)
+      registry.applyDefaultModel(list.selectedModelId)
     })
     const removeApproval = window.desktopApp.codex.onApprovalRequest((request) => {
-      setServerRequests((current) => [...current, request])
+      registry.markUnreadByThread(request.context?.threadId)
+      setServerRequests((current) => {
+        if (current.some((item) => item.id === request.id)) return current
+        return [...current, request]
+      })
     })
 
     return () => {
       cancelled = true
       removeApproval()
     }
-  }, [])
+  }, [registry])
 
-  const transport = useMemo(
-    () =>
-      new ElectronIpcChatTransport({
-        chatBridge: window.desktopApp.chat,
-        getActiveConversation: () => latestTransportState.getActiveConversation(),
-        getProjectSelection: () => latestTransportState.getProjectSelection(),
-        getConversationRevision: () => latestTransportState.getConversationRevision(),
-        getSelectedModelId: () => latestTransportState.getSelectedModelId(),
-        onStreamFinished: (context) =>
-          setConversationRuntime((prev) => reduceStreamFinishedConversationState(prev, context))
-      }),
-    [latestTransportState]
-  )
-  const chat = useChat({ transport })
-  const runtime = useAISDKRuntime(chat)
-  const conversationNavigationBlocked = chat.status === 'submitted' || chat.status === 'streaming'
-  const conversationNavigationBlockedRef = useRef(conversationNavigationBlocked)
-
-  useLayoutEffect(() => {
-    conversationNavigationBlockedRef.current = conversationNavigationBlocked
-    if (conversationNavigationBlocked) {
-      latestNavigationId.current += 1
-    }
-  }, [conversationNavigationBlocked])
+  useEffect(() => {
+    const destroyRegistry = (): void => registry.destroy()
+    window.addEventListener('beforeunload', destroyRegistry)
+    return () => window.removeEventListener('beforeunload', destroyRegistry)
+  }, [registry])
 
   const openConversation = useCallback(
     async (input: SidebarConversationActionPayload) => {
-      if (conversationNavigationBlockedRef.current) return
-
-      const navigationId = latestNavigationId.current + 1
-      latestNavigationId.current = navigationId
-      const result = await window.desktopApp.conversations.openConversation(input)
-      if (latestNavigationId.current !== navigationId || conversationNavigationBlockedRef.current) {
-        return
-      }
-
-      chat.setMessages(result.messages)
-      chat.clearError()
-      setConversationRuntime((prev) => {
-        return {
-          activeConversation: {
-            conversationId: result.conversationId,
-            threadId: result.threadId,
-            title: result.title,
-            projectSelection: projectSelectionFromOpenResult(result),
-            cwd: result.cwd
-          },
-          revision: prev.revision + 1
-        }
-      })
+      await registry.openConversation(input.conversationId, () =>
+        window.desktopApp.conversations.openConversation(input)
+      )
     },
-    [chat]
+    [registry]
   )
 
   const startNewConversation = useCallback(() => {
-    if (conversationNavigationBlockedRef.current) return
+    registry.startNewConversation(options.projectSelection)
+  }, [options.projectSelection, registry])
 
-    latestNavigationId.current += 1
-    chat.setMessages([])
-    chat.clearError()
-    setConversationRuntime((prev) => ({
-      activeConversation: undefined,
-      revision: prev.revision + 1
-    }))
-  }, [chat])
+  const setSelectedModelId = useCallback(
+    async (modelId: string) => {
+      const targetEntry = activeEntry
+      try {
+        const response = await window.desktopApp.codex.setSelectedModel(modelId)
+        setSelectedModelIdState(response.selectedModelId)
+        registry.applyDefaultModel(response.selectedModelId)
+        registry.setSelectedModel(targetEntry, response.selectedModelId)
+      } catch (error) {
+        registry.setModelSelectionError(targetEntry, errorMessage(error))
+        throw error
+      }
+    },
+    [activeEntry, registry]
+  )
 
-  const setSelectedModelId = useCallback(async (modelId: string) => {
-    const response = await window.desktopApp.codex.setSelectedModel(modelId)
-    setSelectedModelIdState(response.selectedModelId)
-  }, [])
+  const setActiveDraft = useCallback(
+    (draft: string) => registry.setDraft(activeEntry, draft),
+    [activeEntry, registry]
+  )
+
+  const setActiveScroll = useCallback(
+    (scroll: ConversationScrollSnapshot) => registry.setScroll(activeEntry, scroll),
+    [activeEntry, registry]
+  )
+
+  const syncConversationMetadata = useCallback(
+    (conversations: readonly SidebarConversation[]) =>
+      registry.applyConversationMetadata(conversations),
+    [registry]
+  )
+
+  const getConversationIndicator = useCallback(
+    (conversation: SidebarConversation): ConversationRuntimeIndicator => {
+      void registrySnapshot.version
+      const entry = registry.resolve(conversation.threadId) ?? registry.resolve(conversation.id)
+      const requestThreadIds = new Set(
+        serverRequests.flatMap((request) =>
+          request.context?.threadId ? [request.context.threadId] : []
+        )
+      )
+      const attention = Boolean(
+        (conversation.threadId && requestThreadIds.has(conversation.threadId)) ||
+        requestThreadIds.has(conversation.id)
+      )
+      return {
+        active: entry === activeEntry,
+        attention,
+        running: entry
+          ? entry.phase === 'submitted' || entry.phase === 'streaming'
+          : Boolean(conversation.running),
+        unread: entry ? entry.unread : Boolean(conversation.unread)
+      }
+    },
+    [activeEntry, registry, registrySnapshot, serverRequests]
+  )
+
+  const getConversationTitle = useCallback(
+    (threadId: string | undefined): string | undefined => {
+      void registrySnapshot.version
+      if (!threadId) return undefined
+      return registry.resolve(threadId)?.context.title ?? undefined
+    },
+    [registry, registrySnapshot]
+  )
 
   const respondToServerRequest = useCallback(
     async (request: CodexApprovalRequest, response: CodexApprovalResponse) => {
@@ -212,19 +200,34 @@ export function useCodexIpcAssistantRuntime(
     setServerRequests((current) => current.filter((item) => item.id !== request.id))
   }, [])
 
+  const activeThreadId = activeEntry.context.threadId
+  const activeServerRequests = activeThreadId
+    ? serverRequests.filter((request) => request.context?.threadId === activeThreadId)
+    : []
+
   return {
-    runtime,
+    activeEntry,
+    activeConversation,
+    activeServerRequests,
     serverRequests,
     models,
-    selectedModelId,
-    activeConversation,
-    conversationNavigationBlocked,
+    selectedModelId: activeEntry.selectedModelId ?? selectedModelId,
+    modelSelectionError: activeEntry.modelSelectionError,
     startNewConversation,
     openConversation,
     setSelectedModelId,
+    setActiveDraft,
+    setActiveScroll,
+    syncConversationMetadata,
+    getConversationIndicator,
+    getConversationTitle,
     respondToServerRequest,
     rejectServerRequest
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function toModelOptions(list: CodexModelList): ModelOption[] {
@@ -237,63 +240,4 @@ function toModelOptions(list: CodexModelList): ModelOption[] {
     description: model.description,
     disabled: false
   }))
-}
-
-function projectSelectionFromOpenResult(
-  result: Pick<SidebarConversationOpenResult, 'projectAssignment'>
-): ProjectSelection | undefined {
-  const assignment = result.projectAssignment
-  if (!assignment) return undefined
-
-  if (assignment.projectKind === 'local') {
-    if (assignment.path) {
-      return { projectKind: 'path', path: assignment.path }
-    }
-    return { projectKind: 'local', projectId: assignment.projectId }
-  }
-
-  if (assignment.projectKind === 'remote') {
-    return {
-      projectKind: 'remote',
-      projectId: assignment.projectId,
-      hostId: assignment.hostId
-    }
-  }
-
-  return { projectKind: 'projectless' }
-}
-
-export function reduceStreamFinishedConversationState(
-  state: ConversationRuntimeState,
-  context: StreamFinishedContext
-): ConversationRuntimeState {
-  if (!context.threadId) return state
-  if (state.revision !== context.conversationRevision) return state
-  if (!sameActiveConversation(state.activeConversation, context.activeConversation)) return state
-
-  const activeConversation = context.activeConversation
-    ? {
-        ...state.activeConversation!,
-        threadId: context.threadId
-      }
-    : {
-        conversationId: context.threadId,
-        threadId: context.threadId,
-        projectSelection: context.projectSelection
-      }
-
-  if (sameActiveConversation(state.activeConversation, activeConversation)) return state
-
-  return {
-    activeConversation,
-    revision: state.revision + 1
-  }
-}
-
-function sameActiveConversation(
-  left: ActiveConversationContext | undefined,
-  right: ActiveConversationContext | undefined
-): boolean {
-  if (!left || !right) return left === right
-  return left.conversationId === right.conversationId && left.threadId === right.threadId
 }

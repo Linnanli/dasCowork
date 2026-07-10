@@ -272,6 +272,43 @@ describe('ElectronIpcChatTransport', () => {
     })
   })
 
+  it('reports an early thread binding with the stream-scoped context', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onThreadBound = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({ conversationId: 'local-conversation' }),
+      getProjectSelection: () => ({ projectKind: 'path', path: '/repo' }),
+      getConversationRevision: () => 3,
+      getSelectedModelId: () => 'gpt-test',
+      onThreadBound
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onThreadBound('thread-real')
+
+    expect(onThreadBound).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      threadId: 'thread-real',
+      activeConversation: { conversationId: 'local-conversation' },
+      projectSelection: { projectKind: 'path', path: '/repo' },
+      conversationRevision: 3
+    })
+  })
+
   it('does not call onStreamFinished for a late finish after an error', async () => {
     let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
     const bridge: DesktopCodexChatApi = {

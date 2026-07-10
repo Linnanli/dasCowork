@@ -18,8 +18,11 @@ import {
   unstable_useMentionAdapter,
   unstable_useSlashCommandAdapter,
   useAui,
+  useAuiEvent,
   useAuiState
 } from '@assistant-ui/react'
+import { useChat } from '@ai-sdk/react'
+import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
 import { LexicalComposerInput, type DirectiveChipProps } from '@assistant-ui/react-lexical'
 import { Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
@@ -59,7 +62,9 @@ import {
 import {
   forwardRef,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type ComponentPropsWithoutRef,
@@ -69,6 +74,7 @@ import {
 
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
+import { Button } from './components/ui/button'
 import { ProjectGate } from './projects/ProjectGate'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
@@ -91,14 +97,17 @@ import {
 import { scrollToRenderTarget } from './lib/renderUnitNavigation'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
+import type {
+  ConversationChatEntry,
+  ConversationScrollSnapshot
+} from './runtime/ConversationChatRegistry'
+import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
 import type { ModelOption } from './components/assistant-ui'
-import type { ProjectSelection } from '../../shared/projects/projectTypes'
 
 type CodexSidebarProps = {
   collapsed: boolean
   nativeBackdrop: boolean
-  navigationBlocked: boolean
   projectState: ProjectStateController
   conversationState: ConversationStateController
   onNewChat: () => void
@@ -117,10 +126,16 @@ type ComposerProps = {
   modelSelectionError?: string
   onSelectedModelChange: (modelId: string) => void
   projectState: ProjectStateController
+  disabled?: boolean
 }
 
 type ChatThreadProps = ComposerProps & {
   hasBlockingRequest: boolean
+  loading: boolean
+  loadError?: Error
+  onRetryLoad: () => void
+  scrollSnapshot?: ConversationScrollSnapshot
+  onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -219,23 +234,32 @@ function useNativeBackdrop(): boolean {
 function App(): React.JSX.Element {
   const projectState = useProjectState()
   const {
-    runtime,
+    activeEntry,
     serverRequests,
+    activeServerRequests,
     respondToServerRequest,
     rejectServerRequest,
     models,
     selectedModelId,
+    modelSelectionError,
     setSelectedModelId,
     activeConversation,
-    conversationNavigationBlocked,
     startNewConversation,
-    openConversation
+    openConversation,
+    setActiveDraft,
+    setActiveScroll,
+    syncConversationMetadata,
+    getConversationIndicator,
+    getConversationTitle
   } = useCodexIpcAssistantRuntime({
     projectSelection: projectState.state?.activeProjectSelection
   })
-  const conversationState = useConversationState({ openConversation })
+  const conversationState = useConversationState({
+    openConversation,
+    getConversationIndicator,
+    syncConversationMetadata
+  })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [modelSelectionError, setModelSelectionError] = useState<string | undefined>()
   const nativeBackdrop = useNativeBackdrop()
 
   useEffect(() => {
@@ -257,61 +281,132 @@ function App(): React.JSX.Element {
     setSidebarCollapsed((collapsed) => !collapsed)
   }
   const handleSelectedModelChange = (modelId: string): void => {
-    setModelSelectionError(undefined)
-    void setSelectedModelId(modelId).catch((error: unknown) => {
-      setModelSelectionError(errorMessage(error))
-    })
+    void setSelectedModelId(modelId).catch(() => undefined)
+  }
+
+  const resolveApprovalConversationTitle = (threadId: string | undefined): string => {
+    const registryTitle = getConversationTitle(threadId)
+    if (registryTitle) return registryTitle
+    if (!threadId) return 'Unknown conversation'
+    const conversation = conversationState.state.conversations.find(
+      (item) => item.threadId === threadId || item.id === threadId
+    )
+    return conversation?.title ?? 'Unknown conversation'
   }
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <main
+    <main
+      className={cn(
+        'flex h-screen w-full text-foreground',
+        nativeBackdrop ? 'bg-background/10 dark:bg-background/10' : 'bg-muted/30'
+      )}
+    >
+      <CodexSidebar
+        collapsed={sidebarCollapsed}
+        nativeBackdrop={nativeBackdrop}
+        projectState={projectState}
+        conversationState={conversationState}
+        onNewChat={startNewConversation}
+      />
+      <section
+        data-slot="app-main-section"
         className={cn(
-          'flex h-screen w-full text-foreground',
-          nativeBackdrop ? 'bg-background/10 dark:bg-background/10' : 'bg-muted/30'
+          'flex min-w-0 flex-1 flex-col overflow-hidden p-2 transition-[padding] duration-200',
+          nativeBackdrop && nativeBackdropSurfaceClass,
+          !sidebarCollapsed && 'md:pl-0'
         )}
       >
-        <CodexSidebar
-          collapsed={sidebarCollapsed}
-          nativeBackdrop={nativeBackdrop}
-          navigationBlocked={conversationNavigationBlocked}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
+          <ActiveConversationPane
+            key={activeEntry.localId}
+            activeConversation={activeConversation}
+            entry={activeEntry}
+            hasBlockingRequest={activeServerRequests.length > 0}
+            models={models}
+            selectedModelId={selectedModelId}
+            modelSelectionError={modelSelectionError}
+            onDraftChange={setActiveDraft}
+            onRetryLoad={() => {
+              void openConversation({ conversationId: activeEntry.localId })
+            }}
+            onScrollSnapshotChange={setActiveScroll}
+            onSelectedModelChange={handleSelectedModelChange}
+            projectState={projectState}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
+          />
+          <ServerRequestPanel
+            getConversationTitle={(request) =>
+              resolveApprovalConversationTitle(request.context?.threadId)
+            }
+            onReject={rejectServerRequest}
+            onRespond={respondToServerRequest}
+            requests={serverRequests}
+          />
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function ActiveConversationPane({
+  activeConversation,
+  entry,
+  hasBlockingRequest,
+  models,
+  selectedModelId,
+  modelSelectionError,
+  onDraftChange,
+  onRetryLoad,
+  onScrollSnapshotChange,
+  onSelectedModelChange,
+  projectState,
+  sidebarCollapsed,
+  onToggleSidebar
+}: {
+  activeConversation: ActiveConversationContext | undefined
+  entry: ConversationChatEntry
+  hasBlockingRequest: boolean
+  models: readonly ModelOption[]
+  selectedModelId: string | undefined
+  modelSelectionError?: string
+  onDraftChange: (draft: string) => void
+  onRetryLoad: () => void
+  onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
+  onSelectedModelChange: (modelId: string) => void
+  projectState: ProjectStateController
+  sidebarCollapsed: boolean
+  onToggleSidebar: () => void
+}): React.JSX.Element {
+  const chat = useChat({ chat: entry.chat })
+  const runtime = useAISDKRuntime(chat, { isDisabled: !entry.loaded })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ConversationDraftBridge draft={entry.draft} onDraftChange={onDraftChange} />
+      <ConversationFocusBridge entryId={entry.localId} />
+      <Header
+        activeConversation={activeConversation}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={onToggleSidebar}
+      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ChatThread
+          activeConversation={activeConversation}
+          disabled={!entry.loaded}
+          hasBlockingRequest={hasBlockingRequest}
+          loading={entry.phase === 'loading'}
+          loadError={!entry.loaded ? entry.error : undefined}
+          models={models}
+          selectedModelId={selectedModelId}
+          modelSelectionError={modelSelectionError}
+          onRetryLoad={onRetryLoad}
+          onScrollSnapshotChange={onScrollSnapshotChange}
+          onSelectedModelChange={onSelectedModelChange}
           projectState={projectState}
-          conversationState={conversationState}
-          onNewChat={startNewConversation}
+          scrollSnapshot={entry.scroll}
         />
-        <section
-          data-slot="app-main-section"
-          className={cn(
-            'flex min-w-0 flex-1 flex-col overflow-hidden p-2 transition-[padding] duration-200',
-            nativeBackdrop && nativeBackdropSurfaceClass,
-            !sidebarCollapsed && 'md:pl-0'
-          )}
-        >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
-            <Header
-              activeConversation={activeConversation}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={toggleSidebar}
-            />
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatThread
-                activeConversation={activeConversation}
-                hasBlockingRequest={serverRequests.length > 0}
-                models={models}
-                selectedModelId={selectedModelId}
-                modelSelectionError={modelSelectionError}
-                onSelectedModelChange={handleSelectedModelChange}
-                projectState={projectState}
-              />
-            </div>
-            <ServerRequestPanel
-              onReject={rejectServerRequest}
-              onRespond={respondToServerRequest}
-              requests={serverRequests}
-            />
-          </div>
-        </section>
-      </main>
+      </div>
     </AssistantRuntimeProvider>
   )
 }
@@ -319,17 +414,13 @@ function App(): React.JSX.Element {
 function CodexSidebar({
   collapsed,
   nativeBackdrop,
-  navigationBlocked,
   projectState,
   conversationState,
   onNewChat
 }: CodexSidebarProps): React.JSX.Element {
   return (
     <aside
-      aria-disabled={navigationBlocked || undefined}
       data-slot="codex-sidebar"
-      inert={navigationBlocked || undefined}
-      title={navigationBlocked ? '停止当前生成后再切换会话' : undefined}
       className={cn(
         sidebarBaseClass,
         nativeBackdrop && nativeBackdropSurfaceClass,
@@ -439,15 +530,25 @@ function isNewChatView(state: AssistantState): boolean {
 
 function ChatThread({
   activeConversation,
+  disabled,
   hasBlockingRequest,
+  loading,
+  loadError,
   models,
   selectedModelId,
   modelSelectionError,
+  onRetryLoad,
   onSelectedModelChange,
-  projectState
+  projectState,
+  scrollSnapshot,
+  onScrollSnapshotChange
 }: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
-  const showProjectGate = isEmpty && !projectState.hasSelection
+  const showNewConversationView = isEmpty && !loading && !loadError
+  const showProjectGate =
+    showNewConversationView && !hasConversationProjectContext(activeConversation, projectState)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
 
   return (
     <ThreadPrimitive.Root
@@ -458,19 +559,30 @@ function ChatThread({
       }}
     >
       <ThreadPrimitive.Viewport
+        ref={viewportRef}
         turnAnchor="top"
+        scrollToBottomOnInitialize={!scrollSnapshot}
+        scrollToBottomOnThreadSwitch={false}
         data-slot="aui_thread-viewport"
         className={cn(
           'relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4',
-          isEmpty && 'justify-center'
+          showNewConversationView && 'justify-center'
         )}
       >
-        {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
-        {!showProjectGate ? (
-          <AuiIf condition={isNewChatView}>
-            <ThreadWelcome />
-          </AuiIf>
+        {loadError ? (
+          <div
+            data-slot="conversation-load-error"
+            role="alert"
+            className="mx-auto mb-6 flex w-full max-w-(--thread-max-width) items-center justify-between gap-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          >
+            <span>无法加载此对话：{loadError.message}</span>
+            <Button type="button" size="sm" variant="secondary" onClick={onRetryLoad}>
+              重试
+            </Button>
+          </div>
         ) : null}
+        {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
+        {showNewConversationView && !showProjectGate ? <ThreadWelcome /> : null}
         <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
           <ThreadPrimitive.Messages>
             {({ message }) => {
@@ -483,29 +595,108 @@ function ChatThread({
         <ThreadPrimitive.ViewportFooter
           className={cn(
             'aui-thread-viewport-footer mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible bg-background pb-4 md:pb-6',
-            !isEmpty && 'sticky bottom-0 mt-auto rounded-t-xl'
+            !showNewConversationView && 'sticky bottom-0 mt-auto rounded-t-xl'
           )}
         >
           <ThreadScrollToBottom />
           <Composer
             activeConversation={activeConversation}
+            disabled={disabled}
             models={models}
             selectedModelId={selectedModelId}
             modelSelectionError={modelSelectionError}
             onSelectedModelChange={onSelectedModelChange}
             projectState={projectState}
           />
-          <AuiIf condition={isNewChatView}>
+          {showNewConversationView ? (
             <div className="aui-thread-welcome-suggestions-shell min-h-19">
               <AuiIf condition={(state) => state.composer.isEmpty}>
                 <ThreadSuggestions />
               </AuiIf>
             </div>
-          </AuiIf>
+          ) : null}
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
   )
+}
+
+function ConversationDraftBridge({
+  draft,
+  onDraftChange
+}: {
+  draft: string
+  onDraftChange: (draft: string) => void
+}): null {
+  const aui = useAui()
+  const composerText = useAuiState((state) => state.composer.text)
+  const isRunning = useAuiState((state) => state.thread.isRunning)
+  const initialDraft = useRef(draft)
+  const hydrated = useRef(false)
+  const pendingSend = useRef(false)
+
+  useAuiEvent('composer.send', () => {
+    pendingSend.current = true
+  })
+
+  useLayoutEffect(() => {
+    aui.composer().setText(initialDraft.current)
+    hydrated.current = true
+  }, [aui])
+
+  useEffect(() => {
+    if (!hydrated.current) return
+    if (pendingSend.current && composerText.length === 0) return
+    onDraftChange(composerText)
+  }, [composerText, onDraftChange])
+
+  useEffect(() => {
+    if (isRunning) {
+      if (draft.length === 0) pendingSend.current = false
+      return
+    }
+    if (pendingSend.current && draft.length > 0 && composerText.length === 0) {
+      aui.composer().setText(draft)
+      pendingSend.current = false
+    }
+  }, [aui, composerText, draft, isRunning])
+
+  return null
+}
+
+function ConversationFocusBridge({ entryId }: { entryId: string }): null {
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLElement>('.aui-lexical-input')
+      input?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [entryId])
+  return null
+}
+
+function useConversationScrollRestoration(
+  viewportRef: React.RefObject<HTMLDivElement | null>,
+  snapshot: ConversationScrollSnapshot | undefined,
+  onSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
+): void {
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    let restoreFrame = 0
+    const layoutFrame = window.requestAnimationFrame(() => {
+      if (!snapshot) return
+      restoreFrame = window.requestAnimationFrame(() => {
+        restoreConversationScroll(viewport, snapshot)
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(layoutFrame)
+      window.cancelAnimationFrame(restoreFrame)
+      onSnapshotChange(captureConversationScroll(viewport))
+    }
+  }, [onSnapshotChange, snapshot, viewportRef])
 }
 
 function ThreadWelcome(): React.JSX.Element {
@@ -1309,6 +1500,7 @@ function ComposerTriggerPopover({
 
 function Composer({
   activeConversation,
+  disabled,
   models,
   selectedModelId,
   modelSelectionError,
@@ -1317,20 +1509,25 @@ function Composer({
 }: ComposerProps): React.JSX.Element {
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
+  const effectiveProjectSelection = activeConversation
+    ? conversationProjectSelection
+    : globalProjectSelection
+  const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const projectContext = conversationProjectContext(activeConversation, projectState)
-  const fileSearchMatchesConversation =
-    !activeConversation ||
-    (conversationProjectSelection !== undefined &&
-      sameProjectSelection(conversationProjectSelection, globalProjectSelection))
-  const workspaceFileSearchEnabled = projectState.hasSelection && fileSearchMatchesConversation
+  const workspaceFileSearchEnabled = Boolean(
+    hasProjectContext &&
+    effectiveProjectSelection &&
+    effectiveProjectSelection.projectKind !== 'projectless'
+  )
   const workspaceFileSearch = useWorkspaceFileSearch({
     manager: window.desktopApp.projects,
     enabled: workspaceFileSearchEnabled,
-    limit: 40
+    limit: 40,
+    projectSelection: effectiveProjectSelection
   })
   const { results: workspaceFileResults, search: searchWorkspaceFilesForMentions } =
     workspaceFileSearch
-  const projectSelectionKey = JSON.stringify(projectState.state?.activeProjectSelection ?? null)
+  const projectSelectionKey = JSON.stringify(effectiveProjectSelection ?? null)
 
   useEffect(() => {
     if (!workspaceFileSearchEnabled) return
@@ -1415,7 +1612,7 @@ function Composer({
                 <ComposerPrimitive.Send asChild>
                   <IconButton
                     className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                    disabled={!projectState.hasSelection}
+                    disabled={disabled || !hasProjectContext}
                     label="发送消息"
                     title="发送消息"
                   >
@@ -1444,8 +1641,14 @@ function Composer({
   )
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function hasConversationProjectContext(
+  activeConversation: ActiveConversationContext | undefined,
+  projectState: ProjectStateController
+): boolean {
+  if (!activeConversation) return projectState.hasSelection
+  return Boolean(
+    activeConversation.threadId || activeConversation.projectSelection || activeConversation.cwd
+  )
 }
 
 function conversationProjectContext(
@@ -1487,22 +1690,6 @@ function conversationProjectContext(
     detail:
       activeConversation.cwd ?? `${selection.hostId}:${project?.remotePath ?? selection.projectId}`
   }
-}
-
-function sameProjectSelection(
-  left: ProjectSelection | undefined,
-  right: ProjectSelection | undefined
-): boolean {
-  if (!left || !right || left.projectKind !== right.projectKind) return left === right
-  if (left.projectKind === 'projectless' && right.projectKind === 'projectless') return true
-  if (left.projectKind === 'path' && right.projectKind === 'path') return left.path === right.path
-  if (left.projectKind === 'local' && right.projectKind === 'local') {
-    return left.projectId === right.projectId
-  }
-  if (left.projectKind === 'remote' && right.projectKind === 'remote') {
-    return left.projectId === right.projectId && left.hostId === right.hostId
-  }
-  return false
 }
 
 function basename(path: string): string {

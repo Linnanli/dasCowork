@@ -75,6 +75,13 @@ type ActiveConversationRun = {
   abortController: AbortController
 }
 
+type PendingThreadBindingAcknowledgement = {
+  threadId: string
+  resolve: () => void
+}
+
+const threadBindingAcknowledgementTimeoutMs = 1_000
+
 export type ModelCatalogLike = Pick<
   ModelCatalogService,
   'listModels' | 'setSelectedModel' | 'resolveClientModel'
@@ -96,6 +103,7 @@ export type CodexChatRunResult = {
 
 export type StartedConversationThread = {
   threadId: string
+  originConversationId: string
   title?: string | null
   cwd?: string | null
   createdAt?: string
@@ -217,24 +225,54 @@ export class CodexChatRuntimeService {
     port: CodexPortLike,
     callbacks?: StartChatStreamCallbacks
   ): Promise<CodexChatRunResult> {
-    const abortController = new AbortController()
-    const conversationKey = request.body?.conversationId ?? request.body?.threadId ?? request.chatId
-    const activeRun: ActiveConversationRun = {
-      conversationId: conversationKey,
-      threadId: request.body?.threadId,
-      abortController
+    let activeRun: ActiveConversationRun
+    try {
+      activeRun = this.registerActiveConversationRun(request)
+    } catch (error) {
+      port.start()
+      port.postMessage({ type: 'error', error: errorMessage(error) })
+      port.close()
+      return { threadId: request.body?.threadId }
     }
-    this.activeConversationRuns.set(conversationKey, activeRun)
-    if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
+    let pendingThreadBindingAcknowledgement: PendingThreadBindingAcknowledgement | undefined
+    const waitForThreadBindingAcknowledgement = (threadId: string): Promise<void> =>
+      new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (pendingThreadBindingAcknowledgement?.threadId === threadId) {
+            pendingThreadBindingAcknowledgement = undefined
+          }
+          resolve()
+        }, threadBindingAcknowledgementTimeoutMs)
+        pendingThreadBindingAcknowledgement = {
+          threadId,
+          resolve: () => {
+            clearTimeout(timeout)
+            pendingThreadBindingAcknowledgement = undefined
+            resolve()
+          }
+        }
+      })
     port.on('message', (event) => {
-      if (isAbortMessage(event.data)) abortController.abort()
+      if (isAbortMessage(event.data)) {
+        activeRun.abortController.abort()
+        pendingThreadBindingAcknowledgement?.resolve()
+        return
+      }
+      if (
+        isThreadBoundAcknowledgement(event.data) &&
+        event.data.threadId === pendingThreadBindingAcknowledgement?.threadId
+      ) {
+        pendingThreadBindingAcknowledgement.resolve()
+      }
     })
     port.start()
 
     try {
-      this.status = {
-        state: 'starting',
-        binary: this.launch.displayBinary
+      if (this.status.state === 'stopped') {
+        this.status = {
+          state: 'starting',
+          binary: this.launch.displayBinary
+        }
       }
       const modelId = request.modelId ?? this.selectedModelId
       if (!modelId) throw new Error('No Codex model selected')
@@ -298,15 +336,19 @@ export class CodexChatRuntimeService {
             const startedAt = new Date().toISOString()
             const startedThread: StartedConversationThread = {
               threadId: thread.threadId,
+              originConversationId: activeRun.conversationId,
               title: conversationTitleFromRequest(request),
               cwd: conversation.executionTarget?.cwd ?? null,
               createdAt: startedAt,
               updatedAt: startedAt,
               projectAssignment: conversation.projectAssignment
             }
-            activeRun.threadId = thread.threadId
-            this.activeConversationRuns.set(activeRun.conversationId, activeRun)
-            this.activeConversationRuns.set(thread.threadId, activeRun)
+            const threadIdChanged = this.bindActiveConversationRunAlias(activeRun, thread.threadId)
+            if (threadIdChanged) {
+              const acknowledgement = waitForThreadBindingAcknowledgement(thread.threadId)
+              port.postMessage({ type: 'thread-bound', threadId: thread.threadId })
+              await acknowledgement
+            }
             await persistStartedProjectAssignment(thread.threadId)
             try {
               callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
@@ -318,16 +360,18 @@ export class CodexChatRuntimeService {
         request,
         modelId: streamModelId,
         provider: this.provider,
-        abortSignal: abortController.signal,
+        abortSignal: activeRun.abortController.signal,
         clientModel,
         executionTarget: conversation.executionTarget,
         resumeThreadId: activeRun.threadId,
         onThreadStarted
       })
-      this.status = {
-        state: 'ready',
-        binary: this.launch.displayBinary,
-        startedAt: new Date().toISOString()
+      if (this.status.state !== 'stopping') {
+        this.status = {
+          state: 'ready',
+          binary: this.launch.displayBinary,
+          startedAt: this.status.startedAt ?? new Date().toISOString()
+        }
       }
       let streamFailed = false
       for await (const chunk of result.toUIMessageStream({
@@ -338,11 +382,6 @@ export class CodexChatRuntimeService {
       })) {
         if (chunk.type === 'error') {
           streamFailed = true
-          this.status = {
-            state: 'failed',
-            binary: this.launch.displayBinary,
-            lastError: chunk.errorText
-          }
           port.postMessage({ type: 'error', error: chunk.errorText })
           break
         }
@@ -350,16 +389,18 @@ export class CodexChatRuntimeService {
         const turnId = extractCodexTurnId(chunk)
         let threadIdChanged = false
         if (threadId || turnId) {
-          threadIdChanged = Boolean(threadId && threadId !== activeRun.threadId)
-          activeRun.threadId = threadId ?? activeRun.threadId
+          threadIdChanged = Boolean(
+            threadId && this.bindActiveConversationRunAlias(activeRun, threadId)
+          )
           activeRun.turnId = turnId ?? activeRun.turnId
-          this.activeConversationRuns.set(activeRun.conversationId, activeRun)
-          if (activeRun.threadId) this.activeConversationRuns.set(activeRun.threadId, activeRun)
         }
         if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
           persistOrNormalizeProjectAssignment(threadId)
         }
         if (threadIdChanged) {
+          const acknowledgement = waitForThreadBindingAcknowledgement(threadId!)
+          port.postMessage({ type: 'thread-bound', threadId: threadId! })
+          await acknowledgement
           try {
             callbacks?.onThreadIdAvailable?.(threadId!)
           } catch (error) {
@@ -369,20 +410,16 @@ export class CodexChatRuntimeService {
         port.postMessage({ type: 'chunk', chunk })
       }
       await projectAssignmentQueue
-      if (abortController.signal.aborted) {
+      if (activeRun.abortController.signal.aborted) {
         port.postMessage({ type: 'aborted' })
       } else if (!streamFailed) {
         port.postMessage({ type: 'finish', threadId: activeRun.threadId })
       }
     } catch (error) {
-      if (abortController.signal.aborted) {
+      this.restoreStatusAfterTurnFailure(activeRun)
+      if (activeRun.abortController.signal.aborted) {
         port.postMessage({ type: 'aborted' })
       } else {
-        this.status = {
-          state: 'failed',
-          binary: this.launch.displayBinary,
-          lastError: errorMessage(error)
-        }
         port.postMessage({ type: 'error', error: errorMessage(error) })
       }
     } finally {
@@ -405,6 +442,9 @@ export class CodexChatRuntimeService {
   async stop(): Promise<void> {
     this.status = { state: 'stopping', binary: this.launch.displayBinary }
     this.approvalBroker.rejectAll(new Error('Codex runtime is stopping'))
+    for (const run of new Set(this.activeConversationRuns.values())) {
+      run.abortController.abort()
+    }
     await this.provider.shutdown()
     this.status = { state: 'stopped', binary: this.launch.displayBinary }
   }
@@ -412,6 +452,56 @@ export class CodexChatRuntimeService {
   private clearActiveConversationRun(run: ActiveConversationRun): void {
     for (const [key, value] of this.activeConversationRuns.entries()) {
       if (value === run) this.activeConversationRuns.delete(key)
+    }
+  }
+
+  private registerActiveConversationRun(request: CodexChatRequest): ActiveConversationRun {
+    const conversationId = request.body?.conversationId ?? request.body?.threadId ?? request.chatId
+    const aliases = new Set(
+      [request.chatId, request.body?.conversationId, request.body?.threadId].filter(
+        (value): value is string => Boolean(value)
+      )
+    )
+    const duplicateAlias = [...aliases].find((alias) => this.activeConversationRuns.has(alias))
+    if (duplicateAlias) {
+      throw new Error(`Conversation already has an active turn: ${duplicateAlias}`)
+    }
+
+    const run: ActiveConversationRun = {
+      conversationId,
+      threadId: request.body?.threadId,
+      abortController: new AbortController()
+    }
+    for (const alias of aliases) this.activeConversationRuns.set(alias, run)
+    return run
+  }
+
+  private bindActiveConversationRunAlias(run: ActiveConversationRun, alias: string): boolean {
+    if (run.threadId && run.threadId !== alias) {
+      throw new Error(`Active conversation thread changed from ${run.threadId} to ${alias}`)
+    }
+    const existingRun = this.activeConversationRuns.get(alias)
+    if (existingRun && existingRun !== run) {
+      throw new Error(`Conversation already has an active turn: ${alias}`)
+    }
+    if (existingRun === run) {
+      if (run.threadId) return false
+      run.threadId = alias
+      return true
+    }
+    const changed = !run.threadId
+    run.threadId = alias
+    this.activeConversationRuns.set(alias, run)
+    return changed
+  }
+
+  private restoreStatusAfterTurnFailure(run: ActiveConversationRun): void {
+    if (this.status.state !== 'starting') return
+    const hasOtherActiveRun = [...this.activeConversationRuns.values()].some(
+      (activeRun) => activeRun !== run
+    )
+    if (!hasOtherActiveRun) {
+      this.status = { state: 'stopped', binary: this.launch.displayBinary }
     }
   }
 
@@ -664,6 +754,17 @@ function toToolUserInputAnswers(
 function isAbortMessage(value: unknown): value is { type: 'abort' } {
   return Boolean(
     value && typeof value === 'object' && (value as { type?: unknown }).type === 'abort'
+  )
+}
+
+function isThreadBoundAcknowledgement(
+  value: unknown
+): value is { type: 'thread-bound-ack'; threadId: string } {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { type?: unknown }).type === 'thread-bound-ack' &&
+    typeof (value as { threadId?: unknown }).threadId === 'string'
   )
 }
 

@@ -320,7 +320,7 @@ describe('SidebarRoot', () => {
       )
     })
 
-    const row = [...container.querySelectorAll('[role="button"]')].find((candidate) =>
+    const row = [...container.querySelectorAll('button')].find((candidate) =>
       candidate.textContent?.includes('Scratch')
     )
     await act(async () => row?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -369,9 +369,9 @@ describe('SidebarRoot', () => {
     })
 
     expect(container.querySelector('[aria-label="Interrupt Running thread"]')).toBeNull()
-    const runningIndicator = container.querySelector('[aria-label="Running thread is running"]')
-    const loaderIcon = runningIndicator?.querySelector('.lucide-loader')
-    expect(runningIndicator?.tagName).toBe('SPAN')
+    const runningRow = container.querySelector('[aria-label="Running thread, running"]')
+    const loaderIcon = runningRow?.querySelector('.lucide-loader')
+    expect(runningRow?.tagName).toBe('BUTTON')
     expect(loaderIcon).not.toBeNull()
     expect(loaderIcon?.getAttribute('class')).toContain('animate-spin')
     root.unmount()

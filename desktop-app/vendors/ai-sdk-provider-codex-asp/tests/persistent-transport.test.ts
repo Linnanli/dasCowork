@@ -320,6 +320,43 @@ describe("PersistentTransport", () =>
         await pool.shutdown();
     });
 
+    it("runs four transports concurrently and never assigns an aborted fifth waiter", async () =>
+    {
+        let transportCount = 0;
+        const pool = new CodexWorkerPool({
+            poolSize: 4,
+            transportFactory: () =>
+            {
+                transportCount += 1;
+                return new ScriptedTransport();
+            },
+        });
+        const active = Array.from({ length: 4 }, () => new PersistentTransport({ pool }));
+
+        await Promise.all(active.map((transport) => transport.connect()));
+        expect(transportCount).toBe(4);
+
+        const abortController = new AbortController();
+        const queued = new PersistentTransport({ pool, signal: abortController.signal });
+        const queuedConnect = queued.connect();
+        await Promise.resolve();
+        expect(transportCount).toBe(4);
+
+        abortController.abort();
+        await expect(queuedConnect).rejects.toThrow(/abort/i);
+
+        await active[0]!.disconnect();
+        const replacement = new PersistentTransport({ pool });
+        await replacement.connect();
+        expect(transportCount).toBe(4);
+
+        await Promise.all([
+            ...active.slice(1).map((transport) => transport.disconnect()),
+            replacement.disconnect(),
+        ]);
+        await pool.shutdown();
+    });
+
     it("does not send initialized notification on subsequent calls", async () =>
     {
         const innerTransport = new ScriptedTransport();

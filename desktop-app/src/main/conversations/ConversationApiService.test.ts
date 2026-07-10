@@ -257,6 +257,7 @@ describe('ConversationApiService', () => {
     expect(
       service.observeStartedThreadSnapshot({
         threadId: 'thread-prestarted',
+        originConversationId: 'local-chat-1',
         title: '你好,你是什么模型?',
         cwd: '/repo/desktop-app',
         createdAt: '2026-06-30T04:00:00.000Z',
@@ -274,6 +275,7 @@ describe('ConversationApiService', () => {
         {
           id: 'thread-prestarted',
           threadId: 'thread-prestarted',
+          originConversationId: 'local-chat-1',
           title: '你好,你是什么模型?',
           cwd: '/repo/desktop-app',
           projectAssignment: { projectKind: 'local', projectId: 'local' },
@@ -285,6 +287,51 @@ describe('ConversationApiService', () => {
     expect(threadClient.listThreads).not.toHaveBeenCalled()
     expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
     expect(threadClient.readThread).not.toHaveBeenCalled()
+  })
+
+  it('publishes the origin once when the authoritative list arrives before the started snapshot', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.listThreads).mockResolvedValue([
+      {
+        id: 'thread-prestarted',
+        title: 'Authoritative title',
+        preview: 'Authoritative title',
+        createdAt: '2026-06-30T04:00:00.000Z',
+        updatedAt: '2026-06-30T04:00:00.000Z',
+        archived: false,
+        running: true,
+        cwd: '/repo/desktop-app'
+      }
+    ])
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await service.refreshConversationList()
+
+    expect(
+      service.observeStartedThreadSnapshot({
+        threadId: 'thread-prestarted',
+        originConversationId: 'local-chat-1',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: 'local',
+          cwd: '/repo/desktop-app'
+        }
+      })
+    ).toMatchObject({
+      conversations: [
+        {
+          id: 'thread-prestarted',
+          originConversationId: 'local-chat-1',
+          projectAssignment: { projectKind: 'local', projectId: 'local' }
+        }
+      ]
+    })
+
+    const refreshedState = await service.refreshConversationList()
+    expect(refreshedState.conversations[0]).not.toHaveProperty('originConversationId')
   })
 
   it('surfaces an observed started thread before thread/read history is available', async () => {

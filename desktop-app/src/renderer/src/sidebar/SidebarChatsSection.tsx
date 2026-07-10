@@ -1,8 +1,8 @@
 import { PencilIcon } from 'lucide-react'
 
-import type { SidebarConversation } from '../../../shared/codexIpcApi'
 import { Button } from '../components/ui/button'
 import { ConversationRow } from './ConversationRow'
+import type { SidebarConversationView } from './sidebarTypes'
 import type { ConversationStateController } from './useConversationState'
 
 export function SidebarChatsSection({
@@ -13,8 +13,8 @@ export function SidebarChatsSection({
   conversationState,
   onNewQuickChat
 }: {
-  quickChats: SidebarConversation[]
-  chronologicalChats: SidebarConversation[]
+  quickChats: SidebarConversationView[]
+  chronologicalChats: SidebarConversationView[]
   showChronological: boolean
   nativeBackdrop: boolean
   conversationState: ConversationStateController

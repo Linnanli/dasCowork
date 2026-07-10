@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
-import { sendMessage } from './support/chatActions'
+import { sendComposerMessage, sendMessage } from './support/chatActions'
 import {
   assistantMessageResponse,
   functionCallOutputText,
@@ -109,6 +109,81 @@ test('rejects a command request through the desktop approval panel', async ({
     const toolOutput = functionCallOutputText(providerBodies[1], 'call-rejected-pwd')
     expect(toolOutput).toBe('exec command rejected by user')
     expect(toolOutput).not.toContain('E2E_REJECTED_COMMAND_SHOULD_NOT_RUN')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('keeps simultaneous conversation approvals independently actionable', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const runId = Date.now().toString(36)
+  const firstPrompt = `approval-first-${runId}`
+  const secondPrompt = `approval-second-${runId}`
+  const firstMarker = `APPROVAL_FIRST_${runId}`
+  const secondMarker = `APPROVAL_SECOND_${runId}`
+  const firstFinal = `approval first completed ${runId}`
+  const secondFinal = `approval second completed ${runId}`
+  const backend = await startMockBackend({
+    responses: [
+      shellCommandResponse('resp-approval-first-tool', 'call-approval-first', {
+        command: `printf ${firstMarker}`,
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E verifies approval isolation'
+      }),
+      shellCommandResponse('resp-approval-second-tool', 'call-approval-second', {
+        command: `printf ${secondMarker}`,
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E verifies approval isolation'
+      }),
+      assistantMessageResponse('resp-approval-first-final', 'msg-approval-first-final', firstFinal),
+      assistantMessageResponse(
+        'resp-approval-second-final',
+        'msg-approval-second-final',
+        secondFinal
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, firstPrompt)
+    const panel = page.locator('[data-slot="server-request-panel"]')
+    await expect(panel).toContainText(firstMarker)
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    await sidebar.getByRole('button', { name: '新对话', exact: true }).click()
+    await sendComposerMessage(page, secondPrompt)
+    await expect(panel.locator('article')).toHaveCount(2)
+
+    const firstCard = panel.locator('article').filter({ hasText: firstMarker })
+    const secondCard = panel.locator('article').filter({ hasText: secondMarker })
+    await expect(firstCard).toContainText(firstPrompt)
+    await expect(secondCard).toContainText(secondPrompt)
+
+    await firstCard.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(firstCard).toHaveCount(0)
+    await expect(secondCard).toBeVisible()
+
+    await secondCard.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: secondFinal })
+    ).toBeVisible()
+
+    await sidebar.getByRole('button', { name: new RegExp(`^${firstPrompt}`) }).click()
+    await expect(
+      page.locator('[data-role="assistant"]').filter({ hasText: firstFinal })
+    ).toBeVisible()
+    expect(providerResponseBodies(backend)).toHaveLength(4)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)

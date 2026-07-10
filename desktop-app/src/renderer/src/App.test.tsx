@@ -92,25 +92,53 @@ const streamdownPropsState = vi.hoisted<{
 }))
 
 const runtimeState = vi.hoisted<{
+  activeEntry: {
+    localId: string
+    newConversation: boolean
+    context: ActiveConversationContext
+    phase: 'loading' | 'ready' | 'streaming' | 'error'
+    error?: Error
+    unread: boolean
+    draft: string
+    loaded: boolean
+    chat: object
+    transport: object
+    scroll?: { scrollTop: number; followBottom: boolean }
+  }
   activeConversation: ActiveConversationContext | undefined
-  conversationNavigationBlocked: boolean
   rejectServerRequest: ReturnType<typeof vi.fn>
   respondToServerRequest: ReturnType<typeof vi.fn>
   serverRequests: CodexApprovalRequest[]
   selectedModelId: string | undefined
+  modelSelectionError: string | undefined
   setSelectedModelId: ReturnType<typeof vi.fn>
   startNewConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
+  setActiveDraft: ReturnType<typeof vi.fn>
+  setActiveScroll: ReturnType<typeof vi.fn>
 }>(() => ({
+  activeEntry: {
+    localId: 'local-test',
+    newConversation: true,
+    context: { conversationId: 'local-test' },
+    phase: 'ready',
+    unread: false,
+    draft: '',
+    loaded: true,
+    chat: {},
+    transport: {}
+  },
   activeConversation: undefined,
-  conversationNavigationBlocked: false,
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
   serverRequests: [],
   selectedModelId: 'gpt-5-codex',
+  modelSelectionError: undefined,
   setSelectedModelId: vi.fn(),
   startNewConversation: vi.fn(),
-  openConversation: vi.fn()
+  openConversation: vi.fn(),
+  setActiveDraft: vi.fn(),
+  setActiveScroll: vi.fn()
 }))
 
 const mentionAdapterState = vi.hoisted<{
@@ -118,6 +146,10 @@ const mentionAdapterState = vi.hoisted<{
 }>(() => ({
   calls: []
 }))
+
+const aiSdkRuntimeState = vi.hoisted<{
+  options?: { isDisabled?: boolean }
+}>(() => ({}))
 
 const projectHookState = vi.hoisted(() => ({
   controller: {
@@ -170,15 +202,23 @@ function resetThreadMessageState(): void {
   runtimeState.respondToServerRequest.mockReset()
   runtimeState.respondToServerRequest.mockResolvedValue(undefined)
   runtimeState.selectedModelId = 'gpt-5-codex'
+  runtimeState.modelSelectionError = undefined
   runtimeState.setSelectedModelId.mockReset()
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
   runtimeState.startNewConversation.mockReset()
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
   runtimeState.activeConversation = undefined
-  runtimeState.conversationNavigationBlocked = false
+  runtimeState.activeEntry.newConversation = true
+  runtimeState.activeEntry.context = { conversationId: 'local-test' }
+  runtimeState.activeEntry.phase = 'ready'
+  delete runtimeState.activeEntry.error
+  runtimeState.activeEntry.loaded = true
+  runtimeState.activeEntry.draft = ''
+  delete runtimeState.activeEntry.scroll
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
+  aiSdkRuntimeState.options = undefined
 }
 
 function setDesktopPlatform(platform: NodeJS.Platform): void {
@@ -340,8 +380,9 @@ function currentMessageParts(): MockMessagePart[] {
 vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
   return {
     useCodexIpcAssistantRuntime: () => ({
-      runtime: {},
+      activeEntry: runtimeState.activeEntry,
       serverRequests: runtimeState.serverRequests,
+      activeServerRequests: runtimeState.serverRequests,
       respondToServerRequest: runtimeState.respondToServerRequest,
       rejectServerRequest: runtimeState.rejectServerRequest,
       models: [
@@ -355,14 +396,35 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
         }
       ],
       selectedModelId: runtimeState.selectedModelId,
+      modelSelectionError: runtimeState.modelSelectionError,
       activeConversation: runtimeState.activeConversation,
-      conversationNavigationBlocked: runtimeState.conversationNavigationBlocked,
       startNewConversation: runtimeState.startNewConversation,
       openConversation: runtimeState.openConversation,
-      setSelectedModelId: runtimeState.setSelectedModelId
+      setSelectedModelId: runtimeState.setSelectedModelId,
+      setActiveDraft: runtimeState.setActiveDraft,
+      setActiveScroll: runtimeState.setActiveScroll,
+      syncConversationMetadata: vi.fn(),
+      getConversationIndicator: (conversation: { running?: boolean; unread?: boolean }) => ({
+        active: false,
+        attention: false,
+        running: Boolean(conversation.running),
+        unread: Boolean(conversation.unread)
+      }),
+      getConversationTitle: () => undefined
     })
   }
 })
+
+vi.mock('@ai-sdk/react', () => ({
+  useChat: () => ({})
+}))
+
+vi.mock('@assistant-ui/react-ai-sdk', () => ({
+  useAISDKRuntime: (_chat: unknown, options?: { isDisabled?: boolean }) => {
+    aiSdkRuntimeState.options = options
+    return {}
+  }
+}))
 
 vi.mock('./projects/useProjectState', () => ({
   useProjectState: () => projectHookState.controller
@@ -413,7 +475,8 @@ vi.mock('@assistant-ui/react', () => {
   const assistantState = {
     composer: {
       dictation: null,
-      isEmpty: true
+      isEmpty: true,
+      text: ''
     },
     message: {
       ...threadMessageState.message,
@@ -631,9 +694,12 @@ vi.mock('@assistant-ui/react', () => {
     unstable_useSlashCommandAdapter: () => ({ action: { onExecute: vi.fn() }, adapter: {} }),
     groupPartByType: () => () => undefined,
     useScrollLock: () => vi.fn(),
+    useAuiEvent: () => undefined,
     useAui: () => ({
+      on: () => vi.fn(),
       composer: () => ({
-        getState: () => ({ runConfig: undefined })
+        getState: () => ({ runConfig: undefined }),
+        setText: vi.fn()
       }),
       modelContext: () => ({
         register: vi.fn(() => vi.fn())
@@ -737,7 +803,11 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(searchFiles).toHaveBeenCalledWith({ query: '', limit: 40 })
+    expect(searchFiles).toHaveBeenCalledWith({
+      query: '',
+      limit: 40,
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    })
     expect(
       mentionAdapterState.calls.some((call) => {
         const categories = (call as { categories?: Array<{ items?: Array<{ id?: string }> }> })
@@ -750,7 +820,7 @@ describe('App composer', () => {
   })
 
   it('shows model selection failures instead of silently swallowing them', async () => {
-    runtimeState.setSelectedModelId.mockRejectedValue(new Error('model catalog unavailable'))
+    runtimeState.modelSelectionError = 'model catalog unavailable'
 
     act(() => {
       root.render(<App />)
@@ -834,7 +904,11 @@ describe('App composer', () => {
     })
 
     expect(container.textContent).toContain('Working in: Remote App')
-    expect(searchFiles).not.toHaveBeenCalled()
+    expect(searchFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' }
+      })
+    )
   })
 
   it('does not reuse the global project when a conversation workspace is unknown', async () => {
@@ -858,16 +932,79 @@ describe('App composer', () => {
     expect(searchFiles).not.toHaveBeenCalled()
   })
 
-  it('locks sidebar navigation while a response is streaming', () => {
-    runtimeState.conversationNavigationBlocked = true
+  it('keeps sidebar navigation available while a response is streaming', () => {
+    runtimeState.activeEntry.phase = 'streaming'
 
     act(() => {
       root.render(<App />)
     })
 
     const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
-    expect(sidebar?.hasAttribute('inert')).toBe(true)
-    expect(sidebar?.getAttribute('aria-disabled')).toBe('true')
+    expect(sidebar?.hasAttribute('inert')).toBe(false)
+    expect(sidebar?.hasAttribute('aria-disabled')).toBe(false)
+  })
+
+  it('keeps the composer disabled until an existing conversation loads successfully', () => {
+    runtimeState.activeEntry.loaded = false
+    runtimeState.activeConversation = {
+      conversationId: 'thread-loading',
+      title: 'Loading thread'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const sendButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === '发送消息'
+    )
+    expect(sendButton?.disabled).toBe(true)
+    expect(aiSdkRuntimeState.options?.isDisabled).toBe(true)
+  })
+
+  it('does not render new-conversation entry points while existing history loads', () => {
+    runtimeState.activeEntry.loaded = false
+    runtimeState.activeEntry.newConversation = false
+    runtimeState.activeEntry.phase = 'loading'
+    runtimeState.activeConversation = {
+      conversationId: 'thread-loading',
+      title: 'Loading thread'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="project-gate"]')).toBeNull()
+    expect(container.textContent).not.toContain('How can I help you today?')
+  })
+
+  it('shows a retry action when existing conversation history fails to load', async () => {
+    runtimeState.activeEntry.loaded = false
+    runtimeState.activeEntry.phase = 'error'
+    runtimeState.activeEntry.error = new Error('history unavailable')
+    runtimeState.activeConversation = {
+      conversationId: 'thread-broken',
+      title: 'Broken thread'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const alert = container.querySelector('[data-slot="conversation-load-error"]')
+    const retryButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === '重试'
+    )
+
+    expect(alert?.textContent).toContain('history unavailable')
+
+    await act(async () => {
+      retryButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(runtimeState.openConversation).toHaveBeenCalledWith({ conversationId: 'local-test' })
   })
 
   it('renders the sidebar with translucent glass styling', () => {

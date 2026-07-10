@@ -53,6 +53,19 @@ describe('WorkspaceFileSearchService', () => {
           root: tempRoot
         })
       ])
+
+      await store.setState({
+        ...(await store.getState()),
+        activeProjectSelection: { projectKind: 'projectless' }
+      })
+      const entryScopedResponse = await search.createFuzzyFileSearchSession({
+        query: 'app',
+        limit: 10,
+        projectSelection: { projectKind: 'path', path: tempRoot }
+      })
+      expect(entryScopedResponse.results).toEqual([
+        expect.objectContaining({ path: join(tempRoot, 'src', 'App.tsx') })
+      ])
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
     }

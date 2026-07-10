@@ -88,13 +88,11 @@ export class ProjectService {
     const { realPath } = await this.dependencies.validateLocalRoot(selection.path)
 
     if (
-      state.activeProjectSelection?.projectKind !== 'path' ||
-      state.activeProjectSelection.path !== realPath ||
       !state.workspaceRootOptions.some(
         (option) => option.hostId === 'local' && option.root === realPath
       )
     ) {
-      throw new Error(`Workspace root is not the active registered project: ${selection.path}`)
+      throw new Error(`Workspace root is not a registered project: ${selection.path}`)
     }
 
     return {

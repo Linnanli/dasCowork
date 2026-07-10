@@ -35,6 +35,7 @@ export type ConversationApiServiceOptions = {
 
 export type ObservedStartedThread = {
   threadId: string
+  originConversationId?: string
   title?: string | null
   cwd?: string | null
   createdAt?: string
@@ -69,6 +70,7 @@ export class ConversationApiService {
   private authoritativeThreadRows: AppServerThreadRow[] = []
   private readonly observedStartedThreads = new Map<string, AppServerThreadRow>()
   private readonly observedStartedThreadAssignments = new Map<string, ThreadProjectAssignment>()
+  private readonly observedStartedThreadOrigins = new Map<string, string>()
   private lastProjectState: ProjectState = emptyProjectState
   private lastState: SidebarConversationListState = {
     conversations: [],
@@ -118,6 +120,7 @@ export class ConversationApiService {
       return this.lastState
     }
     this.observedStartedThreadAssignments.delete(threadId)
+    this.observedStartedThreadOrigins.delete(threadId)
 
     const projectState = await this.options.projectStore.getState()
     this.lastProjectState = projectState
@@ -143,11 +146,10 @@ export class ConversationApiService {
         threads,
         requiredThreadIds: input.ensureThreadIds
       })
-      this.lastState = this.createListState({
+      return this.updateLastState({
         projectState,
         threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
       })
-      return this.lastState
     } catch (error) {
       this.lastState = {
         ...this.lastState,
@@ -181,6 +183,7 @@ export class ConversationApiService {
     await this.options.threadClient.archiveThread(input.conversationId)
     this.observedStartedThreads.delete(input.conversationId)
     this.observedStartedThreadAssignments.delete(input.conversationId)
+    this.observedStartedThreadOrigins.delete(input.conversationId)
     return this.refreshConversationList()
   }
 
@@ -218,6 +221,9 @@ export class ConversationApiService {
     if (input.projectAssignment) {
       this.observedStartedThreadAssignments.set(input.threadId, input.projectAssignment)
     }
+    if (input.originConversationId) {
+      this.observedStartedThreadOrigins.set(input.threadId, input.originConversationId)
+    }
     this.observedStartedThreads.set(input.threadId, {
       id: input.threadId,
       title: input.title ?? existing?.title ?? null,
@@ -254,7 +260,6 @@ export class ConversationApiService {
       if (rowsById.has(thread.id)) continue
       if (thread.archived) continue
       this.observedStartedThreads.delete(thread.id)
-      this.observedStartedThreadAssignments.delete(thread.id)
       rowsById.set(thread.id, thread)
       rows.unshift(thread)
     }
@@ -267,7 +272,6 @@ export class ConversationApiService {
     for (const thread of threads) {
       if (this.observedStartedThreads.has(thread.id)) {
         this.observedStartedThreads.delete(thread.id)
-        this.observedStartedThreadAssignments.delete(thread.id)
       }
     }
 
@@ -286,7 +290,16 @@ export class ConversationApiService {
     threads: AppServerThreadRow[]
   }): SidebarConversationListState {
     this.lastState = this.createListState({ projectState, threads })
+    this.clearReconciledStartedThreadMetadata(threads)
     return this.lastState
+  }
+
+  private clearReconciledStartedThreadMetadata(threads: readonly AppServerThreadRow[]): void {
+    for (const thread of threads) {
+      if (this.observedStartedThreads.has(thread.id)) continue
+      this.observedStartedThreadAssignments.delete(thread.id)
+      this.observedStartedThreadOrigins.delete(thread.id)
+    }
   }
 
   private createListState({
@@ -300,6 +313,9 @@ export class ConversationApiService {
       conversations: threads.map((thread) => ({
         id: thread.id,
         threadId: thread.id,
+        ...(this.observedStartedThreadOrigins.has(thread.id)
+          ? { originConversationId: this.observedStartedThreadOrigins.get(thread.id) }
+          : {}),
         title: conversationTitle(thread),
         projectAssignment:
           this.observedStartedThreadAssignments.get(thread.id) ??

@@ -44,6 +44,7 @@ export type CodexModelList = {
 export type SidebarConversation = {
   id: string
   threadId?: string
+  originConversationId?: string
   title: string | null
   projectAssignment?: ThreadProjectAssignment
   createdAt?: string
@@ -112,17 +113,36 @@ export const codexChatRequestBodySchema = z
   .catchall(z.unknown()) satisfies z.ZodType<CodexChatRequestBody>
 
 export type CodexChatStreamEvent =
+  | { type: 'thread-bound'; threadId: string }
   | { type: 'chunk'; chunk: UIMessageChunk }
   | { type: 'finish'; threadId?: string }
   | { type: 'aborted' }
   | { type: 'error'; error: string }
 
+export type CodexChatControlMessage =
+  | { type: 'abort' }
+  | { type: 'thread-bound-ack'; threadId: string }
+
 export type CodexChatStreamCallbacks = {
+  onThreadBound(threadId: string): void
   onChunk(chunk: UIMessageChunk): void
   onFinish(threadId?: string): void
   onAbort(): void
   onError(error: string): void
 }
+
+export const codexChatStreamEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('thread-bound'), threadId: z.string().min(1) }),
+  z.object({ type: z.literal('chunk'), chunk: z.custom<UIMessageChunk>(isUiMessageChunk) }),
+  z.object({ type: z.literal('finish'), threadId: z.string().min(1).optional() }),
+  z.object({ type: z.literal('aborted') }),
+  z.object({ type: z.literal('error'), error: z.string() })
+]) satisfies z.ZodType<CodexChatStreamEvent>
+
+export const codexChatControlMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('abort') }),
+  z.object({ type: z.literal('thread-bound-ack'), threadId: z.string().min(1) })
+]) satisfies z.ZodType<CodexChatControlMessage>
 
 export type CodexApprovalKind = 'command' | 'file-change' | 'tool-user-input' | 'mcp-elicitation'
 
@@ -192,7 +212,8 @@ export const codexOpenLocalPathPayloadSchema = z.object({
 
 export const workspaceFileSearchPayloadSchema = z.object({
   query: z.string().optional(),
-  limit: z.number().int().min(1).max(200).optional()
+  limit: z.number().int().min(1).max(200).optional(),
+  projectSelection: projectSelectionSchema.optional()
 })
 
 export const sidebarConversationActionPayloadSchema = z.object({
@@ -318,4 +339,10 @@ function isUiMessagePart(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const part = value as { type?: unknown }
   return typeof part.type === 'string' && part.type.length > 0
+}
+
+function isUiMessageChunk(value: unknown): value is UIMessageChunk {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const chunk = value as { type?: unknown }
+  return typeof chunk.type === 'string' && chunk.type.length > 0
 }

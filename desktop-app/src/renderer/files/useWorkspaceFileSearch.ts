@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { WorkspaceFileSearchResult } from '../../shared/projects/projectTypes'
+import type {
+  ProjectSelection,
+  WorkspaceFileSearchResult
+} from '../../shared/projects/projectTypes'
 
 export type WorkspaceFileSearchSessionRequest = {
   query: string
   limit?: number
+  projectSelection?: ProjectSelection
 }
 
 export type WorkspaceFileSearchSessionResponse =
@@ -40,11 +44,13 @@ type WorkspaceFileSearchSnapshot = {
 export async function searchWorkspaceFiles({
   manager,
   query,
-  limit
+  limit,
+  projectSelection
 }: SearchWorkspaceFilesInput): Promise<WorkspaceFileSearchResult[]> {
   const response = await manager.createFuzzyFileSearchSession({
     query,
-    ...(limit === undefined ? {} : { limit })
+    ...(limit === undefined ? {} : { limit }),
+    ...(projectSelection === undefined ? {} : { projectSelection })
   })
 
   return Array.isArray(response) ? response : (response.results ?? [])
@@ -53,15 +59,18 @@ export async function searchWorkspaceFiles({
 export function useWorkspaceFileSearch({
   manager,
   enabled = true,
-  limit
+  limit,
+  projectSelection
 }: {
   manager: WorkspaceFileSearchManager | null
   enabled?: boolean
   limit?: number
+  projectSelection?: ProjectSelection
 }): WorkspaceFileSearchState {
+  const projectSelectionKey = JSON.stringify(projectSelection ?? null)
   const scope = useMemo<symbol | null>(
     () => (manager && enabled ? Symbol('workspace-file-search-scope') : null),
-    [enabled, manager]
+    [enabled, manager, projectSelectionKey]
   )
   const [snapshot, setSnapshot] = useState<WorkspaceFileSearchSnapshot>({
     error: null,
@@ -93,7 +102,8 @@ export function useWorkspaceFileSearch({
         const nextResults = await searchWorkspaceFiles({
           manager,
           query,
-          ...(limit === undefined ? {} : { limit })
+          ...(limit === undefined ? {} : { limit }),
+          ...(projectSelection === undefined ? {} : { projectSelection })
         })
         if (latestSearchId.current === searchId) {
           setSnapshot({ error: null, loading: false, results: nextResults, scope })
@@ -107,7 +117,7 @@ export function useWorkspaceFileSearch({
         return []
       }
     },
-    [enabled, limit, manager, scope]
+    [enabled, limit, manager, projectSelection, scope]
   )
 
   return useMemo(() => {

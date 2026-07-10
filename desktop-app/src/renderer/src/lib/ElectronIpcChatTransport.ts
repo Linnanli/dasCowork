@@ -5,7 +5,7 @@ import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 
 export type ActiveConversationContext = {
   conversationId: string
-  threadId: string
+  threadId?: string
   title?: string | null
   projectSelection?: ProjectSelection
   cwd?: string | null
@@ -17,6 +17,11 @@ export type ElectronIpcChatTransportOptions = {
   getProjectSelection?: () => ProjectSelection | undefined
   getConversationRevision?: () => number
   getSelectedModelId: () => string | undefined
+  onStreamStarted?: () => void
+  onThreadBound?: (context: StreamFinishedContext & { threadId: string }) => void
+  onStreamAccepted?: () => void
+  onStreamAborted?: () => void
+  onStreamError?: (error: string) => void
   onStreamFinished?: (context: StreamFinishedContext) => void
 }
 
@@ -41,6 +46,13 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly getProjectSelection: () => ProjectSelection | undefined
   private readonly getConversationRevision: () => number
   private readonly getSelectedModelId: () => string | undefined
+  private readonly onStreamStarted: (() => void) | undefined
+  private readonly onThreadBound:
+    | ((context: StreamFinishedContext & { threadId: string }) => void)
+    | undefined
+  private readonly onStreamAccepted: (() => void) | undefined
+  private readonly onStreamAborted: (() => void) | undefined
+  private readonly onStreamError: ((error: string) => void) | undefined
   private readonly onStreamFinished: ((context: StreamFinishedContext) => void) | undefined
 
   constructor(options: ElectronIpcChatTransportOptions) {
@@ -49,6 +61,11 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
     this.getConversationRevision = options.getConversationRevision ?? (() => 0)
     this.getSelectedModelId = options.getSelectedModelId
+    this.onStreamStarted = options.onStreamStarted
+    this.onThreadBound = options.onThreadBound
+    this.onStreamAccepted = options.onStreamAccepted
+    this.onStreamAborted = options.onStreamAborted
+    this.onStreamError = options.onStreamError
     this.onStreamFinished = options.onStreamFinished
   }
 
@@ -57,21 +74,47 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   ): Promise<ReadableStream<UIMessageChunk>> {
     let streamId: string | undefined
     let settled = false
+    let accepted = false
+    let detachAbortListener = (): void => undefined
 
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
         const trustedContext = this.createTrustedContext(options.body)
+        const abortSignal = options.abortSignal
+        const streamContext = (threadId: string | undefined): StreamFinishedContext => ({
+          chatId: options.chatId,
+          threadId,
+          activeConversation: trustedContext.activeConversation,
+          projectSelection: trustedContext.projectSelection,
+          conversationRevision: trustedContext.conversationRevision
+        })
+        const markAccepted = (): void => {
+          if (accepted) return
+          accepted = true
+          this.onStreamAccepted?.()
+        }
+        const handleAbortSignal = (): void => {
+          if (streamId) this.chatBridge.abortChatStream(streamId)
+        }
+        const removeAbortListener = (): void => {
+          abortSignal?.removeEventListener('abort', handleAbortSignal)
+        }
+        detachAbortListener = removeAbortListener
         const closeStream = (): void => {
           if (settled) return
           settled = true
+          removeAbortListener()
           controller.close()
         }
         const errorStream = (error: string): void => {
           if (settled) return
           settled = true
+          removeAbortListener()
+          this.onStreamError?.(error)
           controller.error(new Error(error))
         }
 
+        this.onStreamStarted?.()
         streamId = this.chatBridge.startChatStream(
           {
             chatId: options.chatId,
@@ -83,34 +126,36 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
             body: trustedContext.body
           },
           {
+            onThreadBound: (threadId) => {
+              if (settled) return
+              markAccepted()
+              this.onThreadBound?.({ ...streamContext(threadId), threadId })
+            },
             onChunk: (chunk) => {
-              if (!settled) controller.enqueue(chunk)
+              if (settled) return
+              markAccepted()
+              controller.enqueue(chunk)
             },
             onFinish: (threadId) => {
               if (settled) return
-              this.onStreamFinished?.({
-                chatId: options.chatId,
-                threadId,
-                activeConversation: trustedContext.activeConversation,
-                projectSelection: trustedContext.projectSelection,
-                conversationRevision: trustedContext.conversationRevision
-              })
+              markAccepted()
+              this.onStreamFinished?.(streamContext(threadId))
               closeStream()
             },
-            onAbort: closeStream,
+            onAbort: () => {
+              markAccepted()
+              this.onStreamAborted?.()
+              closeStream()
+            },
             onError: errorStream
           }
         )
-        options.abortSignal?.addEventListener(
-          'abort',
-          () => {
-            if (streamId) this.chatBridge.abortChatStream(streamId)
-          },
-          { once: true }
-        )
+        abortSignal?.addEventListener('abort', handleAbortSignal, { once: true })
+        if (abortSignal?.aborted) handleAbortSignal()
       },
       cancel: () => {
         settled = true
+        detachAbortListener()
         if (streamId) this.chatBridge.abortChatStream(streamId)
       }
     })
@@ -127,7 +172,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     if (projectSelection) trustedBody.projectSelection = projectSelection
     if (activeConversation) {
       trustedBody.conversationId = activeConversation.conversationId
-      trustedBody.threadId = activeConversation.threadId
+      if (activeConversation.threadId) trustedBody.threadId = activeConversation.threadId
     }
     return {
       body: Object.keys(trustedBody).length > 0 ? trustedBody : undefined,

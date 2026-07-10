@@ -234,7 +234,7 @@ describe('ProjectService', () => {
     expect(validateLocalRoot).toHaveBeenCalledWith('~/repo')
   })
 
-  it('rejects new thread path selections that are not the active registered root', async () => {
+  it('rejects new thread path selections that are not a registered root', async () => {
     const { service } = makeProjectService({
       activeProjectSelection: { projectKind: 'path', path: '/safe/repo' },
       workspaceRootOptions: [
@@ -252,7 +252,7 @@ describe('ProjectService', () => {
         selection: { projectKind: 'path', path: '/malicious' },
         prompt: 'start here'
       })
-    ).rejects.toThrow('Workspace root is not the active registered project')
+    ).rejects.toThrow('Workspace root is not a registered project')
   })
 
   it('creates projectless workspace when no project is selected', async () => {

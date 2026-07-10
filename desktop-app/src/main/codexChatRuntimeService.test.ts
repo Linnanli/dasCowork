@@ -32,10 +32,25 @@ import { ProjectStore, createDefaultProjectState } from './projects/ProjectStore
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
+  started = false
+  closed = false
   private handler: ((event: { data: unknown }) => void) | undefined
+
+  constructor(private readonly acknowledgeThreadBinding = true) {}
 
   postMessage(message: unknown): void {
     this.messages.push(message)
+    if (
+      this.acknowledgeThreadBinding &&
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'thread-bound' &&
+      'threadId' in message &&
+      typeof message.threadId === 'string'
+    ) {
+      this.emit({ type: 'thread-bound-ack', threadId: message.threadId })
+    }
   }
 
   on(event: 'message', handler: (event: { data: unknown }) => void): void {
@@ -43,11 +58,11 @@ class FakePort implements CodexPortLike {
   }
 
   start(): void {
-    return undefined
+    this.started = true
   }
 
   close(): void {
-    return undefined
+    this.closed = true
   }
 
   emit(message: unknown): void {
@@ -93,6 +108,13 @@ function deferred<T = void>(): {
 
 async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+async function* waitThenEnd(promise: Promise<unknown>): AsyncGenerator<never, void, unknown> {
+  await promise
+  if (process.env['NODE_ENV'] === '__unused_test_stream__') {
+    yield undefined as never
+  }
 }
 
 describe('CodexChatRuntimeService', () => {
@@ -270,7 +292,10 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'backend-default'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
+    expect(port.messages).toEqual([
+      { type: 'thread-bound', threadId: 'thread-prestarted' },
+      { type: 'finish', threadId: 'thread-prestarted' }
+    ])
   })
 
   it('rejects chat request modelId values that are not in the catalog', async () => {
@@ -354,7 +379,10 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'canonical-model'
       })
     )
-    expect(port.messages).toEqual([{ type: 'finish', threadId: 'thread-prestarted' }])
+    expect(port.messages).toEqual([
+      { type: 'thread-bound', threadId: 'thread-prestarted' },
+      { type: 'finish', threadId: 'thread-prestarted' }
+    ])
   })
 
   it('delegates selected model validation to the catalog', async () => {
@@ -412,6 +440,7 @@ describe('CodexChatRuntimeService', () => {
     )
 
     expect(port.messages).toEqual([
+      { type: 'thread-bound', threadId: 'thread-prestarted' },
       { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
       { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } },
       { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } },
@@ -454,7 +483,7 @@ describe('CodexChatRuntimeService', () => {
     expect(port.messages).toEqual([{ type: 'error', error: 'The free quota has been exhausted.' }])
   })
 
-  it('normalizes project assignment to the app-server thread id from stream metadata', async () => {
+  it('persists project assignment to the canonical app-server thread id', async () => {
     const port = new FakePort()
     const projectStore = ProjectStore.inMemory(createDefaultProjectState())
     const projectService = {
@@ -490,7 +519,7 @@ describe('CodexChatRuntimeService', () => {
                 id: 'text-1',
                 providerMetadata: {
                   '@janole/ai-sdk-provider-codex-asp': {
-                    threadId: 'thread-real'
+                    threadId: 'thread-prestarted'
                   }
                 }
               } as never
@@ -515,7 +544,7 @@ describe('CodexChatRuntimeService', () => {
     await flushAsyncWork()
     await expect(projectStore.getState()).resolves.toMatchObject({
       threadProjectAssignments: {
-        'thread-real': {
+        'thread-prestarted': {
           projectKind: 'local',
           projectId: 'project-1',
           cwd: '/repo'
@@ -523,9 +552,6 @@ describe('CodexChatRuntimeService', () => {
       }
     })
     expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty('chat-temp')
-    expect((await projectStore.getState()).threadProjectAssignments).not.toHaveProperty(
-      'thread-prestarted'
-    )
   })
 
   it('does not fail the chat stream when project assignment persistence fails', async () => {
@@ -592,6 +618,7 @@ describe('CodexChatRuntimeService', () => {
         expect.any(Error)
       )
       expect(port.messages).toEqual([
+        { type: 'thread-bound', threadId: 'thread-prestarted' },
         { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
         { type: 'finish', threadId: 'thread-prestarted' }
       ])
@@ -603,6 +630,18 @@ describe('CodexChatRuntimeService', () => {
   it('publishes the provider-started thread before streaming first-turn chunks', async () => {
     const port = new FakePort()
     const events: string[] = []
+    const postMessage = port.postMessage.bind(port)
+    vi.spyOn(port, 'postMessage').mockImplementation((message) => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'type' in message &&
+        message.type === 'thread-bound'
+      ) {
+        events.push(`port:${(message as unknown as { threadId: string }).threadId}`)
+      }
+      postMessage(message)
+    })
     const onThreadIdAvailable = vi.fn((threadId: string) => {
       events.push(`callback:${threadId}`)
     })
@@ -647,12 +686,18 @@ describe('CodexChatRuntimeService', () => {
       { onThreadIdAvailable }
     )
 
-    expect(events).toEqual(['streamText', 'callback:thread-prestarted', 'chunk'])
+    expect(events).toEqual([
+      'streamText',
+      'port:thread-prestarted',
+      'callback:thread-prestarted',
+      'chunk'
+    ])
     expect(providerState.startThread).not.toHaveBeenCalled()
     expect(onThreadIdAvailable).toHaveBeenCalledWith(
       'thread-prestarted',
       expect.objectContaining({
         threadId: 'thread-prestarted',
+        originConversationId: 'chat-1',
         title: '你好,你是什么模型?'
       })
     )
@@ -664,12 +709,58 @@ describe('CodexChatRuntimeService', () => {
     )
     expect(result.threadId).toBe('thread-prestarted')
     expect(port.messages).toEqual([
+      { type: 'thread-bound', threadId: 'thread-prestarted' },
       { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
       { type: 'finish', threadId: 'thread-prestarted' }
     ])
   })
 
-  it('fires onThreadIdAvailable when resumed stream metadata reports a different thread id', async () => {
+  it('waits for renderer thread binding acknowledgement before publishing the sidebar thread', async () => {
+    const port = new FakePort(false)
+    const onThreadIdAvailable = vi.fn()
+    const streamText = vi.fn(async ({ onThreadStarted }: RuntimeStreamTextInput) => {
+      await onThreadStarted?.({ threadId: 'thread-acknowledged' })
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-acknowledged',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port,
+      { onThreadIdAvailable }
+    )
+
+    await vi.waitFor(() =>
+      expect(port.messages).toContainEqual({
+        type: 'thread-bound',
+        threadId: 'thread-acknowledged'
+      })
+    )
+    expect(onThreadIdAvailable).not.toHaveBeenCalled()
+
+    port.emit({ type: 'thread-bound-ack', threadId: 'thread-acknowledged' })
+    await running
+
+    expect(onThreadIdAvailable).toHaveBeenCalledWith(
+      'thread-acknowledged',
+      expect.objectContaining({ threadId: 'thread-acknowledged' })
+    )
+  })
+
+  it('fails the stream when resumed metadata reports a different thread id', async () => {
     const port = new FakePort()
     const onThreadIdAvailable = vi.fn()
     const service = new CodexChatRuntimeService({
@@ -710,10 +801,13 @@ describe('CodexChatRuntimeService', () => {
     )
 
     expect(providerState.startThread).not.toHaveBeenCalled()
-    expect(onThreadIdAvailable).toHaveBeenCalledTimes(1)
-    expect(onThreadIdAvailable).toHaveBeenCalledWith('thread-real')
-    expect(result.threadId).toBe('thread-real')
-    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-real' })
+    expect(onThreadIdAvailable).not.toHaveBeenCalled()
+    expect(result.threadId).toBe('thread-old')
+    expect(port.messages).not.toContainEqual({ type: 'thread-bound', threadId: 'thread-real' })
+    expect(port.messages.at(-1)).toEqual({
+      type: 'error',
+      error: 'Active conversation thread changed from thread-old to thread-real'
+    })
   })
 
   it('tracks and interrupts an active conversation by conversation id or app-server thread id', async () => {
@@ -766,7 +860,7 @@ describe('CodexChatRuntimeService', () => {
     expect(service.isConversationRunning('conversation-1')).toBe(true)
     expect(service.isConversationRunning('thread-real')).toBe(true)
 
-    service.interruptConversation('conversation-1')
+    service.interruptConversation('thread-real')
     await abortSeen.promise
     expect(capturedAbortSignal?.aborted).toBe(true)
     await streamPromise
@@ -774,6 +868,177 @@ describe('CodexChatRuntimeService', () => {
     expect(service.isConversationRunning('conversation-1')).toBe(false)
     expect(service.isConversationRunning('thread-real')).toBe(false)
     expect(port.messages.at(-1)).toEqual({ type: 'aborted' })
+  })
+
+  it('rejects a duplicate active turn without replacing the original run', async () => {
+    const firstPort = new FakePort()
+    const duplicatePort = new FakePort()
+    const firstEntered = deferred()
+    const firstAborted = deferred()
+    const streamText = vi.fn(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
+      abortSignal.addEventListener('abort', () => firstAborted.resolve(), { once: true })
+      firstEntered.resolve()
+      return {
+        toUIMessageStream: () => waitThenEnd(firstAborted.promise)
+      }
+    }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+    const firstRequest = service.startChatStream(
+      {
+        chatId: 'chat-first',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1' }
+      },
+      firstPort
+    )
+
+    await firstEntered.promise
+    await service.startChatStream(
+      {
+        chatId: 'chat-duplicate',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1' }
+      },
+      duplicatePort
+    )
+
+    expect(streamText).toHaveBeenCalledTimes(1)
+    expect(duplicatePort.messages).toEqual([
+      {
+        type: 'error',
+        error: 'Conversation already has an active turn: conversation-1'
+      }
+    ])
+    expect(duplicatePort.closed).toBe(true)
+    expect(service.isConversationRunning('conversation-1')).toBe(true)
+
+    service.interruptConversation('conversation-1')
+    await firstRequest
+    expect(firstPort.messages.at(-1)).toEqual({ type: 'aborted' })
+    expect(service.isConversationRunning('conversation-1')).toBe(false)
+  })
+
+  it('allows different conversations to enter execution concurrently', async () => {
+    const ports = [new FakePort(), new FakePort()]
+    const entered = [deferred(), deferred()]
+    const aborted = [deferred(), deferred()]
+    let invocation = 0
+    const streamText = vi.fn(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
+      const index = invocation++
+      abortSignal.addEventListener('abort', () => aborted[index].resolve(), { once: true })
+      entered[index].resolve()
+      return {
+        toUIMessageStream: () => waitThenEnd(aborted[index].promise)
+      }
+    }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+    const requests = ['conversation-a', 'conversation-b'].map((conversationId, index) =>
+      service.startChatStream(
+        {
+          chatId: `chat-${index}`,
+          trigger: 'submit-message',
+          messages: [],
+          modelId: 'gpt-test',
+          body: { conversationId }
+        },
+        ports[index]
+      )
+    )
+
+    await Promise.all(entered.map((entry) => entry.promise))
+    expect(streamText).toHaveBeenCalledTimes(2)
+    expect(service.isConversationRunning('conversation-a')).toBe(true)
+    expect(service.isConversationRunning('conversation-b')).toBe(true)
+
+    service.interruptConversation('conversation-a')
+    service.interruptConversation('conversation-b')
+    await Promise.all(requests)
+    expect(ports.map((port) => port.messages.at(-1))).toEqual([
+      { type: 'aborted' },
+      { type: 'aborted' }
+    ])
+  })
+
+  it('keeps a healthy concurrent run and global status isolated from another turn error', async () => {
+    const healthyPort = new FakePort()
+    const failedPort = new FakePort()
+    const healthyEntered = deferred()
+    const healthyAborted = deferred()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ request, abortSignal }) => {
+        if (request.body?.conversationId === 'healthy') {
+          abortSignal.addEventListener('abort', () => healthyAborted.resolve(), { once: true })
+          healthyEntered.resolve()
+          return {
+            toUIMessageStream: () => waitThenEnd(healthyAborted.promise)
+          }
+        }
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield { type: 'error', errorText: 'turn failed' } as never
+            })()
+        }
+      }
+    })
+    const healthyRequest = service.startChatStream(
+      {
+        chatId: 'chat-healthy',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'healthy' }
+      },
+      healthyPort
+    )
+    await healthyEntered.promise
+    await flushAsyncWork()
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-failed',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'failed' }
+      },
+      failedPort
+    )
+
+    expect(failedPort.messages).toEqual([{ type: 'error', error: 'turn failed' }])
+    expect(healthyPort.messages).toEqual([])
+    expect(service.isConversationRunning('healthy')).toBe(true)
+    expect(service.getStatus()).toMatchObject({ state: 'ready' })
+
+    service.interruptConversation('healthy')
+    await healthyRequest
+    expect(healthyPort.messages).toEqual([{ type: 'aborted' }])
   })
 
   it('sends stream errors to the provided port', async () => {

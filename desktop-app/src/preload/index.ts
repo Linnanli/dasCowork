@@ -3,8 +3,6 @@ import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
   CodexChatRequest,
-  CodexChatStreamCallbacks,
-  CodexChatStreamEvent,
   CodexModelList,
   CodexStatus,
   DesktopCodexApi,
@@ -24,8 +22,7 @@ import type {
   RemoteProject,
   WorkspaceRootOption
 } from '../shared/projects/projectTypes'
-
-const activePorts = new Map<string, MessagePort>()
+import { createChatStreamBridge } from './chatStreamBridge'
 
 const desktopEnvironment = {
   platform: process.platform
@@ -57,39 +54,13 @@ const desktopCodex: DesktopCodexApi = {
   }
 }
 
-const desktopCodexChat: DesktopCodexChatApi = {
-  startChatStream: (request: CodexChatRequest, callbacks: CodexChatStreamCallbacks) => {
-    const streamId = crypto.randomUUID()
-    const channel = new MessageChannel()
-    activePorts.set(streamId, channel.port1)
-    channel.port1.onmessage = (event: MessageEvent<CodexChatStreamEvent>) => {
-      const message = event.data
-      if (message.type === 'chunk') callbacks.onChunk(message.chunk)
-      if (message.type === 'finish') {
-        callbacks.onFinish(message.threadId)
-        activePorts.delete(streamId)
-        channel.port1.close()
-      }
-      if (message.type === 'aborted') {
-        callbacks.onAbort()
-        activePorts.delete(streamId)
-        channel.port1.close()
-      }
-      if (message.type === 'error') {
-        callbacks.onError(message.error)
-        activePorts.delete(streamId)
-        channel.port1.close()
-      }
-    }
-    ipcRenderer.postMessage('codex-chat:start', request, [channel.port2])
-    return streamId
-  },
-  abortChatStream: (streamId: string) => {
-    const port = activePorts.get(streamId)
-    if (!port) return
-    port.postMessage({ type: 'abort' })
+const desktopCodexChat: DesktopCodexChatApi = createChatStreamBridge({
+  createStreamId: () => crypto.randomUUID(),
+  createMessageChannel: () => new MessageChannel(),
+  postStart: (request: CodexChatRequest, port: MessagePort) => {
+    ipcRenderer.postMessage('codex-chat:start', request, [port])
   }
-}
+})
 
 const desktopProjects: DesktopProjectsApi = {
   getState: () => ipcRenderer.invoke('codex:projects:get-state') as Promise<ProjectState>,

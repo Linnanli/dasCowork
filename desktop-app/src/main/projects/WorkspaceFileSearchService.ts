@@ -1,7 +1,10 @@
 import { opendir } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 
-import type { WorkspaceFileSearchResult } from '../../shared/projects/projectTypes'
+import type {
+  ProjectSelection,
+  WorkspaceFileSearchResult
+} from '../../shared/projects/projectTypes'
 import type { ProjectStore } from './ProjectStore'
 import type { ProjectService } from './ProjectService'
 
@@ -16,6 +19,7 @@ export type WorkspaceFileSearchServiceOptions = {
 export type WorkspaceFileSearchRequest = {
   query?: string
   limit?: number
+  projectSelection?: ProjectSelection
 }
 
 const ignoredDirectoryNames = new Set([
@@ -35,10 +39,11 @@ export class WorkspaceFileSearchService {
 
   async createFuzzyFileSearchSession({
     query = '',
-    limit = 40
+    limit = 40,
+    projectSelection
   }: WorkspaceFileSearchRequest): Promise<{ results: WorkspaceFileSearchResult[] }> {
     const state = await this.options.projectStore.getState()
-    const selection = state.activeProjectSelection
+    const selection = projectSelection ?? state.activeProjectSelection
     if (!selection || selection.projectKind === 'projectless') return { results: [] }
 
     const target = await this.options.projectService.resolveNewThreadTarget({

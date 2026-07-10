@@ -20,11 +20,13 @@ describe('searchWorkspaceFiles', () => {
 
     await searchWorkspaceFiles({
       manager,
-      query: 'app'
+      query: 'app',
+      projectSelection: { projectKind: 'path', path: '/repo/a' }
     })
 
     expect(manager.sessions[0]).toMatchObject({
-      query: 'app'
+      query: 'app',
+      projectSelection: { projectKind: 'path', path: '/repo/a' }
     })
   })
 })

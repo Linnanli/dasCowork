@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {
   SidebarConversationActionPayload,
@@ -6,6 +6,12 @@ import type {
   SidebarConversationRenamePayload,
   SidebarPreferences
 } from '../../../shared/codexIpcApi'
+import type { ConversationRuntimeIndicator } from '../hooks/useCodexIpcAssistantRuntime'
+import type { SidebarConversationView } from './sidebarTypes'
+
+type SidebarConversationViewState = Omit<SidebarConversationListState, 'conversations'> & {
+  conversations: SidebarConversationView[]
+}
 
 const initialConversationState: SidebarConversationListState = {
   conversations: [],
@@ -21,7 +27,7 @@ const defaultPreferences: SidebarPreferences = {
 }
 
 export type ConversationStateController = {
-  state: SidebarConversationListState
+  state: SidebarConversationViewState
   preferences: SidebarPreferences
   refresh: () => Promise<void>
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
@@ -33,12 +39,28 @@ export type ConversationStateController = {
 }
 
 export function useConversationState({
-  openConversation: openConversationInRuntime
+  openConversation: openConversationInRuntime,
+  getConversationIndicator,
+  syncConversationMetadata
 }: {
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
+  getConversationIndicator?: (
+    conversation: SidebarConversationListState['conversations'][number]
+  ) => ConversationRuntimeIndicator
+  syncConversationMetadata?: (conversations: SidebarConversationListState['conversations']) => void
 }): ConversationStateController {
   const [state, setState] = useState<SidebarConversationListState>(initialConversationState)
   const [preferences, setPreferencesState] = useState<SidebarPreferences>(defaultPreferences)
+  const viewState = useMemo<SidebarConversationViewState>(() => {
+    if (!getConversationIndicator) return state
+    return {
+      ...state,
+      conversations: state.conversations.map((conversation) => ({
+        ...conversation,
+        ...getConversationIndicator(conversation)
+      }))
+    }
+  }, [getConversationIndicator, state])
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +80,10 @@ export function useConversationState({
       removeListener()
     }
   }, [])
+
+  useEffect(() => {
+    syncConversationMetadata?.(state.conversations)
+  }, [state.conversations, syncConversationMetadata])
 
   const refresh = useCallback(async () => {
     setState(await window.desktopApp.conversations.refreshConversationList())
@@ -91,7 +117,7 @@ export function useConversationState({
   }, [])
 
   return {
-    state,
+    state: viewState,
     preferences,
     refresh,
     openConversation,

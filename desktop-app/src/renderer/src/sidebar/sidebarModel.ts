@@ -1,4 +1,4 @@
-import type { SidebarConversation, SidebarPreferences } from '../../../shared/codexIpcApi'
+import type { SidebarPreferences } from '../../../shared/codexIpcApi'
 import type {
   LocalProject,
   ProjectSelection,
@@ -6,11 +6,11 @@ import type {
   RemoteProject,
   WorkspaceRootOption
 } from '../../../shared/projects/projectTypes'
-import type { SidebarProjectGroup, SidebarViewModel } from './sidebarTypes'
+import type { SidebarConversationView, SidebarProjectGroup, SidebarViewModel } from './sidebarTypes'
 
 export function buildSidebarViewModel(input: {
   projectState: ProjectState | null
-  conversations: SidebarConversation[]
+  conversations: SidebarConversationView[]
   preferences: SidebarPreferences
 }): SidebarViewModel {
   const visibleConversations = input.conversations.filter((conversation) => !conversation.archived)
@@ -33,7 +33,7 @@ export function buildSidebarViewModel(input: {
 
 function buildProjectGroups(
   projectState: ProjectState,
-  conversations: SidebarConversation[],
+  conversations: SidebarConversationView[],
   preferences: SidebarPreferences
 ): SidebarProjectGroup[] {
   const localGroups = projectState.projectOrder
@@ -59,7 +59,7 @@ function buildProjectGroups(
 function localProjectGroup(
   projectState: ProjectState,
   project: LocalProject,
-  conversations: SidebarConversation[],
+  conversations: SidebarConversationView[],
   preferences: SidebarPreferences
 ): SidebarProjectGroup {
   const id = `local:${project.id}`
@@ -86,7 +86,7 @@ function localProjectGroup(
 function remoteProjectGroup(
   projectState: ProjectState,
   project: RemoteProject,
-  conversations: SidebarConversation[],
+  conversations: SidebarConversationView[],
   preferences: SidebarPreferences
 ): SidebarProjectGroup {
   const id = `remote:${project.hostId}:${project.id}`
@@ -115,7 +115,7 @@ function remoteProjectGroup(
 function pathProjectGroup(
   projectState: ProjectState,
   option: WorkspaceRootOption,
-  conversations: SidebarConversation[],
+  conversations: SidebarConversationView[],
   preferences: SidebarPreferences
 ): SidebarProjectGroup {
   const id = `path:${option.root}`
@@ -139,9 +139,9 @@ function pathProjectGroup(
 }
 
 function sortConversations(
-  conversations: SidebarConversation[],
+  conversations: SidebarConversationView[],
   sortKey: SidebarPreferences['sortKey']
-): SidebarConversation[] {
+): SidebarConversationView[] {
   const field = sortKey === 'created_at' ? 'createdAt' : 'updatedAt'
   return [...conversations].sort((left, right) => timestamp(right[field]) - timestamp(left[field]))
 }

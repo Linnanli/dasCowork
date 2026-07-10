@@ -7,6 +7,7 @@ import type { CodexApprovalRequest, CodexApprovalResponse } from '../../../../sh
 
 type ServerRequestPanelProps = {
   requests: readonly CodexApprovalRequest[]
+  getConversationTitle: (request: CodexApprovalRequest) => string
   onRespond: (request: CodexApprovalRequest, response: CodexApprovalResponse) => Promise<void>
   onReject: (request: CodexApprovalRequest) => Promise<void>
 }
@@ -15,14 +16,46 @@ type ActionState = 'approve' | 'approveForSession' | 'alwaysApprove' | 'decline'
 
 export function ServerRequestPanel({
   requests,
+  getConversationTitle,
   onRespond,
   onReject
 }: ServerRequestPanelProps): React.JSX.Element | null {
-  const request = requests[0]
+  if (requests.length === 0) return null
+
+  return (
+    <section
+      className="border-t border-border/70 bg-background px-4 py-3"
+      data-slot="server-request-panel"
+      aria-label="Pending approvals"
+    >
+      <div className="mx-auto flex max-h-[45vh] w-full max-w-(--thread-max-width) flex-col gap-3 overflow-y-auto">
+        {requests.map((request) => (
+          <ServerRequestCard
+            key={request.id}
+            conversationTitle={getConversationTitle(request)}
+            onReject={onReject}
+            onRespond={onRespond}
+            request={request}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function ServerRequestCard({
+  conversationTitle,
+  onReject,
+  onRespond,
+  request
+}: {
+  conversationTitle: string
+  onReject: ServerRequestPanelProps['onReject']
+  onRespond: ServerRequestPanelProps['onRespond']
+  request: CodexApprovalRequest
+}): React.JSX.Element {
   const [busyAction, setBusyAction] = useState<ActionState>()
   const [error, setError] = useState<string>()
-
-  if (!request) return null
 
   const runAction = async (action: ActionState, callback: () => Promise<void>): Promise<void> => {
     setBusyAction(action)
@@ -37,26 +70,20 @@ export function ServerRequestPanel({
   }
 
   return (
-    <section
-      className="border-t border-border/70 bg-background px-4 py-3"
-      data-slot="server-request-panel"
-    >
-      <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-3">
-        <div key={request.id}>
-          {renderRequestBody(request, onRespond, onReject, runAction, busyAction)}
-        </div>
-        {error ? (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </div>
-    </section>
+    <article aria-busy={Boolean(busyAction)} className="rounded-lg border border-border/70 p-3">
+      {renderRequestBody(request, conversationTitle, onRespond, onReject, runAction, busyAction)}
+      {error ? (
+        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </article>
   )
 }
 
 function renderRequestBody(
   request: CodexApprovalRequest,
+  conversationTitle: string,
   onRespond: ServerRequestPanelProps['onRespond'],
   onReject: ServerRequestPanelProps['onReject'],
   runAction: (action: ActionState, callback: () => Promise<void>) => Promise<void>,
@@ -69,6 +96,7 @@ function renderRequestBody(
         onReject={() => void runAction('decline', () => onReject(request))}
         onSubmit={(response) => void runAction('answer', () => onRespond(request, response))}
         request={request}
+        conversationTitle={conversationTitle}
       />
     )
   }
@@ -79,7 +107,7 @@ function renderRequestBody(
 
   return (
     <RequestShell title={requestTitle(request)} method={request.kind}>
-      <ApprovalContextDetails request={request} />
+      <ApprovalContextDetails conversationTitle={conversationTitle} request={request} />
       <Detail label="Created" value={new Date(request.createdAt).toLocaleString()} />
       <Detail label="Parameters" value={formatUnknown(request.params)} />
       <ActionRow>
@@ -128,6 +156,7 @@ function renderRequestBody(
 
 function ToolUserInputRequest({
   busy,
+  conversationTitle,
   onReject,
   onSubmit,
   request
@@ -136,6 +165,7 @@ function ToolUserInputRequest({
   onReject: () => void
   onSubmit: (response: CodexApprovalResponse) => void
   request: CodexApprovalRequest
+  conversationTitle: string
 }): React.JSX.Element {
   const questions = readToolUserInputQuestions(request.params)
   const initialValues = useMemo(
@@ -157,7 +187,7 @@ function ToolUserInputRequest({
   return (
     <RequestShell title="User input requested" method={request.kind}>
       <form className="flex flex-col gap-3" onSubmit={submit}>
-        <ApprovalContextDetails request={request} />
+        <ApprovalContextDetails conversationTitle={conversationTitle} request={request} />
         {questions.map((question) => (
           <label className="flex flex-col gap-1.5" key={question.id}>
             <span className="text-sm font-medium text-foreground">{question.header}</span>
@@ -189,20 +219,22 @@ function ToolUserInputRequest({
 }
 
 function ApprovalContextDetails({
-  request
+  request,
+  conversationTitle
 }: {
   request: CodexApprovalRequest
-}): React.JSX.Element | null {
+  conversationTitle: string
+}): React.JSX.Element {
   const context = request.context
-  if (!context) return null
 
   return (
     <>
-      {context.projectLabel ? <Detail label="Project" value={context.projectLabel} /> : null}
-      {context.hostId ? <Detail label="Host" value={context.hostId} /> : null}
-      {context.cwd ? <Detail label="Working directory" value={context.cwd} /> : null}
-      {context.threadId ? <Detail label="Thread" value={context.threadId} /> : null}
-      {context.turnId ? <Detail label="Turn" value={context.turnId} /> : null}
+      <Detail label="Conversation" value={conversationTitle} />
+      {context?.projectLabel ? <Detail label="Project" value={context.projectLabel} /> : null}
+      {context?.hostId ? <Detail label="Host" value={context.hostId} /> : null}
+      {context?.cwd ? <Detail label="Working directory" value={context.cwd} /> : null}
+      {context?.threadId ? <Detail label="Thread" value={context.threadId} /> : null}
+      {context?.turnId ? <Detail label="Turn" value={context.turnId} /> : null}
     </>
   )
 }

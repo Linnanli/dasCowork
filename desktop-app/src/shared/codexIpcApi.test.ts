@@ -2,16 +2,59 @@ import { describe, expect, it } from 'vitest'
 
 import {
   codexChatRequestSchema,
+  codexChatControlMessageSchema,
+  codexChatStreamEventSchema,
   codexOpenExternalHttpUrlPayloadSchema,
   codexOpenLocalPathPayloadSchema,
   codexSetSelectedModelPayloadSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
   sidebarConversationRenamePayloadSchema,
-  sidebarPreferencesPatchSchema
+  sidebarPreferencesPatchSchema,
+  workspaceFileSearchPayloadSchema
 } from './codexIpcApi'
 
 describe('codex IPC schemas', () => {
+  it('accepts thread binding stream events and rejects empty thread ids', () => {
+    expect(
+      codexChatStreamEventSchema.safeParse({
+        type: 'thread-bound',
+        threadId: 'thread-1'
+      }).success
+    ).toBe(true)
+    expect(
+      codexChatStreamEventSchema.safeParse({ type: 'thread-bound', threadId: '' }).success
+    ).toBe(false)
+    expect(codexChatStreamEventSchema.safeParse({ type: 'chunk', chunk: {} }).success).toBe(false)
+  })
+
+  it('validates thread binding acknowledgements', () => {
+    expect(
+      codexChatControlMessageSchema.safeParse({
+        type: 'thread-bound-ack',
+        threadId: 'thread-1'
+      }).success
+    ).toBe(true)
+    expect(
+      codexChatControlMessageSchema.safeParse({ type: 'thread-bound-ack', threadId: '' }).success
+    ).toBe(false)
+  })
+
+  it('accepts an entry-scoped project selection for file search', () => {
+    expect(
+      workspaceFileSearchPayloadSchema.safeParse({
+        query: 'app',
+        projectSelection: { projectKind: 'path', path: '/repo/a' }
+      }).success
+    ).toBe(true)
+    expect(
+      workspaceFileSearchPayloadSchema.safeParse({
+        query: 'app',
+        projectSelection: { projectKind: 'path', path: '' }
+      }).success
+    ).toBe(false)
+  })
+
   it('accepts a minimal AI SDK UI message chat request', () => {
     expect(
       codexChatRequestSchema.safeParse({
