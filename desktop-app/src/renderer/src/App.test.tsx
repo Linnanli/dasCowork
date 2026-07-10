@@ -2375,7 +2375,7 @@ describe('App composer', () => {
     )
 
     expect(completedReasoning?.getAttribute('data-state')).toBe('closed')
-    expect(trigger?.textContent).toBe('已处理 · 耗时 1.3 秒')
+    expect(trigger?.textContent).toBe('已处理 · 耗时 1 秒')
     expect(trigger?.querySelectorAll('svg')).toHaveLength(1)
     expect(completedReasoning?.textContent).not.toContain('根因已经确认')
     expect(container.textContent).toContain('根因已经确认')
@@ -2545,10 +2545,41 @@ describe('App composer', () => {
 
     expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
     expect(reasoning?.getAttribute('data-state')).toBe('closed')
-    expect(reasoning?.textContent).toContain('已处理 · 耗时 1.3 秒')
+    expect(reasoning?.textContent).toContain('已处理 · 耗时 1 秒')
     expect(reasoning?.textContent).not.toContain('根因已经确认')
     expect(container.textContent).toContain('根因已经确认')
     expect(container.textContent).not.toContain('Inspecting ProjectGate card conditions')
+  })
+
+  it('formats completed reasoning duration as seconds, minutes, or hours', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '我会先读取仓库记录，再收集实际证据。' },
+      { type: 'text', text: '## 结论\n\n根因已经确认。' }
+    ]
+
+    const renderWithDuration = (durationMs: number) => {
+      threadMessageState.externalMessages = [
+        {
+          metadata: { codexTurnDurationMs: durationMs },
+          parts: [
+            { type: 'text', providerMetadata: messagePhaseMetadata('commentary') },
+            { type: 'text', providerMetadata: messagePhaseMetadata('final_answer') }
+          ]
+        }
+      ]
+
+      act(() => {
+        root.render(<App />)
+      })
+
+      return container.querySelector('[data-slot="reasoning-group-trigger"]')?.textContent
+    }
+
+    expect(renderWithDuration(1250)).toBe('已处理 · 耗时 1 秒')
+    expect(renderWithDuration(65_000)).toBe('已处理 · 耗时 1 分 5 秒')
+    expect(renderWithDuration(3_661_000)).toBe('已处理 · 耗时 1 小时 1 分 1 秒')
   })
 
   it('does not show thinking for a finished empty assistant message', () => {

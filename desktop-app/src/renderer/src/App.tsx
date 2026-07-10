@@ -1143,9 +1143,24 @@ function ReasoningGroupUnit({
 }
 
 function processedDurationLabel(durationMs: number | undefined): string {
-  if (durationMs === undefined) return '已处理'
-  if (durationMs < 1000) return `已处理 · 耗时 ${Math.round(durationMs)}ms`
-  return `已处理 · 耗时 ${Number((durationMs / 1000).toFixed(1))} 秒`
+  if (durationMs === undefined || !Number.isFinite(durationMs)) return '已处理'
+  return `已处理 · 耗时 ${formatProcessedDuration(durationMs)}`
+}
+
+function formatProcessedDuration(durationMs: number): string {
+  const roundedSeconds = Math.max(0, Math.round(durationMs / 1000))
+  const totalSeconds = durationMs > 0 ? Math.max(1, roundedSeconds) : 0
+
+  if (durationMs < 60_000) return `${totalSeconds} 秒`
+
+  const seconds = totalSeconds % 60
+  const totalMinutes = Math.floor(totalSeconds / 60)
+
+  if (durationMs < 3_600_000) return `${totalMinutes} 分 ${seconds} 秒`
+
+  const minutes = totalMinutes % 60
+  const hours = Math.floor(totalMinutes / 60)
+  return `${hours} 小时 ${minutes} 分 ${seconds} 秒`
 }
 
 function AssistantText({
