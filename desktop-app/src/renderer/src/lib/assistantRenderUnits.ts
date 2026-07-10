@@ -45,6 +45,45 @@ export type DynamicToolMetadata = {
   completedSummaryKey?: string
   repeatCount: number
   hasRegistryMetadata: boolean
+  displayLabels: readonly DynamicToolDisplayLabel[]
+}
+
+export type DynamicToolDisplayLabel = {
+  key: string
+  activeLabel: string
+  completedLabel: string
+  count: number
+  callIds: readonly string[]
+  hasRegistryMetadata: boolean
+}
+
+export type ToolGroupKind =
+  | 'composite'
+  | 'exploration'
+  | 'web-search'
+  | 'mcp'
+  | 'dynamic'
+  | 'multi-agent'
+  | 'command'
+  | 'file-change'
+  | 'generic'
+
+export type ToolItemStatus = 'running' | 'complete' | 'error' | 'requires-action'
+
+export type ToolItem = {
+  id: string
+  kind: string
+  status: ToolItemStatus
+  label?: string
+  source?: McpSourceMetadata
+  input?: unknown
+  output?: unknown
+  error?: unknown
+  rawPart: AssistantMessagePart
+  rawItem?: Record<string, unknown>
+  partIndex: number
+  dynamicMetadata?: DynamicToolMetadata
+  action?: string
 }
 
 export type AssistantRenderUnitBase = {
@@ -67,28 +106,20 @@ export type AssistantRenderUnit =
       item?: Record<string, unknown>
       itemType?: string
       mcpSource?: McpSourceMetadata
+      dynamicMetadata?: DynamicToolMetadata
       renderMode: EntryRenderMode
     })
   | (AssistantRenderUnitBase & { type: 'unknown'; partIndex: number; part: AssistantMessagePart })
   | (AssistantRenderUnitBase & {
-      type: 'collapsed-tool-activity'
+      type: 'tool-group'
+      kind: ToolGroupKind
+      status: ToolItemStatus
       parts: readonly AssistantMessagePart[]
-    })
-  | (AssistantRenderUnitBase & {
-      type: 'pending-mcp-tool-calls'
-      parts: readonly AssistantMessagePart[]
+      children: readonly ToolItem[]
       mcpSource?: McpSourceMetadata
-    })
-  | (AssistantRenderUnitBase & {
-      type: 'dynamic-tool-call-group'
-      parts: readonly AssistantMessagePart[]
       dynamicMetadata?: DynamicToolMetadata
-    })
-  | (AssistantRenderUnitBase & { type: 'web-search-group'; parts: readonly AssistantMessagePart[] })
-  | (AssistantRenderUnitBase & {
-      type: 'multi-agent-group'
-      parts: readonly AssistantMessagePart[]
       action?: string
+      summaryOnly?: boolean
     })
 
 export type AssistantRenderModel = {
@@ -126,6 +157,7 @@ type GroupableUnit =
       partIndex: number
       partIndices: readonly number[]
       part: AssistantMessagePart
+      parts?: readonly AssistantMessagePart[]
       item?: Record<string, unknown>
       itemType?: string
       toolName?: string
@@ -141,32 +173,13 @@ type GroupableUnit =
       part: AssistantMessagePart
     }
   | {
-      type: 'web-search-group'
-      partIndices: readonly number[]
-      parts: readonly AssistantMessagePart[]
-    }
-  | {
-      type: 'multi-agent-group'
-      partIndices: readonly number[]
-      parts: readonly AssistantMessagePart[]
-      action?: string
-    }
-  | {
-      type: 'collapsed-tool-activity'
-      partIndices: readonly number[]
-      parts: readonly AssistantMessagePart[]
-    }
-  | {
-      type: 'dynamic-tool-call-group'
-      partIndices: readonly number[]
-      parts: readonly AssistantMessagePart[]
-      dynamicMetadata?: DynamicToolMetadata
-    }
-  | {
-      type: 'pending-mcp-tool-calls'
+      type: 'tool-group-candidate'
+      kind: ToolGroupKind
       partIndices: readonly number[]
       parts: readonly AssistantMessagePart[]
       mcpSource?: McpSourceMetadata
+      dynamicMetadata?: DynamicToolMetadata
+      action?: string
     }
 
 type ToolGroupableUnit = GroupableUnit & {
@@ -184,28 +197,6 @@ type ExplorationAction = {
   query?: string
   command?: string
 }
-
-const ACTIVITY_ITEM_TYPES = new Set([
-  'commandExecution',
-  'exec',
-  'fileChange',
-  'patch',
-  'subAgentActivity',
-  'subagent-activity',
-  'imageView',
-  'contextCompaction',
-  'context-compaction',
-  'hookPrompt',
-  'hook-prompt',
-  'enteredReviewMode',
-  'exitedReviewMode',
-  'automaticApprovalReview',
-  'automatic-approval-review',
-  'sleep',
-  'loadedTool',
-  'loaded-tool',
-  'worktree-init'
-])
 
 const STEPS_PROSE_HIDDEN_ACTIVITY_TYPES = new Set([
   'contextCompaction',
@@ -226,36 +217,35 @@ const MULTI_AGENT_ITEM_TYPES = new Set([
   'multi-agent-action'
 ])
 
+const KNOWN_DYNAMIC_TOOL_METADATA: Record<
+  string,
+  {
+    activeLabel: string
+    completedLabel: string
+    completedSummaryKey?: string
+  }
+> = {
+  load_workspace_dependencies: {
+    activeLabel: '正在加载工作区依赖',
+    completedLabel: '已加载工作区依赖'
+  },
+  pia_slackbot_dm: { activeLabel: 'Pia Slackbot DM', completedLabel: 'Pia Slackbot DM' },
+  read_thread_terminal: { activeLabel: '正在读取线程终端', completedLabel: '已读取线程终端' }
+}
+
 export function buildAssistantRenderUnits(message: AssistantMessageLike): AssistantRenderModel {
   const parts = message.parts ?? message.content
   const isRunning = message.status?.type === 'running'
   const detailLevel = message.detailLevel ?? 'default'
   const normalized = normalizeParts(parts, isRunning)
   const preGrouped = groupWebSearchAndMultiAgent(normalized)
-  const explorationGrouped = groupExplorationActivity(preGrouped)
-  const activityCollapsed = collapseToolActivity(explorationGrouped, { detailLevel })
-  const dynamicGrouped = groupDynamicToolCalls(activityCollapsed)
+  const dynamicGrouped = groupDynamicToolCalls(preGrouped)
   const mcpGrouped = groupPendingMcpToolCalls(dynamicGrouped)
-  const units = assignThinkingOwnership(
-    mcpGrouped.map((unit, index) => toRenderUnit(unit, index)),
+  const activityCollapsed = groupAdjacentToolActivity(mcpGrouped, { detailLevel })
+  const units = attachMessageThinkingFallback(
+    activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning)),
     isRunning
   )
-
-  if (units.length === 0 && isRunning) {
-    return {
-      isThinkingOnly: true,
-      units: [
-        {
-          type: 'message-thinking',
-          key: 'message-thinking',
-          partIndices: [],
-          target: { id: 'message-thinking', itemIds: [] },
-          active: true,
-          showThinkingFallback: true
-        }
-      ]
-    }
-  }
 
   return { isThinkingOnly: units.length === 1 && units[0]?.type === 'message-thinking', units }
 }
@@ -297,22 +287,27 @@ function normalizeParts(
       const toolName = stringValue(part.toolName)
       const item =
         extractThreadItem(part) ?? inferredItemForToolPart(part, toolName, isMessageRunning)
-      const itemType = canonicalItemType(typeof item?.type === 'string' ? item.type : undefined)
+      const normalizedItem = automationUpdateItemForToolPart(part, item, toolName) ?? item
+      const itemType = canonicalItemType(
+        typeof normalizedItem?.type === 'string' ? normalizedItem.type : undefined
+      )
       return [
         {
           kind: 'tool',
           partIndex,
           part,
-          item,
+          item: normalizedItem,
           itemType,
           toolName,
-          callId: partCallId(part, item),
-          action: multiAgentAction(item),
+          callId: partCallId(part, normalizedItem),
+          action: multiAgentAction(normalizedItem),
           mcpSource:
-            itemType && MCP_ITEM_TYPES.has(itemType) ? mcpSourceForPart(part, item) : undefined,
+            itemType && MCP_ITEM_TYPES.has(itemType)
+              ? mcpSourceForPart(part, normalizedItem)
+              : undefined,
           dynamicMetadata:
-            itemType && DYNAMIC_ITEM_TYPES.has(itemType)
-              ? dynamicMetadataForPart(part, item)
+            (itemType && DYNAMIC_ITEM_TYPES.has(itemType)) || type === 'dynamic-tool'
+              ? dynamicMetadataForPart(part, normalizedItem)
               : undefined
         }
       ]
@@ -335,7 +330,8 @@ function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): Groupabl
   const flushWebSearch = (): void => {
     if (webSearchParts.length === 0) return
     units.push({
-      type: 'web-search-group',
+      type: 'tool-group-candidate',
+      kind: 'web-search',
       partIndices: webSearchParts.map((part) => part.partIndex),
       parts: webSearchParts.map((part) => part.part)
     })
@@ -366,7 +362,8 @@ function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): Groupabl
       }
 
       units.push({
-        type: 'multi-agent-group',
+        type: 'tool-group-candidate',
+        kind: 'multi-agent',
         partIndices: group.map((part) => part.partIndex),
         parts: group.map((part) => part.part),
         action
@@ -382,7 +379,7 @@ function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): Groupabl
   return units
 }
 
-function collapseToolActivity(
+function groupAdjacentToolActivity(
   units: readonly GroupableUnit[],
   options: { detailLevel: AssistantRenderDetailLevel }
 ): GroupableUnit[] {
@@ -393,29 +390,25 @@ function collapseToolActivity(
   const result: GroupableUnit[] = []
 
   for (let index = 0; index < visibleUnits.length; index += 1) {
-    const group = collectConsecutive(visibleUnits, index, isCollapsibleActivityUnit)
+    const group = collectConsecutive(visibleUnits, index, isAdjacentToolActivityUnit)
 
     if (group.length === 0) {
       result.push(visibleUnits[index]!)
       continue
     }
 
-    for (const activityGroup of splitActivityRuns(group)) {
-      pushCollapsedActivityGroup(result, activityGroup)
-    }
+    pushAdjacentToolGroup(result, group)
     index += group.length - 1
   }
 
   return result
 }
 
-function pushCollapsedActivityGroup(
-  result: GroupableUnit[],
-  group: readonly GroupableUnit[]
-): void {
+function pushAdjacentToolGroup(result: GroupableUnit[], group: readonly GroupableUnit[]): void {
   if (group.length > 1) {
     result.push({
-      type: 'collapsed-tool-activity',
+      type: 'tool-group-candidate',
+      kind: 'composite',
       partIndices: group.flatMap((unit) => [...unit.partIndices]),
       parts: group.flatMap(partsForUnit)
     } as GroupableUnit)
@@ -424,52 +417,6 @@ function pushCollapsedActivityGroup(
 
   const first = group[0]
   if (first) result.push(first)
-}
-
-function splitActivityRuns(group: readonly GroupableUnit[]): GroupableUnit[][] {
-  const runs: GroupableUnit[][] = []
-  let current: GroupableUnit[] = []
-  let currentActive: boolean | undefined
-
-  for (const unit of group) {
-    const active = isGroupableUnitActive(unit)
-    if (current.length > 0 && active !== currentActive) {
-      runs.push(current)
-      current = []
-    }
-    current.push(unit)
-    currentActive = active
-  }
-
-  if (current.length > 0) runs.push(current)
-  return runs
-}
-
-function groupExplorationActivity(units: readonly GroupableUnit[]): GroupableUnit[] {
-  const result: GroupableUnit[] = []
-
-  for (let index = 0; index < units.length; index += 1) {
-    const first = units[index]
-    if (!first || !isExplorationActivityUnit(first)) {
-      first && result.push(first)
-      continue
-    }
-
-    const group = [first]
-    let nextIndex = index + 1
-
-    while (nextIndex < units.length) {
-      const next = units[nextIndex]
-      if (!next || !isExplorationActivityUnit(next)) break
-      group.push(next)
-      nextIndex += 1
-    }
-
-    result.push(explorationUnitFromGroup(group))
-    index = nextIndex - 1
-  }
-
-  return result
 }
 
 function groupDynamicToolCalls(units: readonly GroupableUnit[]): GroupableUnit[] {
@@ -497,7 +444,8 @@ function groupDynamicToolCalls(units: readonly GroupableUnit[]): GroupableUnit[]
     const metadata = mergeDynamicMetadata(group)
     if (group.length > 1 || metadata.standaloneInConversation) {
       result.push({
-        type: 'dynamic-tool-call-group',
+        type: 'tool-group-candidate',
+        kind: 'dynamic',
         partIndices: group.flatMap((unit) => [...unit.partIndices]),
         parts: group.flatMap(partsForUnit),
         dynamicMetadata: metadata
@@ -535,7 +483,8 @@ function groupPendingMcpToolCalls(units: readonly GroupableUnit[]): GroupableUni
 
     if (group.length > 1 || shouldRenderSingleMcpGroup(first)) {
       result.push({
-        type: 'pending-mcp-tool-calls',
+        type: 'tool-group-candidate',
+        kind: 'mcp',
         partIndices: group.flatMap((unit) => [...unit.partIndices]),
         parts: group.flatMap(partsForUnit),
         mcpSource: mergeMcpSource(group)
@@ -550,18 +499,30 @@ function groupPendingMcpToolCalls(units: readonly GroupableUnit[]): GroupableUni
   return result
 }
 
-function assignThinkingOwnership(
+function attachMessageThinkingFallback(
   units: readonly AssistantRenderUnit[],
   isRunning: boolean
 ): AssistantRenderUnit[] {
-  if (!isRunning) return units.map((unit) => ({ ...unit, showThinkingFallback: false }))
+  const stableUnits = units.map((unit) => ({ ...unit, showThinkingFallback: false }))
+  if (!isRunning) return stableUnits
+  if (stableUnits.length === 0) return [messageThinkingUnit()]
 
-  const latestIndex = findLatestThinkingEligibleUnitIndex(units)
-  return units.map((unit, index) => {
-    if (index !== latestIndex) return { ...unit, showThinkingFallback: false }
-    if (unit.active) return { ...unit, showThinkingFallback: false }
-    return { ...unit, showThinkingFallback: true }
-  })
+  const latestIndex = findLatestThinkingEligibleUnitIndex(stableUnits)
+  const latestUnit = latestIndex >= 0 ? stableUnits[latestIndex] : undefined
+  if (!latestUnit || latestUnit.active) return stableUnits
+
+  return [...stableUnits, messageThinkingUnit()]
+}
+
+function messageThinkingUnit(): AssistantRenderUnit {
+  return {
+    type: 'message-thinking',
+    key: 'message-thinking',
+    partIndices: [],
+    target: { id: 'message-thinking', itemIds: [] },
+    active: true,
+    showThinkingFallback: true
+  }
 }
 
 function findLatestThinkingEligibleUnitIndex(units: readonly AssistantRenderUnit[]): number {
@@ -574,7 +535,11 @@ function findLatestThinkingEligibleUnitIndex(units: readonly AssistantRenderUnit
   return -1
 }
 
-function toRenderUnit(unit: GroupableUnit, index: number): AssistantRenderUnit {
+function toRenderUnit(
+  unit: GroupableUnit,
+  index: number,
+  isMessageRunning: boolean
+): AssistantRenderUnit {
   switch (unit.type) {
     case 'text':
       return {
@@ -598,6 +563,10 @@ function toRenderUnit(unit: GroupableUnit, index: number): AssistantRenderUnit {
       }
     case 'entry': {
       const summary = summarizeToolGroup([unit.part])
+      if (shouldRenderEntryAsToolGroup(unit)) {
+        return toToolGroupRenderUnit(unit, index, isMessageRunning)
+      }
+
       const key = itemKey(unit.item, unit.partIndex, unit.callId)
       return {
         type: 'entry',
@@ -609,72 +578,61 @@ function toRenderUnit(unit: GroupableUnit, index: number): AssistantRenderUnit {
         item: unit.item,
         itemType: unit.itemType,
         mcpSource: unit.mcpSource,
+        dynamicMetadata: unit.dynamicMetadata,
         renderMode: entryRenderModeFor(unit.itemType),
         summary,
         active: summary.active || isItemActive(unit.item) || isToolPartActive(unit.part),
         showThinkingFallback: false
       }
     }
-    case 'collapsed-tool-activity':
-    case 'web-search-group': {
-      const summary = summarizeToolGroup(unit.parts)
-      const key = groupKey(unit, index)
-      return {
-        type: unit.type,
-        key,
-        partIndices: unit.partIndices,
-        target: targetForUnit(key, unit),
-        parts: unit.parts,
-        summary,
-        active: summary.active || unit.parts.some(isToolPartActive),
-        showThinkingFallback: false
-      }
-    }
-    case 'multi-agent-group': {
-      const summary = summarizeToolGroup(unit.parts)
-      const key = groupKey(unit, index)
-      return {
-        type: 'multi-agent-group',
-        key,
-        partIndices: unit.partIndices,
-        target: targetForUnit(key, unit),
-        parts: unit.parts,
-        summary,
-        active: summary.active || unit.parts.some(isToolPartActive),
-        showThinkingFallback: false,
-        action: unit.action
-      }
-    }
-    case 'dynamic-tool-call-group': {
-      const summary = summarizeToolGroup(unit.parts)
-      const key = groupKey(unit, index)
-      return {
-        type: 'dynamic-tool-call-group',
-        key,
-        partIndices: unit.partIndices,
-        target: targetForUnit(key, unit),
-        parts: unit.parts,
-        summary,
-        active: summary.active || unit.parts.some(isToolPartActive),
-        showThinkingFallback: false,
-        dynamicMetadata: unit.dynamicMetadata
-      }
-    }
-    case 'pending-mcp-tool-calls': {
-      const summary = summarizeToolGroup(unit.parts)
-      const key = groupKey(unit, index)
-      return {
-        type: 'pending-mcp-tool-calls',
-        key,
-        partIndices: unit.partIndices,
-        target: targetForUnit(key, unit),
-        parts: unit.parts,
-        summary,
-        active: summary.active || unit.parts.some(isToolPartActive),
-        showThinkingFallback: false,
-        mcpSource: unit.mcpSource
-      }
-    }
+    case 'tool-group-candidate':
+      return toToolGroupRenderUnit(unit, index, isMessageRunning)
+  }
+}
+
+function shouldRenderEntryAsToolGroup(unit: EntryGroupableUnit): boolean {
+  if (unit.itemType === 'exploration') return true
+
+  const renderMode = entryRenderModeFor(unit.itemType)
+  return renderMode === 'tool' || renderMode === 'fallback'
+}
+
+function toToolGroupRenderUnit(
+  unit: GroupableUnit,
+  index: number,
+  isMessageRunning: boolean
+): AssistantRenderUnit {
+  const children = toolItemsForUnit(unit)
+  const summary = summarizeToolGroup(children.map((child) => child.rawPart))
+  const kind = toolGroupKindForUnit(unit, children)
+  const key = toolGroupKey(unit, index, children)
+  const status = toolGroupStatus(children)
+  const dynamicMetadata = dynamicMetadataForToolGroup(unit, children)
+  const active =
+    summary.active ||
+    status === 'running' ||
+    status === 'requires-action' ||
+    (isMessageRunning && groupContinuesLiveActivity(children))
+
+  return {
+    type: 'tool-group',
+    kind,
+    status,
+    key,
+    partIndices: unit.partIndices,
+    target: targetForUnit(key, unit),
+    parts: partsForUnit(unit),
+    children,
+    summary,
+    active,
+    showThinkingFallback: false,
+    mcpSource:
+      unit.type === 'tool-group-candidate' && unit.kind === 'mcp'
+        ? unit.mcpSource
+        : mergeMcpSource([unit]),
+    dynamicMetadata,
+    action: toolGroupAction(unit, kind, children),
+    summaryOnly: isSummaryOnlyToolGroup(children)
   }
 }
 
@@ -723,6 +681,284 @@ function normalizedToUnit(part: NormalizedPart): GroupableUnit {
   }
 }
 
+function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
+  if (unit.type === 'entry' && unit.itemType === 'exploration') {
+    const childItems = arrayValue(unit.item?.items).map(recordValue).filter(isDefined)
+    if (childItems.length > 0) {
+      return childItems.map((item, index) =>
+        toolItemFromPart({
+          part: unit.part,
+          partIndex: unit.partIndices[index] ?? unit.partIndex,
+          item,
+          fallbackKind: canonicalItemType(stringValue(item.type)) ?? 'exploration'
+        })
+      )
+    }
+  }
+
+  if (unit.type === 'entry') {
+    return [
+      toolItemFromPart({
+        part: unit.part,
+        partIndex: unit.partIndex,
+        item: unit.item,
+        fallbackKind: unit.itemType,
+        mcpSource: unit.mcpSource,
+        dynamicMetadata: unit.dynamicMetadata,
+        action: unit.action
+      })
+    ]
+  }
+
+  return partsForUnit(unit).map((part, index) =>
+    toolItemFromPart({
+      part,
+      partIndex: unit.partIndices[index] ?? index,
+      mcpSource:
+        unit.type === 'tool-group-candidate' && unit.kind === 'mcp' ? unit.mcpSource : undefined,
+      dynamicMetadata:
+        unit.type === 'tool-group-candidate' && unit.kind === 'dynamic'
+          ? unit.dynamicMetadata
+          : undefined,
+      action:
+        unit.type === 'tool-group-candidate' && unit.kind === 'multi-agent'
+          ? unit.action
+          : undefined
+    })
+  )
+}
+
+function toolItemFromPart({
+  part,
+  partIndex,
+  item,
+  fallbackKind,
+  mcpSource,
+  dynamicMetadata,
+  action
+}: {
+  part: AssistantMessagePart
+  partIndex: number
+  item?: Record<string, unknown>
+  fallbackKind?: string
+  mcpSource?: McpSourceMetadata
+  dynamicMetadata?: DynamicToolMetadata
+  action?: string
+}): ToolItem {
+  const toolName = stringValue(part.toolName)
+  const rawItem =
+    item ??
+    extractThreadItem(part) ??
+    inferredItemForToolPart(part, toolName, isToolPartActive(part))
+  const kind =
+    canonicalItemType(stringValue(rawItem?.type)) ??
+    fallbackKind ??
+    inferredToolKindFromToolName(toolName, part, rawItem) ??
+    (part.type === 'dynamic-tool' ? 'dynamicToolCall' : undefined) ??
+    'generic'
+  const source =
+    mcpSource ?? (MCP_ITEM_TYPES.has(kind) ? mcpSourceForPart(part, rawItem) : undefined)
+  const input = extractToolInput(part)
+  const output = part.output ?? part.result
+  const error = rawItem?.error ?? recordValue(part.result)?.error ?? recordValue(part.output)?.error
+  const id = partCallId(part, rawItem) ?? stringValue(part.id) ?? `${kind}:${partIndex}`
+
+  return {
+    id,
+    kind,
+    status: toolItemStatus(part, rawItem),
+    label: toolItemLabel({ part, item: rawItem, kind, toolName }),
+    source,
+    input,
+    output,
+    error,
+    rawPart: part,
+    rawItem,
+    partIndex,
+    dynamicMetadata:
+      dynamicMetadata ??
+      (DYNAMIC_ITEM_TYPES.has(kind) || part.type === 'dynamic-tool'
+        ? dynamicMetadataForPart(part, rawItem)
+        : undefined),
+    action: action ?? multiAgentAction(rawItem)
+  }
+}
+
+function inferredToolKindFromToolName(
+  toolName: string | undefined,
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined
+): string | undefined {
+  if (toolName === 'codex_command_execution') return 'commandExecution'
+  if (toolName === 'codex_file_change') return 'fileChange'
+  if (toolName === 'codex_web_search') {
+    return item || isToolPartActive(part) ? 'webSearch' : undefined
+  }
+  if (toolName?.startsWith('mcp:')) return 'mcpToolCall'
+  if (toolName === 'codex_collab_agent') return 'collabAgentToolCall'
+  return undefined
+}
+
+function toolItemStatus(
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined
+): ToolItemStatus {
+  if (isRequiresActionToolPart(part)) return 'requires-action'
+  if (isToolPartActive(part) || isActiveStatus(item?.status)) return 'running'
+  if (isErrorToolPart(part, item)) return 'error'
+  return 'complete'
+}
+
+function isRequiresActionToolPart(part: AssistantMessagePart): boolean {
+  if (recordValue(part.status)?.type === 'requires-action') return true
+  return part.state === 'approval-requested'
+}
+
+function isErrorToolPart(
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined
+): boolean {
+  const status = stringValue(item?.status)
+  if (status === 'failed' || status === 'cancelled' || status === 'error') return true
+  if (item?.error !== undefined) return true
+  if (part.isError === true) return true
+  const partStatus = recordValue(part.status)
+  if (partStatus?.type === 'incomplete' || partStatus?.type === 'error') {
+    return true
+  }
+  const result = recordValue(part.result)
+  const output = recordValue(part.output)
+  if (result?.error !== undefined || output?.error !== undefined) return true
+  if (result?.isError === true || output?.isError === true) return true
+  return part.state === 'output-error'
+}
+
+function toolItemLabel({
+  part,
+  item,
+  kind,
+  toolName
+}: {
+  part: AssistantMessagePart
+  item: Record<string, unknown> | undefined
+  kind: string
+  toolName: string | undefined
+}): string | undefined {
+  if (kind === 'dynamicToolCall') {
+    const metadata = dynamicMetadataForPart(part, item)
+    const first = metadata.displayLabels[0]
+    return first?.completedLabel
+  }
+
+  return (
+    stringValue(item?.label) ??
+    stringValue(item?.title) ??
+    stringValue(item?.tool) ??
+    humanizeToolName(toolName)
+  )
+}
+
+function toolGroupKindForUnit(unit: GroupableUnit, children: readonly ToolItem[]): ToolGroupKind {
+  if (unit.type === 'tool-group-candidate' && unit.kind !== 'composite') return unit.kind
+  if (unit.type === 'entry' && unit.itemType === 'exploration') return 'exploration'
+  if (children.length > 0 && children.every(isExplorationToolItem)) return 'exploration'
+  if (children.length > 0 && children.every((child) => child.kind === 'webSearch')) {
+    return 'web-search'
+  }
+  if (children.length > 0 && children.every((child) => child.kind === 'mcpToolCall')) {
+    return 'mcp'
+  }
+  if (children.length > 0 && children.every((child) => DYNAMIC_ITEM_TYPES.has(child.kind))) {
+    return 'dynamic'
+  }
+  if (children.length > 0 && children.every((child) => MULTI_AGENT_ITEM_TYPES.has(child.kind))) {
+    return 'multi-agent'
+  }
+  if (children.length > 0 && children.every((child) => child.kind === 'fileChange')) {
+    return 'file-change'
+  }
+  if (
+    children.length > 0 &&
+    children.every((child) => child.kind === 'commandExecution' || child.kind === 'exec')
+  ) {
+    return 'command'
+  }
+  return hasRecognizedToolItem(children) ? 'composite' : 'generic'
+}
+
+function isExplorationToolItem(item: ToolItem): boolean {
+  if (item.kind === 'exploration') return true
+  if (item.kind !== 'commandExecution' && item.kind !== 'exec') return false
+  return (
+    explorationActionsFromRecord(item.rawItem).length > 0 ||
+    explorationActionsFromRecord(recordValue(item.input)).length > 0
+  )
+}
+
+function toolGroupStatus(children: readonly ToolItem[]): ToolItemStatus {
+  if (children.some((child) => child.status === 'requires-action')) return 'requires-action'
+  if (children.some((child) => child.status === 'running')) return 'running'
+  if (children.some((child) => child.status === 'error')) return 'error'
+  return 'complete'
+}
+
+function toolGroupAction(
+  unit: GroupableUnit,
+  kind: ToolGroupKind,
+  children: readonly ToolItem[]
+): string | undefined {
+  if (kind !== 'multi-agent') return undefined
+  if (unit.type === 'tool-group-candidate' && unit.kind === 'multi-agent') return unit.action
+
+  const actions = [...new Set(children.map((child) => child.action).filter(isDefined))]
+  return actions.length === 1 ? actions[0] : undefined
+}
+
+function toolGroupKey(unit: GroupableUnit, index: number, children: readonly ToolItem[]): string {
+  const firstChild = children[0]
+  const firstIndex = unit.partIndices[0] ?? index
+  const stableIdentity = firstChild?.id ?? firstIndex
+
+  return `tool-group:${stableIdentity}`
+}
+
+function dynamicMetadataForToolGroup(
+  unit: GroupableUnit,
+  children: readonly ToolItem[]
+): DynamicToolMetadata | undefined {
+  if (unit.type === 'tool-group-candidate' && unit.kind === 'dynamic' && unit.dynamicMetadata) {
+    return unit.dynamicMetadata
+  }
+
+  const metadata = children.map((child) => child.dynamicMetadata).filter(isDefined)
+  return metadata.length > 0 ? mergeDynamicMetadataValues(metadata, metadata.length) : undefined
+}
+
+function groupContinuesLiveActivity(children: readonly ToolItem[]): boolean {
+  return children.some((child) => child.dynamicMetadata?.continuesLiveActivityBetweenCalls === true)
+}
+
+function isSummaryOnlyToolGroup(children: readonly ToolItem[]): boolean {
+  return (
+    children.length > 0 &&
+    children.every((child) => child.dynamicMetadata?.summaryOnlyInConversationGroup === true)
+  )
+}
+
+function hasRecognizedToolItem(children: readonly ToolItem[]): boolean {
+  return children.some(
+    (child) =>
+      isExplorationToolItem(child) ||
+      child.kind === 'webSearch' ||
+      child.kind === 'mcpToolCall' ||
+      child.kind === 'fileChange' ||
+      child.kind === 'commandExecution' ||
+      child.kind === 'exec' ||
+      DYNAMIC_ITEM_TYPES.has(child.kind) ||
+      MULTI_AGENT_ITEM_TYPES.has(child.kind)
+  )
+}
+
 function collectConsecutive(
   units: readonly GroupableUnit[],
   startIndex: number,
@@ -739,11 +975,12 @@ function collectConsecutive(
   return group
 }
 
-function isCollapsibleActivityUnit(unit: GroupableUnit): boolean {
-  if (unit.type === 'web-search-group') return true
+function isAdjacentToolActivityUnit(unit: GroupableUnit): boolean {
+  if (unit.type === 'tool-group-candidate') return true
   if (unit.type !== 'entry') return false
-  if (unit.itemType == null) return true
-  return ACTIVITY_ITEM_TYPES.has(unit.itemType)
+
+  const renderMode = entryRenderModeFor(unit.itemType)
+  return renderMode === 'tool' || renderMode === 'fallback'
 }
 
 function isLowValueStepsProseActivityUnit(unit: GroupableUnit): boolean {
@@ -757,60 +994,6 @@ function isGroupableUnitActive(unit: GroupableUnit): boolean {
     return isToolPartActive(unit.part) || isActiveStatus(unit.item?.status)
   }
   return partsForUnit(unit).some(isToolPartActive)
-}
-
-function isExplorationActivityUnit(unit: GroupableUnit): unit is EntryGroupableUnit {
-  return unit.type === 'entry' && explorationActionsForUnit(unit).length > 0
-}
-
-function explorationUnitFromGroup(group: readonly EntryGroupableUnit[]): GroupableUnit {
-  const first = group[0]!
-  const actions = group.flatMap(explorationActionsForUnit)
-  const items = group.map((unit) => unit.item).filter(isDefined)
-  const active = group.some(
-    (unit) => isToolPartActive(unit.part) || isActiveStatus(unit.item?.status)
-  )
-  const firstId =
-    stringValue(items[0]?.callId) ?? stringValue(items[0]?.id) ?? String(first.partIndex)
-
-  return {
-    type: 'entry',
-    partIndex: first.partIndex,
-    partIndices: group.flatMap((unit) => [...unit.partIndices]),
-    part: first.part,
-    item: {
-      id: `exploration:${firstId}`,
-      type: 'exploration',
-      status: active ? 'inProgress' : 'completed',
-      actions,
-      items
-    },
-    itemType: 'exploration'
-  }
-}
-
-function explorationActionsForUnit(unit: EntryGroupableUnit): ExplorationAction[] {
-  if (unit.itemType === 'exploration') return []
-  if (!isCommandExecutionUnit(unit)) return []
-
-  const itemActions = explorationActionsForItem(unit.item)
-  if (itemActions.length > 0) return itemActions
-
-  return explorationActionsFromRecord(recordValue(extractToolInput(unit.part)))
-}
-
-function isCommandExecutionUnit(unit: EntryGroupableUnit): boolean {
-  return (
-    unit.itemType === 'commandExecution' ||
-    canonicalItemType(stringValue(unit.item?.type)) === 'commandExecution' ||
-    unit.toolName === 'codex_command_execution'
-  )
-}
-
-function explorationActionsForItem(item: Record<string, unknown> | undefined): ExplorationAction[] {
-  const record = recordValue(item)
-  if (!record) return []
-  return explorationActionsFromRecord(record)
 }
 
 function explorationActionsFromRecord(
@@ -895,14 +1078,7 @@ function shouldRenderSingleMcpGroup(unit: GroupableUnit): boolean {
 }
 
 function isToolLikeUnit(unit: AssistantRenderUnit): boolean {
-  return (
-    unit.type === 'entry' ||
-    unit.type === 'collapsed-tool-activity' ||
-    unit.type === 'pending-mcp-tool-calls' ||
-    unit.type === 'dynamic-tool-call-group' ||
-    unit.type === 'web-search-group' ||
-    unit.type === 'multi-agent-group'
-  )
+  return unit.type === 'entry' || unit.type === 'tool-group'
 }
 
 function partsForUnit(unit: ToolGroupableUnit): readonly AssistantMessagePart[] {
@@ -913,24 +1089,6 @@ function partsForUnit(unit: ToolGroupableUnit): readonly AssistantMessagePart[] 
 function mcpGroupKey(unit: GroupableUnit): string {
   if (unit.type !== 'entry') return 'unknown'
   return unit.mcpSource?.groupKey ?? 'unknown'
-}
-
-function groupKey(unit: GroupableUnit, index: number): string {
-  const firstIndex = unit.partIndices[0] ?? index
-  if (unit.type === 'multi-agent-group') {
-    return `multi-agent-group:${unit.action ?? 'unknown'}:${firstIndex}`
-  }
-  if (unit.type === 'web-search-group') {
-    const firstItem = extractThreadItem(unit.parts[0])
-    return `web-search-group:${stringValue(firstItem?.query) ?? firstIndex}:${unit.partIndices.length}`
-  }
-  if (unit.type === 'pending-mcp-tool-calls') {
-    return `pending-mcp-tool-calls:${unit.mcpSource?.groupKey ?? firstIndex}:${unit.partIndices.length}`
-  }
-  if (unit.type === 'dynamic-tool-call-group') {
-    return `dynamic-tool-call-group:${unit.dynamicMetadata?.completedSummaryKey ?? firstIndex}:${unit.partIndices.length}`
-  }
-  return `${unit.type}:${firstIndex}:${unit.partIndices.length}`
 }
 
 function itemKey(
@@ -1110,6 +1268,82 @@ function inferredItemForToolPart(
   }
 }
 
+function automationUpdateItemForToolPart(
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined,
+  toolName: string | undefined
+): Record<string, unknown> | undefined {
+  const itemToolName = stringValue(item?.tool) ?? stringValue(item?.functionName) ?? toolName
+  if (itemToolName !== 'automation_update') return undefined
+  if (!isCompletedSuccessfulAutomationUpdate(part, item)) return undefined
+
+  const details = automationUpdateDetails(part, item)
+  if (!details) return undefined
+
+  const id = partCallId(part, item) ?? stringValue(part.id) ?? 'automation-update'
+  return {
+    id,
+    type: 'automationUpdate',
+    status: 'completed',
+    title: details.title,
+    summary: details.summary,
+    name: details.name,
+    action: details.action
+  }
+}
+
+function isCompletedSuccessfulAutomationUpdate(
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined
+): boolean {
+  if (isToolPartActive(part) || isActiveStatus(item?.status)) return false
+  if (item?.success === false || isErrorToolPart(part, item)) return false
+  return (
+    item?.success === true ||
+    isCompleteStatus(item?.status) ||
+    isCompleteStatus(part.status) ||
+    part.state === 'output-available'
+  )
+}
+
+function automationUpdateDetails(
+  part: AssistantMessagePart,
+  item: Record<string, unknown> | undefined
+):
+  | {
+      title?: string
+      summary?: string
+      name?: string
+      action?: string
+    }
+  | undefined {
+  const input = recordValue(extractToolInput(part))
+  const argumentsRecord = firstRecord(item?.arguments, item?.args, input)
+  if (!argumentsRecord) return undefined
+
+  const name =
+    stringValue(item?.name) ??
+    stringValue(argumentsRecord.name) ??
+    stringValue(argumentsRecord.title) ??
+    stringValue(argumentsRecord.id)
+  const action =
+    stringValue(item?.action) ??
+    stringValue(argumentsRecord.action) ??
+    stringValue(argumentsRecord.operation) ??
+    stringValue(argumentsRecord.status)
+  const summary =
+    stringValue(item?.summary) ??
+    stringValue(argumentsRecord.summary) ??
+    [action, name].filter(isDefined).join(' ')
+
+  return {
+    title: stringValue(item?.title) ?? stringValue(argumentsRecord.title),
+    summary: summary || undefined,
+    name,
+    action
+  }
+}
+
 function webSearchQueryFromInput(input: unknown): string | undefined {
   const record = recordValue(input)
   if (!record) return undefined
@@ -1159,6 +1393,9 @@ function dynamicMetadataForPart(
   part: AssistantMessagePart,
   item: Record<string, unknown> | undefined
 ): DynamicToolMetadata {
+  const toolName =
+    stringValue(item?.tool) ?? stringValue(item?.functionName) ?? stringValue(part.toolName)
+  const localMetadata = toolName ? KNOWN_DYNAMIC_TOOL_METADATA[toolName] : undefined
   const registry = firstRecord(
     item?.registryMetadata,
     item?.displayMetadata,
@@ -1167,45 +1404,151 @@ function dynamicMetadataForPart(
     recordValue(part.result)?.metadata,
     recordValue(part.output)?.metadata
   )
+  const display = firstRecord(item?.display, item?.displayMetadata, registry)
+  const completedSummaryKey =
+    stringValue(registry?.completedSummaryKey) ??
+    stringValue(item?.completedSummaryKey) ??
+    stringValue(item?.summaryKey) ??
+    localMetadata?.completedSummaryKey
+  const activeLabel =
+    stringValue(display?.activeLabel) ??
+    stringValue(registry?.activeLabel) ??
+    stringValue(item?.activeLabel) ??
+    localMetadata?.activeLabel
+  const completedLabel =
+    stringValue(display?.completedLabel) ??
+    stringValue(display?.label) ??
+    stringValue(registry?.completedLabel) ??
+    stringValue(registry?.label) ??
+    stringValue(item?.completedLabel) ??
+    stringValue(item?.label) ??
+    stringValue(item?.title) ??
+    localMetadata?.completedLabel ??
+    humanizeToolName(toolName)
+  const fallbackActiveLabel =
+    activeLabel ?? completedLabel ?? localMetadata?.activeLabel ?? humanizeToolName(toolName)
+  const fallbackCompletedLabel =
+    completedLabel ?? activeLabel ?? localMetadata?.completedLabel ?? humanizeToolName(toolName)
+  const hasRegistryMetadata = registry !== undefined || localMetadata !== undefined
+  const displayLabels =
+    fallbackActiveLabel && fallbackCompletedLabel
+      ? [
+          {
+            key: dynamicDisplayLabelKey({
+              completedSummaryKey,
+              toolName,
+              activeLabel: fallbackActiveLabel,
+              completedLabel: fallbackCompletedLabel
+            }),
+            activeLabel: fallbackActiveLabel,
+            completedLabel: fallbackCompletedLabel,
+            count: numberValue(item?.repeatCount) ?? 1,
+            callIds: [partCallId(part, item)].filter(isDefined),
+            hasRegistryMetadata
+          }
+        ]
+      : []
 
   return {
     summaryOnlyInConversationGroup: booleanValue(registry?.summaryOnlyInConversationGroup),
     standaloneInConversation: booleanValue(registry?.standaloneInConversation),
     continuesLiveActivityBetweenCalls: booleanValue(registry?.continuesLiveActivityBetweenCalls),
-    completedSummaryKey:
-      stringValue(registry?.completedSummaryKey) ??
-      stringValue(item?.completedSummaryKey) ??
-      stringValue(item?.summaryKey),
+    completedSummaryKey,
     repeatCount: numberValue(item?.repeatCount) ?? 1,
-    hasRegistryMetadata: registry !== undefined
+    hasRegistryMetadata,
+    displayLabels
   }
 }
 
 function dynamicMetadataForUnit(unit: GroupableUnit): DynamicToolMetadata | undefined {
-  return unit.type === 'entry' ? unit.dynamicMetadata : undefined
+  if (unit.type === 'entry') return unit.dynamicMetadata
+  if (unit.type === 'tool-group-candidate' && unit.kind === 'dynamic') return unit.dynamicMetadata
+  return undefined
 }
 
 function mergeDynamicMetadata(group: readonly GroupableUnit[]): DynamicToolMetadata {
   const metadata = group.map(dynamicMetadataForUnit).filter(isDefined)
+  return mergeDynamicMetadataValues(metadata, group.length)
+}
+
+function mergeDynamicMetadataValues(
+  metadata: readonly DynamicToolMetadata[],
+  fallbackCount: number
+): DynamicToolMetadata {
   const first = metadata[0]
+  const displayLabels = mergeDynamicDisplayLabels(metadata.flatMap((item) => item.displayLabels))
   const completedSummaryKey =
     first?.completedSummaryKey ??
     metadata.find((item) => item.completedSummaryKey)?.completedSummaryKey
   const repeatedCount =
     completedSummaryKey == null
-      ? group.length
+      ? fallbackCount
       : metadata.filter((item) => item.completedSummaryKey === completedSummaryKey).length
 
   return {
-    summaryOnlyInConversationGroup: metadata.some((item) => item.summaryOnlyInConversationGroup),
+    summaryOnlyInConversationGroup:
+      metadata.length > 0 && metadata.every((item) => item.summaryOnlyInConversationGroup),
     standaloneInConversation: first?.standaloneInConversation ?? false,
     continuesLiveActivityBetweenCalls: metadata.some(
       (item) => item.continuesLiveActivityBetweenCalls
     ),
     completedSummaryKey,
-    repeatCount: Math.max(repeatedCount, ...metadata.map((item) => item.repeatCount)),
-    hasRegistryMetadata: metadata.some((item) => item.hasRegistryMetadata)
+    repeatCount: Math.max(
+      repeatedCount,
+      ...metadata.map((item) => item.repeatCount),
+      ...displayLabels.map((item) => item.count)
+    ),
+    hasRegistryMetadata: metadata.length > 0 && metadata.every((item) => item.hasRegistryMetadata),
+    displayLabels
   }
+}
+
+function mergeDynamicDisplayLabels(
+  labels: readonly DynamicToolDisplayLabel[]
+): DynamicToolDisplayLabel[] {
+  const result: DynamicToolDisplayLabel[] = []
+
+  for (const label of labels) {
+    const existing = result.find((item) => item.key === label.key)
+    if (!existing) {
+      result.push(label)
+      continue
+    }
+
+    result[result.indexOf(existing)] = {
+      ...existing,
+      count: existing.count + label.count,
+      callIds: [...new Set([...existing.callIds, ...label.callIds])],
+      hasRegistryMetadata: existing.hasRegistryMetadata && label.hasRegistryMetadata
+    }
+  }
+
+  return result
+}
+
+function dynamicDisplayLabelKey({
+  completedSummaryKey,
+  toolName,
+  activeLabel,
+  completedLabel
+}: {
+  completedSummaryKey?: string
+  toolName?: string
+  activeLabel: string
+  completedLabel: string
+}): string {
+  return `${toolName ?? 'dynamic-tool'}:${completedSummaryKey ?? completedLabel ?? activeLabel}`
+}
+
+function humanizeToolName(toolName: string | undefined): string | undefined {
+  if (!toolName) return undefined
+  const tail = toolName.includes('/') ? toolName.split('/').at(-1) : toolName
+  const words = (tail ?? toolName)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+  if (!words) return undefined
+  return words.replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
 function mcpSourceForPart(

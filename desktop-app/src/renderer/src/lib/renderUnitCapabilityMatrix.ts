@@ -90,12 +90,12 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     testOwner: 'App.test.tsx'
   },
   exploration: {
-    renderMode: 'custom',
+    renderMode: 'tool',
     priority: 'P2',
-    renderer: 'ExplorationEntryUnit',
+    renderer: 'ToolGroupUnit',
     fallbackLevel: 'none',
     reason:
-      'Read/list/search command activity is normalized into an exploration render-unit with visible counts and details.',
+      'Read/list/search command activity is normalized into ToolGroup(kind=exploration) with item details in the group body.',
     testOwner: 'App.test.tsx'
   },
   'permission-request': {

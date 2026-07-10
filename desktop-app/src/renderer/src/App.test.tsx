@@ -29,6 +29,8 @@ type MockMessagePart =
       toolCallId: string
       toolName: string
       argsText: string
+      isError?: boolean
+      providerMetadata?: unknown
       result?: unknown
       status?: MockPartStatus
     }
@@ -1026,7 +1028,7 @@ describe('App composer', () => {
 
     expect(container.textContent).toContain('已探索')
     expect(container.textContent).toContain('2 次搜索')
-    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
+    expect(explorationToolGroup()).not.toBeNull()
   })
 
   it('summarizes grouped assistant exploration tool parts with Codex actions', () => {
@@ -1068,8 +1070,241 @@ describe('App composer', () => {
     expect(container.textContent).toContain('已探索')
     expect(container.textContent).toContain('3 个文件')
     expect(container.textContent).not.toContain('3 tool calls')
-    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="collapsed-tool-activity-unit"]')).toBeNull()
+    expect(explorationToolGroup()).not.toBeNull()
+    expect(container.querySelector('[data-tool-group-kind="generic"]')).toBeNull()
+  })
+
+  it('renders ordinary command tool fallback as formatted shell output', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-test',
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({ command: 'npm test', cwd: '/repo' }),
+        status: { type: 'complete' },
+        result: {
+          item: {
+            id: 'cmd-test',
+            type: 'commandExecution',
+            command: 'npm test',
+            cwd: '/repo',
+            processId: null,
+            source: { type: 'exec' },
+            status: 'completed',
+            commandActions: [{ type: 'unknown', command: 'npm test' }],
+            aggregatedOutput: 'PASS src/App.test.tsx\n',
+            exitCode: 0,
+            durationMs: 1250
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('command')
+    expect(group?.dataset.state).toBe('closed')
+    expect(container.textContent).toContain('已运行 1 条命令')
+    expect(container.textContent).not.toContain('codex_command_execution')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(container.textContent).toContain('已运行：npm test')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    const shell = container.querySelector('[data-slot="tool-fallback-shell"]')
+    expect(shell).not.toBeNull()
+    expect(shell?.textContent).toContain('$ npm test')
+    expect(shell?.textContent).toContain('PASS src/App.test.tsx')
+    expect(shell?.textContent).toContain('cwd: /repo')
+    expect(shell?.textContent).toContain('exit 0')
+    expect(shell?.textContent).toContain('1.3s')
+    expect(shell?.textContent).not.toContain('aggregatedOutput')
+  })
+
+  it('keeps active command details on the item instead of repeating them in group details', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-running',
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({ command: 'npm test -- --watch=false', cwd: '/repo' }),
+        status: { type: 'running' },
+        result: {
+          item: {
+            id: 'cmd-running',
+            type: 'commandExecution',
+            command: 'npm test -- --watch=false',
+            cwd: '/repo',
+            processId: null,
+            source: { type: 'exec' },
+            status: 'inProgress',
+            commandActions: [{ type: 'unknown', command: 'npm test -- --watch=false' }],
+            aggregatedOutput: 'running tests\n',
+            exitCode: undefined,
+            durationMs: 250
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('command')
+    expect(group?.textContent).toContain('正在运行：npm test -- --watch=false')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    const groupDetails = group?.querySelector('[data-slot="collapsed-activity-details"]')
+    expect(groupDetails?.textContent).toContain('来源：exec')
+    expect(groupDetails?.textContent).not.toContain('正在运行：npm test -- --watch=false')
+    expect(groupDetails?.textContent).not.toContain('Command: npm test -- --watch=false')
+    expect(group?.textContent).toContain('正在运行：npm test -- --watch=false')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    const shell = container.querySelector('[data-slot="tool-fallback-shell"]')
+    expect(shell?.textContent).toContain('$ npm test -- --watch=false')
+    expect(shell?.textContent).toContain('running tests')
+    expect(shell?.textContent).toContain('cwd: /repo')
+    expect(shell?.textContent).toContain('250ms')
+  })
+
+  it('shows fallback item attention statuses in the visible group label', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-approval',
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({ command: 'npm test -- --inspect', cwd: '/repo' }),
+        status: { type: 'requires-action', reason: 'interrupt' }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(toolGroup('command')?.textContent).toContain('等待审批：npm test -- --inspect')
+
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-stopped',
+        toolName: 'codex_file_change',
+        argsText: '',
+        result: {
+          item: {
+            id: 'patch-stopped',
+            type: 'fileChange',
+            status: 'stopped',
+            changes: [{ path: 'src/new.ts', kind: { type: 'add' }, diff: '+new\n' }]
+          }
+        }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(toolGroup('file-change')?.textContent).toContain('已停止创建：src/new.ts')
+  })
+
+  it('keeps command fallback error results visible with shell output', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-error',
+        toolName: 'codex_command_execution',
+        argsText: JSON.stringify({ command: 'npm test', cwd: '/repo' }),
+        isError: true,
+        status: { type: 'complete' },
+        result: { error: 'command did not complete before the turn closed' }
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('command')
+    expect(container.textContent).toContain('命令出错：npm test')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(container.textContent).toContain('命令出错：npm test')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    expect(container.querySelector('[data-slot="tool-fallback-shell"]')?.textContent).toContain(
+      '$ npm test'
+    )
+    const result = container.querySelector('[data-slot="tool-fallback-result"]')
+    expect(result).not.toBeNull()
+    expect(result?.textContent).toContain('command did not complete before the turn closed')
+  })
+
+  it('keeps unknown tool fallback on generic input and result rendering', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'custom-tool-1',
+        toolName: 'custom_tool',
+        state: 'output-available',
+        input: { query: 'needle' },
+        output: { found: true },
+        providerExecuted: true
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('dynamic')
+    expect(group?.dataset.state).toBe('closed')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    expect(container.querySelector('[data-slot="tool-fallback-shell"]')).toBeNull()
+    expect(container.textContent).toContain('Custom Tool')
+    expect(container.textContent).toContain('"query": "needle"')
+    expect(container.textContent).toContain('"found": true')
   })
 
   it('keeps collapsed tool activity closed until expanded', async () => {
@@ -1098,7 +1333,7 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const group = container.querySelector<HTMLElement>('[data-slot="collapsed-tool-activity-unit"]')
+    const group = toolGroup('file-change')
     expect(group).not.toBeNull()
     expect(group?.dataset.state).toBe('closed')
     expect(group?.textContent).toContain('已编辑 2 个文件')
@@ -1113,9 +1348,15 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="collapsed-activity-details"]')).not.toBeNull()
     expect(container.textContent).toContain('变更 +1/-1 行')
     expect(container.querySelectorAll('[data-slot="tool-fallback-root"]')).toHaveLength(2)
+
+    const contentBody = group?.querySelector<HTMLElement>('[data-slot="tool-group-content"] > div')
+    expect(contentBody?.className).not.toContain('animate-in')
+    expect(contentBody?.className).not.toContain('fade-in-0')
+    expect(contentBody?.className).not.toContain('blur-in')
+    expect(contentBody?.className).not.toContain('slide-in-from-top')
   })
 
-  it('uses dedicated renderers for web dynamic MCP and multi-agent groups', () => {
+  it('uses dedicated renderers when tool runs are separated by text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1130,6 +1371,7 @@ describe('App composer', () => {
         completedSummaryKey: 'dyn:search',
         registryMetadata: { completedSummaryKey: 'dyn:search' }
       }),
+      { type: 'text', text: '继续调用集成' },
       genericToolPart('mcp-1', 'mcp:github/read', 'mcpToolCall', {
         server: 'github',
         tool: 'read'
@@ -1138,14 +1380,17 @@ describe('App composer', () => {
         server: 'github',
         tool: 'write'
       }),
+      { type: 'text', text: '继续运行 Node' },
       genericToolPart('mcp-node', 'mcp:node_repl/js', 'mcpToolCall', {
         server: 'node_repl',
         tool: 'js'
       }),
+      { type: 'text', text: '继续使用 Browser' },
       genericToolPart('mcp-browser', 'mcp:browser/open', 'mcpToolCall', {
         server: 'browser',
         tool: 'open'
       }),
+      { type: 'text', text: '继续协作' },
       genericToolPart('agent-1', 'codex_collab_agent', 'collabAgentToolCall', {
         action: 'review'
       }),
@@ -1158,14 +1403,78 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="web-search-group-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="dynamic-tool-call-group-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="pending-mcp-tool-calls-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="multi-agent-group-unit"]')).not.toBeNull()
-    expect(container.textContent).toContain('已调用 github 2 次')
-    expect(container.textContent).toContain('已运行 Node REPL')
+    const webSearchGroup = toolGroup('web-search')
+    const dynamicGroup = toolGroup('dynamic')
+    const pendingMcpGroup = toolGroup('mcp')
+    const multiAgentGroup = toolGroup('multi-agent')
+    expect(webSearchGroup?.dataset.state).toBe('closed')
+    expect(dynamicGroup?.dataset.state).toBe('closed')
+    expect(pendingMcpGroup?.dataset.state).toBe('closed')
+    expect(multiAgentGroup?.dataset.state).toBe('closed')
+    expect(container.textContent).toContain('已使用 github')
+    expect(container.textContent).toContain('已运行命令')
     expect(container.textContent).toContain('已使用 Browser')
-    expect(container.textContent).toContain('已运行 2 个 review 协作任务')
+    expect(container.textContent).toContain('已处理 2 个 review 协作任务')
+  })
+
+  it('keeps the missing metadata diagnostic for unknown dynamic tool groups', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('lookup-1', 'lookup', 'dynamicToolCall', {
+        tool: 'lookup',
+        arguments: { id: 'A' }
+      }),
+      genericToolPart('lookup-2', 'lookup', 'dynamicToolCall', {
+        tool: 'lookup',
+        arguments: { id: 'B' }
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('dynamic')
+    expect(group).not.toBeNull()
+    expect(group?.textContent).toContain('Lookup（2 次）')
+    expect(group?.textContent).not.toContain('动态工具缺少完整显示元数据')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(group?.textContent).toContain('动态工具缺少完整显示元数据')
+  })
+
+  it('renders summary-only dynamic groups without expandable details', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('lookup-1', 'lookup', 'dynamicToolCall', {
+        registryMetadata: {
+          summaryOnlyInConversationGroup: true,
+          completedSummaryKey: 'lookup'
+        }
+      }),
+      genericToolPart('lookup-2', 'lookup', 'dynamicToolCall', {
+        registryMetadata: {
+          summaryOnlyInConversationGroup: true,
+          completedSummaryKey: 'lookup'
+        }
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('dynamic')
+    const trigger = group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')
+    expect(group).not.toBeNull()
+    expect(trigger?.disabled).toBe(true)
+    expect(group?.querySelector('[data-slot="tool-group-content"]')).toBeNull()
+    expect(group?.querySelector('[data-slot="collapsed-activity-details"]')).toBeNull()
   })
 
   it('renders rich MCP content blocks and web search query details', () => {
@@ -1206,12 +1515,12 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
+    const group = toolGroup('composite')
+    expect(group).not.toBeNull()
+
     act(() => {
-      container
-        .querySelector('[data-slot="pending-mcp-tool-calls-unit"] [data-slot="tool-group-trigger"]')
-        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      container
-        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+      group
+        ?.querySelector('[data-slot="tool-group-trigger"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
@@ -1225,7 +1534,7 @@ describe('App composer', () => {
     expect(container.textContent).toContain('未知内容：custom_block')
     expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
     expect(container.textContent).toContain('render unit parity')
-    expect(container.textContent).toContain('已搜索 · search')
+    expect(container.textContent).toContain('已搜索网页 · 搜索')
     expect(container.querySelector('img[src="https://example.test/favicon.ico"]')).not.toBeNull()
   })
 
@@ -1248,14 +1557,14 @@ describe('App composer', () => {
     })
 
     act(() => {
-      container
-        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+      toolGroup('web-search')
+        ?.querySelector('[data-slot="tool-group-trigger"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
     expect(container.textContent).toContain('live render unit query')
-    expect(container.textContent).toContain('正在搜索 · search')
+    expect(container.textContent).toContain('正在搜索网页 · 搜索')
   })
 
   it('renders only safe web search favicons', () => {
@@ -1284,8 +1593,8 @@ describe('App composer', () => {
     })
 
     act(() => {
-      container
-        .querySelector('[data-slot="web-search-group-unit"] [data-slot="tool-group-trigger"]')
+      toolGroup('web-search')
+        ?.querySelector('[data-slot="tool-group-trigger"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
@@ -1514,7 +1823,7 @@ describe('App composer', () => {
     expect(container.textContent).toContain('src/a.ts')
   })
 
-  it('renders command read search and list activity as an exploration card', () => {
+  it('renders command read search and list activity as a collapsed exploration card', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1527,13 +1836,21 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="exploration-entry-unit"]')).not.toBeNull()
+    const group = explorationToolGroup()
+    expect(group?.dataset.state).toBe('closed')
     expect(container.textContent).toContain('已探索')
     expect(container.textContent).toContain('1 个文件')
     expect(container.textContent).toContain('1 次搜索')
-    expect(container.textContent).toContain('1 个目录')
+    expect(container.textContent).toContain('1 次列表')
+    expect(container.textContent).not.toContain('read-exploration')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(group?.dataset.state).toBe('open')
     expect(container.textContent).toContain('read-exploration')
-    expect(container.textContent).toContain('search-exploration')
+    expect(container.textContent).toContain('已运行：search search-exploration')
     expect(container.textContent).toContain('list-exploration')
   })
 
@@ -1690,7 +2007,7 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const group = container.querySelector<HTMLElement>('[data-slot="web-search-group-unit"]')
+    const group = toolGroup('web-search')
     expect(group).not.toBeNull()
     expect(group?.dataset.state).toBe('closed')
 
@@ -1783,7 +2100,7 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).toBeNull()
   })
 
-  it('shows thinking inside the latest completed tool activity while waiting for text', () => {
+  it('shows thinking separately after completed tool activity while waiting for text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -1809,14 +2126,21 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('正在思考')
+    const toolGroupTrigger = container.querySelector(
+      '[data-slot="tool-group-unit"] [data-slot="tool-group-trigger"]'
+    )
+
+    expect(toolGroupTrigger?.textContent).not.toContain('正在思考')
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')?.textContent).toContain(
+      '正在思考'
+    )
     expect(
       container.querySelector('[data-slot="aui_assistant-message-content"]')?.className
     ).not.toContain('shimmer')
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
   })
 
-  it('only lets the latest eligible tool group own thinking fallback', () => {
+  it('keeps thinking placeholder outside tool groups when the latest tool is complete', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -1830,10 +2154,13 @@ describe('App composer', () => {
     })
 
     const thinkingExplorationCards = Array.from(
-      container.querySelectorAll('[data-slot="exploration-entry-unit"]')
+      container.querySelectorAll(
+        '[data-slot="tool-group-unit"][data-tool-group-kind="exploration"]'
+      )
     ).filter((trigger) => trigger.textContent?.includes('正在思考'))
 
-    expect(thinkingExplorationCards).toHaveLength(1)
+    expect(thinkingExplorationCards).toHaveLength(0)
+    expect(container.querySelectorAll('[data-slot="message-thinking-unit"]')).toHaveLength(1)
     expect(container.textContent).toContain('先查到一部分')
   })
 
@@ -2007,6 +2334,16 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(
     (button) => button.textContent?.trim() === text
   )
+}
+
+function toolGroup(kind: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-slot="tool-group-unit"][data-tool-group-kind="${kind}"]`
+  )
+}
+
+function explorationToolGroup(): HTMLElement | null {
+  return toolGroup('exploration')
 }
 
 function modelSelectorItemWithText(text: string): HTMLElement | undefined {

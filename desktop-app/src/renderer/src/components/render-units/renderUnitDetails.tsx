@@ -4,11 +4,9 @@ import {
   CheckCircle2Icon,
   ClockIcon,
   FileIcon,
-  FolderOpenIcon,
   ImageIcon,
   LinkIcon,
   ListChecksIcon,
-  SearchIcon,
   ShieldCheckIcon,
   ShieldXIcon,
   WrenchIcon,
@@ -16,8 +14,8 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { pendingAssistantMessageText } from '@/lib/assistantMessages'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
+import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
 import {
   extractToolInput,
   extractThreadItem,
@@ -36,33 +34,34 @@ const MAX_VISIBLE_DIFF_FILES = 5
 const LARGE_DIFF_TEXT_LENGTH = 50_000
 
 export function CollapsedActivityDetails({
+  detailRows,
   summary
 }: {
+  detailRows?: readonly ToolActivityDetailRow[]
   summary?: ToolGroupSummary
 }): React.JSX.Element | null {
-  if (!summary) return null
+  const rows: readonly ToolActivityDetailRow[] = detailRows ?? legacySummaryRows(summary)
 
-  if (!summary.activeSummary && !summary.sourceSummary && summary.details.length === 0) {
-    return null
-  }
+  if (rows.length === 0) return null
 
   return (
     <div data-slot="collapsed-activity-details" className="space-y-1 text-xs text-muted-foreground">
-      {summary.activeSummary ? (
-        <p className="font-medium text-foreground/80">{summary.activeSummary}</p>
-      ) : null}
-      {summary.sourceSummary ? <p>来源：{summary.sourceSummary}</p> : null}
-      {summary.details.length > 0 ? (
-        <ul className="space-y-1">
-          {summary.details.slice(0, 4).map((detail) => (
-            <li key={detail} className="min-w-0 truncate">
-              {detail}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <ul className="space-y-1">
+        {rows.slice(0, 4).map((row) => (
+          <li key={`${row.label ?? ''}:${row.value}`} className="min-w-0 truncate">
+            {row.label ? `${row.label}：${row.value}` : row.value}
+          </li>
+        ))}
+      </ul>
     </div>
   )
+}
+
+function legacySummaryRows(summary: ToolGroupSummary | undefined): ToolActivityDetailRow[] {
+  return [
+    summary?.sourceSummary ? { label: '来源', value: summary.sourceSummary } : undefined,
+    ...(summary?.details ?? []).map((value) => ({ value }))
+  ].filter(isDefined)
 }
 
 export function McpToolCallDetails({
@@ -122,7 +121,7 @@ export function WebSearchDetails({ parts }: { parts: readonly AnyRecord[] }): Re
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{query}</p>
                 <p className="text-xs text-muted-foreground">
-                  {active ? '正在搜索' : '已搜索'}
+                  {active ? '正在搜索网页' : '已搜索网页'}
                   {action ? ` · ${action}` : null}
                 </p>
               </div>
@@ -177,8 +176,6 @@ export function SpecialEntryRenderer({ unit }: { unit: EntryUnit }): React.JSX.E
       return <ReviewCommentsEntryUnit unit={unit} />
     case 'automaticApprovalReview':
       return <AutomaticApprovalReviewEntryUnit unit={unit} />
-    case 'exploration':
-      return <ExplorationEntryUnit unit={unit} />
     case 'streamError':
     case 'systemError':
       return <ErrorEntryUnit unit={unit} />
@@ -439,51 +436,6 @@ function TodoListEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
             </ul>
           ) : (
             <p className="mt-1 text-xs text-muted-foreground">待办详情暂不可用</p>
-          )}
-        </div>
-      </div>
-    </RenderUnitCard>
-  )
-}
-
-function ExplorationEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
-  const item = unit.item ?? {}
-  const actions = explorationActions(item)
-  const summary = explorationSummary(actions)
-  const active = unit.active === true || isActiveStatus(item.status) || unit.showThinkingFallback
-  const title = unit.showThinkingFallback
-    ? pendingAssistantMessageText
-    : active
-      ? '正在探索'
-      : '已探索'
-  const [expanded, setExpanded] = useState(false)
-  const visible = expanded ? actions : actions.slice(0, MAX_VISIBLE_ROWS)
-
-  return (
-    <RenderUnitCard unit={unit} slot="exploration-entry-unit">
-      <div className="flex items-start gap-2">
-        <SearchIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{title}</p>
-          {summary ? <p className="text-xs text-muted-foreground">{summary}</p> : null}
-          {actions.length === 0 ? (
-            <p className="mt-1 text-xs text-muted-foreground">探索详情暂不可用</p>
-          ) : (
-            <div className="mt-2 space-y-2">
-              <ul className="space-y-1 text-xs">
-                {visible.map((action, index) => (
-                  <ExplorationActionRow
-                    key={`${action.type}:${action.label}:${index}`}
-                    action={action}
-                  />
-                ))}
-              </ul>
-              <ShowMoreButton
-                expanded={expanded}
-                hiddenCount={actions.length - visible.length}
-                onClick={() => setExpanded((value) => !value)}
-              />
-            </div>
           )}
         </div>
       </div>
@@ -925,21 +877,6 @@ function ReviewCommentRow({ comment }: { comment: AnyRecord }): React.JSX.Elemen
   )
 }
 
-function ExplorationActionRow({ action }: { action: ExplorationAction }): React.JSX.Element {
-  const icon = explorationActionIcon(action.type)
-  const detail = explorationActionDetail(action)
-
-  return (
-    <li className="flex min-w-0 items-start gap-2 rounded-md border border-border/50 px-2.5 py-2">
-      {icon}
-      <div className="min-w-0">
-        <p className="truncate font-medium">{explorationActionLabel(action)}</p>
-        {detail ? <p className="mt-0.5 truncate text-muted-foreground">{detail}</p> : null}
-      </div>
-    </li>
-  )
-}
-
 function ShowMoreButton({
   expanded,
   hiddenCount,
@@ -1011,14 +948,6 @@ type DiffFile = {
   removed: number
 }
 
-type ExplorationAction = {
-  type: 'read' | 'list' | 'search'
-  label?: string
-  path?: string
-  query?: string
-  command?: string
-}
-
 type ImageEntry = {
   src?: string
   alt?: string
@@ -1048,114 +977,6 @@ function todoItems(item: AnyRecord): TodoItem[] {
       status: stringValue(record?.status)
     }
   })
-}
-
-function explorationActions(item: AnyRecord): ExplorationAction[] {
-  const explicit = arrayValue(item.actions)
-    .map((action) => explorationActionFromRecord(recordValue(action)))
-    .filter(isDefined)
-  if (explicit.length > 0) return explicit
-
-  return arrayValue(item.items).flatMap((child) =>
-    explorationActionsFromThreadItem(recordValue(child))
-  )
-}
-
-function explorationActionsFromThreadItem(item: AnyRecord | undefined): ExplorationAction[] {
-  if (!item) return []
-  const commandActions = arrayValue(item.commandActions)
-    .map((action) => explorationActionFromRecord(recordValue(action)))
-    .filter(isDefined)
-  if (commandActions.length > 0) return commandActions
-
-  const parsed = explorationActionFromRecord(recordValue(item.parsedCmd))
-  return parsed ? [parsed] : []
-}
-
-function explorationActionFromRecord(record: AnyRecord | undefined): ExplorationAction | undefined {
-  if (!record) return undefined
-  const type = explorationActionType(stringValue(record.type))
-  if (!type) return undefined
-
-  return {
-    type,
-    label:
-      stringValue(record.name) ??
-      stringValue(record.label) ??
-      stringValue(record.path) ??
-      stringValue(record.query) ??
-      stringValue(record.command),
-    path:
-      stringValue(record.path) ??
-      stringValue(record.file) ??
-      stringValue(record.filename) ??
-      stringValue(record.directory),
-    query: stringValue(record.query) ?? stringValue(record.pattern),
-    command: stringValue(record.command)
-  }
-}
-
-function explorationActionType(value: string | undefined): ExplorationAction['type'] | undefined {
-  switch (value) {
-    case 'read':
-    case 'readFile':
-    case 'read_file':
-      return 'read'
-    case 'list':
-    case 'listFiles':
-    case 'list_files':
-    case 'ls':
-      return 'list'
-    case 'search':
-    case 'searchCode':
-    case 'search_code':
-    case 'grep':
-    case 'rg':
-      return 'search'
-    default:
-      return undefined
-  }
-}
-
-function explorationSummary(actions: readonly ExplorationAction[]): string | undefined {
-  const reads = countUniqueActions(actions, 'read', (action) => action.path ?? action.label)
-  const searches = actions.filter((action) => action.type === 'search').length
-  const lists = countUniqueActions(actions, 'list', (action) => action.path ?? action.label)
-  const parts = [
-    reads > 0 ? `${reads} 个文件` : undefined,
-    searches > 0 ? `${searches} 次搜索` : undefined,
-    lists > 0 ? `${lists} 个目录` : undefined
-  ].filter(isDefined)
-
-  return parts.length > 0 ? parts.join(' · ') : undefined
-}
-
-function countUniqueActions(
-  actions: readonly ExplorationAction[],
-  type: ExplorationAction['type'],
-  keyForAction: (action: ExplorationAction) => string | undefined
-): number {
-  const matching = actions.filter((action) => action.type === type)
-  const uniqueKeys = new Set(matching.map(keyForAction).filter(isDefined))
-  return uniqueKeys.size > 0 ? uniqueKeys.size : matching.length
-}
-
-function explorationActionLabel(action: ExplorationAction): string {
-  if (action.type === 'read') return action.label ?? action.path ?? '读取文件'
-  if (action.type === 'list') return action.label ?? action.path ?? '列出目录'
-  return action.label ?? action.query ?? '搜索代码'
-}
-
-function explorationActionDetail(action: ExplorationAction): string | undefined {
-  if (action.type === 'search') return action.query ?? action.command
-  return action.path ?? action.command
-}
-
-function explorationActionIcon(type: ExplorationAction['type']): ReactNode {
-  const className = 'mt-0.5 size-3.5 shrink-0 text-muted-foreground'
-  if (type === 'read') return <FileIcon className={className} />
-  if (type === 'list') return <FolderOpenIcon className={className} />
-  return <SearchIcon className={className} />
 }
 
 function isCompleteTodoStatus(status: string | undefined): boolean {
@@ -1500,9 +1321,25 @@ function mcpToolFromToolName(toolName: string | undefined): string | undefined {
 }
 
 function webSearchActionLabel(action: unknown): string | undefined {
-  if (typeof action === 'string') return action
+  if (typeof action === 'string') return webSearchActionDisplayLabel(action)
   const record = recordValue(action)
-  return stringValue(record?.type) ?? stringValue(record?.query)
+  const actionType = stringValue(record?.type)
+  return actionType ? webSearchActionDisplayLabel(actionType) : stringValue(record?.query)
+}
+
+function webSearchActionDisplayLabel(action: string): string {
+  switch (action) {
+    case 'search':
+      return '搜索'
+    case 'openPage':
+    case 'open_page':
+      return '打开网页'
+    case 'findInPage':
+    case 'find_in_page':
+      return '页内查找'
+    default:
+      return action
+  }
 }
 
 function webSearchQueryFromInput(input: unknown): string | undefined {

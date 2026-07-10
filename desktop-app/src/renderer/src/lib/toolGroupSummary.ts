@@ -61,6 +61,7 @@ type CounterLabels = {
   active: string
   completed: string
   unit: string
+  showCount?: boolean
 }
 
 const counterKeys: ToolGroupCounterKey[] = [
@@ -97,7 +98,7 @@ const counterLabels: Record<ToolGroupCounterKey, CounterLabels> = {
   createFiles: { active: '正在创建', completed: '已创建', unit: '个文件' },
   editFiles: { active: '正在编辑', completed: '已编辑', unit: '个文件' },
   deleteFiles: { active: '正在删除', completed: '已删除', unit: '个文件' },
-  webSearches: { active: '正在搜索', completed: '已搜索', unit: '次网页' },
+  webSearches: { active: '正在搜索网页', completed: '已搜索网页', unit: '', showCount: false },
   mcpTools: { active: '正在调用', completed: '已调用', unit: '个 MCP 工具' },
   subAgentActivities: { active: '正在更新', completed: '已更新', unit: '次子任务' },
   imageViews: { active: '正在查看', completed: '已查看', unit: '张图片' },
@@ -417,17 +418,23 @@ function renderSummaryLabel(state: ToolGroupSummaryState): string | undefined {
     const rendered: string[] = []
 
     if (counter.active > 0) {
-      rendered.push(`${labels.active} ${counter.active} ${labels.unit}`)
+      rendered.push(renderCounterLabel(labels, counter.active, true))
     }
 
     if (counter.completed > 0) {
-      rendered.push(`${labels.completed} ${counter.completed} ${labels.unit}`)
+      rendered.push(renderCounterLabel(labels, counter.completed, false))
     }
 
     return rendered
   })
 
   return segments.length > 0 ? segments.join('，') : undefined
+}
+
+function renderCounterLabel(labels: CounterLabels, count: number, active: boolean): string {
+  const label = active ? labels.active : labels.completed
+  if (labels.showCount === false) return label
+  return `${label} ${count} ${labels.unit}`
 }
 
 function renderSummaryIcon(state: ToolGroupSummaryState): ToolGroupIconName | undefined {
@@ -602,7 +609,7 @@ function activeThreadItemSummary(item: ToolPartRecord, part: ToolPartRecord): st
   const type = canonicalItemType(stringValue(item.type))
   if (type === 'webSearch') {
     const query = stringValue(item.query)
-    return query ? `正在搜索：${truncateMiddle(query, 72)}` : '正在搜索网页'
+    return query ? `正在搜索网页：${truncateMiddle(query, 72)}` : '正在搜索网页'
   }
   if (type === 'mcpToolCall') {
     const label = mcpSourceLabel(item, part)
@@ -630,7 +637,7 @@ function activeToolInputSummary(part: ToolPartRecord, input: unknown): string | 
 
   if (toolName === 'codex_web_search') {
     const query = stringValue(inputRecord?.query)
-    return query ? `正在搜索：${truncateMiddle(query, 72)}` : '正在搜索网页'
+    return query ? `正在搜索网页：${truncateMiddle(query, 72)}` : '正在搜索网页'
   }
   if (toolName === 'codex_command_execution') {
     const command = stringValue(inputRecord?.command)

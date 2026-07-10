@@ -1,0 +1,305 @@
+import { describe, expect, it } from 'vitest'
+
+import { buildAssistantRenderUnits, type AssistantRenderUnit } from './assistantRenderUnits'
+import {
+  buildToolActivityDisplayModel,
+  shellMetadata,
+  shellOutputText
+} from './toolActivityDisplay'
+
+type ToolGroupUnit = Extract<AssistantRenderUnit, { type: 'tool-group' }>
+
+describe('buildToolActivityDisplayModel', () => {
+  it('keeps running command activity in the group header and full shell data on the item', () => {
+    const group = toolGroup([
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-running',
+        toolName: 'codex_command_execution',
+        status: { type: 'running' },
+        argsText: JSON.stringify({
+          command: "npm test -- --runInBand --grep 'tool activity display'",
+          cwd: '/repo',
+          commandActions: [
+            {
+              type: 'unknown',
+              command: "npm test -- --runInBand --grep 'tool activity display'"
+            }
+          ]
+        })
+      }
+    ])
+
+    const display = buildToolActivityDisplayModel(group)
+
+    expect(display.group).toMatchObject({
+      label: "正在运行：npm test -- --runInBand --grep 'tool activity display'",
+      icon: 'run-command',
+      status: 'running',
+      active: true,
+      count: 1,
+      expandable: true,
+      detailRows: []
+    })
+    expect(display.items[0]).toMatchObject({
+      label: "正在运行：npm test -- --runInBand --grep 'tool activity display'",
+      status: 'running',
+      toolName: 'codex_command_execution',
+      details: {
+        shell: {
+          command: "npm test -- --runInBand --grep 'tool activity display'",
+          cwd: '/repo'
+        }
+      }
+    })
+  })
+
+  it('puts file line totals in group details without duplicating active summaries', () => {
+    const group = toolGroup([
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-1',
+        toolName: 'codex_file_change',
+        result: {
+          item: {
+            id: 'patch-1',
+            type: 'fileChange',
+            status: 'completed',
+            changes: [
+              {
+                path: 'src/a.ts',
+                kind: { type: 'update' },
+                diff: '--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n+again\n'
+              }
+            ]
+          }
+        }
+      }
+    ])
+
+    const display = buildToolActivityDisplayModel(group)
+
+    expect(display.group.label).toBe('已编辑 1 个文件')
+    expect(display.group.detailRows).toEqual([{ value: '变更 +2/-1 行' }])
+    expect(display.items[0]?.label).toBe('已编辑：src/a.ts')
+  })
+
+  it('maps requires-action stopped and error states to display statuses', () => {
+    const requiresAction = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'tool-call',
+          toolCallId: 'needs-approval',
+          toolName: 'codex_command_execution',
+          status: { type: 'requires-action', reason: 'interrupt' },
+          argsText: JSON.stringify({ command: 'npm test' }),
+          approval: { id: 'approval-1' }
+        }
+      ])
+    )
+    const stopped = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'tool-call',
+          toolCallId: 'stopped-file',
+          toolName: 'codex_file_change',
+          result: {
+            item: {
+              id: 'stopped-file',
+              type: 'fileChange',
+              status: 'stopped',
+              changes: [{ path: 'src/new.ts', kind: { type: 'add' }, diff: '+new\n' }]
+            }
+          }
+        }
+      ])
+    )
+    const errored = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'tool-call',
+          toolCallId: 'errored-command',
+          toolName: 'codex_command_execution',
+          status: { type: 'incomplete', reason: 'error', error: 'boom' },
+          argsText: JSON.stringify({ command: 'npm test' })
+        }
+      ])
+    )
+
+    expect(requiresAction.group.status).toBe('requiresAction')
+    expect(requiresAction.group.label).toBe('等待审批：npm test')
+    expect(requiresAction.items[0]?.label).toBe('等待审批：npm test')
+    expect(requiresAction.items[0]?.statusLabel).toBe('等待审批')
+    expect(requiresAction.items[0]?.details.approval).toEqual({ id: 'approval-1' })
+    expect(stopped.group.status).toBe('stopped')
+    expect(stopped.group.label).toBe('已停止创建：src/new.ts')
+    expect(stopped.items[0]?.label).toBe('已停止创建：src/new.ts')
+    expect(stopped.items[0]?.statusLabel).toBe('已停止')
+    expect(errored.group.status).toBe('error')
+    expect(errored.group.label).toBe('命令出错：npm test')
+    expect(errored.items[0]?.label).toBe('命令出错：npm test')
+    expect(errored.items[0]?.statusLabel).toBe('出错')
+    expect(errored.items[0]?.details.error).toBe('boom')
+  })
+
+  it('uses mixed status for terminal groups with different item outcomes', () => {
+    const display = buildToolActivityDisplayModel(
+      toolGroup([
+        fileChangePart('patch-completed', 'completed'),
+        fileChangePart('patch-stopped', 'stopped')
+      ])
+    )
+
+    expect(display.group.status).toBe('mixed')
+    expect(display.group.active).toBe(false)
+    expect(display.items.map((item) => item.status)).toEqual(['completed', 'stopped'])
+  })
+
+  it('normalizes MCP web search dynamic and Node REPL labels', () => {
+    const mcp = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'tool-call',
+          toolCallId: 'mcp-read',
+          toolName: 'mcp:github/read',
+          result: {
+            item: {
+              id: 'mcp-read',
+              type: 'mcpToolCall',
+              status: 'completed',
+              server: 'github',
+              tool: 'read'
+            }
+          }
+        }
+      ])
+    )
+    const web = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'web-live',
+          toolName: 'codex_web_search',
+          state: 'input-available',
+          input: { query: 'render unit parity' },
+          providerExecuted: true
+        }
+      ])
+    )
+    const dynamic = buildToolActivityDisplayModel(
+      toolGroup([dynamicToolPart('lookup-1', 'lookup'), dynamicToolPart('lookup-2', 'lookup')])
+    )
+    const nodeRepl = buildToolActivityDisplayModel(
+      toolGroup([
+        {
+          type: 'tool-call',
+          toolCallId: 'node-js',
+          toolName: 'mcp:node_repl/js',
+          result: {
+            item: {
+              id: 'node-js',
+              type: 'mcpToolCall',
+              status: 'completed',
+              server: 'node_repl',
+              tool: 'js'
+            }
+          }
+        }
+      ])
+    )
+
+    expect(mcp.group.label).toBe('已使用 github')
+    expect(mcp.group.detailRows).toEqual([{ label: '来源', value: 'github' }])
+    expect(mcp.items[0]?.label).toBe('MCP：github / read')
+    expect(web.group.label).toBe('正在搜索网页：render unit parity')
+    expect(web.items[0]?.label).toBe('网页搜索：render unit parity')
+    expect(dynamic.group.label).toBe('Lookup（2 次）')
+    expect(nodeRepl.group.label).toBe('已运行命令')
+  })
+
+  it('uses group summaries instead of a single active query for multiple active web searches', () => {
+    const display = buildToolActivityDisplayModel(
+      toolGroup([
+        webSearchPart('web-live-a', 'first active query'),
+        webSearchPart('web-live-b', 'second active query')
+      ])
+    )
+
+    expect(display.group.label).toBe('正在搜索网页')
+    expect(display.group.label).not.toContain('first active query')
+    expect(display.items.map((item) => item.label)).toEqual([
+      '网页搜索：first active query',
+      '网页搜索：second active query'
+    ])
+  })
+
+  it('formats command shell output and metadata for item details', () => {
+    const shell = {
+      command: 'npm test',
+      cwd: '/repo',
+      output: 'PASS src/App.test.tsx\n',
+      exitCode: 0,
+      durationMs: 1250
+    }
+
+    expect(shellOutputText(shell)).toBe('$ npm test\nPASS src/App.test.tsx\n')
+    expect(shellMetadata(shell)).toEqual(['cwd: /repo', 'exit 0', '1.3s'])
+  })
+})
+
+function toolGroup(content: readonly Record<string, unknown>[]): ToolGroupUnit {
+  const model = buildAssistantRenderUnits({
+    status: { type: 'running' },
+    content
+  })
+  const unit = model.units.find((candidate) => candidate.type === 'tool-group')
+  if (!unit || unit.type !== 'tool-group') {
+    throw new Error('Expected a tool group render unit')
+  }
+  return unit
+}
+
+function dynamicToolPart(id: string, tool: string): Record<string, unknown> {
+  return {
+    type: 'dynamic-tool',
+    toolCallId: id,
+    toolName: tool,
+    state: 'output-available',
+    output: {
+      item: {
+        id,
+        type: 'dynamicToolCall',
+        tool,
+        status: 'completed'
+      }
+    },
+    providerExecuted: true
+  }
+}
+
+function fileChangePart(id: string, status: string): Record<string, unknown> {
+  return {
+    type: 'tool-call',
+    toolCallId: id,
+    toolName: 'codex_file_change',
+    result: {
+      item: {
+        id,
+        type: 'fileChange',
+        status,
+        changes: [{ path: `src/${id}.ts`, kind: { type: 'update' }, diff: '+new\n' }]
+      }
+    }
+  }
+}
+
+function webSearchPart(id: string, query: string): Record<string, unknown> {
+  return {
+    type: 'dynamic-tool',
+    toolCallId: id,
+    toolName: 'codex_web_search',
+    state: 'input-available',
+    input: { query },
+    providerExecuted: true
+  }
+}

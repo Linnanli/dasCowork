@@ -29,17 +29,13 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import {
-  ToolGroupRoot,
-  ToolGroupTrigger,
-  ToolGroupContent
-} from '@/components/assistant-ui/tool-group'
-import {
   CollapsedActivityDetails,
   McpToolCallDetails,
   SpecialEntryRenderer,
   UnknownPartRenderer,
   WebSearchDetails
 } from '@/components/render-units/renderUnitDetails'
+import { ToolActivityGroupShell } from '@/components/render-units/toolActivityGroupShell'
 import { renderUnitAttributes } from '@/components/render-units/renderUnitAttributes'
 import {
   ActivityIcon,
@@ -82,7 +78,16 @@ import {
 } from './sidebar/useConversationState'
 import { cn } from './lib/utils'
 import { pendingAssistantMessageText } from './lib/assistantMessages'
-import { buildAssistantRenderUnits, type AssistantRenderUnit } from './lib/assistantRenderUnits'
+import {
+  buildAssistantRenderUnits,
+  type AssistantRenderUnit,
+  type ToolItem
+} from './lib/assistantRenderUnits'
+import {
+  buildToolActivityDisplayModel,
+  buildToolItemDisplay,
+  type ToolItemDisplay
+} from './lib/toolActivityDisplay'
 import { scrollToRenderTarget } from './lib/renderUnitNavigation'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
@@ -810,21 +815,17 @@ function AssistantRenderUnitView({
 }): React.JSX.Element | null {
   switch (unit.type) {
     case 'message-thinking':
-      return <span>{pendingAssistantMessageText}</span>
+      return (
+        <span data-slot="message-thinking-unit" {...renderUnitAttributes(unit)}>
+          {pendingAssistantMessageText}
+        </span>
+      )
     case 'text':
       return <AssistantText text={unit.text} unit={unit} />
     case 'entry':
       return <EntryUnit unit={unit} />
-    case 'collapsed-tool-activity':
-      return <CollapsedToolActivityUnit unit={unit} />
-    case 'pending-mcp-tool-calls':
-      return <PendingMcpToolCallsUnit unit={unit} />
-    case 'dynamic-tool-call-group':
-      return <DynamicToolCallGroupUnit unit={unit} />
-    case 'web-search-group':
-      return <WebSearchGroupUnit unit={unit} />
-    case 'multi-agent-group':
-      return <MultiAgentGroupUnit unit={unit} />
+    case 'tool-group':
+      return <ToolGroupUnit unit={unit} />
     case 'unknown':
       return <UnknownUnit unit={unit} />
   }
@@ -846,148 +847,67 @@ function AssistantText({
   )
 }
 
-function CollapsedToolActivityUnit({
+function ToolGroupUnit({
   unit
 }: {
-  unit: Extract<AssistantRenderUnit, { type: 'collapsed-tool-activity' }>
+  unit: Extract<AssistantRenderUnit, { type: 'tool-group' }>
 }): React.JSX.Element {
+  const displayModel = buildToolActivityDisplayModel(unit)
+
   return (
-    <AssistantToolGroupShell
+    <ToolActivityGroupShell
       unit={unit}
-      slot="collapsed-tool-activity-unit"
-      label={unit.showThinkingFallback ? pendingAssistantMessageText : unit.summary?.label}
-      icon={unit.summary?.icon}
-      active={Boolean(unit.active || unit.showThinkingFallback)}
+      slot="tool-group-unit"
+      display={displayModel.group}
       defaultOpen={false}
     >
-      <CollapsedActivityDetails summary={unit.summary} />
-      {unit.parts.map((part, index) => renderToolPart(part, index))}
-    </AssistantToolGroupShell>
-  )
-}
-
-function PendingMcpToolCallsUnit({
-  unit
-}: {
-  unit: Extract<AssistantRenderUnit, { type: 'pending-mcp-tool-calls' }>
-}): React.JSX.Element {
-  const sourceLabel = unit.mcpSource?.label
-  const label = mcpGroupLabel(unit, sourceLabel)
-
-  return (
-    <AssistantToolGroupShell
-      unit={unit}
-      slot="pending-mcp-tool-calls-unit"
-      label={label}
-      icon="mcp-tools"
-      active={Boolean(unit.active || unit.showThinkingFallback)}
-      defaultOpen={unit.mcpSource?.sourceType === 'app'}
-    >
-      <McpToolCallDetails parts={unit.parts} mcpSource={unit.mcpSource} />
-    </AssistantToolGroupShell>
-  )
-}
-
-function DynamicToolCallGroupUnit({
-  unit
-}: {
-  unit: Extract<AssistantRenderUnit, { type: 'dynamic-tool-call-group' }>
-}): React.JSX.Element {
-  return (
-    <AssistantToolGroupShell
-      unit={unit}
-      slot="dynamic-tool-call-group-unit"
-      label={dynamicGroupLabel(unit)}
-      icon={unit.summary?.icon ?? 'generic-tool'}
-      active={Boolean(unit.active || unit.showThinkingFallback)}
-      defaultOpen={unit.dynamicMetadata?.standaloneInConversation}
-    >
+      <CollapsedActivityDetails detailRows={displayModel.group.detailRows} />
       {unit.dynamicMetadata?.hasRegistryMetadata === false ? (
         <p className="text-xs text-muted-foreground">动态工具缺少完整显示元数据</p>
       ) : null}
-      {unit.parts.map((part, index) => renderToolPart(part, index))}
-    </AssistantToolGroupShell>
+      {unit.children.map((item, index) => (
+        <ToolItemRenderer
+          key={`${item.id}:${index}`}
+          item={item}
+          display={displayModel.items[index] ?? buildToolItemDisplay(item, unit)}
+          index={index}
+          group={unit}
+        />
+      ))}
+    </ToolActivityGroupShell>
   )
 }
 
-function WebSearchGroupUnit({
-  unit
+function ToolItemRenderer({
+  item,
+  display,
+  index,
+  group
 }: {
-  unit: Extract<AssistantRenderUnit, { type: 'web-search-group' }>
+  item: ToolItem
+  display: ToolItemDisplay
+  index: number
+  group: Extract<AssistantRenderUnit, { type: 'tool-group' }>
 }): React.JSX.Element {
-  return (
-    <AssistantToolGroupShell
-      unit={unit}
-      slot="web-search-group-unit"
-      label={webSearchGroupLabel(unit)}
-      icon="web-search"
-      active={Boolean(unit.active || unit.showThinkingFallback)}
-    >
-      <WebSearchDetails parts={unit.parts} />
-    </AssistantToolGroupShell>
-  )
-}
+  if (item.kind === 'mcpToolCall') {
+    return <McpToolCallDetails parts={[item.rawPart]} mcpSource={item.source ?? group.mcpSource} />
+  }
 
-function MultiAgentGroupUnit({
-  unit
-}: {
-  unit: Extract<AssistantRenderUnit, { type: 'multi-agent-group' }>
-}): React.JSX.Element {
-  const actionLabel = unit.action ? `${unit.action} ` : ''
-  const label = unit.showThinkingFallback
-    ? pendingAssistantMessageText
-    : `已运行 ${unit.partIndices.length} 个 ${actionLabel}协作任务`
+  if (item.kind === 'webSearch') {
+    return <WebSearchDetails parts={[item.rawPart]} />
+  }
 
   return (
-    <AssistantToolGroupShell
-      unit={unit}
-      slot="multi-agent-group-unit"
-      label={label}
-      icon="sub-agent"
-      active={Boolean(unit.active || unit.showThinkingFallback)}
-    >
-      {unit.parts.map((part, index) => renderToolPart(part, index))}
-    </AssistantToolGroupShell>
-  )
-}
-
-function AssistantToolGroupShell({
-  unit,
-  slot,
-  label,
-  icon,
-  active,
-  defaultOpen = false,
-  children
-}: {
-  unit: Extract<
-    AssistantRenderUnit,
-    {
-      type:
-        | 'collapsed-tool-activity'
-        | 'pending-mcp-tool-calls'
-        | 'dynamic-tool-call-group'
-        | 'web-search-group'
-        | 'multi-agent-group'
-    }
-  >
-  slot: string
-  label?: string
-  icon?: React.ComponentProps<typeof ToolGroupTrigger>['icon']
-  active: boolean
-  defaultOpen?: boolean
-  children: ReactNode
-}): React.JSX.Element {
-  return (
-    <ToolGroupRoot
-      variant="ghost"
-      data-slot={slot}
-      defaultOpen={defaultOpen}
-      {...renderUnitAttributes(unit)}
-    >
-      <ToolGroupTrigger count={unit.partIndices.length} label={label} icon={icon} active={active} />
-      <ToolGroupContent>{children}</ToolGroupContent>
-    </ToolGroupRoot>
+    <>
+      {renderToolPart(
+        item.rawPart,
+        index,
+        undefined,
+        item.dynamicMetadata ?? group.dynamicMetadata,
+        item,
+        display
+      )}
+    </>
   )
 }
 
@@ -1037,51 +957,6 @@ function isRenderableUnknownPart(part: Record<string, unknown>): boolean {
   return part.type === 'file' && stringRecordValue(part, 'mediaType')?.startsWith('image/') === true
 }
 
-function mcpGroupLabel(
-  unit: Extract<AssistantRenderUnit, { type: 'pending-mcp-tool-calls' }>,
-  sourceLabel: string | undefined
-): string | undefined {
-  if (unit.showThinkingFallback) return pendingAssistantMessageText
-
-  const sourceType = unit.mcpSource?.sourceType
-  if (sourceType === 'node-repl') {
-    return unit.active ? '正在运行 Node REPL' : '已运行 Node REPL'
-  }
-  if (sourceType === 'browser') {
-    return unit.active ? '正在使用 Browser' : '已使用 Browser'
-  }
-  if (sourceType === 'app' && sourceLabel) {
-    return unit.active
-      ? `正在使用 ${sourceLabel}`
-      : `已调用 ${sourceLabel} ${unit.partIndices.length} 次`
-  }
-
-  if (unit.active) {
-    return sourceLabel ? `正在调用 ${sourceLabel}` : (unit.summary?.label ?? '正在调用 MCP 工具')
-  }
-  if (sourceLabel) return `已调用 ${sourceLabel} ${unit.partIndices.length} 次`
-  return unit.summary?.label
-}
-
-function dynamicGroupLabel(
-  unit: Extract<AssistantRenderUnit, { type: 'dynamic-tool-call-group' }>
-): string {
-  if (unit.showThinkingFallback) return pendingAssistantMessageText
-
-  const baseLabel = unit.summary?.label ?? `已调用 ${unit.partIndices.length} 个动态工具`
-  const repeatCount = unit.dynamicMetadata?.repeatCount ?? 1
-  if (repeatCount <= 1 || !unit.dynamicMetadata?.completedSummaryKey) return baseLabel
-
-  return `${baseLabel}（重复 ${repeatCount} 次）`
-}
-
-function webSearchGroupLabel(
-  unit: Extract<AssistantRenderUnit, { type: 'web-search-group' }>
-): string {
-  if (unit.showThinkingFallback) return pendingAssistantMessageText
-  return unit.summary?.label ?? `已搜索 ${unit.partIndices.length} 次网页`
-}
-
 function entryText(unit: Extract<AssistantRenderUnit, { type: 'entry' }>): string | undefined {
   const item = unit.item
   return (
@@ -1105,15 +980,16 @@ function AssistantToolPart({
 function renderToolPart(
   part: Record<string, unknown>,
   index: number,
-  unit?: Extract<AssistantRenderUnit, { type: 'entry' }>
+  unit?: Extract<AssistantRenderUnit, { type: 'entry' }>,
+  _dynamicMetadata?: unknown,
+  item?: ToolItem,
+  display?: ToolItemDisplay
 ): ReactNode {
   const toolUI = part.toolUI as ReactNode | undefined
   if (toolUI) return toolUI
 
-  const summaryLabel = unit?.showThinkingFallback
-    ? pendingAssistantMessageText
-    : unit?.summary?.label
-  const activeStatus = toolStatusForPart(part, unit)
+  const activeStatus = toolStatusForPart(part)
+  const itemDisplay = display ?? (item ? buildToolItemDisplay(item) : undefined)
 
   return (
     <ToolFallback
@@ -1121,20 +997,14 @@ function renderToolPart(
       key={String(part.toolCallId ?? index)}
       toolName={stringRecordValue(part, 'toolName') ?? unit?.itemType ?? 'unknown_tool'}
       status={activeStatus ?? { type: 'complete' }}
-      summaryLabel={summaryLabel}
-      summaryIcon={unit?.summary?.icon}
+      display={itemDisplay}
+      summaryLabel={itemDisplay?.label ?? item?.label ?? unit?.summary?.label}
+      summaryIcon={itemDisplay?.icon ?? unit?.summary?.icon}
     />
   )
 }
 
-function toolStatusForPart(
-  part: Record<string, unknown>,
-  unit: Extract<AssistantRenderUnit, { type: 'entry' }> | undefined
-): ToolCallMessagePartStatus | undefined {
-  if (unit?.showThinkingFallback && isRecord(part.status) && part.status.type === 'complete') {
-    return { type: 'running' }
-  }
-
+function toolStatusForPart(part: Record<string, unknown>): ToolCallMessagePartStatus | undefined {
   if (isToolCallStatus(part.status)) return part.status
   if (part.preliminary === true) return { type: 'running' }
 

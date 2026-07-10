@@ -39,7 +39,7 @@ describe('renderUnitNavigation', () => {
   it('opens a collapsed parent before scrolling', async () => {
     const trigger = vi.fn()
     document.body.innerHTML = `
-      <div class="aui-tool-group-root" data-slot="web-search-group-unit" data-state="closed">
+      <div class="aui-tool-group-root" data-slot="tool-group-unit" data-tool-group-kind="web-search" data-state="closed">
         <button data-slot="tool-group-trigger">open</button>
         <div data-render-target-id="group-child-a" data-render-target-ids="child-a"></div>
       </div>

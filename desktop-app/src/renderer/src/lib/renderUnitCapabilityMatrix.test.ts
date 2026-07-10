@@ -52,8 +52,8 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
       renderer: 'TurnDiffEntryUnit'
     })
     expect(RENDER_UNIT_CAPABILITY_MATRIX.exploration).toMatchObject({
-      renderMode: 'custom',
-      renderer: 'ExplorationEntryUnit',
+      renderMode: 'tool',
+      renderer: 'ToolGroupUnit',
       fallbackLevel: 'none'
     })
   })
@@ -66,7 +66,6 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
       'turnDiff',
       'generated-image',
       'imageGeneration',
-      'exploration',
       'endResources',
       'reviewComments',
       'review-comments'
@@ -78,6 +77,11 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
         fallbackLevel: 'none'
       })
     }
+
+    expect(RENDER_UNIT_CAPABILITY_MATRIX.exploration).toMatchObject({
+      renderMode: 'tool',
+      fallbackLevel: 'none'
+    })
   })
 
   it('documents resource and review comment renderers as client-derived', () => {

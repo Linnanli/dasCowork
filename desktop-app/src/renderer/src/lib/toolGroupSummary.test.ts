@@ -100,7 +100,7 @@ describe('summarizeToolGroup', () => {
     ])
 
     expect(summary).toMatchObject({
-      label: '已读取 1 个文件，正在搜索 1 次网页',
+      label: '已读取 1 个文件，正在搜索网页',
       icon: 'web-search',
       active: true,
       count: 2,
@@ -208,6 +208,30 @@ describe('summarizeToolGroup', () => {
     })
   })
 
+  it('summarizes automatic approval timeouts', () => {
+    const summary = summarizeToolGroup([
+      {
+        type: 'tool-call',
+        toolName: 'codex_automatic_approval_review',
+        result: {
+          item: {
+            id: 'approval-timeout',
+            type: 'automaticApprovalReview',
+            status: 'completed',
+            outcome: 'timedOut'
+          }
+        }
+      }
+    ])
+
+    expect(summary).toMatchObject({
+      label: '已超时 1 次自动审批',
+      icon: 'review-mode',
+      active: false,
+      count: 1
+    })
+  })
+
   it('treats AI SDK preliminary dynamic-tool outputs as active', () => {
     const summary = summarizeToolGroup([
       {
@@ -264,7 +288,7 @@ describe('summarizeToolGroup', () => {
     ])
 
     expect(summary).toMatchObject({
-      activeSummary: '正在搜索：render unit parity',
+      activeSummary: '正在搜索网页：render unit parity',
       details: ['网页搜索：render unit parity']
     })
   })

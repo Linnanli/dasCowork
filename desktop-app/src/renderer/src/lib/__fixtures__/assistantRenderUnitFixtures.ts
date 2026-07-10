@@ -7,14 +7,17 @@ type AssistantRenderUnitFixture = {
 
 type ExpectedRenderUnitSummary = {
   type: string
+  kind?: string
   key?: string
   partIndices: readonly number[]
   action?: string
   renderMode?: string
   targetIds?: readonly string[]
+  childCount?: number
   mcpSourceType?: string
   dynamicRepeatCount?: number
   dynamicHasRegistryMetadata?: boolean
+  summaryOnly?: boolean
   summaryLabel?: string
 }
 
@@ -30,14 +33,26 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
       { type: 'file', mediaType: 'image/png', data: 'abc' }
     ],
     expectedUnits: [
-      { type: 'web-search-group', partIndices: [0, 1], targetIds: ['web-1', 'web-2'] },
+      {
+        type: 'tool-group',
+        kind: 'web-search',
+        partIndices: [0, 1],
+        targetIds: ['web-1', 'web-2'],
+        childCount: 2
+      },
       { type: 'text', partIndices: [2] },
-      { type: 'web-search-group', partIndices: [3], targetIds: ['web-3'] },
+      {
+        type: 'tool-group',
+        kind: 'web-search',
+        partIndices: [3],
+        targetIds: ['web-3'],
+        childCount: 1
+      },
       { type: 'unknown', partIndices: [4] }
     ]
   },
   {
-    name: 'multi-agent groups split when the action changes',
+    name: 'adjacent multi-agent tools stay in one group when the action changes',
     status: { type: 'complete' },
     parts: [
       toolPart('agent-1', 'collabAgentToolCall', { action: 'review' }),
@@ -46,16 +61,11 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'multi-agent-group',
-        partIndices: [0, 1],
-        action: 'review',
-        targetIds: ['agent-1', 'agent-2']
-      },
-      {
-        type: 'multi-agent-group',
-        partIndices: [2],
-        action: 'implement',
-        targetIds: ['agent-3']
+        type: 'tool-group',
+        kind: 'multi-agent',
+        partIndices: [0, 1, 2],
+        targetIds: ['agent-1', 'agent-2', 'agent-3'],
+        childCount: 3
       }
     ]
   },
@@ -82,11 +92,14 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'dynamic-tool-call-group',
+        type: 'tool-group',
+        kind: 'dynamic',
         partIndices: [0, 1],
         dynamicRepeatCount: 2,
         dynamicHasRegistryMetadata: true,
-        targetIds: ['dyn-1', 'dyn-2']
+        summaryOnly: true,
+        targetIds: ['dyn-1', 'dyn-2'],
+        childCount: 2
       }
     ]
   },
@@ -100,16 +113,18 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'dynamic-tool-call-group',
+        type: 'tool-group',
+        kind: 'dynamic',
         partIndices: [0],
         dynamicRepeatCount: 1,
         dynamicHasRegistryMetadata: true,
-        targetIds: ['dyn-standalone']
+        targetIds: ['dyn-standalone'],
+        childCount: 1
       }
     ]
   },
   {
-    name: 'MCP groups by app or server and keeps special tool experiences distinct',
+    name: 'adjacent MCP tools stay in one group across app and server sources',
     status: { type: 'complete' },
     parts: [
       toolPart('mcp-1', 'mcpToolCall', {
@@ -128,23 +143,11 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'pending-mcp-tool-calls',
-        partIndices: [0, 1],
-        mcpSourceType: 'app',
-        targetIds: ['mcp-1', 'mcp-2']
-      },
-      { type: 'entry', partIndices: [2], targetIds: ['mcp-3'] },
-      {
-        type: 'pending-mcp-tool-calls',
-        partIndices: [3],
-        mcpSourceType: 'node-repl',
-        targetIds: ['mcp-4']
-      },
-      {
-        type: 'pending-mcp-tool-calls',
-        partIndices: [4],
-        mcpSourceType: 'browser',
-        targetIds: ['mcp-5']
+        type: 'tool-group',
+        kind: 'mcp',
+        partIndices: [0, 1, 2, 3, 4],
+        targetIds: ['mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5'],
+        childCount: 5
       }
     ]
   },
@@ -163,10 +166,22 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'collapsed-tool-activity',
-        partIndices: [0, 1, 2, 3],
-        targetIds: ['mkdir-1', 'file-1', 'load-1', 'approval-1'],
-        summaryLabel: '已创建 1 个文件夹，已创建 1 个文件，已加载 1 个工具定义，已拒绝 1 次自动审批'
+        type: 'tool-group',
+        kind: 'composite',
+        partIndices: [0, 1],
+        targetIds: ['mkdir-1', 'file-1'],
+        childCount: 2,
+        summaryLabel: '已创建 1 个文件夹，已创建 1 个文件'
+      },
+      {
+        type: 'entry',
+        partIndices: [2],
+        targetIds: ['load-1']
+      },
+      {
+        type: 'entry',
+        partIndices: [3],
+        targetIds: ['approval-1']
       }
     ]
   },
@@ -198,11 +213,12 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ],
     expectedUnits: [
       {
-        type: 'entry',
-        key: 'exploration:exec-1',
+        type: 'tool-group',
+        kind: 'exploration',
+        key: 'tool-group:exec-1',
         partIndices: [0],
-        renderMode: 'custom',
-        targetIds: ['exec-item-1', 'exec-1']
+        targetIds: ['exec-item-1', 'exec-1'],
+        childCount: 1
       }
     ]
   }

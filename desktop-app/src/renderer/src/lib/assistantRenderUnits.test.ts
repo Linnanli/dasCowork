@@ -21,19 +21,19 @@ describe('buildAssistantRenderUnits', () => {
     expect(
       model.units.map((unit) => ({
         type: unit.type,
+        kind: unit.type === 'tool-group' ? unit.kind : undefined,
         key: unit.key,
         partIndices: unit.partIndices,
         action: 'action' in unit ? unit.action : undefined,
         renderMode: unit.type === 'entry' ? unit.renderMode : undefined,
         targetIds: unit.target.itemIds,
-        mcpSourceType:
-          unit.type === 'pending-mcp-tool-calls' ? unit.mcpSource?.sourceType : undefined,
+        childCount: unit.type === 'tool-group' ? unit.children.length : undefined,
+        mcpSourceType: unit.type === 'tool-group' ? unit.mcpSource?.sourceType : undefined,
         dynamicRepeatCount:
-          unit.type === 'dynamic-tool-call-group' ? unit.dynamicMetadata?.repeatCount : undefined,
+          unit.type === 'tool-group' ? unit.dynamicMetadata?.repeatCount : undefined,
         dynamicHasRegistryMetadata:
-          unit.type === 'dynamic-tool-call-group'
-            ? unit.dynamicMetadata?.hasRegistryMetadata
-            : undefined,
+          unit.type === 'tool-group' ? unit.dynamicMetadata?.hasRegistryMetadata : undefined,
+        summaryOnly: unit.type === 'tool-group' ? unit.summaryOnly : undefined,
         summaryLabel: unit.summary?.label
       }))
     ).toMatchObject(fixture.expectedUnits)
@@ -57,7 +57,7 @@ describe('buildAssistantRenderUnits', () => {
       content: [toolPart('cmd-1', 'commandExecution'), { type: 'text', text: '结果如下' }]
     })
 
-    expect(model.units.map((unit) => unit.type)).toEqual(['entry', 'text'])
+    expect(model.units.map((unit) => unit.type)).toEqual(['tool-group', 'text'])
     expect(model.units[0]).toMatchObject({ showThinkingFallback: false })
   })
 
@@ -72,27 +72,36 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toHaveLength(1)
     expect(model.units[0]).toMatchObject({
-      type: 'collapsed-tool-activity',
+      type: 'tool-group',
+      kind: 'composite',
       active: true,
       showThinkingFallback: false
     })
   })
 
-  it('assigns thinking to the completed latest collapsed tool activity while the turn runs', () => {
+  it('adds message-level thinking after completed tool activity while the turn runs', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },
       content: [toolPart('cmd-1', 'commandExecution'), toolPart('file-1', 'fileChange')]
     })
 
-    expect(model.units).toHaveLength(1)
-    expect(model.units[0]).toMatchObject({
-      type: 'collapsed-tool-activity',
-      active: false,
-      showThinkingFallback: true
-    })
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        kind: 'composite',
+        active: false,
+        showThinkingFallback: false
+      },
+      {
+        type: 'message-thinking',
+        key: 'message-thinking',
+        active: true,
+        showThinkingFallback: true
+      }
+    ])
   })
 
-  it('keeps completed activity outside the current active activity group', () => {
+  it('keeps adjacent completed and active tools in the same activity group', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },
       content: [
@@ -103,18 +112,41 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'entry',
-        itemType: 'commandExecution',
-        active: false,
-        showThinkingFallback: false
-      },
-      {
-        type: 'entry',
-        itemType: 'fileChange',
+        type: 'tool-group',
+        kind: 'composite',
+        partIndices: [0, 1],
+        status: 'running',
         active: true,
         showThinkingFallback: false
       }
     ])
+    expect(model.units).toHaveLength(1)
+  })
+
+  it('keeps the same group key when a second adjacent tool joins a running turn', () => {
+    const afterFirstTool = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [toolPart('cmd-complete', 'commandExecution')]
+    })
+    const whileSecondToolRuns = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        toolPart('cmd-complete', 'commandExecution'),
+        toolPart('file-active', 'fileChange', { status: { type: 'running' } })
+      ]
+    })
+
+    expect(afterFirstTool.units[0]).toMatchObject({
+      type: 'tool-group',
+      key: 'tool-group:cmd-complete'
+    })
+    expect(whileSecondToolRuns.units).toHaveLength(1)
+    expect(whileSecondToolRuns.units[0]).toMatchObject({
+      type: 'tool-group',
+      key: 'tool-group:cmd-complete',
+      kind: 'composite',
+      partIndices: [0, 1]
+    })
   })
 
   it('hides completed low-value internals in steps prose detail level', () => {
@@ -130,8 +162,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'entry',
-        itemType: 'fileChange'
+        type: 'tool-group',
+        kind: 'file-change'
       }
     ])
     expect(model.units).toHaveLength(1)
@@ -159,7 +191,20 @@ describe('buildAssistantRenderUnits', () => {
       content: [toolPart('web-1', 'webSearch'), toolPart('web-2', 'webSearch')]
     })
 
-    expect(model.units).toMatchObject([{ type: 'web-search-group', partIndices: [0, 1] }])
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'web-search', partIndices: [0, 1] }
+    ])
+  })
+
+  it('keeps mixed web search and command activity in a composite tool group', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [toolPart('web-1', 'webSearch'), toolPart('cmd-1', 'commandExecution')]
+    })
+
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'composite', partIndices: [0, 1] }
+    ])
   })
 
   it('groups historical dynamic-tool webSearch parts like live tool-call parts', () => {
@@ -179,7 +224,9 @@ describe('buildAssistantRenderUnits', () => {
       ]
     })
 
-    expect(model.units).toMatchObject([{ type: 'web-search-group', partIndices: [0, 1] }])
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'web-search', partIndices: [0, 1] }
+    ])
   })
 
   it('normalizes read list and search command activity into an exploration entry', () => {
@@ -200,20 +247,15 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'entry',
-        itemType: 'exploration',
-        renderMode: 'custom',
+        type: 'tool-group',
+        kind: 'exploration',
         partIndices: [0, 1, 2]
       }
     ])
     expect(model.units[0]?.target.itemIds).toEqual(
       expect.arrayContaining(['read-1', 'list-1', 'search-1'])
     )
-    expect(model.units[0]?.type === 'entry' ? model.units[0].item?.actions : undefined).toEqual([
-      { type: 'read', label: '/repo/src/a.ts', path: '/repo/src/a.ts', command: 'sed -n 1,80p' },
-      { type: 'list', label: '/repo/src', path: '/repo/src', command: 'ls src' },
-      { type: 'search', label: 'needle', query: 'needle', command: 'rg needle' }
-    ])
+    expect(model.units[0]?.type === 'tool-group' ? model.units[0].children : []).toHaveLength(3)
   })
 
   it('recognizes reference exec parsed command exploration actions', () => {
@@ -231,9 +273,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'entry',
-        itemType: 'exploration',
-        renderMode: 'custom',
+        type: 'tool-group',
+        kind: 'exploration',
         partIndices: [0, 1]
       }
     ])
@@ -259,12 +300,13 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'web-search-group',
+        type: 'tool-group',
+        kind: 'web-search',
         active: true,
         partIndices: [0],
         target: { itemIds: ['web-live'] },
         summary: {
-          activeSummary: '正在搜索：live render unit query',
+          activeSummary: '正在搜索网页：live render unit query',
           details: ['网页搜索：live render unit query']
         }
       }
@@ -288,9 +330,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'entry',
-        itemType: undefined,
-        renderMode: 'tool'
+        type: 'tool-group',
+        kind: 'dynamic'
       }
     ])
   })
@@ -326,7 +367,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'pending-mcp-tool-calls',
+        type: 'tool-group',
+        kind: 'mcp',
         partIndices: [0, 1],
         mcpSource: {
           sourceType: 'app',
@@ -375,7 +417,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'pending-mcp-tool-calls',
+        type: 'tool-group',
+        kind: 'mcp',
         active: true,
         mcpSource: {
           sourceType: 'app',
@@ -393,7 +436,9 @@ describe('buildAssistantRenderUnits', () => {
       content: [toolPart('dyn-1', 'dynamicToolCall'), toolPart('dyn-2', 'dynamicToolCall')]
     })
 
-    expect(model.units).toMatchObject([{ type: 'dynamic-tool-call-group', partIndices: [0, 1] }])
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'dynamic', partIndices: [0, 1] }
+    ])
   })
 
   it('keeps dynamic tool fallback metadata explicit when registry metadata is absent', () => {
@@ -417,13 +462,126 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'dynamic-tool-call-group',
+        type: 'tool-group',
+        kind: 'dynamic',
         dynamicMetadata: {
           hasRegistryMetadata: false,
-          repeatCount: 2
+          repeatCount: 2,
+          displayLabels: [
+            {
+              completedLabel: 'Lookup',
+              count: 2,
+              hasRegistryMetadata: false
+            }
+          ]
         }
       }
     ])
+  })
+
+  it('normalizes successful automation_update dynamic tools into compact entries', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        historicalDynamicToolPart('automation-1', 'automation_update', {
+          id: 'automation-1',
+          type: 'dynamicToolCall',
+          tool: 'automation_update',
+          status: 'completed',
+          success: true,
+          arguments: {
+            name: 'daily digest',
+            action: 'updated',
+            summary: 'daily digest updated'
+          }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'entry',
+        itemType: 'automationUpdate',
+        renderMode: 'custom',
+        item: {
+          type: 'automationUpdate',
+          name: 'daily digest',
+          action: 'updated',
+          summary: 'daily digest updated'
+        }
+      }
+    ])
+  })
+
+  it('keeps failed automation_update calls in dynamic tool fallback instead of compact success UI', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        historicalDynamicToolPart('automation-1', 'automation_update', {
+          id: 'automation-1',
+          type: 'dynamicToolCall',
+          tool: 'automation_update',
+          status: 'completed',
+          success: false,
+          error: 'permission denied',
+          arguments: { name: 'daily digest' }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([{ type: 'tool-group', kind: 'dynamic' }])
+  })
+
+  it('marks summary-only dynamic groups as non-expandable render units', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('dyn-1', 'dynamicToolCall', {
+          registryMetadata: {
+            summaryOnlyInConversationGroup: true,
+            completedSummaryKey: 'docs'
+          }
+        }),
+        toolPart('dyn-2', 'dynamicToolCall', {
+          registryMetadata: {
+            summaryOnlyInConversationGroup: true,
+            completedSummaryKey: 'docs'
+          }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        kind: 'dynamic',
+        summaryOnly: true
+      }
+    ])
+  })
+
+  it('keeps completed dynamic groups live between calls while the message runs', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        toolPart('dyn-1', 'dynamicToolCall', {
+          registryMetadata: {
+            completedSummaryKey: 'docs',
+            continuesLiveActivityBetweenCalls: true
+          }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        kind: 'dynamic',
+        active: true,
+        showThinkingFallback: false
+      }
+    ])
+    expect(model.units).toHaveLength(1)
   })
 
   it('groups consecutive MCP tool calls by server', () => {
@@ -435,7 +593,7 @@ describe('buildAssistantRenderUnits', () => {
       ]
     })
 
-    expect(model.units).toMatchObject([{ type: 'pending-mcp-tool-calls', partIndices: [0, 1] }])
+    expect(model.units).toMatchObject([{ type: 'tool-group', kind: 'mcp', partIndices: [0, 1] }])
   })
 
   it('renders a single regular MCP server call through the MCP group renderer', () => {
@@ -446,7 +604,8 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units).toMatchObject([
       {
-        type: 'pending-mcp-tool-calls',
+        type: 'tool-group',
+        kind: 'mcp',
         partIndices: [0],
         mcpSource: {
           sourceType: 'server',
@@ -465,7 +624,9 @@ describe('buildAssistantRenderUnits', () => {
       ]
     })
 
-    expect(model.units).toMatchObject([{ type: 'multi-agent-group', partIndices: [0, 1] }])
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'multi-agent', partIndices: [0, 1] }
+    ])
   })
 
   it('keeps stable keys and target ids for grouped internal items', () => {
@@ -478,9 +639,9 @@ describe('buildAssistantRenderUnits', () => {
     })
 
     expect(model.units[0]).toMatchObject({
-      key: 'multi-agent-group:review:0',
+      key: 'tool-group:agent-1',
       target: {
-        id: 'render-unit-multi-agent-group-review-0',
+        id: 'render-unit-tool-group-agent-1',
         itemIds: ['agent-1', 'agent-2']
       }
     })
@@ -554,7 +715,8 @@ describe('buildAssistantRenderUnits', () => {
     ])
     expect(model.units).toMatchObject([
       {
-        type: 'pending-mcp-tool-calls',
+        type: 'tool-group',
+        kind: 'mcp',
         partIndices: [1],
         mcpSource: {
           sourceType: 'app',

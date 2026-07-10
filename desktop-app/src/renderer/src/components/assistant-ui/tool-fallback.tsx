@@ -14,6 +14,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { toolGroupIconMap } from './tool-group'
+import {
+  shellMetadata,
+  shellOutputText,
+  type ToolItemDisplay,
+  type ToolItemShellDetails
+} from '@/lib/toolActivityDisplay'
 import type { ToolGroupIconName } from '@/lib/toolGroupSummary'
 
 const ANIMATION_DURATION = 200
@@ -82,14 +88,21 @@ const statusIconMap: Partial<Record<ToolStatus, React.ElementType>> = {
 }
 
 type ToolFallbackProps = ToolCallMessagePartProps & {
+  display?: ToolItemDisplay
   summaryLabel?: string
   summaryIcon?: ToolGroupIconName
+  args?: unknown
+  input?: unknown
+  output?: unknown
 }
+
+type AnyRecord = Record<string, unknown>
 
 function ToolFallbackTrigger({
   toolName,
   summaryLabel,
   summaryIcon,
+  statusLabel,
   status,
   className,
   ...props
@@ -97,17 +110,26 @@ function ToolFallbackTrigger({
   toolName: string
   summaryLabel?: string
   summaryIcon?: ToolGroupIconName
+  statusLabel?: string
   status?: ToolCallMessagePartStatus
 }) {
   const statusType = status?.type ?? 'complete'
   const isRunning = statusType === 'running'
   const isCancelled = status?.type === 'incomplete' && status.reason === 'cancelled'
+  const visibleStatusLabel = visibleTriggerStatusLabel(summaryLabel, statusLabel)
 
   const Icon =
     statusIconMap[statusType] ?? (summaryIcon ? toolGroupIconMap[summaryIcon] : undefined)
   const label = isCancelled ? 'Cancelled tool' : 'Used tool'
   const labelContent = summaryLabel ? (
-    <span>{summaryLabel}</span>
+    <span className="inline-flex min-w-0 items-baseline gap-1.5">
+      {visibleStatusLabel ? (
+        <span className="shrink-0 text-xs font-medium text-muted-foreground">
+          {visibleStatusLabel}
+        </span>
+      ) : null}
+      <span className="min-w-0 truncate">{summaryLabel}</span>
+    </span>
   ) : (
     <span>
       {label}: <b>{toolName}</b>
@@ -118,12 +140,12 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        'aui-tool-fallback-trigger group/trigger text-muted-foreground hover:text-foreground flex w-fit origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]',
+        'aui-tool-fallback-trigger group/trigger text-muted-foreground hover:text-foreground flex w-fit origin-left items-center gap-2 py-1.5 text-sm transition-colors',
         className
       )}
       {...props}
     >
-      {Icon && (
+      {Icon ? (
         <Icon
           data-slot="tool-fallback-trigger-icon"
           className={cn(
@@ -131,7 +153,7 @@ function ToolFallbackTrigger({
             isCancelled && 'text-muted-foreground'
           )}
         />
-      )}
+      ) : null}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
@@ -245,21 +267,62 @@ function ToolFallbackResult({
   )
 }
 
+function ToolFallbackShell({
+  details,
+  className,
+  ...props
+}: React.ComponentProps<'div'> & {
+  details?: ToolItemShellDetails
+}) {
+  if (!details) return null
+
+  const shellText = shellOutputText(details)
+  const metadata = shellMetadata(details)
+  if (!shellText && metadata.length === 0) return null
+
+  return (
+    <div
+      data-slot="tool-fallback-shell"
+      className={cn(
+        'aui-tool-fallback-shell overflow-hidden rounded-md border border-border/50 bg-muted/40',
+        className
+      )}
+      {...props}
+    >
+      {shellText ? (
+        <pre
+          data-slot="tool-fallback-shell-output"
+          className="aui-tool-fallback-shell-output max-h-80 overflow-auto p-2.5 font-mono text-xs whitespace-pre-wrap text-foreground/90"
+        >
+          {shellText}
+        </pre>
+      ) : null}
+      {metadata.length > 0 ? (
+        <p
+          data-slot="tool-fallback-shell-meta"
+          className="aui-tool-fallback-shell-meta border-t border-border/50 px-2.5 py-1.5 text-xs text-muted-foreground"
+        >
+          {metadata.join(' | ')}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function ToolFallbackError({
+  error,
   status,
   className,
   ...props
 }: React.ComponentProps<'div'> & {
+  error?: unknown
   status?: ToolCallMessagePartStatus
 }) {
-  if (status?.type !== 'incomplete') return null
-
-  const error = status.error
   const errorText = error ? (typeof error === 'string' ? error : JSON.stringify(error)) : null
 
   if (!errorText) return null
 
-  const isCancelled = status.reason === 'cancelled'
+  const isCancelled = status?.type === 'incomplete' && status.reason === 'cancelled'
   const headerText = isCancelled ? 'Cancelled reason:' : 'Error:'
 
   return (
@@ -343,49 +406,127 @@ function ToolFallbackApproval({
 
 const ToolFallbackImpl = ({
   toolName,
+  display,
   summaryLabel,
   summaryIcon,
   argsText,
+  args,
+  input,
   result,
+  output,
   status,
   addResult,
   resume,
   interrupt,
-  approval
+  approval,
+  ...partRest
 }) => {
   const isCancelled = status?.type === 'incomplete' && status.reason === 'cancelled'
   const isRequiresAction = status?.type === 'requires-action'
 
-  const [open, setOpen] = useState(isRequiresAction)
+  const [open, setOpen] = useState(display?.defaultOpen ?? isRequiresAction)
   const [prevRequiresAction, setPrevRequiresAction] = useState(isRequiresAction)
   if (isRequiresAction !== prevRequiresAction) {
     setPrevRequiresAction(isRequiresAction)
     if (isRequiresAction) setOpen(true)
   }
 
+  const shellDetails = display?.details.shell
+  const fallbackArgsText = display?.details.argsText ?? argsText ?? formattedJson(args ?? input)
+  const fallbackResult = display?.details.result ?? result ?? output
+  const fallbackApproval =
+    approval ?? (display?.details.approval as ToolCallMessagePart['approval'] | undefined)
+  const showShellResult =
+    display?.details.showResult ??
+    shouldRenderShellResult(fallbackResult, partRest.isError === true)
+
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
         toolName={toolName}
-        summaryLabel={summaryLabel}
-        summaryIcon={summaryIcon}
+        summaryLabel={display?.label ?? summaryLabel}
+        summaryIcon={display?.icon ?? summaryIcon}
+        statusLabel={display?.statusLabel}
         status={status}
       />
       <ToolFallbackContent>
-        <ToolFallbackError status={status} />
-        <ToolFallbackArgs argsText={argsText} className={cn(isCancelled && 'opacity-60')} />
+        <ToolFallbackError error={display?.details.error ?? status?.error} status={status} />
+        {shellDetails ? (
+          <ToolFallbackShell details={shellDetails} className={cn(isCancelled && 'opacity-60')} />
+        ) : (
+          <ToolFallbackArgs
+            argsText={fallbackArgsText}
+            className={cn(isCancelled && 'opacity-60')}
+          />
+        )}
         {isRequiresAction && (
           <ToolFallbackApproval
             addResult={addResult}
             resume={resume}
             interrupt={interrupt}
-            approval={approval}
+            approval={fallbackApproval}
           />
         )}
-        {!isCancelled && <ToolFallbackResult result={result} />}
+        {!isCancelled && (!shellDetails || showShellResult) && (
+          <ToolFallbackResult result={fallbackResult} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   )
+}
+
+function shouldRenderShellResult(result: unknown, isError: boolean): boolean {
+  if (result === undefined) return false
+  if (isError) return true
+
+  const record = recordValue(result)
+  if (!record) return true
+  if (record.error !== undefined) return true
+  if (record.isError === true) return true
+
+  const item = recordValue(record.item)
+  if (stringValue(item?.type) === 'commandExecution') return false
+  if (stringValue(record.type) === 'commandExecution') return false
+
+  return true
+}
+
+function visibleTriggerStatusLabel(
+  summaryLabel: string | undefined,
+  statusLabel: string | undefined
+): string | undefined {
+  if (!statusLabel || statusLabel === '已完成') return undefined
+  if (!summaryLabel) return statusLabel
+  if (labelImpliesStatus(summaryLabel, statusLabel)) return undefined
+  return statusLabel
+}
+
+function labelImpliesStatus(label: string, statusLabel: string): boolean {
+  if (label.includes(statusLabel)) return true
+  if (statusLabel === '正在运行' && label.startsWith('正在')) return true
+  if (statusLabel === '已停止' && label.startsWith('已停止')) return true
+  if (statusLabel === '出错' && label.includes('出错')) return true
+  if (statusLabel === '等待审批' && label.includes('等待审批')) return true
+  if (statusLabel === '状态混合' && label.includes('状态混合')) return true
+  return false
+}
+
+function formattedJson(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
+}
+
+function recordValue(value: unknown): AnyRecord | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function isRecord(value: unknown): value is AnyRecord {
+  return typeof value === 'object' && value !== null
 }
 
 const ToolFallback = memo(ToolFallbackImpl) as unknown as ToolCallMessagePartComponent & {
