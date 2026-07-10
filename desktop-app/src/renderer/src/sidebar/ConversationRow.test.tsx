@@ -33,6 +33,10 @@ describe('ConversationRow', () => {
     const row = container.querySelector('button')
     expect(row?.getAttribute('aria-current')).toBe('page')
     expect(row?.getAttribute('aria-label')).toBe('Conversation A, running, unread, needs attention')
+    expect(row?.className).toContain('w-full')
+    expect(row?.textContent).toContain('Conversation A')
+    expect(row?.querySelector('span')?.className).toContain('w-full')
+    expect(row?.querySelector('span')?.className).toContain('truncate')
     expect(row?.querySelector('.lucide-loader')).not.toBeNull()
 
     act(() => row?.click())

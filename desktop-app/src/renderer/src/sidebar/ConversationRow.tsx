@@ -20,7 +20,7 @@ export function ConversationRow({
       aria-current={conversation.active ? 'page' : undefined}
       aria-label={conversationAriaLabel(conversation, title)}
       className={cn(
-        'group flex min-h-8 min-w-0 cursor-default items-center gap-1 rounded-md transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+        'group flex min-h-8 w-full min-w-0 cursor-default items-center gap-1 rounded-md transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
         nativeBackdrop
           ? 'hover:bg-background/40 focus-within:bg-background/40 dark:hover:bg-foreground/8'
           : 'hover:bg-muted focus-within:bg-muted'
@@ -29,8 +29,8 @@ export function ConversationRow({
       onClick={onOpen}
     >
       <div className="flex min-w-0 flex-1 flex-col px-3 py-1 text-left text-sm text-foreground">
-        <span className="min-w-0 truncate">{title}</span>
-        <span className="truncate text-[11px] font-normal text-muted-foreground">
+        <span className="block w-full min-w-0 truncate">{title}</span>
+        <span className="block w-full min-w-0 truncate text-[11px] font-normal text-muted-foreground">
           {projectLabel ?? formatConversationMeta(conversation)}
         </span>
       </div>
