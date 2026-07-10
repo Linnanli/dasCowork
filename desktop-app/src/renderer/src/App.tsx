@@ -876,9 +876,10 @@ function AssistantMessage({
         </MessagePrimitive.Error>
       </div>
       {isThinkingOnly ? null : (
+        // Keep the autohidden action bar from changing the following message's position.
         <div
           data-slot="aui_assistant-message-footer"
-          className="ml-2 flex min-h-7.5 items-center pt-1.5 -mb-7.5"
+          className="ml-2 mt-1.5 flex h-8 items-center -mb-8"
         >
           <AssistantActionBar />
         </div>

@@ -1109,6 +1109,24 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).toBeNull()
   })
 
+  it('keeps the assistant message footer height stable when actions appear', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [{ type: 'text', text: '完成了' }]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const assistantFooter = container.querySelector('[data-slot="aui_assistant-message-footer"]')
+
+    expect(assistantFooter?.className).toContain('mt-1.5')
+    expect(assistantFooter?.className).toContain('h-8')
+    expect(assistantFooter?.className).toContain('-mb-8')
+    expect(assistantFooter?.className).not.toContain('min-h-7.5')
+    expect(assistantFooter?.className).not.toContain('pt-1.5')
+  })
+
   it('renders assistant text with the streamdown markdown renderer', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.content = [{ type: 'text', text: '# 标题\n\n- 条目' }]
