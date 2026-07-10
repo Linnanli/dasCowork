@@ -19,6 +19,11 @@ export function SidebarProjectsSection({
   conversationState: ConversationStateController
   onNewChat: () => void
 }): React.JSX.Element {
+  const startProjectConversation = async (group: SidebarProjectGroup): Promise<void> => {
+    await projectState.selectProject(group.selection)
+    onNewChat()
+  }
+
   const toggleGroupCollapsed = (group: SidebarProjectGroup): void => {
     const collapsedGroupIds = group.collapsed
       ? conversationState.preferences.collapsedGroupIds.filter((groupId) => groupId !== group.id)
@@ -60,12 +65,9 @@ export function SidebarProjectsSection({
               key={group.id}
               group={group}
               nativeBackdrop={nativeBackdrop}
-              onSelectProject={() => void projectState.selectProject(group.selection)}
+              onSelectProject={() => void startProjectConversation(group)}
               onToggleCollapsed={() => toggleGroupCollapsed(group)}
-              onNewChat={() => {
-                onNewChat()
-                void projectState.selectProject(group.selection)
-              }}
+              onNewChat={() => void startProjectConversation(group)}
               onRemoveProject={() => void projectState.removeProject(group.selection)}
               onOpenConversation={(conversationId) =>
                 void conversationState.openConversation({ conversationId })

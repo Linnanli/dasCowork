@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
@@ -27,6 +26,10 @@ import type {
 } from '../shared/projects/projectTypes'
 
 const activePorts = new Map<string, MessagePort>()
+
+const desktopEnvironment = {
+  platform: process.platform
+}
 
 const desktopCodex: DesktopCodexApi = {
   getStatus: () => ipcRenderer.invoke('codex:get-status') as Promise<CodexStatus>,
@@ -154,7 +157,7 @@ const desktopConversations: DesktopConversationsApi = {
 }
 
 const desktopApp = {
-  electron: electronAPI,
+  environment: desktopEnvironment,
   codex: desktopCodex,
   chat: desktopCodexChat,
   projects: desktopProjects,

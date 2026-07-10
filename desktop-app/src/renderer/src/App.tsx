@@ -93,10 +93,12 @@ import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
 import type { ModelOption } from './components/assistant-ui'
+import type { ProjectSelection } from '../../shared/projects/projectTypes'
 
 type CodexSidebarProps = {
   collapsed: boolean
   nativeBackdrop: boolean
+  navigationBlocked: boolean
   projectState: ProjectStateController
   conversationState: ConversationStateController
   onNewChat: () => void
@@ -109,6 +111,7 @@ type HeaderProps = {
 }
 
 type ComposerProps = {
+  activeConversation?: ActiveConversationContext
   models: readonly ModelOption[]
   selectedModelId: string | undefined
   modelSelectionError?: string
@@ -210,7 +213,7 @@ const sidebarGlassClass =
   'shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)] dark:shadow-[0_18px_60px_-48px_rgba(0,0,0,0.95)]'
 
 function useNativeBackdrop(): boolean {
-  return window.desktopApp.electron.process.platform === 'darwin'
+  return window.desktopApp.environment.platform === 'darwin'
 }
 
 function App(): React.JSX.Element {
@@ -224,6 +227,7 @@ function App(): React.JSX.Element {
     selectedModelId,
     setSelectedModelId,
     activeConversation,
+    conversationNavigationBlocked,
     startNewConversation,
     openConversation
   } = useCodexIpcAssistantRuntime({
@@ -270,6 +274,7 @@ function App(): React.JSX.Element {
         <CodexSidebar
           collapsed={sidebarCollapsed}
           nativeBackdrop={nativeBackdrop}
+          navigationBlocked={conversationNavigationBlocked}
           projectState={projectState}
           conversationState={conversationState}
           onNewChat={startNewConversation}
@@ -290,6 +295,7 @@ function App(): React.JSX.Element {
             />
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatThread
+                activeConversation={activeConversation}
                 hasBlockingRequest={serverRequests.length > 0}
                 models={models}
                 selectedModelId={selectedModelId}
@@ -313,13 +319,17 @@ function App(): React.JSX.Element {
 function CodexSidebar({
   collapsed,
   nativeBackdrop,
+  navigationBlocked,
   projectState,
   conversationState,
   onNewChat
 }: CodexSidebarProps): React.JSX.Element {
   return (
     <aside
+      aria-disabled={navigationBlocked || undefined}
       data-slot="codex-sidebar"
+      inert={navigationBlocked || undefined}
+      title={navigationBlocked ? '停止当前生成后再切换会话' : undefined}
       className={cn(
         sidebarBaseClass,
         nativeBackdrop && nativeBackdropSurfaceClass,
@@ -428,6 +438,7 @@ function isNewChatView(state: AssistantState): boolean {
 }
 
 function ChatThread({
+  activeConversation,
   hasBlockingRequest,
   models,
   selectedModelId,
@@ -477,6 +488,7 @@ function ChatThread({
         >
           <ThreadScrollToBottom />
           <Composer
+            activeConversation={activeConversation}
             models={models}
             selectedModelId={selectedModelId}
             modelSelectionError={modelSelectionError}
@@ -1296,15 +1308,24 @@ function ComposerTriggerPopover({
 }
 
 function Composer({
+  activeConversation,
   models,
   selectedModelId,
   modelSelectionError,
   onSelectedModelChange,
   projectState
 }: ComposerProps): React.JSX.Element {
+  const globalProjectSelection = projectState.state?.activeProjectSelection
+  const conversationProjectSelection = activeConversation?.projectSelection
+  const projectContext = conversationProjectContext(activeConversation, projectState)
+  const fileSearchMatchesConversation =
+    !activeConversation ||
+    (conversationProjectSelection !== undefined &&
+      sameProjectSelection(conversationProjectSelection, globalProjectSelection))
+  const workspaceFileSearchEnabled = projectState.hasSelection && fileSearchMatchesConversation
   const workspaceFileSearch = useWorkspaceFileSearch({
     manager: window.desktopApp.projects,
-    enabled: projectState.hasSelection,
+    enabled: workspaceFileSearchEnabled,
     limit: 40
   })
   const { results: workspaceFileResults, search: searchWorkspaceFilesForMentions } =
@@ -1312,9 +1333,9 @@ function Composer({
   const projectSelectionKey = JSON.stringify(projectState.state?.activeProjectSelection ?? null)
 
   useEffect(() => {
-    if (!projectState.hasSelection) return
+    if (!workspaceFileSearchEnabled) return
     void searchWorkspaceFilesForMentions('')
-  }, [projectSelectionKey, projectState.hasSelection, searchWorkspaceFilesForMentions])
+  }, [projectSelectionKey, searchWorkspaceFilesForMentions, workspaceFileSearchEnabled])
 
   const fileMentions = useMemo(
     () =>
@@ -1384,9 +1405,9 @@ function Composer({
               )}
               <span
                 className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
-                title={projectState.currentDetail ?? projectState.currentLabel}
+                title={projectContext.detail ?? projectContext.label}
               >
-                Working in: {projectState.currentLabel}
+                Working in: {projectContext.label}
               </span>
             </div>
             <div className="flex items-center gap-1.5">
@@ -1425,6 +1446,67 @@ function Composer({
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function conversationProjectContext(
+  activeConversation: ActiveConversationContext | undefined,
+  projectState: ProjectStateController
+): { label: string; detail: string | null } {
+  const selection = activeConversation?.projectSelection
+  if (!selection) {
+    if (activeConversation) {
+      return {
+        label: activeConversation.cwd ? basename(activeConversation.cwd) : 'Unknown workspace',
+        detail: activeConversation.cwd ?? 'Conversation workspace is unavailable'
+      }
+    }
+    return { label: projectState.currentLabel, detail: projectState.currentDetail }
+  }
+
+  if (selection.projectKind === 'projectless') {
+    return { label: 'Projectless', detail: activeConversation.cwd ?? 'Working without a project' }
+  }
+
+  if (selection.projectKind === 'path') {
+    return { label: basename(selection.path), detail: selection.path }
+  }
+
+  if (selection.projectKind === 'local') {
+    const project = projectState.state?.localProjects[selection.projectId]
+    return {
+      label: project?.name ?? basename(activeConversation.cwd ?? selection.projectId),
+      detail: activeConversation.cwd ?? project?.writableRoots[0] ?? null
+    }
+  }
+
+  const project = projectState.state?.remoteProjects.find(
+    (candidate) => candidate.id === selection.projectId && candidate.hostId === selection.hostId
+  )
+  return {
+    label: project?.label ?? selection.projectId,
+    detail:
+      activeConversation.cwd ?? `${selection.hostId}:${project?.remotePath ?? selection.projectId}`
+  }
+}
+
+function sameProjectSelection(
+  left: ProjectSelection | undefined,
+  right: ProjectSelection | undefined
+): boolean {
+  if (!left || !right || left.projectKind !== right.projectKind) return left === right
+  if (left.projectKind === 'projectless' && right.projectKind === 'projectless') return true
+  if (left.projectKind === 'path' && right.projectKind === 'path') return left.path === right.path
+  if (left.projectKind === 'local' && right.projectKind === 'local') {
+    return left.projectId === right.projectId
+  }
+  if (left.projectKind === 'remote' && right.projectKind === 'remote') {
+    return left.projectId === right.projectId && left.hostId === right.hostId
+  }
+  return false
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
 }
 
 const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(

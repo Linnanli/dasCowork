@@ -17,6 +17,11 @@ export function SidebarRoot({
   conversationState: ConversationStateController
   onNewChat: () => void
 }): React.JSX.Element {
+  const startQuickChat = async (): Promise<void> => {
+    await projectState.selectProject({ projectKind: 'projectless' })
+    onNewChat()
+  }
+
   const model = buildSidebarViewModel({
     projectState: projectState.state,
     conversations: conversationState.state.conversations,
@@ -41,10 +46,7 @@ export function SidebarRoot({
             showChronological={model.preferences.organizeMode === 'chronological'}
             nativeBackdrop={nativeBackdrop}
             conversationState={conversationState}
-            onNewQuickChat={() => {
-              onNewChat()
-              void projectState.selectProject({ projectKind: 'projectless' })
-            }}
+            onNewQuickChat={() => void startQuickChat()}
           />
         </div>
       </ScrollArea>

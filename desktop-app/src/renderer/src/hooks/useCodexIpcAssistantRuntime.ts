@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
 
@@ -23,6 +23,7 @@ export type CodexIpcAssistantRuntimeState = {
   models: readonly ModelOption[]
   selectedModelId: string | undefined
   activeConversation: ActiveConversationContext | undefined
+  conversationNavigationBlocked: boolean
   startNewConversation: () => void
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
   setSelectedModelId: (modelId: string) => Promise<void>
@@ -90,6 +91,7 @@ export function useCodexIpcAssistantRuntime(
   const activeConversation = conversationRuntime.activeConversation
   const { projectSelection } = options
   const latestTransportState = useMemo(() => new TransportStateHolder(), [])
+  const latestNavigationId = useRef(0)
 
   useEffect(() => {
     latestTransportState.set({
@@ -138,10 +140,27 @@ export function useCodexIpcAssistantRuntime(
   )
   const chat = useChat({ transport })
   const runtime = useAISDKRuntime(chat)
+  const conversationNavigationBlocked = chat.status === 'submitted' || chat.status === 'streaming'
+  const conversationNavigationBlockedRef = useRef(conversationNavigationBlocked)
+
+  useLayoutEffect(() => {
+    conversationNavigationBlockedRef.current = conversationNavigationBlocked
+    if (conversationNavigationBlocked) {
+      latestNavigationId.current += 1
+    }
+  }, [conversationNavigationBlocked])
 
   const openConversation = useCallback(
     async (input: SidebarConversationActionPayload) => {
+      if (conversationNavigationBlockedRef.current) return
+
+      const navigationId = latestNavigationId.current + 1
+      latestNavigationId.current = navigationId
       const result = await window.desktopApp.conversations.openConversation(input)
+      if (latestNavigationId.current !== navigationId || conversationNavigationBlockedRef.current) {
+        return
+      }
+
       chat.setMessages(result.messages)
       chat.clearError()
       setConversationRuntime((prev) => {
@@ -161,6 +180,9 @@ export function useCodexIpcAssistantRuntime(
   )
 
   const startNewConversation = useCallback(() => {
+    if (conversationNavigationBlockedRef.current) return
+
+    latestNavigationId.current += 1
     chat.setMessages([])
     chat.clearError()
     setConversationRuntime((prev) => ({
@@ -196,6 +218,7 @@ export function useCodexIpcAssistantRuntime(
     models,
     selectedModelId,
     activeConversation,
+    conversationNavigationBlocked,
     startNewConversation,
     openConversation,
     setSelectedModelId,

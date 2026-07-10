@@ -1,4 +1,3 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   DesktopCodexApi,
   DesktopCodexChatApi,
@@ -7,7 +6,9 @@ import type {
 } from '../shared/codexIpcApi'
 
 export type DesktopAppApi = {
-  electron: ElectronAPI
+  environment: {
+    platform: NodeJS.Platform
+  }
   codex: DesktopCodexApi
   chat: DesktopCodexChatApi
   projects: DesktopProjectsApi

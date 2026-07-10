@@ -8,6 +8,8 @@ import { SidebarRoot } from './SidebarRoot'
 import type { ProjectStateController } from '../projects/useProjectState'
 import type { ConversationStateController } from './useConversationState'
 
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
 vi.mock('@assistant-ui/react', () => ({
   ThreadListPrimitive: {
     New: ({ children }: { children: React.ReactNode }) => (
@@ -214,10 +216,11 @@ describe('SidebarRoot', () => {
     root.unmount()
   })
 
-  it('selects a project when the project label is clicked', async () => {
+  it('starts a new conversation after the project label is selected', async () => {
     const container = document.createElement('div')
     const root = createRoot(container)
     vi.mocked(projectState.selectProject).mockClear()
+    onNewChat.mockClear()
 
     await act(async () => {
       root.render(
@@ -239,6 +242,7 @@ describe('SidebarRoot', () => {
       projectKind: 'local',
       projectId: 'local'
     })
+    expect(onNewChat).toHaveBeenCalledOnce()
     root.unmount()
   })
 
@@ -274,6 +278,7 @@ describe('SidebarRoot', () => {
     const root = createRoot(container)
     vi.mocked(projectState.selectProject).mockClear()
     vi.mocked(conversationState.setPreferences).mockClear()
+    onNewChat.mockClear()
 
     await act(async () => {
       root.render(

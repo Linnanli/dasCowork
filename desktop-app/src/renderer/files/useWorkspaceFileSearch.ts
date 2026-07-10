@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { WorkspaceFileSearchResult } from '../../shared/projects/projectTypes'
 
@@ -30,6 +30,13 @@ export type WorkspaceFileSearchState = {
   search(query: string): Promise<WorkspaceFileSearchResult[]>
 }
 
+type WorkspaceFileSearchSnapshot = {
+  error: string | null
+  loading: boolean
+  results: WorkspaceFileSearchResult[]
+  scope: symbol | null
+}
+
 export async function searchWorkspaceFiles({
   manager,
   query,
@@ -52,46 +59,64 @@ export function useWorkspaceFileSearch({
   enabled?: boolean
   limit?: number
 }): WorkspaceFileSearchState {
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [results, setResults] = useState<WorkspaceFileSearchResult[]>([])
+  const scope = useMemo<symbol | null>(
+    () => (manager && enabled ? Symbol('workspace-file-search-scope') : null),
+    [enabled, manager]
+  )
+  const [snapshot, setSnapshot] = useState<WorkspaceFileSearchSnapshot>({
+    error: null,
+    loading: false,
+    results: [],
+    scope: null
+  })
+  const latestSearchId = useRef(0)
+
+  useEffect(
+    () => () => {
+      latestSearchId.current += 1
+    },
+    []
+  )
 
   const search = useCallback(
     async (query: string) => {
-      if (!manager || !enabled) {
-        setResults([])
+      const searchId = latestSearchId.current + 1
+      latestSearchId.current = searchId
+
+      if (!manager || !enabled || !scope) {
+        setSnapshot({ error: null, loading: false, results: [], scope: null })
         return []
       }
 
-      setLoading(true)
-      setError(null)
+      setSnapshot({ error: null, loading: true, results: [], scope })
       try {
         const nextResults = await searchWorkspaceFiles({
           manager,
           query,
           ...(limit === undefined ? {} : { limit })
         })
-        setResults(nextResults)
+        if (latestSearchId.current === searchId) {
+          setSnapshot({ error: null, loading: false, results: nextResults, scope })
+        }
         return nextResults
       } catch (searchError) {
         const message = searchError instanceof Error ? searchError.message : String(searchError)
-        setError(message)
-        setResults([])
+        if (latestSearchId.current === searchId) {
+          setSnapshot({ error: message, loading: false, results: [], scope })
+        }
         return []
-      } finally {
-        setLoading(false)
       }
     },
-    [enabled, limit, manager]
+    [enabled, limit, manager, scope]
   )
 
-  return useMemo(
-    () => ({
-      error,
-      loading,
-      results,
+  return useMemo(() => {
+    const currentSnapshot = snapshot.scope === scope ? snapshot : null
+    return {
+      error: currentSnapshot?.error ?? null,
+      loading: currentSnapshot?.loading ?? false,
+      results: currentSnapshot?.results ?? [],
       search
-    }),
-    [error, loading, results, search]
-  )
+    }
+  }, [scope, search, snapshot])
 }

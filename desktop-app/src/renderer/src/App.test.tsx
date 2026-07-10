@@ -93,6 +93,7 @@ const streamdownPropsState = vi.hoisted<{
 
 const runtimeState = vi.hoisted<{
   activeConversation: ActiveConversationContext | undefined
+  conversationNavigationBlocked: boolean
   rejectServerRequest: ReturnType<typeof vi.fn>
   respondToServerRequest: ReturnType<typeof vi.fn>
   serverRequests: CodexApprovalRequest[]
@@ -102,6 +103,7 @@ const runtimeState = vi.hoisted<{
   openConversation: ReturnType<typeof vi.fn>
 }>(() => ({
   activeConversation: undefined,
+  conversationNavigationBlocked: false,
   rejectServerRequest: vi.fn(),
   respondToServerRequest: vi.fn(),
   serverRequests: [],
@@ -174,6 +176,7 @@ function resetThreadMessageState(): void {
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
   runtimeState.activeConversation = undefined
+  runtimeState.conversationNavigationBlocked = false
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
 }
@@ -181,21 +184,13 @@ function resetThreadMessageState(): void {
 function setDesktopPlatform(platform: NodeJS.Platform): void {
   window.desktopApp = {
     ...window.desktopApp,
-    electron: {
-      process: {
-        platform
-      }
-    } as typeof window.desktopApp.electron
+    environment: { platform }
   }
 }
 
 function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
   vi.stubGlobal('desktopApp', {
-    electron: {
-      process: {
-        platform: 'darwin'
-      }
-    },
+    environment: { platform: 'darwin' },
     codex: {
       openExternalHttpUrl: vi.fn(async () => undefined),
       openLocalPath: vi.fn(async () => undefined)
@@ -361,6 +356,7 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       ],
       selectedModelId: runtimeState.selectedModelId,
       activeConversation: runtimeState.activeConversation,
+      conversationNavigationBlocked: runtimeState.conversationNavigationBlocked,
       startNewConversation: runtimeState.startNewConversation,
       openConversation: runtimeState.openConversation,
       setSelectedModelId: runtimeState.setSelectedModelId
@@ -817,6 +813,61 @@ describe('App composer', () => {
 
     expect(header?.textContent).toContain('Feature thread')
     expect(header?.innerHTML).not.toContain('/Users/test/repo')
+  })
+
+  it('uses the active conversation project for the composer context', async () => {
+    const searchFiles = vi.fn(async () => ({ results: [] }))
+    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-remote',
+      threadId: 'thread-remote',
+      title: 'Remote feature',
+      projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' },
+      cwd: '/srv/app'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('Working in: Remote App')
+    expect(searchFiles).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse the global project when a conversation workspace is unknown', async () => {
+    const searchFiles = vi.fn(async () => ({ results: [] }))
+    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-unassigned',
+      threadId: 'thread-unassigned',
+      title: 'Unassigned feature',
+      cwd: '/srv/unassigned'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('Working in: unassigned')
+    expect(searchFiles).not.toHaveBeenCalled()
+  })
+
+  it('locks sidebar navigation while a response is streaming', () => {
+    runtimeState.conversationNavigationBlocked = true
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const sidebar = container.querySelector('[data-slot="codex-sidebar"]')
+    expect(sidebar?.hasAttribute('inert')).toBe(true)
+    expect(sidebar?.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('renders the sidebar with translucent glass styling', () => {
