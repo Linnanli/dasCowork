@@ -23,11 +23,12 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     testOwner: 'assistantRenderUnits.test.ts'
   },
   reasoning: {
-    renderMode: 'text',
+    renderMode: 'known-null',
     priority: 'P1',
-    renderer: 'AssistantText',
-    fallbackLevel: 'none',
-    reason: 'Completed reasoning summaries are user-visible text.',
+    renderer: 'None',
+    fallbackLevel: 'intentional',
+    reason:
+      'Reasoning summaries are internal progress metadata; completed summaries must not be rendered as assistant prose.',
     testOwner: 'assistantRenderUnits.test.ts'
   },
   'worked-for': {

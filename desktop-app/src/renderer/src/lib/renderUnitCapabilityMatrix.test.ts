@@ -96,6 +96,14 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
     expect(RENDER_UNIT_CAPABILITY_MATRIX['review-comments'].reason).toMatch(/Legacy/)
   })
 
+  it('keeps completed reasoning summaries out of assistant prose', () => {
+    expect(RENDER_UNIT_CAPABILITY_MATRIX.reasoning).toMatchObject({
+      renderMode: 'known-null',
+      renderer: 'None',
+      fallbackLevel: 'intentional'
+    })
+  })
+
   it('keeps P3 worked-for and realtime transcript as intentional non-text-thread gaps', () => {
     expect(RENDER_UNIT_CAPABILITY_MATRIX['worked-for']).toMatchObject({
       renderMode: 'fallback',

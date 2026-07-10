@@ -2408,11 +2408,15 @@ describe('App composer', () => {
     ).not.toContain('shimmer')
   })
 
-  it('renders completed reasoning parts as renderable entry text', () => {
+  it('does not render completed reasoning summaries as assistant text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
-      { type: 'reasoning', text: '推理内容', status: { type: 'complete' } }
+      {
+        type: 'reasoning',
+        text: '**Inspecting ProjectGate card conditions**\n\n<!-- -->',
+        status: { type: 'complete' }
+      }
     ]
 
     act(() => {
@@ -2420,7 +2424,8 @@ describe('App composer', () => {
     })
 
     expect(container.querySelector('[data-slot="aui_reasoning-part"]')).toBeNull()
-    expect(container.textContent).toContain('推理内容')
+    expect(container.textContent).not.toContain('Inspecting ProjectGate card conditions')
+    expect(container.querySelector('[data-slot="assistant-render-text"]')).toBeNull()
     expect(container.querySelector('[data-slot="entry-unit"]')).toBeNull()
   })
 
