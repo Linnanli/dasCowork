@@ -34,21 +34,64 @@ describe('buildAssistantRenderUnits', () => {
         dynamicHasRegistryMetadata:
           unit.type === 'tool-group' ? unit.dynamicMetadata?.hasRegistryMetadata : undefined,
         summaryOnly: unit.type === 'tool-group' ? unit.summaryOnly : undefined,
-        summaryLabel: unit.summary?.label
+        summaryLabel: unit.summary?.label,
+        active: unit.active,
+        processItemCount: unit.type === 'reasoning-group' ? unit.children.length : undefined
       }))
     ).toMatchObject(fixture.expectedUnits)
   })
 
-  it('maps reasoning-only running messages to message-level thinking', () => {
+  it('hides internal reasoning summaries and groups commentary with process activity', () => {
     const model = buildAssistantRenderUnits({
-      status: { type: 'running' },
-      content: [{ type: 'reasoning', text: 'checking context' }]
+      status: { type: 'complete' },
+      content: [
+        { type: 'reasoning', text: '**Clarifying state initialization and active flags**' },
+        { type: 'text', text: '我会先收集实际证据。' },
+        toolPart('cmd-1', 'commandExecution'),
+        { type: 'reasoning', text: '**Confirming reasoning visibility handling**' },
+        { type: 'text', text: '现已核对实时流和历史记录。' },
+        { type: 'text', text: '## 结论\n\n根因已经确认。' }
+      ],
+      textPhases: ['commentary', 'commentary', 'final_answer'],
+      processDurationMs: 1250
     })
 
-    expect(model.isThinkingOnly).toBe(true)
+    expect(model.isThinkingOnly).toBe(false)
+    expect(model.units.map((unit) => unit.type)).toEqual(['reasoning-group', 'text'])
+    expect(model.units[0]).toMatchObject({
+      type: 'reasoning-group',
+      key: 'reasoning-group',
+      partIndices: [1, 2, 4],
+      active: false,
+      durationMs: 1250,
+      children: [{ type: 'text' }, { type: 'tool-group' }, { type: 'text' }]
+    })
+    expect(model.units[1]).toMatchObject({ type: 'text', phase: 'final_answer' })
+    expect(JSON.stringify(model.units)).not.toContain('Clarifying state initialization')
+    expect(JSON.stringify(model.units)).not.toContain('Confirming reasoning visibility')
+  })
+
+  it('keeps the commentary process group active until the final answer starts', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'reasoning', text: '**Internal summary**' },
+        { type: 'text', text: '正在检查结果。' },
+        toolPart('cmd-1', 'commandExecution')
+      ],
+      textPhases: ['commentary']
+    })
+
     expect(model.units).toMatchObject([
-      { type: 'message-thinking', key: 'message-thinking', showThinkingFallback: true }
+      {
+        type: 'reasoning-group',
+        key: 'reasoning-group',
+        partIndices: [1, 2],
+        active: true,
+        children: [{ type: 'text' }, { type: 'tool-group' }]
+      }
     ])
+    expect(model.units).toHaveLength(1)
   })
 
   it('prevents older tools from owning thinking when text follows them', () => {
@@ -655,6 +698,114 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.isThinkingOnly).toBe(false)
     expect(model.units).toMatchObject([{ type: 'unknown', showThinkingFallback: false }])
+  })
+
+  it('preserves agent message phases through the provider and AI SDK UI stream', async () => {
+    const mapper = new CodexEventMapper()
+    const streamParts = [
+      { method: 'turn/started', params: { threadId: 'thr', turn: { id: 'turn-phase' } } },
+      {
+        method: 'item/started',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          item: {
+            type: 'agentMessage',
+            id: 'commentary',
+            text: '',
+            phase: 'commentary',
+            memoryCitation: null
+          }
+        }
+      },
+      {
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          itemId: 'commentary',
+          delta: '先收集实际证据。'
+        }
+      },
+      {
+        method: 'item/completed',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          item: {
+            type: 'agentMessage',
+            id: 'commentary',
+            text: '先收集实际证据。',
+            phase: 'commentary',
+            memoryCitation: null
+          }
+        }
+      },
+      {
+        method: 'item/started',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          item: {
+            type: 'agentMessage',
+            id: 'final',
+            text: '',
+            phase: 'final_answer',
+            memoryCitation: null
+          }
+        }
+      },
+      {
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          itemId: 'final',
+          delta: '## 结论\n\n根因已确认。'
+        }
+      },
+      {
+        method: 'item/completed',
+        params: {
+          threadId: 'thr',
+          turnId: 'turn-phase',
+          item: {
+            type: 'agentMessage',
+            id: 'final',
+            text: '## 结论\n\n根因已确认。',
+            phase: 'final_answer',
+            memoryCitation: null
+          }
+        }
+      },
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr',
+          turn: { id: 'turn-phase', items: [], status: 'completed', error: null }
+        }
+      }
+    ].flatMap((event) => mapper.map(event))
+
+    const aiSdkParts = await messagePartsFromProviderStreamParts(streamParts)
+
+    expect(aiSdkParts).toMatchObject([
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: '先收集实际证据。',
+        providerMetadata: {
+          '@janole/ai-sdk-provider-codex-asp': { messagePhase: 'commentary' }
+        }
+      },
+      {
+        type: 'text',
+        text: '## 结论\n\n根因已确认。',
+        providerMetadata: {
+          '@janole/ai-sdk-provider-codex-asp': { messagePhase: 'final_answer' }
+        }
+      }
+    ])
   })
 
   it('keeps provider mapper MCP lifecycle as one Render-Unit with completed source metadata', async () => {

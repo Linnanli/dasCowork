@@ -96,7 +96,7 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
     expect(RENDER_UNIT_CAPABILITY_MATRIX['review-comments'].reason).toMatch(/Legacy/)
   })
 
-  it('keeps completed reasoning summaries out of assistant prose', () => {
+  it('hides internal reasoning summaries instead of treating them as visible progress', () => {
     expect(RENDER_UNIT_CAPABILITY_MATRIX.reasoning).toMatchObject({
       renderMode: 'known-null',
       renderer: 'None',

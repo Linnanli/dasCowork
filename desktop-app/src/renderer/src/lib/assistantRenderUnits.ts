@@ -12,11 +12,14 @@ import { ENTRY_ITEM_RENDER_MODES, type EntryRenderMode } from './renderUnitCapab
 type AssistantMessagePart = Record<string, unknown>
 
 export type AssistantRenderDetailLevel = 'default' | 'stepsProse'
+export type AssistantMessagePhase = 'commentary' | 'final_answer'
 
 type AssistantMessageLike = {
   status?: { type?: string }
   content: readonly AssistantMessagePart[]
   parts?: readonly AssistantMessagePart[]
+  textPhases?: readonly (AssistantMessagePhase | undefined)[]
+  processDurationMs?: number
   detailLevel?: AssistantRenderDetailLevel
 }
 
@@ -98,7 +101,17 @@ export type AssistantRenderUnitBase = {
 
 export type AssistantRenderUnit =
   | (AssistantRenderUnitBase & { type: 'message-thinking'; partIndices: readonly [] })
-  | (AssistantRenderUnitBase & { type: 'text'; partIndex: number; text: string })
+  | (AssistantRenderUnitBase & {
+      type: 'text'
+      partIndex: number
+      text: string
+      phase?: AssistantMessagePhase
+    })
+  | (AssistantRenderUnitBase & {
+      type: 'reasoning-group'
+      children: readonly AssistantRenderUnit[]
+      durationMs?: number
+    })
   | (AssistantRenderUnitBase & {
       type: 'entry'
       partIndex: number
@@ -128,7 +141,13 @@ export type AssistantRenderModel = {
 }
 
 type NormalizedPart =
-  | { kind: 'text'; partIndex: number; part: AssistantMessagePart; text: string }
+  | {
+      kind: 'text'
+      partIndex: number
+      part: AssistantMessagePart
+      text: string
+      phase?: AssistantMessagePhase
+    }
   | {
       kind: 'entry'
       partIndex: number
@@ -151,7 +170,13 @@ type NormalizedPart =
   | { kind: 'unknown'; partIndex: number; part: AssistantMessagePart }
 
 type GroupableUnit =
-  | { type: 'text'; partIndex: number; partIndices: readonly number[]; text: string }
+  | {
+      type: 'text'
+      partIndex: number
+      partIndices: readonly number[]
+      text: string
+      phase?: AssistantMessagePhase
+    }
   | {
       type: 'entry'
       partIndex: number
@@ -237,49 +262,38 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
   const parts = message.parts ?? message.content
   const isRunning = message.status?.type === 'running'
   const detailLevel = message.detailLevel ?? 'default'
-  const normalized = normalizeParts(parts, isRunning)
+  const normalized = normalizeParts(parts, isRunning, message.textPhases)
   const preGrouped = groupWebSearchAndMultiAgent(normalized)
   const dynamicGrouped = groupDynamicToolCalls(preGrouped)
   const mcpGrouped = groupPendingMcpToolCalls(dynamicGrouped)
   const activityCollapsed = groupAdjacentToolActivity(mcpGrouped, { detailLevel })
-  const units = attachMessageThinkingFallback(
+  const visibleUnits = attachMessageThinkingFallback(
     activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning)),
     isRunning
   )
+  const units = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
 
   return { isThinkingOnly: units.length === 1 && units[0]?.type === 'message-thinking', units }
 }
 
 function normalizeParts(
   parts: readonly AssistantMessagePart[],
-  isMessageRunning: boolean
+  isMessageRunning: boolean,
+  textPhases: readonly (AssistantMessagePhase | undefined)[] | undefined
 ): NormalizedPart[] {
+  let textIndex = 0
+
   return parts.flatMap((part, partIndex): NormalizedPart[] => {
     const type = typeof part.type === 'string' ? part.type : undefined
 
     if (type === 'text') {
       const text = typeof part.text === 'string' ? part.text : ''
-      return isVisibleAssistantText(text) ? [{ kind: 'text', partIndex, part, text }] : []
+      const phase = textPhases?.[textIndex]
+      textIndex += 1
+      return isVisibleAssistantText(text) ? [{ kind: 'text', partIndex, part, text, phase }] : []
     }
 
-    if (type === 'reasoning') {
-      const text = typeof part.text === 'string' ? part.text : ''
-      const isCompleteReasoning = !isMessageRunning || isCompleteStatus(part.status)
-      if (!isVisibleAssistantText(text) || !isCompleteReasoning) return []
-      return [
-        {
-          kind: 'entry',
-          partIndex,
-          part,
-          item: {
-            id: stringValue(part.id) ?? `reasoning:${partIndex}`,
-            type: 'reasoning',
-            text
-          },
-          itemType: 'reasoning'
-        }
-      ]
-    }
+    if (type === 'reasoning') return []
 
     if (type === 'indicator' || type === 'step-start') return []
 
@@ -514,6 +528,41 @@ function attachMessageThinkingFallback(
   return [...stableUnits, messageThinkingUnit()]
 }
 
+function groupCommentaryProcess(
+  units: readonly AssistantRenderUnit[],
+  isRunning: boolean,
+  processDurationMs: number | undefined
+): AssistantRenderUnit[] {
+  const commentaryIndex = units.findIndex(
+    (unit) => unit.type === 'text' && unit.phase === 'commentary'
+  )
+  if (commentaryIndex < 0) return [...units]
+
+  const finalAnswerIndex = units.findIndex(
+    (unit) => unit.type === 'text' && unit.phase === 'final_answer'
+  )
+  if (finalAnswerIndex >= 0 && finalAnswerIndex < commentaryIndex) return [...units]
+
+  const processEnd = finalAnswerIndex >= 0 ? finalAnswerIndex : units.length
+  const children = units.slice(0, processEnd).filter((unit) => unit.type !== 'message-thinking')
+  if (children.length === 0) return [...units]
+
+  const partIndices = [...new Set(children.flatMap((unit) => [...unit.partIndices]))]
+  const itemIds = [...new Set(children.flatMap((unit) => [...unit.target.itemIds]))]
+  const group: AssistantRenderUnit = {
+    type: 'reasoning-group',
+    key: 'reasoning-group',
+    partIndices,
+    target: { id: 'reasoning-group', itemIds },
+    children,
+    active: isRunning && finalAnswerIndex < 0,
+    durationMs: isRunning ? undefined : processDurationMs,
+    showThinkingFallback: false
+  }
+
+  return [group, ...units.slice(processEnd)]
+}
+
 function messageThinkingUnit(): AssistantRenderUnit {
   return {
     type: 'message-thinking',
@@ -549,6 +598,7 @@ function toRenderUnit(
         partIndices: unit.partIndices,
         target: targetForUnit(`text:${unit.partIndex}`, unit),
         text: unit.text,
+        phase: unit.phase,
         showThinkingFallback: false
       }
     case 'unknown':
@@ -642,7 +692,8 @@ function normalizedToUnit(part: NormalizedPart): GroupableUnit {
       type: 'text',
       partIndex: part.partIndex,
       partIndices: [part.partIndex],
-      text: part.text
+      text: part.text,
+      phase: part.phase
     }
   }
 

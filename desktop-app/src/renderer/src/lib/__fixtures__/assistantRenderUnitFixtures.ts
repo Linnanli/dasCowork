@@ -19,6 +19,8 @@ type ExpectedRenderUnitSummary = {
   dynamicHasRegistryMetadata?: boolean
   summaryOnly?: boolean
   summaryLabel?: string
+  active?: boolean
+  processItemCount?: number
 }
 
 export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] = [
@@ -186,14 +188,13 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ]
   },
   {
-    name: 'entry render matrix hides reasoning and keeps generated images explicit',
+    name: 'entry render matrix hides internal reasoning and keeps generated images explicit',
     status: { type: 'complete' },
     parts: [
       { type: 'reasoning', text: '内部推理完成', status: { type: 'complete' } },
       { type: 'item', result: { item: { id: 'image-1', type: 'generated-image' } } }
     ],
     expectedUnits: [
-      { type: 'entry', partIndices: [0], renderMode: 'known-null', targetIds: ['reasoning:0'] },
       { type: 'entry', partIndices: [1], renderMode: 'custom', targetIds: ['image-1'] }
     ]
   },

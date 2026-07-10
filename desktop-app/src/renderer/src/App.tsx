@@ -17,9 +17,11 @@ import {
   unstable_defaultDirectiveFormatter,
   unstable_useMentionAdapter,
   unstable_useSlashCommandAdapter,
+  getExternalStoreMessages,
   useAui,
   useAuiEvent,
-  useAuiState
+  useAuiState,
+  type ThreadMessage
 } from '@assistant-ui/react'
 import { useChat } from '@ai-sdk/react'
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
@@ -45,6 +47,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -75,6 +78,7 @@ import {
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { Button } from './components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './components/ui/collapsible'
 import { ProjectGate } from './projects/ProjectGate'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
@@ -86,6 +90,7 @@ import { cn } from './lib/utils'
 import { pendingAssistantMessageText } from './lib/assistantMessages'
 import {
   buildAssistantRenderUnits,
+  type AssistantMessagePhase,
   type AssistantRenderUnit,
   type ToolItem
 } from './lib/assistantRenderUnits'
@@ -812,20 +817,25 @@ function AssistantMessage({
 }: {
   hasBlockingRequest: boolean
 }): React.JSX.Element {
-  const messageContent = useAuiState((state) => state.message.content)
-  const messageParts = useAuiState((state) => state.message.parts)
-  const messageStatus = useAuiState((state) => state.message.status)
+  const message = useAuiState((state) => state.message)
+  const textPartMetadata = useMemo(() => codexTextPartMetadataFor(message), [message])
+  const turnDurationMs = useMemo(() => codexTurnDurationFor(message), [message])
   const renderModel = useMemo(
     () =>
       buildAssistantRenderUnits({
-        content: messageContent,
-        parts: messageParts,
-        status: messageStatus
+        content: message.content,
+        parts: message.parts,
+        status: message.status,
+        textPhases: textPartMetadata.map((metadata) => metadata.phase),
+        processDurationMs:
+          message.metadata?.timing?.totalStreamTime ??
+          turnDurationMs ??
+          textPartMetadata.find((metadata) => metadata.turnDurationMs !== undefined)?.turnDurationMs
       }),
-    [messageContent, messageParts, messageStatus]
+    [message, textPartMetadata, turnDurationMs]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
-  const isRunning = messageStatus?.type === 'running'
+  const isRunning = message.status?.type === 'running'
   const liveFooterUnits =
     isRunning && !hasBlockingRequest ? latestLiveFooterUnits(renderModel.units) : []
   const visibleUnits =
@@ -875,6 +885,53 @@ function AssistantMessage({
       )}
     </MessagePrimitive.Root>
   )
+}
+
+type ExternalAISDKMessage = {
+  parts?: readonly { type?: unknown; providerMetadata?: unknown }[]
+  metadata?: unknown
+}
+
+type CodexTextPartMetadata = {
+  phase?: AssistantMessagePhase
+  turnDurationMs?: number
+}
+
+const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
+
+function codexTextPartMetadataFor(message: ThreadMessage): readonly CodexTextPartMetadata[] {
+  return getExternalStoreMessages<ExternalAISDKMessage>(message).flatMap((externalMessage) =>
+    (externalMessage.parts ?? []).flatMap((part) => {
+      if (part.type !== 'text') return []
+      return [messageMetadataFromProviderMetadata(part.providerMetadata)]
+    })
+  )
+}
+
+function codexTurnDurationFor(message: ThreadMessage): number | undefined {
+  return getExternalStoreMessages<ExternalAISDKMessage>(message)
+    .map((externalMessage) => externalMessage.metadata)
+    .map((metadata) => (metadata && typeof metadata === 'object'
+      ? (metadata as Record<string, unknown>).codexTurnDurationMs
+      : undefined))
+    .find((durationMs): durationMs is number =>
+      typeof durationMs === 'number' && Number.isFinite(durationMs)
+    )
+}
+
+function messageMetadataFromProviderMetadata(providerMetadata: unknown): CodexTextPartMetadata {
+  if (!providerMetadata || typeof providerMetadata !== 'object') return {}
+  const codexMetadata = (providerMetadata as Record<string, unknown>)[CODEX_PROVIDER_ID]
+  if (!codexMetadata || typeof codexMetadata !== 'object') return {}
+  const metadata = codexMetadata as Record<string, unknown>
+  const phase = metadata.messagePhase
+  const turnDurationMs = metadata.turnDurationMs
+  return {
+    ...(phase === 'commentary' || phase === 'final_answer' ? { phase } : {}),
+    ...(typeof turnDurationMs === 'number' && Number.isFinite(turnDurationMs)
+      ? { turnDurationMs }
+      : {})
+  }
 }
 
 function LiveRenderUnitFooter({
@@ -1025,6 +1082,8 @@ function AssistantRenderUnitView({
       )
     case 'text':
       return <AssistantText text={unit.text} unit={unit} />
+    case 'reasoning-group':
+      return <ReasoningGroupUnit unit={unit} />
     case 'entry':
       return <EntryUnit unit={unit} />
     case 'tool-group':
@@ -1032,6 +1091,60 @@ function AssistantRenderUnitView({
     case 'unknown':
       return <UnknownUnit unit={unit} />
   }
+}
+
+function ReasoningGroupUnit({
+  unit
+}: {
+  unit: Extract<AssistantRenderUnit, { type: 'reasoning-group' }>
+}): React.JSX.Element {
+  const isStreaming = unit.active === true
+
+  return (
+    <Collapsible
+      key={isStreaming ? 'streaming' : 'done'}
+      data-slot="reasoning-group"
+      defaultOpen={isStreaming}
+      className="group/reasoning my-2 w-full text-sm text-muted-foreground"
+      {...renderUnitAttributes(unit)}
+    >
+      <CollapsibleTrigger
+        data-slot="reasoning-group-trigger"
+        className="group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <span
+          className={cn(
+            'relative inline-block font-medium',
+            isStreaming && 'shimmer motion-reduce:animate-none'
+          )}
+        >
+          {isStreaming ? '正在思考' : processedDurationLabel(unit.durationMs)}
+        </span>
+        <ChevronDownIcon
+          aria-hidden
+          className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        data-slot="reasoning-group-content"
+        className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
+      >
+        <div className="flex max-h-72 flex-col gap-2 overflow-y-auto border-l border-border/70 pl-3 text-foreground/85">
+          {unit.children.map((child) => (
+            <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
+              <AssistantRenderUnitView unit={child} />
+            </div>
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function processedDurationLabel(durationMs: number | undefined): string {
+  if (durationMs === undefined) return '已处理'
+  if (durationMs < 1000) return `已处理 · 耗时 ${Math.round(durationMs)}ms`
+  return `已处理 · 耗时 ${Number((durationMs / 1000).toFixed(1))} 秒`
 }
 
 function AssistantText({

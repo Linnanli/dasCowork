@@ -448,6 +448,42 @@ describe('CodexChatRuntimeService', () => {
     ])
   })
 
+  it('forwards completed turn duration to UI message metadata', async () => {
+    const port = new FakePort()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => ({
+        toUIMessageStream: (options) => {
+          expect(
+            options?.messageMetadata?.({
+              part: {
+                providerMetadata: {
+                  '@janole/ai-sdk-provider-codex-asp': { turnDurationMs: 1250 }
+                }
+              }
+            })
+          ).toEqual({ codexTurnDurationMs: 1250 })
+          return emptyUiMessageStream()
+        }
+      })
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+  })
+
   it('forwards model stream error messages as terminal IPC errors', async () => {
     const port = new FakePort()
     const service = new CodexChatRuntimeService({

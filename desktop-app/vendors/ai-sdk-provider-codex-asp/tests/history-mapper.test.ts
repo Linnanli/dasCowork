@@ -107,6 +107,65 @@ describe("history mapper", () =>
         });
     });
 
+    it("preserves commentary and final-answer phases in historical text parts", () =>
+    {
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_phases",
+                    items: [
+                        {
+                            type: "agentMessage",
+                            id: "commentary",
+                            text: "Collecting evidence",
+                            phase: "commentary",
+                            memoryCitation: null,
+                        },
+                        {
+                            type: "agentMessage",
+                            id: "final",
+                            text: "Conclusion",
+                            phase: "final_answer",
+                            memoryCitation: null,
+                        },
+                    ],
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: 1250,
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)[0]?.parts).toEqual([
+            {
+                type: "text",
+                text: "Collecting evidence",
+                state: "done",
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": {
+                        messagePhase: "commentary",
+                        turnDurationMs: 1250,
+                    },
+                },
+            },
+            {
+                type: "text",
+                text: "Conclusion",
+                state: "done",
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": {
+                        messagePhase: "final_answer",
+                        turnDurationMs: 1250,
+                    },
+                },
+            },
+        ]);
+    });
+
     it("maps sleep history items through the shared dynamic-tool contract", () =>
     {
         const item = {

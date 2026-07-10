@@ -28,7 +28,7 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     renderer: 'None',
     fallbackLevel: 'intentional',
     reason:
-      'Reasoning summaries are internal progress metadata; completed summaries must not be rendered as assistant prose.',
+      'Internal reasoning summaries are hidden; the visible analysis panel is built from commentary-phase assistant messages and process activity.',
     testOwner: 'assistantRenderUnits.test.ts'
   },
   'worked-for': {

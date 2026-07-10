@@ -21,7 +21,7 @@ type DynamicToolUiPart = Extract<UiMessagePart, { type: "dynamic-tool" }>;
 type FileUiPart = Extract<UiMessagePart, { type: "file" }>;
 
 export type CodexThreadForUi = Pick<Thread, "id" | "turns">;
-export type CodexTurnForUi = Pick<Turn, "id" | "items">;
+export type CodexTurnForUi = Pick<Turn, "id" | "items" | "durationMs">;
 
 export function mapCodexThreadToUiMessages(thread: CodexThreadForUi): UIMessage[]
 {
@@ -78,7 +78,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi): UIMessage[]
                 const text = item.text.trim();
                 if (text)
                 {
-                    appendAssistantPart({ type: "text", text, state: "done" });
+                    appendAssistantPart(agentMessagePart(item, text, turn.durationMs));
                 }
                 break;
             }
@@ -134,7 +134,7 @@ export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiM
     {
         case "agentMessage": {
             const text = item.text.trim();
-            return text ? { type: "text", text, state: "done" } : null;
+            return text ? agentMessagePart(item, text) : null;
         }
         case "plan":
         case "reasoning": {
@@ -165,6 +165,27 @@ export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiM
         default:
             return assertNever(item);
     }
+}
+
+function agentMessagePart(
+    item: Extract<CodexRenderableThreadItem, { type: "agentMessage" }>,
+    text: string,
+    turnDurationMs?: number | null,
+): Extract<UiMessagePart, { type: "text" }>
+{
+    const metadata = stripUndefined({
+        messagePhase: item.phase ?? undefined,
+        turnDurationMs: turnDurationMs ?? undefined,
+    });
+
+    return {
+        type: "text",
+        text,
+        state: "done",
+        ...(Object.keys(metadata).length > 0
+            ? { providerMetadata: { [CODEX_PROVIDER_ID]: metadata } }
+            : {}),
+    };
 }
 
 function userMessageParts(item: Extract<ThreadItem, { type: "userMessage" }>): UIMessage["parts"]

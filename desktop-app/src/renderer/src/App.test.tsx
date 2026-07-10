@@ -62,6 +62,11 @@ type MockMessagePart =
       status?: MockPartStatus
     }
 
+type MockExternalMessage = {
+  parts: { type: 'reasoning' | 'text'; providerMetadata?: unknown }[]
+  metadata?: { codexTurnDurationMs?: number }
+}
+
 type MockThreadMessageState = {
   message: {
     composer: {
@@ -69,9 +74,15 @@ type MockThreadMessageState = {
     }
     content: MockMessagePart[]
     parts?: MockMessagePart[]
+    metadata?: {
+      timing?: {
+        totalStreamTime?: number
+      }
+    }
     role: 'assistant' | 'user'
     status: MockMessageStatus
   }
+  externalMessages: MockExternalMessage[]
 }
 
 const threadMessageState = vi.hoisted<MockThreadMessageState>(() => ({
@@ -82,7 +93,8 @@ const threadMessageState = vi.hoisted<MockThreadMessageState>(() => ({
     content: [{ type: 'text', text: '正在思考' }],
     role: 'user',
     status: { type: 'complete' }
-  }
+  },
+  externalMessages: []
 }))
 
 const streamdownPropsState = vi.hoisted<{
@@ -194,8 +206,10 @@ function resetThreadMessageState(): void {
   threadMessageState.message.composer.isEditing = false
   threadMessageState.message.content = [{ type: 'text', text: '正在思考' }]
   delete threadMessageState.message.parts
+  delete threadMessageState.message.metadata
   threadMessageState.message.role = 'user'
   threadMessageState.message.status = { type: 'complete' }
+  threadMessageState.externalMessages = []
   streamdownPropsState.lastProps = null
   runtimeState.rejectServerRequest.mockReset()
   runtimeState.rejectServerRequest.mockResolvedValue(undefined)
@@ -537,6 +551,7 @@ vi.mock('@assistant-ui/react', () => {
       Root: primitive('ActionBar.Root')
     },
     AssistantRuntimeProvider: primitive('AssistantRuntimeProvider'),
+    getExternalStoreMessages: () => threadMessageState.externalMessages,
     AttachmentPrimitive: {
       Name: primitive('Attachment.Name'),
       Root: primitive('Attachment.Root'),
@@ -2270,22 +2285,90 @@ describe('App composer', () => {
     expect(container.textContent).not.toContain('已等待 1 次')
   })
 
-  it('keeps the thinking placeholder while only reasoning streams', () => {
+  it('groups commentary and process activity while hiding internal reasoning summaries', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
-    threadMessageState.message.content = [{ type: 'reasoning', text: '正在整理上下文' }]
+    threadMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: '**Clarifying state initialization and active flags**'
+      },
+      {
+        type: 'text',
+        text: '我会按“只分析、不改代码”的方式，把这几段异常文字沿着「模型事件 → provider 映射 → AI SDK 流 → renderer 消息渲染/持久化」逐层定位，并核对你点名的几个本地对话记录。先读取仓库的分析流程要求，再收集实际证据。'
+      },
+      commandToolPart('search-1', 'search', { status: { type: 'complete' } }),
+      {
+        type: 'reasoning',
+        text: '**Confirming reasoning visibility handling**'
+      },
+      { type: 'text', text: '现已核对实时流与历史记录。' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [
+          { type: 'reasoning' },
+          { type: 'text', providerMetadata: messagePhaseMetadata('commentary') },
+          { type: 'reasoning' },
+          { type: 'text', providerMetadata: messagePhaseMetadata('commentary') }
+        ]
+      }
+    ]
+    act(() => {
+      root.render(<App />)
+    })
+
+    const reasoning = container.querySelector('[data-slot="reasoning-group"]')
+
+    expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-slot="reasoning-process-item"]')).toHaveLength(3)
+    expect(reasoning?.getAttribute('data-state')).toBe('open')
+    expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
+    expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
+    expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
+    expect(container.textContent).not.toContain('Confirming reasoning visibility handling')
+
+    threadMessageState.message.content = [
+      ...threadMessageState.message.content,
+      { type: 'text', text: '## 结论\n\n根因已经确认。' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        metadata: { codexTurnDurationMs: 1250 },
+        parts: [
+          { type: 'reasoning' },
+          { type: 'text', providerMetadata: messagePhaseMetadata('commentary') },
+          { type: 'reasoning' },
+          { type: 'text', providerMetadata: messagePhaseMetadata('commentary') },
+          { type: 'text', providerMetadata: messagePhaseMetadata('final_answer') }
+        ]
+      }
+    ]
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.metadata = undefined
 
     act(() => {
       root.render(<App />)
     })
 
-    const assistantContent = container.querySelector('[data-slot="aui_assistant-message-content"]')
-    const reasoning = container.querySelector('[data-slot="aui_reasoning-part"]')
+    const completedReasoning = container.querySelector('[data-slot="reasoning-group"]')
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
 
-    expect(assistantContent?.className).toContain('shimmer')
-    expect(assistantContent?.textContent).toContain('正在思考')
-    expect(reasoning).toBeNull()
-    expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).toBeNull()
+    expect(completedReasoning?.getAttribute('data-state')).toBe('closed')
+    expect(trigger?.textContent).toBe('已处理 · 耗时 1.3 秒')
+    expect(trigger?.querySelectorAll('svg')).toHaveLength(1)
+    expect(completedReasoning?.textContent).not.toContain('根因已经确认')
+    expect(container.textContent).toContain('根因已经确认')
+
+    act(() => {
+      trigger?.click()
+    })
+
+    expect(completedReasoning?.getAttribute('data-state')).toBe('open')
+    expect(completedReasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
+    expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
   })
 
   it('shows thinking separately after completed tool activity while waiting for text', () => {
@@ -2408,7 +2491,7 @@ describe('App composer', () => {
     ).not.toContain('shimmer')
   })
 
-  it('does not render completed reasoning summaries as assistant text', () => {
+  it('loads historical commentary as a collapsed group and keeps the final answer outside', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -2416,6 +2499,23 @@ describe('App composer', () => {
         type: 'reasoning',
         text: '**Inspecting ProjectGate card conditions**\n\n<!-- -->',
         status: { type: 'complete' }
+      },
+      { type: 'text', text: '我会先读取仓库记录，再收集实际证据。' },
+      { type: 'text', text: '## 结论\n\n根因已经确认。' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [
+          { type: 'reasoning' },
+          {
+            type: 'text',
+            providerMetadata: messagePhaseMetadata('commentary', 1250)
+          },
+          {
+            type: 'text',
+            providerMetadata: messagePhaseMetadata('final_answer', 1250)
+          }
+        ]
       }
     ]
 
@@ -2423,10 +2523,14 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-part"]')).toBeNull()
+    const reasoning = container.querySelector('[data-slot="reasoning-group"]')
+
+    expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
+    expect(reasoning?.getAttribute('data-state')).toBe('closed')
+    expect(reasoning?.textContent).toContain('已处理 · 耗时 1.3 秒')
+    expect(reasoning?.textContent).not.toContain('根因已经确认')
+    expect(container.textContent).toContain('根因已经确认')
     expect(container.textContent).not.toContain('Inspecting ProjectGate card conditions')
-    expect(container.querySelector('[data-slot="assistant-render-text"]')).toBeNull()
-    expect(container.querySelector('[data-slot="entry-unit"]')).toBeNull()
   })
 
   it('does not show thinking for a finished empty assistant message', () => {
@@ -2543,6 +2647,18 @@ function modelSelectorItemWithText(text: string): HTMLElement | undefined {
   return Array.from(
     document.querySelectorAll<HTMLElement>('[data-slot="model-selector-item"]')
   ).find((item) => item.textContent?.includes(text))
+}
+
+function messagePhaseMetadata(
+  phase: 'commentary' | 'final_answer',
+  turnDurationMs?: number
+): Record<string, unknown> {
+  return {
+    '@janole/ai-sdk-provider-codex-asp': {
+      messagePhase: phase,
+      ...(turnDurationMs === undefined ? {} : { turnDurationMs })
+    }
+  }
 }
 
 function commandToolPart(

@@ -44,6 +44,7 @@ interface DeltaParams
 
 type DynamicToolCallItem = CodexDynamicToolCallItem;
 type CodexThreadItemToolStart = Pick<CodexThreadItemToolInvocation, "toolCallId" | "toolName" | "input">;
+type AgentMessagePhase = NonNullable<Extract<CodexRenderableThreadItem, { type: "agentMessage" }>["phase"]>;
 type AutoApprovalReviewItem = Record<string, unknown> & {
     id: string;
     type: "automaticApprovalReview";
@@ -211,6 +212,7 @@ export class CodexEventMapper
     private streamStarted = false;
     private readonly openTextParts = new Set<string>();
     private readonly textDeltaReceived = new Set<string>();
+    private readonly agentMessagePhaseByItemId = new Map<string, AgentMessagePhase>();
     private readonly openReasoningParts = new Set<string>();
     private readonly openToolCalls = new Map<string, { toolName: string; item?: Record<string, unknown> }>();
     /**
@@ -323,7 +325,7 @@ export class CodexEventMapper
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private withMeta<T extends LanguageModelV3StreamPart>(part: T, extra?: Record<string, string>): T
+    private withMeta<T extends LanguageModelV3StreamPart>(part: T, extra?: Record<string, unknown>): T
     {
         if (part.type === "stream-start")
         {
@@ -365,6 +367,22 @@ export class CodexEventMapper
         return next;
     }
 
+    private recordAgentMessagePhase(
+        item: Extract<CodexRenderableThreadItem, { type: "agentMessage" }>,
+    ): void
+    {
+        if (item.phase)
+        {
+            this.agentMessagePhaseByItemId.set(item.id, item.phase);
+        }
+    }
+
+    private agentMessageMetadata(itemId: string): Record<string, string> | undefined
+    {
+        const messagePhase = this.agentMessagePhaseByItemId.get(itemId);
+        return messagePhase ? { messagePhase } : undefined;
+    }
+
     // ── Handlers ─────────────────────────────────────────────────────────────
 
     // turn/started
@@ -395,9 +413,13 @@ export class CodexEventMapper
         switch (item.type)
         {
             case "agentMessage": {
+                this.recordAgentMessagePhase(item);
                 this.ensureStreamStarted(parts);
                 this.openTextParts.add(item.id);
-                parts.push(this.withMeta({ type: "text-start", id: item.id }));
+                parts.push(this.withMeta(
+                    { type: "text-start", id: item.id },
+                    this.agentMessageMetadata(item.id),
+                ));
                 break;
             }
             case "commandExecution": {
@@ -472,10 +494,16 @@ export class CodexEventMapper
         if (!this.openTextParts.has(delta.itemId))
         {
             this.openTextParts.add(delta.itemId);
-            parts.push(this.withMeta({ type: "text-start", id: delta.itemId }));
+            parts.push(this.withMeta(
+                { type: "text-start", id: delta.itemId },
+                this.agentMessageMetadata(delta.itemId),
+            ));
         }
 
-        parts.push(this.withMeta({ type: "text-delta", id: delta.itemId, delta: delta.delta }));
+        parts.push(this.withMeta(
+            { type: "text-delta", id: delta.itemId, delta: delta.delta },
+            this.agentMessageMetadata(delta.itemId),
+        ));
         this.textDeltaReceived.add(delta.itemId);
         return parts;
     }
@@ -494,6 +522,9 @@ export class CodexEventMapper
 
         if (item.type === "agentMessage")
         {
+            this.recordAgentMessagePhase(item);
+            const metadata = this.agentMessageMetadata(item.id);
+
             if (!this.textDeltaReceived.has(item.id) && item.text)
             {
                 this.ensureStreamStarted(parts);
@@ -501,17 +532,21 @@ export class CodexEventMapper
                 if (!this.openTextParts.has(item.id))
                 {
                     this.openTextParts.add(item.id);
-                    parts.push(this.withMeta({ type: "text-start", id: item.id }));
+                    parts.push(this.withMeta({ type: "text-start", id: item.id }, metadata));
                 }
 
-                parts.push(this.withMeta({ type: "text-delta", id: item.id, delta: item.text }));
+                parts.push(this.withMeta(
+                    { type: "text-delta", id: item.id, delta: item.text },
+                    metadata,
+                ));
             }
 
             if (this.openTextParts.has(item.id))
             {
-                parts.push(this.withMeta({ type: "text-end", id: item.id }));
+                parts.push(this.withMeta({ type: "text-end", id: item.id }, metadata));
                 this.openTextParts.delete(item.id);
             }
+            this.agentMessagePhaseByItemId.delete(item.id);
         }
         else if (this.openToolCalls.has(item.id))
         {
@@ -942,11 +977,18 @@ export class CodexEventMapper
         const parts: LanguageModelV3StreamPart[] = [];
         this.ensureStreamStarted(parts);
 
+        const completed = (params ?? {}) as TurnCompletedNotification;
+        const turnDurationMs = completed.turn?.durationMs;
+
         for (const itemId of this.openTextParts)
         {
-            parts.push(this.withMeta({ type: "text-end", id: itemId }));
+            parts.push(this.withMeta(
+                { type: "text-end", id: itemId },
+                this.agentMessageMetadata(itemId),
+            ));
         }
         this.openTextParts.clear();
+        this.agentMessagePhaseByItemId.clear();
 
         for (const itemId of this.openReasoningParts)
         {
@@ -957,7 +999,6 @@ export class CodexEventMapper
         parts.push(...this.closeOpenToolCalls("Tool call did not complete before turn ended"));
         this._sdkDynamicToolCallIds.clear();
 
-        const completed = (params ?? {}) as TurnCompletedNotification;
         if (completed.turn?.id)
         {
             this.planSequenceByTurnId.delete(completed.turn.id);
@@ -969,7 +1010,12 @@ export class CodexEventMapper
         {
             parts.push(this.withMeta({ type: "error", error: new Error(errorMessage) }));
         }
-        parts.push(this.withMeta({ type: "finish", finishReason: toFinishReason(completed.turn?.status), usage }));
+        parts.push(this.withMeta(
+            { type: "finish", finishReason: toFinishReason(completed.turn?.status), usage },
+            typeof turnDurationMs === "number" && Number.isFinite(turnDurationMs)
+                ? { turnDurationMs }
+                : undefined,
+        ));
         return parts;
     }
 }

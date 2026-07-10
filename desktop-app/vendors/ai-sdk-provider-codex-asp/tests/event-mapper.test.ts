@@ -68,6 +68,115 @@ describe("CodexEventMapper", () =>
         ]);
     });
 
+    it("preserves commentary phase metadata across the agent message stream", () =>
+    {
+        const mapper = new CodexEventMapper();
+
+        const events = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
+            {
+                method: "item/started",
+                params: {
+                    item: {
+                        type: "agentMessage",
+                        id: "commentary_1",
+                        text: "",
+                        phase: "commentary" as const,
+                    },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+            {
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn",
+                    itemId: "commentary_1",
+                    delta: "Collecting evidence",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    item: {
+                        type: "agentMessage",
+                        id: "commentary_1",
+                        text: "Collecting evidence",
+                        phase: "commentary" as const,
+                    },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+        ];
+
+        const parts = events.flatMap((event) => mapper.map(event));
+        const providerMetadata = {
+            "@janole/ai-sdk-provider-codex-asp": {
+                turnId: "turn",
+                messagePhase: "commentary",
+            },
+        };
+
+        expect(parts).toEqual([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "commentary_1", providerMetadata },
+            {
+                type: "text-delta",
+                id: "commentary_1",
+                delta: "Collecting evidence",
+                providerMetadata,
+            },
+            { type: "text-end", id: "commentary_1", providerMetadata },
+        ]);
+    });
+
+    it("attaches the completed turn duration to finish metadata", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadId("thr");
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "turn",
+                        items: [],
+                        status: "completed" as const,
+                        error: null,
+                        durationMs: 1250,
+                    },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        expect(parts).toEqual([
+            {
+                type: "stream-start",
+                warnings: [],
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": { threadId: "thr", turnId: "turn" },
+                },
+            },
+            {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "completed" },
+                usage: EMPTY_USAGE,
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": {
+                        threadId: "thr",
+                        turnId: "turn",
+                        turnDurationMs: 1250,
+                    },
+                },
+            },
+        ]);
+    });
+
     it("maps reasoning and progress notifications to reasoning stream parts", () =>
     {
         const mapper = new CodexEventMapper();
@@ -1378,8 +1487,27 @@ describe("CodexEventMapper", () =>
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "msg_fb" },
             // Fallback: full text emitted from item/completed since no deltas arrived.
-            { type: "text-delta", id: "msg_fb", delta: "Final answer text" },
-            { type: "text-end", id: "msg_fb" },
+            {
+                type: "text-delta",
+                id: "msg_fb",
+                delta: "Final answer text",
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": {
+                        turnId: "turn_fb",
+                        messagePhase: "final_answer",
+                    },
+                },
+            },
+            {
+                type: "text-end",
+                id: "msg_fb",
+                providerMetadata: {
+                    "@janole/ai-sdk-provider-codex-asp": {
+                        turnId: "turn_fb",
+                        messagePhase: "final_answer",
+                    },
+                },
+            },
             {
                 type: "finish",
                 finishReason: { unified: "stop", raw: "completed" },

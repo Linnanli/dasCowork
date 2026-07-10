@@ -54,6 +54,7 @@ type StreamTextLikeResult = {
     sendReasoning?: boolean
     sendSources?: boolean
     onError?: (error: unknown) => string
+    messageMetadata?: (options: { part: { providerMetadata?: unknown } }) => unknown
   }): AsyncIterable<UIMessageChunk>
 }
 
@@ -378,6 +379,7 @@ export class CodexChatRuntimeService {
         originalMessages: request.messages,
         sendReasoning: true,
         sendSources: true,
+        messageMetadata: ({ part }) => codexTurnDurationMessageMetadata(part.providerMetadata),
         onError: errorMessage
       })) {
         if (chunk.type === 'error') {
@@ -557,6 +559,18 @@ export class CodexChatRuntimeService {
       _meta: response.action === 'decline' ? { reason: response.reason ?? null } : null
     }
   }
+}
+
+function codexTurnDurationMessageMetadata(providerMetadata: unknown):
+  | { codexTurnDurationMs: number }
+  | undefined {
+  if (!providerMetadata || typeof providerMetadata !== 'object') return undefined
+  const codexMetadata = (providerMetadata as Record<string, unknown>)[CODEX_PROVIDER_ID]
+  if (!codexMetadata || typeof codexMetadata !== 'object') return undefined
+  const durationMs = (codexMetadata as Record<string, unknown>).turnDurationMs
+  return typeof durationMs === 'number' && Number.isFinite(durationMs)
+    ? { codexTurnDurationMs: durationMs }
+    : undefined
 }
 
 async function defaultStreamText({
