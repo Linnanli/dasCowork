@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { FilePath } from '@/components/ui/file-path'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
 import {
@@ -502,7 +503,7 @@ function TurnDiffFileRow({
 
   return (
     <li className="flex min-w-0 items-center gap-2 rounded-md border border-border/50 px-2.5 py-2">
-      <span className="min-w-0 flex-1 truncate">{file.path}</span>
+      <FilePath path={file.path} className="flex-1" />
       <span className="shrink-0 text-muted-foreground">
         +{file.added}/-{file.removed}
       </span>

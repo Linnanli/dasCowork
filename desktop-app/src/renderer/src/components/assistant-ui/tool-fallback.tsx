@@ -13,11 +13,15 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { FilePath } from '@/components/ui/file-path'
+import { DiffViewer } from './diff-viewer'
 import { toolGroupIconMap } from './tool-group'
 import {
   shellMetadata,
   shellOutputText,
   type ToolItemDisplay,
+  type ToolItemFileChangeDetails,
+  type ToolItemFileChangeStats,
   type ToolItemShellDetails
 } from '@/lib/toolActivityDisplay'
 import type { ToolGroupIconName } from '@/lib/toolGroupSummary'
@@ -102,6 +106,8 @@ function ToolFallbackTrigger({
   toolName,
   summaryLabel,
   summaryIcon,
+  filePath,
+  fileChangeStats,
   statusLabel,
   status,
   className,
@@ -110,6 +116,8 @@ function ToolFallbackTrigger({
   toolName: string
   summaryLabel?: string
   summaryIcon?: ToolGroupIconName
+  filePath?: string
+  fileChangeStats?: ToolItemFileChangeStats
   statusLabel?: string
   status?: ToolCallMessagePartStatus
 }) {
@@ -121,20 +129,43 @@ function ToolFallbackTrigger({
   const Icon =
     statusIconMap[statusType] ?? (summaryIcon ? toolGroupIconMap[summaryIcon] : undefined)
   const label = isCancelled ? 'Cancelled tool' : 'Used tool'
-  const labelContent = summaryLabel ? (
-    <span className="inline-flex min-w-0 items-baseline gap-1.5">
-      {visibleStatusLabel ? (
-        <span className="shrink-0 text-xs font-medium text-muted-foreground">
-          {visibleStatusLabel}
+  const labelContent =
+    summaryLabel && filePath ? (
+      <span className="inline-flex min-w-0 items-baseline gap-1.5">
+        {visibleStatusLabel ? (
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">
+            {visibleStatusLabel}
+          </span>
+        ) : null}
+        <span className="inline-flex min-w-0 items-baseline gap-0.5">
+          <span className="shrink-0">{toolItemLabelPrefix(summaryLabel, filePath)}：</span>
+          <FilePath path={filePath} className="max-w-48" />
+          {fileChangeStats ? (
+            <span data-slot="tool-file-change-stats" className="inline-flex shrink-0 gap-1 text-xs">
+              <span className="text-muted-foreground group-hover/tool-fallback-root:text-emerald-700 dark:group-hover/tool-fallback-root:text-emerald-300">
+                +{fileChangeStats.additions}
+              </span>
+              <span className="text-muted-foreground group-hover/tool-fallback-root:text-red-700 dark:group-hover/tool-fallback-root:text-red-300">
+                -{fileChangeStats.deletions}
+              </span>
+            </span>
+          ) : null}
         </span>
-      ) : null}
-      <span className="min-w-0 truncate">{summaryLabel}</span>
-    </span>
-  ) : (
-    <span>
-      {label}: <b>{toolName}</b>
-    </span>
-  )
+      </span>
+    ) : summaryLabel ? (
+      <span className="inline-flex min-w-0 items-baseline gap-1.5">
+        {visibleStatusLabel ? (
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">
+            {visibleStatusLabel}
+          </span>
+        ) : null}
+        <span className="min-w-0 truncate">{summaryLabel}</span>
+      </span>
+    ) : (
+      <span>
+        {label}: <b>{toolName}</b>
+      </span>
+    )
 
   return (
     <CollapsibleTrigger
@@ -183,6 +214,11 @@ function ToolFallbackTrigger({
       />
     </CollapsibleTrigger>
   )
+}
+
+function toolItemLabelPrefix(summaryLabel: string, filePath: string): string {
+  const suffix = `：${filePath}`
+  return summaryLabel.endsWith(suffix) ? summaryLabel.slice(0, -suffix.length) : summaryLabel
 }
 
 function ToolFallbackContent({
@@ -265,6 +301,106 @@ function ToolFallbackResult({
       </pre>
     </div>
   )
+}
+
+function ToolFallbackFileChange({
+  details,
+  className,
+  ...props
+}: React.ComponentProps<'div'> & {
+  details: ToolItemFileChangeDetails
+}) {
+  const files = details.files.filter(fileChangeHasRenderableDiff)
+
+  if (files.length === 0) {
+    return (
+      <p
+        data-slot="tool-file-change-diff"
+        className={cn(
+          'rounded-md bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground',
+          className
+        )}
+        {...props}
+      >
+        {details.files.length === 0 ? '正在等待文件差异' : '文件变更未提供可展示的差异'}
+      </p>
+    )
+  }
+
+  return (
+    <div
+      data-slot="tool-file-change-diff"
+      className={cn('max-h-96 space-y-2 overflow-y-auto pe-1', className)}
+      {...props}
+    >
+      {files.map((file, index) => (
+        <FileChangeDiffViewer
+          key={`${file.path}:${index}`}
+          path={file.path}
+          kind={file.kind}
+          patch={file.patch}
+        />
+      ))}
+    </div>
+  )
+}
+
+function FileChangeDiffViewer({
+  path,
+  kind,
+  patch
+}: ToolItemFileChangeDetails['files'][number]): React.JSX.Element {
+  if (kind === 'add') {
+    return (
+      <DiffViewer
+        oldFile={{ content: '', name: path }}
+        newFile={{ content: patch ?? '', name: path }}
+        size="sm"
+      />
+    )
+  }
+  if (kind === 'delete') {
+    return (
+      <DiffViewer
+        oldFile={{ content: patch ?? '', name: path }}
+        newFile={{ content: '', name: path }}
+        size="sm"
+      />
+    )
+  }
+
+  return <DiffViewer patch={fileChangePatch(path, patch)} size="sm" />
+}
+
+function fileChangeHasRenderableDiff(file: ToolItemFileChangeDetails['files'][number]): boolean {
+  return (
+    file.kind === 'add' || file.kind === 'delete' || Boolean(fileChangePatch(file.path, file.patch))
+  )
+}
+
+function fileChangePatch(path: string, patch: string | undefined): string | undefined {
+  if (!patch?.trim()) return undefined
+
+  const normalizedPath = path.replace(/^[/\\]+/, '') || 'file'
+  const hasFileHeaders = /^(?:diff --git |--- )/m.test(patch)
+  const diff = hasFileHeaders ? patch : `--- a/${normalizedPath}\n+++ b/${normalizedPath}\n${patch}`
+  if (/^@@/m.test(diff)) return diff
+
+  const lines = diff.split('\n')
+  const additions = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+  const deletions = lines.filter((line) => line.startsWith('-') && !line.startsWith('---'))
+  if (additions.length === 0 && deletions.length === 0) return diff
+
+  const oldStart = deletions.length > 0 ? 1 : 0
+  const newStart = additions.length > 0 ? 1 : 0
+  const newHeaderIndex = lines.findIndex((line) => line.startsWith('+++'))
+  if (newHeaderIndex < 0) return diff
+
+  return [
+    ...lines.slice(0, newHeaderIndex + 1),
+    `@@ -${oldStart},${deletions.length} +${newStart},${additions.length} @@`,
+    ...lines.slice(newHeaderIndex + 1)
+  ].join('\n')
 }
 
 function ToolFallbackShell({
@@ -432,6 +568,7 @@ const ToolFallbackImpl = ({
   }
 
   const shellDetails = display?.details.shell
+  const fileChangeDetails = display?.details.fileChange
   const fallbackArgsText = display?.details.argsText ?? argsText ?? formattedJson(args ?? input)
   const fallbackResult = display?.details.result ?? result ?? output
   const fallbackApproval =
@@ -446,12 +583,19 @@ const ToolFallbackImpl = ({
         toolName={toolName}
         summaryLabel={display?.label ?? summaryLabel}
         summaryIcon={display?.icon ?? summaryIcon}
+        filePath={display?.filePath}
+        fileChangeStats={display?.fileChangeStats}
         statusLabel={display?.statusLabel}
         status={status}
       />
       <ToolFallbackContent>
         <ToolFallbackError error={display?.details.error ?? status?.error} status={status} />
-        {shellDetails ? (
+        {fileChangeDetails ? (
+          <ToolFallbackFileChange
+            details={fileChangeDetails}
+            className={cn(isCancelled && 'opacity-60')}
+          />
+        ) : shellDetails ? (
           <ToolFallbackShell details={shellDetails} className={cn(isCancelled && 'opacity-60')} />
         ) : (
           <ToolFallbackArgs
@@ -467,7 +611,7 @@ const ToolFallbackImpl = ({
             approval={fallbackApproval}
           />
         )}
-        {!isCancelled && (!shellDetails || showShellResult) && (
+        {!fileChangeDetails && !isCancelled && (!shellDetails || showShellResult) && (
           <ToolFallbackResult result={fallbackResult} />
         )}
       </ToolFallbackContent>

@@ -40,8 +40,24 @@ export type ToolItemShellDetails = {
   durationMs?: number
 }
 
+export type ToolItemFileChange = {
+  path: string
+  kind?: 'add' | 'delete' | 'update'
+  patch?: string
+}
+
+export type ToolItemFileChangeDetails = {
+  files: readonly ToolItemFileChange[]
+}
+
+export type ToolItemFileChangeStats = {
+  additions: number
+  deletions: number
+}
+
 export type ToolItemDisplayDetails = {
   shell?: ToolItemShellDetails
+  fileChange?: ToolItemFileChangeDetails
   argsText?: string
   result?: unknown
   error?: unknown
@@ -58,6 +74,8 @@ export type ToolItemDisplay = {
   shortTarget?: string
   icon?: ToolGroupIconName
   toolName: string
+  filePath?: string
+  fileChangeStats?: ToolItemFileChangeStats
   defaultOpen: boolean
   details: ToolItemDisplayDetails
 }
@@ -102,6 +120,8 @@ export function buildToolItemDisplay(item: ToolItem, group?: ToolGroupUnit): Too
   const toolName = stringValue(part.toolName) ?? item.kind ?? 'unknown_tool'
   const status = toolItemActivityStatus(item)
   const shell = shellCommandDetails(item)
+  const fileChange = fileChangeDetails(item)
+  const fileChangeStats = fileChangeLineStats(fileChange?.files)
   const argsText = shell ? undefined : formattedJson(item.input)
   const result = item.output
   const error = itemError(item)
@@ -123,9 +143,12 @@ export function buildToolItemDisplay(item: ToolItem, group?: ToolGroupUnit): Too
     shortTarget: shortTarget(item, shell),
     icon: itemIcon(item, group),
     toolName,
+    filePath: fileChange?.files[0]?.path,
+    fileChangeStats,
     defaultOpen: status === 'requiresAction',
     details: {
       shell,
+      fileChange,
       argsText,
       result,
       error,
@@ -191,7 +214,7 @@ function groupDetailRows(summary: ToolGroupSummary | undefined): ToolActivityDet
 }
 
 function isGroupLevelDetail(detail: string): boolean {
-  return detail.startsWith('变更 ') || detail.startsWith('已停止') || detail.includes('自动审批')
+  return detail.startsWith('已停止') || detail.includes('自动审批')
 }
 
 function explorationGroupLabel(unit: ToolGroupUnit): string {
@@ -491,6 +514,51 @@ function shellCommandDetails(item: ToolItem): ToolItemShellDetails | undefined {
   return hasShellCommandDetails(details) ? details : undefined
 }
 
+function fileChangeDetails(item: ToolItem): ToolItemFileChangeDetails | undefined {
+  if (item.kind !== 'fileChange') return undefined
+
+  const input = recordValue(item.input)
+  const source = item.rawItem ?? input
+  const files = arrayValue(source?.changes)
+    .map(recordValue)
+    .filter(isDefined)
+    .map((change, index) => ({
+      path:
+        stringValue(change.path) ??
+        stringValue(change.file) ??
+        stringValue(change.filename) ??
+        `文件 ${index + 1}`,
+      kind: fileChangeKind(change.kind),
+      patch: stringValue(change.diff) ?? stringValue(change.patch)
+    }))
+
+  return { files }
+}
+
+function fileChangeKind(value: unknown): ToolItemFileChange['kind'] | undefined {
+  const type = stringValue(recordValue(value)?.type) ?? stringValue(value)
+  if (type === 'add' || type === 'delete' || type === 'update') return type
+  return undefined
+}
+
+function fileChangeLineStats(
+  files: readonly ToolItemFileChange[] | undefined
+): ToolItemFileChangeStats | undefined {
+  let additions = 0
+  let deletions = 0
+
+  for (const file of files ?? []) {
+    for (const line of file.patch?.split('\n') ?? []) {
+      if (line.startsWith('+++') || line.startsWith('---')) continue
+      if (line.startsWith('+')) additions += 1
+      if (line.startsWith('-')) deletions += 1
+    }
+  }
+
+  if (additions === 0 && deletions === 0) return undefined
+  return { additions, deletions }
+}
+
 function hasShellCommandDetails(details: ToolItemShellDetails): boolean {
   return Boolean(
     details.command ||
@@ -607,10 +675,7 @@ function commandStatusLabel(status: ToolActivityStatus): string {
   }
 }
 
-function fileChangeStatusLabel(
-  change: AnyRecord | undefined,
-  status: ToolActivityStatus
-): string {
+function fileChangeStatusLabel(change: AnyRecord | undefined, status: ToolActivityStatus): string {
   const action = fileChangeAction(change)
   if (status === 'requiresAction') return '等待审批'
   if (status === 'stopped') return action === 'create' ? '已停止创建' : '已停止变更'

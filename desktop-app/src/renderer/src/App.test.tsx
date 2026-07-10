@@ -1566,15 +1566,103 @@ describe('App composer', () => {
     })
 
     expect(group?.dataset.state).toBe('open')
-    expect(container.querySelector('[data-slot="collapsed-activity-details"]')).not.toBeNull()
-    expect(container.textContent).toContain('变更 +1/-1 行')
+    expect(container.querySelector('[data-slot="collapsed-activity-details"]')).toBeNull()
     expect(container.querySelectorAll('[data-slot="tool-fallback-root"]')).toHaveLength(2)
+    const fileChangeStats = Array.from(
+      group?.querySelectorAll<HTMLElement>('[data-slot="tool-file-change-stats"]') ?? []
+    )
+    expect(fileChangeStats.map((stats) => stats.textContent)).toEqual(['+1-0', '+1-1'])
+    expect(fileChangeStats[0]?.children[0]?.className).toContain(
+      'group-hover/tool-fallback-root:text-emerald-700'
+    )
+    expect(fileChangeStats[0]?.children[1]?.className).toContain(
+      'group-hover/tool-fallback-root:text-red-700'
+    )
 
     const contentBody = group?.querySelector<HTMLElement>('[data-slot="tool-group-content"] > div')
     expect(contentBody?.className).not.toContain('animate-in')
     expect(contentBody?.className).not.toContain('fade-in-0')
     expect(contentBody?.className).not.toContain('blur-in')
     expect(contentBody?.className).not.toContain('slide-in-from-top')
+  })
+
+  it('renders expanded file changes with Diff Viewer instead of generic parameters and results', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('edit-diff', 'codex_file_change', 'fileChange', {
+        changes: [
+          {
+            path: 'src/example.ts',
+            diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old value\n+new value\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('file-change')
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    const diff = group?.querySelector<HTMLElement>('[data-slot="tool-file-change-diff"]')
+    expect(diff).not.toBeNull()
+    expect(diff?.className).toContain('max-h-96')
+    expect(diff?.className).toContain('overflow-y-auto')
+    expect(diff?.querySelector('[data-slot="diff-viewer"]')?.getAttribute('data-view-mode')).toBe(
+      'unified'
+    )
+    expect(diff?.textContent).toContain('example.ts')
+    expect(diff?.textContent).toContain('old value')
+    expect(diff?.textContent).toContain('new value')
+    expect(group?.querySelector('[data-slot="tool-fallback-args"]')).toBeNull()
+    expect(group?.querySelector('[data-slot="tool-fallback-result"]')).toBeNull()
+  })
+
+  it('renders created files from their raw content in Diff Viewer', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('create-diff', 'codex_file_change', 'fileChange', {
+        changes: [
+          {
+            path: '/repo/src/generated/new-file.ts',
+            kind: { type: 'add' },
+            diff: 'export const created = true\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('file-change')
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+    })
+
+    const trigger = group?.querySelector<HTMLElement>('[data-slot="tool-fallback-trigger"]')
+    const filePath = trigger?.querySelector<HTMLElement>('[data-slot="file-path"]')
+    const diff = group?.querySelector<HTMLElement>('[data-slot="tool-file-change-diff"]')
+
+    expect(trigger?.textContent).toContain('new-file.ts')
+    expect(trigger?.textContent).not.toContain('/repo/src/generated/new-file.ts')
+    expect(filePath?.getAttribute('title')).toBe('/repo/src/generated/new-file.ts')
+    expect(
+      diff?.querySelector('[data-slot="diff-viewer-line"][data-type="add"]')?.textContent
+    ).toContain('export const created = true')
   })
 
   it('uses dedicated renderers when tool runs are separated by text', () => {
@@ -2015,14 +2103,14 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('src/file-5.ts')
-    expect(container.textContent).not.toContain('src/file-6.ts')
+    expect(container.textContent).toContain('file-5.ts')
+    expect(container.textContent).not.toContain('file-6.ts')
 
     await act(async () => {
       buttonWithText('显示更多 1 条')?.click()
     })
 
-    expect(container.textContent).toContain('src/file-6.ts')
+    expect(container.textContent).toContain('file-6.ts')
     expect(container.textContent).toContain('收起')
   })
 
@@ -2041,7 +2129,7 @@ describe('App composer', () => {
     })
 
     expect(container.textContent).toContain('大 diff 已折叠，只显示文件摘要')
-    expect(container.textContent).toContain('src/a.ts')
+    expect(container.textContent).toContain('a.ts')
   })
 
   it('renders command read search and list activity as a collapsed exploration card', async () => {
@@ -2393,6 +2481,103 @@ describe('App composer', () => {
     expect(completedReasoning?.getAttribute('data-state')).toBe('open')
     expect(completedReasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
+  })
+
+  it('renders every completed command and wait item in a historical commentary replay', async () => {
+    const commandParts = Array.from({ length: 15 }, (_, index) => {
+      const callId = `replay-exec-${index + 1}`
+      const command = `echo ${callId}`
+
+      return genericToolPart(callId, 'codex_command_execution', 'commandExecution', {
+        command,
+        cwd: '/repo',
+        processId: null,
+        status: 'completed',
+        commandActions: [],
+        aggregatedOutput: `${callId} completed`,
+        exitCode: 0,
+        durationMs: 1
+      })
+    })
+    const waitParts = Array.from({ length: 3 }, (_, index) =>
+      genericToolPart(`replay-wait-${index + 1}`, 'codex_sleep', 'sleep', {
+        durationMs: 1_000
+      })
+    )
+
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '开始回放工具调用。' },
+      ...commandParts.slice(0, 11),
+      waitParts[0],
+      ...commandParts.slice(11, 14),
+      waitParts[1],
+      commandParts[14],
+      waitParts[2],
+      { type: 'text', text: '## 回放完成' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [
+          { type: 'text', providerMetadata: messagePhaseMetadata('commentary') },
+          { type: 'text', providerMetadata: messagePhaseMetadata('final_answer') }
+        ]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const reasoning = container.querySelector<HTMLElement>('[data-slot="reasoning-group"]')
+    const reasoningTrigger = reasoning?.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
+
+    expect(reasoning?.getAttribute('data-state')).toBe('closed')
+    expect(container.textContent).toContain('回放完成')
+
+    await act(async () => {
+      reasoningTrigger?.click()
+    })
+
+    const commandGroups = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[data-slot="tool-group-unit"][data-tool-group-kind="command"]'
+      )
+    )
+    const renderedWaitItems = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="compact-entry-unit"]')
+    )
+
+    expect(commandGroups).toHaveLength(3)
+    expect(commandGroups.map((group) => group.textContent)).toEqual(
+      expect.arrayContaining(['已运行 11 条命令', '已运行 3 条命令', '已运行 1 条命令'])
+    )
+    expect(renderedWaitItems).toHaveLength(3)
+    expect(renderedWaitItems.every((item) => item.textContent?.includes('等待完成'))).toBe(true)
+
+    await act(async () => {
+      for (const group of commandGroups) {
+        group.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+      }
+    })
+
+    const toolItems = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="tool-fallback-root"]')
+    )
+    expect(toolItems).toHaveLength(15)
+
+    await act(async () => {
+      for (const item of toolItems) {
+        item.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+      }
+    })
+
+    for (const index of Array.from({ length: 15 }, (_, position) => position + 1)) {
+      expect(container.textContent).toContain(`$ echo replay-exec-${index}`)
+    }
   })
 
   it('shows thinking separately after completed tool activity while waiting for text', () => {

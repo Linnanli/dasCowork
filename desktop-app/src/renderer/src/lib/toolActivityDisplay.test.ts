@@ -54,7 +54,7 @@ describe('buildToolActivityDisplayModel', () => {
     })
   })
 
-  it('puts file line totals in group details without duplicating active summaries', () => {
+  it('places file line totals on the file edit item instead of the group details', () => {
     const group = toolGroup([
       {
         type: 'tool-call',
@@ -80,8 +80,9 @@ describe('buildToolActivityDisplayModel', () => {
     const display = buildToolActivityDisplayModel(group)
 
     expect(display.group.label).toBe('已编辑 1 个文件')
-    expect(display.group.detailRows).toEqual([{ value: '变更 +2/-1 行' }])
+    expect(display.group.detailRows).toEqual([])
     expect(display.items[0]?.label).toBe('已编辑：src/a.ts')
+    expect(display.items[0]?.fileChangeStats).toEqual({ additions: 2, deletions: 1 })
   })
 
   it('maps requires-action stopped and error states to display statuses', () => {
