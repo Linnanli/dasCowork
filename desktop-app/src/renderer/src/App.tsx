@@ -1106,7 +1106,7 @@ function ReasoningGroupUnit({
       key={isStreaming ? 'streaming' : 'done'}
       data-slot="reasoning-group"
       defaultOpen={isStreaming}
-      className="group/reasoning my-2 w-full text-sm text-muted-foreground"
+      className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
       <CollapsibleTrigger
@@ -1130,7 +1130,7 @@ function ReasoningGroupUnit({
         data-slot="reasoning-group-content"
         className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
       >
-        <div className="flex max-h-72 flex-col gap-2 overflow-y-auto border-l border-border/70 pl-3 text-foreground/85">
+        <div className="min-w-0">
           {unit.children.map((child) => (
             <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
               <AssistantRenderUnitView unit={child} />

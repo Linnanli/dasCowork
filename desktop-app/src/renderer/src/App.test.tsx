@@ -2337,10 +2337,16 @@ describe('App composer', () => {
     })
 
     const reasoning = container.querySelector('[data-slot="reasoning-group"]')
+    const reasoningContent = reasoning?.querySelector<HTMLElement>(
+      '[data-slot="reasoning-group-content"] > div'
+    )
 
     expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
     expect(container.querySelectorAll('[data-slot="reasoning-process-item"]')).toHaveLength(3)
     expect(reasoning?.getAttribute('data-state')).toBe('open')
+    expect(reasoning?.className).not.toContain('text-sm')
+    expect(reasoning?.className).not.toContain('text-muted-foreground')
+    expect(reasoningContent?.className).toBe('min-w-0')
     expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
     expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
