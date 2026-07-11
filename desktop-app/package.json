@@ -32,7 +32,8 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@janole/ai-sdk-provider-codex-asp": "file:vendors/ai-sdk-provider-codex-asp",
     "ai": "^6.0.213",
-    "zod": "^4.1.8"
+    "zod": "^4.1.8",
+    "zustand": "^5.0.14"
   },
   "overrides": {
     "@assistant-ui/core": "0.2.19",

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement, type ElementType, type ReactNode } from 'react'
+import { act, createElement, type ElementType, type ReactNode, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -485,6 +485,27 @@ vi.mock('@streamdown/cjk', () => ({
   cjk: { plugin: 'cjk' }
 }))
 
+vi.mock('@/components/ui/avatar', () => ({
+  Avatar: ({ children, className }: { children?: ReactNode; className?: string }) => (
+    <div className={className}>{children}</div>
+  ),
+  AvatarFallback: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  AvatarImage: ({ onError, ...props }: React.ComponentProps<'img'>) => {
+    const [failed, setFailed] = useState(false)
+    if (failed) return null
+
+    return (
+      <img
+        {...props}
+        onError={(event) => {
+          setFailed(true)
+          onError?.(event)
+        }}
+      />
+    )
+  }
+}))
+
 vi.mock('@assistant-ui/react', () => {
   const assistantState = {
     composer: {
@@ -554,6 +575,7 @@ vi.mock('@assistant-ui/react', () => {
     getExternalStoreMessages: () => threadMessageState.externalMessages,
     AttachmentPrimitive: {
       Name: primitive('Attachment.Name'),
+      Remove: primitive('Attachment.Remove'),
       Root: primitive('Attachment.Root'),
       unstable_Thumb: primitive('Attachment.Thumb')
     },
@@ -739,6 +761,9 @@ vi.mock('@assistant-ui/react', () => {
     useScrollLock: () => vi.fn(),
     useAuiEvent: () => undefined,
     useAui: () => ({
+      attachment: {
+        source: 'message'
+      },
       on: () => vi.fn(),
       composer: () => ({
         getState: () => ({ runConfig: undefined }),
@@ -753,22 +778,21 @@ vi.mock('@assistant-ui/react', () => {
       })
     }),
     useMessageTiming: () => null,
-    useAuiState: (
-      selector: (
-        state: typeof assistantState & {
-          threadListItem: {
-            id: string
-            remoteId: string | undefined
-            externalId: string | undefined
-            title: string
-            status: string
-            custom: undefined
-          }
-        }
-      ) => unknown
-    ) =>
-      selector({
+    useAuiState: (selector: (state: Record<string, unknown>) => unknown) => {
+      const attachment = threadMessageState.message.content
+        .filter((part): part is Extract<MockMessagePart, { type: 'file' }> => part.type === 'file')
+        .map((part) => ({
+          type: part.mediaType.startsWith('image/') ? 'image' : 'file',
+          name: part.name ?? 'file',
+          status: { type: 'complete' as const },
+          content: part.mediaType.startsWith('image/')
+            ? [{ type: 'image' as const, image: part.url ?? part.data ?? '' }]
+            : []
+        }))[0]
+
+      return selector({
         ...currentAssistantState(),
+        attachment,
         threadListItem: {
           id: 'main',
           remoteId: undefined,
@@ -778,6 +802,7 @@ vi.mock('@assistant-ui/react', () => {
           custom: undefined
         }
       })
+    }
   }
 })
 
@@ -1109,7 +1134,7 @@ describe('App composer', () => {
     expect(container.querySelector('.aui-user-action-bar-root')).not.toBeNull()
   })
 
-  it('renders user image attachments as image previews', () => {
+  it('renders user image attachments with the assistant-ui attachment component', () => {
     threadMessageState.message.content = [
       { type: 'text', text: '按这个图像风格调整组件样式' },
       {
@@ -1124,18 +1149,21 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const preview = container.querySelector<HTMLImageElement>('.aui-attachment-tile img')
+    const preview = container.querySelector<HTMLImageElement>('.aui-attachment-tile-image')
+    const tile = container.querySelector<HTMLDivElement>('.aui-attachment-tile')
 
     expect(preview?.getAttribute('src')).toBe('app://fs/@fs/tmp/codex-clipboard.png')
-    expect(preview?.getAttribute('alt')).toBe('codex-clipboard.png')
-    expect(container.querySelector('[data-primitive="Attachment.Thumb"]')).toBeNull()
+    expect(preview?.getAttribute('alt')).toBe('Attachment preview')
+    expect(tile?.className).toContain('size-14')
+    expect(tile?.className).toContain('rounded-md')
+    expect(container.querySelector('.aui-attachment-root')?.className).not.toContain('size-24')
 
     act(() => {
       preview?.dispatchEvent(new Event('error'))
     })
 
-    expect(container.querySelector('.aui-attachment-tile img')).toBeNull()
-    expect(container.querySelector('[data-primitive="Attachment.Thumb"]')).not.toBeNull()
+    expect(container.querySelector('.aui-attachment-tile-image')).toBeNull()
+    expect(container.querySelector('.aui-attachment-tile-fallback-icon')).not.toBeNull()
   })
 
   it('renders the edit composer when a user message enters editing state', () => {
