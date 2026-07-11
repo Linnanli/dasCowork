@@ -2,20 +2,34 @@ import { useState, type ReactNode } from 'react'
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
+  ChevronDownIcon,
   ClockIcon,
   CombineIcon,
   FileIcon,
+  FilePenIcon,
   ImageIcon,
   LinkIcon,
   ListChecksIcon,
   ShieldCheckIcon,
   ShieldXIcon,
+  Undo2Icon,
   WrenchIcon,
   type LucideIcon
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { FilePath } from '@/components/ui/file-path'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
+import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
+import { DiffViewer } from '@/components/assistant-ui/diff-viewer'
 import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
@@ -33,7 +47,7 @@ type EntryUnit = Extract<AssistantRenderUnit, { type: 'entry' }>
 
 const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const MAX_VISIBLE_ROWS = 3
-const MAX_VISIBLE_DIFF_FILES = 5
+const MAX_VISIBLE_DIFF_FILES = 3
 const LARGE_DIFF_TEXT_LENGTH = 50_000
 const WebSearchIcon = toolGroupIconMap['web-search']
 
@@ -432,7 +446,7 @@ function TodoListEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
 function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   const item = unit.item ?? {}
   const files = diffFiles(item)
-  const lineSummary = diffLineSummary(files)
+  const { added, removed } = diffLineTotals(files)
   const diffTextLength = files.reduce((total, file) => total + (file.diff?.length ?? 0), 0)
   const largeDiff = isDiffTruncated(item) || diffTextLength > LARGE_DIFF_TEXT_LENGTH
   const cwd = turnDiffCwd(item)
@@ -440,36 +454,74 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   const visible = expanded ? files : files.slice(0, MAX_VISIBLE_DIFF_FILES)
 
   return (
-    <RenderUnitCard unit={unit} slot="turn-diff-entry-unit">
-      <div className="flex items-start gap-2">
-        <FileIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+    <Card
+      data-slot="turn-diff-entry-unit"
+      className="mt-3 gap-0 rounded-2xl py-0 shadow-none"
+      {...renderUnitAttributes(unit)}
+    >
+      <CardHeader className="grid-cols-[auto_1fr_auto] items-center gap-3 border-b px-3 py-3 sm:px-4">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-background">
+          <FilePenIcon aria-hidden className="size-5 text-muted-foreground" strokeWidth={1.8} />
+        </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">
-            代码变更 {files.length > 0 ? `${files.length} 个文件` : '摘要暂不可用'}
-          </p>
-          {lineSummary ? <p className="text-xs text-muted-foreground">{lineSummary}</p> : null}
-          {largeDiff ? (
-            <p className="mt-2 rounded-md bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
-              大 diff 已折叠，只显示文件摘要
-            </p>
-          ) : null}
-          {files.length > 0 ? (
-            <div className="mt-2 space-y-2">
-              <ul className="space-y-1 text-xs">
-                {visible.map((file, index) => (
-                  <TurnDiffFileRow key={`${file.path}:${index}`} file={file} cwd={cwd} />
-                ))}
-              </ul>
-              <ShowMoreButton
-                expanded={expanded}
-                hiddenCount={files.length - visible.length}
-                onClick={() => setExpanded((value) => !value)}
-              />
-            </div>
+          <CardTitle className="text-base tracking-tight sm:text-lg">
+            已编辑 {files.length} 个文件
+          </CardTitle>
+          {added > 0 || removed > 0 ? (
+            <CardDescription
+              data-slot="turn-diff-line-summary"
+              className="mt-0.5 flex items-center gap-2 text-sm tabular-nums"
+            >
+              {added > 0 ? (
+                <span className="text-emerald-500 dark:text-emerald-400">+{added}</span>
+              ) : null}
+              {removed > 0 ? (
+                <span className="text-red-500 dark:text-red-400">-{removed}</span>
+              ) : null}
+            </CardDescription>
           ) : null}
         </div>
-      </div>
-    </RenderUnitCard>
+        <CardAction
+          aria-hidden
+          data-slot="turn-diff-static-actions"
+          className="col-start-auto row-span-1 row-start-auto hidden shrink-0 items-center gap-5 self-auto justify-self-auto text-sm sm:flex"
+        >
+          <span className="inline-flex items-center gap-1.5">
+            撤销 <Undo2Icon className="size-4" strokeWidth={1.8} />
+          </span>
+          <span className="rounded-xl border border-border px-3 py-1.5">审核</span>
+        </CardAction>
+      </CardHeader>
+      {largeDiff ? (
+        <CardContent className="border-b bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground sm:px-6">
+          大 diff 已折叠，只显示文件摘要
+        </CardContent>
+      ) : null}
+      {files.length > 0 ? (
+        <CardContent className="px-0">
+          <Table>
+            <TableBody>
+              {visible.map((file, index) => (
+                <TurnDiffFileRow key={`${file.path}:${index}`} file={file} cwd={cwd} />
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      ) : (
+        <CardContent className="px-4 py-4 text-sm text-muted-foreground sm:px-6">
+          暂未取得文件明细
+        </CardContent>
+      )}
+      {expanded || files.length > visible.length ? (
+        <CardFooter className="p-0">
+          <TurnDiffShowMoreButton
+            expanded={expanded}
+            hiddenCount={files.length - visible.length}
+            onClick={() => setExpanded((value) => !value)}
+          />
+        </CardFooter>
+      ) : null}
+    </Card>
   )
 }
 
@@ -481,29 +533,51 @@ function TurnDiffFileRow({
   cwd: string | undefined
 }): React.JSX.Element {
   const openPath = resolveTurnDiffFilePath(file.path, cwd)
+  const displayPath = displayTurnDiffFilePath(file.path, cwd)
   const handleOpen = (): void => {
     if (!openPath) return
     void window.desktopApp.codex.openLocalPath({ path: openPath }).catch(() => undefined)
   }
 
   return (
-    <li className="flex min-w-0 items-center gap-2 rounded-md border border-border/50 px-2.5 py-2">
-      <FilePath path={file.path} className="flex-1" />
-      <span className="shrink-0 text-muted-foreground">
-        +{file.added}/-{file.removed}
-      </span>
-      <Button
-        aria-label={openPath ? `打开 ${file.path}` : `无法打开 ${file.path}`}
-        disabled={!openPath}
-        size="icon-xs"
-        title={openPath ? `打开 ${openPath}` : '缺少工作目录，无法打开相对路径'}
-        type="button"
-        variant="ghost"
-        onClick={handleOpen}
-      >
-        <FileIcon className="size-3.5" />
-      </Button>
-    </li>
+    <TableRow>
+      <TableCell className="p-0">
+        <HoverCard openDelay={150} closeDelay={100}>
+          <HoverCardTrigger asChild>
+            <span className="block min-w-0">
+              <Button
+                aria-label={openPath ? `打开 ${file.path}` : `无法打开 ${file.path}`}
+                disabled={!openPath}
+                type="button"
+                title={openPath ? `打开 ${openPath}` : '缺少工作目录，无法打开相对路径'}
+                variant="ghost"
+                className="h-auto w-full min-w-0 justify-start gap-4 rounded-none px-4 py-3 text-left font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 sm:px-6"
+                onClick={handleOpen}
+              >
+                <span
+                  data-slot="turn-diff-file-path"
+                  className="min-w-0 flex-1 truncate text-sm text-foreground/80 sm:text-base"
+                >
+                  {displayPath}
+                </span>
+                <span className="flex shrink-0 items-center gap-2 tabular-nums">
+                  <span className="text-emerald-500 dark:text-emerald-400">+{file.added}</span>
+                  <span className="text-red-500 dark:text-red-400">-{file.removed}</span>
+                </span>
+              </Button>
+            </span>
+          </HoverCardTrigger>
+          <HoverCardContent
+            align="start"
+            className="w-[48rem] max-w-[calc(100vw-2rem)] max-h-[min(32rem,70vh)] overflow-y-auto p-0"
+            side="top"
+            sideOffset={8}
+          >
+            <DiffViewer patch={file.diff} size="sm" variant="muted" />
+          </HoverCardContent>
+        </HoverCard>
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -737,9 +811,11 @@ function ImageGallery({ images }: { images: readonly ImageEntry[] }): React.JSX.
     <div data-slot="generated-image-gallery" className="mt-2 space-y-2">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2">
         {visible.map((image, index) => (
-          <button
+          <Button
+            aria-label={image.src ? `预览 ${image.alt ?? '生成图片'}` : (image.alt ?? '图片生成中')}
             key={`${image.src ?? image.alt ?? 'pending'}:${index}`}
-            className="group relative aspect-square min-w-0 overflow-hidden rounded-md border bg-muted/35 text-left"
+            className="group relative aspect-square h-auto min-w-0 w-full justify-start overflow-hidden rounded-md border bg-muted/35 p-0 text-left hover:bg-muted/35"
+            variant="ghost"
             type="button"
             onClick={() => image.src && setPreview(image)}
             disabled={!image.src}
@@ -760,7 +836,7 @@ function ImageGallery({ images }: { images: readonly ImageEntry[] }): React.JSX.
                 +{overflow}
               </span>
             ) : null}
-          </button>
+          </Button>
         ))}
       </div>
       {images.some((image) => image.alt || image.savedPath) ? (
@@ -889,6 +965,36 @@ function ShowMoreButton({
     return (
       <Button size="sm" variant="ghost" type="button" onClick={onClick}>
         {expanded ? '收起' : `显示更多 ${hiddenCount} 条`}
+      </Button>
+    )
+  }
+  return null
+}
+
+function TurnDiffShowMoreButton({
+  expanded,
+  hiddenCount,
+  onClick
+}: {
+  expanded: boolean
+  hiddenCount: number
+  onClick: () => void
+}): React.JSX.Element | null {
+  if (expanded || hiddenCount > 0) {
+    return (
+      <Button
+        aria-expanded={expanded}
+        className="h-auto w-full justify-start gap-2 rounded-none px-4 py-3 text-left text-sm font-normal transition-colors hover:bg-muted/50 sm:px-6"
+        variant="ghost"
+        type="button"
+        onClick={onClick}
+      >
+        {expanded ? '收起文件' : `再显示 ${hiddenCount} 个文件`}
+        <ChevronDownIcon
+          aria-hidden
+          className={cn('size-4 transition-transform', expanded && 'rotate-180')}
+          strokeWidth={2}
+        />
       </Button>
     )
   }
@@ -1045,11 +1151,11 @@ function parseUnifiedDiffFiles(diff: string, fallbackPath: string | undefined): 
   return files
 }
 
-function diffLineSummary(files: readonly DiffFile[]): string | undefined {
-  const added = files.reduce((total, file) => total + file.added, 0)
-  const removed = files.reduce((total, file) => total + file.removed, 0)
-  if (added === 0 && removed === 0) return undefined
-  return `+${added}/-${removed} 行`
+function diffLineTotals(files: readonly DiffFile[]): { added: number; removed: number } {
+  return {
+    added: files.reduce((total, file) => total + file.added, 0),
+    removed: files.reduce((total, file) => total + file.removed, 0)
+  }
 }
 
 function countDiffLines(diff: string | undefined): { added: number; removed: number } {
@@ -1090,6 +1196,24 @@ function resolveTurnDiffFilePath(path: string, cwd: string | undefined): string 
   const relativePath = safeRelativeLocalPath(path)
   if (!relativePath) return undefined
   return joinLocalPath(cwd, relativePath)
+}
+
+function displayTurnDiffFilePath(path: string, cwd: string | undefined): string {
+  const normalizedPath = path.replace(/\\/g, '/').replace(/^[ab]\//, '')
+  const normalizedCwd = cwd?.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!normalizedCwd) return normalizedPath
+
+  const caseInsensitive = /^[A-Za-z]:\//.test(normalizedPath) || /^[A-Za-z]:\//.test(normalizedCwd)
+  const pathForComparison = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath
+  const cwdForComparison = caseInsensitive ? normalizedCwd.toLowerCase() : normalizedCwd
+  if (pathForComparison === cwdForComparison) return '.'
+
+  const projectPrefix = `${cwdForComparison}/`
+  if (pathForComparison.startsWith(projectPrefix)) {
+    return normalizedPath.slice(normalizedCwd.length + 1)
+  }
+
+  return normalizedPath
 }
 
 function safeRelativeLocalPath(path: string): string | undefined {

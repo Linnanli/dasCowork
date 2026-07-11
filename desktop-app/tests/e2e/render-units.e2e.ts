@@ -148,9 +148,18 @@ test('renders turn diff render unit after a real file change through the desktop
 
     const turnDiffCard = page.locator('[data-slot="turn-diff-entry-unit"]').first()
     await expect(turnDiffCard).toBeVisible()
-    await expect(turnDiffCard).toContainText('代码变更')
+    await expect(turnDiffCard).toContainText('已编辑 1 个文件')
     await expect(turnDiffCard).toContainText('notes.txt')
-    await expect(turnDiffCard).toContainText('+1/-1')
+    await expect(turnDiffCard).toContainText('+1')
+    await expect(turnDiffCard).toContainText('-1')
+    await expect(turnDiffCard.locator('[data-slot="turn-diff-line-summary"]')).toBeVisible()
+    await turnDiffCard.locator('[data-slot="turn-diff-file-path"]').hover()
+    const diffViewer = page.locator('[data-slot="diff-viewer"]')
+    await expect(diffViewer).toBeVisible()
+    await expect(page.locator('[data-slot="hover-card-content"]')).toHaveAttribute(
+      'data-side',
+      'top'
+    )
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: 'Turn diff render unit complete' })
     ).toBeVisible()

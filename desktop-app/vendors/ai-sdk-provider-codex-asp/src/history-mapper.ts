@@ -14,21 +14,30 @@ import {
     toolInvocationForItem,
     userInputText,
 } from "./protocol/shared-item-extractors";
+import {
+    type FileChangeDiffBatch,
+    turnDiffItem,
+    unifiedDiffForFileChangeBatches,
+} from "./protocol/turn-diff";
 import { stripUndefined } from "./utils/object";
 
 type UiMessagePart = UIMessage["parts"][number];
 type DynamicToolUiPart = Extract<UiMessagePart, { type: "dynamic-tool" }>;
 type FileUiPart = Extract<UiMessagePart, { type: "file" }>;
 
-export type CodexThreadForUi = Pick<Thread, "id" | "turns">;
+export type CodexThreadForUi = Pick<Thread, "id" | "turns"> & {
+    // Thread-list and history responses may omit cwd or return null for
+    // threads created before the working directory was recorded.
+    cwd?: Thread["cwd"] | null;
+};
 export type CodexTurnForUi = Pick<Turn, "id" | "items" | "durationMs">;
 
 export function mapCodexThreadToUiMessages(thread: CodexThreadForUi): UIMessage[]
 {
-    return thread.turns.flatMap((turn) => mapCodexTurnToUiMessages(turn));
+    return thread.turns.flatMap((turn) => mapCodexTurnToUiMessages(turn, thread.cwd ?? undefined));
 }
 
-export function mapCodexTurnToUiMessages(turn: CodexTurnForUi): UIMessage[]
+export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UIMessage[]
 {
     const messages: UIMessage[] = [];
     let assistantParts: UIMessage["parts"] = [];
@@ -124,8 +133,65 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi): UIMessage[]
         }
     }
 
+    const historicalTurnDiffPart = turnDiffPartForTurn(turn, cwd);
+    if (historicalTurnDiffPart)
+    {
+        appendAssistantPart(historicalTurnDiffPart);
+    }
+
     flushAssistant();
     return messages;
+}
+
+function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiPart | null
+{
+    const batches = fileChangeDiffBatchesForTurn(turn, cwd);
+    const diff = unifiedDiffForFileChangeBatches(batches);
+    if (!diff)
+    {
+        return null;
+    }
+
+    const item = turnDiffItem({
+        id: `turn-diff:${turn.id}`,
+        status: "completed",
+        cwd: batches[0]?.cwd ?? cwd,
+        diff,
+    });
+    return {
+        type: "dynamic-tool",
+        toolName: "codex_turn_diff",
+        toolCallId: item.id,
+        state: "output-available",
+        input: { turnId: turn.id },
+        output: { item },
+        providerExecuted: true,
+    };
+}
+
+function fileChangeDiffBatchesForTurn(turn: CodexTurnForUi, initialCwd?: string): FileChangeDiffBatch[]
+{
+    const batches: FileChangeDiffBatch[] = [];
+    let cwd = initialCwd;
+
+    for (const item of turn.items as CodexRenderableThreadItem[])
+    {
+        if (item.type === "commandExecution")
+        {
+            cwd = item.cwd;
+            continue;
+        }
+
+        if (item.type === "fileChange"
+            && item.status !== "failed"
+            && item.status !== "declined"
+            && item.changes.length > 0)
+        {
+            batches.push({ changes: item.changes, cwd });
+        }
+    }
+
+    return batches;
 }
 
 export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiMessagePart | null

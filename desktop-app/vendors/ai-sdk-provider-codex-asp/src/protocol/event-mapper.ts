@@ -27,6 +27,7 @@ import {
     toolInvocationForItem,
     webSearchHasContent,
 } from "./shared-item-extractors";
+import { turnDiffItem } from "./turn-diff";
 import type { CodexDynamicToolCallItem } from "./types";
 
 export interface CodexEventMapperInput
@@ -75,8 +76,6 @@ const EMPTY_USAGE: LanguageModelV3Usage = {
         reasoning: undefined,
     },
 };
-
-const TURN_DIFF_PREVIEW_CHAR_LIMIT = 50_000;
 
 function toFinishReason(status: TurnStatus | undefined): LanguageModelV3FinishReason
 {
@@ -171,16 +170,12 @@ function turnDiffItemForNotification(
     cwd?: string,
 ): Record<string, unknown>
 {
-    const truncated = notification.diff.length > TURN_DIFF_PREVIEW_CHAR_LIMIT;
-    return stripUndefined({
+    return { ...turnDiffItem({
         id: itemId,
-        type: "turnDiff",
         status: "inProgress",
         cwd,
-        diff: truncated ? notification.diff.slice(0, TURN_DIFF_PREVIEW_CHAR_LIMIT) : notification.diff,
-        truncated,
-        originalLength: truncated ? notification.diff.length : undefined,
-    });
+        diff: notification.diff,
+    }) };
 }
 
 export interface CodexEventMapperOptions

@@ -449,7 +449,7 @@ export function DiffViewerFileBadge({ filename }: { filename?: string }): React.
   if (!extension || extension === filename) return null
 
   return (
-    <span className="inline-flex size-5 shrink-0 items-end justify-end rounded-sm border border-border/60 bg-background text-[8px] leading-none font-bold text-foreground">
+    <span className="inline-flex size-5 shrink-0 items-end justify-end rounded-sm border border-border/60 bg-background text-[8px] leading-none text-foreground">
       <span className="p-0.5">{extension}</span>
     </span>
   )

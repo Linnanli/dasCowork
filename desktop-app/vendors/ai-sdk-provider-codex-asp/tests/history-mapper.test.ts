@@ -6,6 +6,7 @@ import {
     mapCodexThreadToUiMessages,
     toolInvocationForItem,
 } from "../src";
+import { unifiedDiffForFileChangeBatches } from "../src/protocol/turn-diff";
 import type { ThreadItem } from "../src/protocol/types";
 
 describe("history mapper", () =>
@@ -30,6 +31,7 @@ describe("history mapper", () =>
         } satisfies Extract<ThreadItem, { type: "commandExecution" }>;
         const thread = {
             id: "thr",
+            cwd: "/repo",
             turns: [
                 {
                     id: "turn_1",
@@ -84,6 +86,140 @@ describe("history mapper", () =>
         ]);
     });
 
+    it("rebuilds a historical turn diff from persisted file changes", () =>
+    {
+        const fileChange = {
+            type: "fileChange",
+            id: "file_1",
+            status: "completed",
+            changes: [
+                { path: "notes.txt", kind: { type: "add" }, diff: "first line\nsecond line\n" },
+                {
+                    path: "src/app.ts",
+                    kind: { type: "update", move_path: null },
+                    diff: "@@ -1 +1 @@\n-before\n+after\n",
+                },
+                { path: "obsolete.txt", kind: { type: "delete" }, diff: "unused\n" },
+            ],
+        } satisfies Extract<ThreadItem, { type: "fileChange" }>;
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_1",
+                    items: [fileChange],
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: null,
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toEqual([
+            {
+                id: "turn_1:assistant",
+                role: "assistant",
+                parts: [
+                    {
+                        type: "dynamic-tool",
+                        toolName: "codex_file_change",
+                        toolCallId: "file_1",
+                        state: "output-available",
+                        input: { changes: fileChange.changes, status: "completed" },
+                        output: { item: fileChange },
+                        providerExecuted: true,
+                    },
+                    {
+                        type: "dynamic-tool",
+                        toolName: "codex_turn_diff",
+                        toolCallId: "turn-diff:turn_1",
+                        state: "output-available",
+                        input: { turnId: "turn_1" },
+                        output: {
+                            item: {
+                                id: "turn-diff:turn_1",
+                                type: "turnDiff",
+                                status: "completed",
+                                cwd: "/repo",
+                                diff: [
+                                    "diff --git a/notes.txt b/notes.txt",
+                                    "new file mode 100644",
+                                    "--- /dev/null",
+                                    "+++ b/notes.txt",
+                                    "@@ -0,0 +1,2 @@",
+                                    "+first line",
+                                    "+second line",
+                                    "",
+                                    "diff --git a/src/app.ts b/src/app.ts",
+                                    "--- a/src/app.ts",
+                                    "+++ b/src/app.ts",
+                                    "@@ -1 +1 @@",
+                                    "-before",
+                                    "+after",
+                                    "",
+                                    "diff --git a/obsolete.txt b/obsolete.txt",
+                                    "deleted file mode 100644",
+                                    "--- a/obsolete.txt",
+                                    "+++ /dev/null",
+                                    "@@ -1,1 +0,0 @@",
+                                    "-unused",
+                                    "",
+                                ].join("\n"),
+                                truncated: false,
+                            },
+                        },
+                        providerExecuted: true,
+                    },
+                ],
+            },
+        ]);
+    });
+
+    it("coalesces only updates to the same file in the same working directory", () =>
+    {
+        const change = (diff: string) => ({
+            path: "src/app.ts",
+            kind: { type: "update" as const, move_path: null },
+            diff,
+        });
+
+        expect(unifiedDiffForFileChangeBatches([
+            {
+                cwd: "/repo/a",
+                changes: [
+                    change("@@ -1 +1 @@\n-before\n+after\n"),
+                    change("@@ -3 +3 @@\n-old\n+new\n"),
+                ],
+            },
+            {
+                cwd: "/repo/b",
+                changes: [change("@@ -1 +1 @@\n-before-b\n+after-b\n")],
+            },
+        ])).toBe([
+            "diff --git a/src/app.ts b/src/app.ts",
+            "--- a/src/app.ts",
+            "+++ b/src/app.ts",
+            "@@ -1 +1 @@",
+            "-before",
+            "+after",
+            "@@ -3 +3 @@",
+            "-old",
+            "+new",
+            "",
+            "diff --git a/src/app.ts b/src/app.ts",
+            "--- a/src/app.ts",
+            "+++ b/src/app.ts",
+            "@@ -1 +1 @@",
+            "-before-b",
+            "+after-b",
+            "",
+        ].join("\n"));
+    });
+
     it("uses the shared extractor output for history dynamic-tool parts", () =>
     {
         const item = {
@@ -111,6 +247,7 @@ describe("history mapper", () =>
     {
         const thread = {
             id: "thr",
+            cwd: "/repo",
             turns: [
                 {
                     id: "turn_phases",

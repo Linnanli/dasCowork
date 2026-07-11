@@ -134,6 +134,18 @@ describe('AppServerThreadClient', () => {
       exitCode: 0,
       durationMs: 1200
     } satisfies Extract<ThreadItem, { type: 'commandExecution' }>
+    const fileChangeItem = {
+      id: 'file_1',
+      type: 'fileChange',
+      status: 'completed',
+      changes: [
+        {
+          path: 'src/history.ts',
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1 +1 @@\n-before\n+after\n'
+        }
+      ]
+    } satisfies Extract<ThreadItem, { type: 'fileChange' }>
     const historyClient = createHistoryClient([
       historyThread({
         id: 'thread-1',
@@ -150,7 +162,8 @@ describe('AppServerThreadClient', () => {
                 clientId: 'client_1',
                 content: [{ type: 'text', text: 'Run tests', text_elements: [] }]
               },
-              commandItem
+              commandItem,
+              fileChangeItem
             ],
             itemsView: 'full',
             status: 'completed',
@@ -183,6 +196,40 @@ describe('AppServerThreadClient', () => {
               toolName: 'codex_command_execution',
               toolCallId: 'cmd_1',
               input: { command: 'npm test', cwd: '/repo/app' },
+              state: 'output-available',
+              providerExecuted: true
+            },
+            {
+              type: 'dynamic-tool',
+              toolName: 'codex_file_change',
+              toolCallId: 'file_1',
+              input: { changes: fileChangeItem.changes, status: 'completed' },
+              output: { item: fileChangeItem },
+              state: 'output-available',
+              providerExecuted: true
+            },
+            {
+              type: 'dynamic-tool',
+              toolName: 'codex_turn_diff',
+              toolCallId: 'turn-diff:turn_1',
+              input: { turnId: 'turn_1' },
+              output: {
+                item: {
+                  type: 'turnDiff',
+                  status: 'completed',
+                  cwd: '/repo/app',
+                  diff: [
+                    'diff --git a/src/history.ts b/src/history.ts',
+                    '--- a/src/history.ts',
+                    '+++ b/src/history.ts',
+                    '@@ -1 +1 @@',
+                    '-before',
+                    '+after',
+                    ''
+                  ].join('\n'),
+                  truncated: false
+                }
+              },
               state: 'output-available',
               providerExecuted: true
             }

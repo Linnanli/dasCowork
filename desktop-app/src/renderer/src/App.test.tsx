@@ -1986,6 +1986,7 @@ describe('App composer', () => {
         ]
       }),
       genericToolPart('diff-1', 'turn-diff', 'turn-diff', {
+        cwd: '/repo',
         files: [
           {
             path: '/repo/src/App.tsx',
@@ -2023,9 +2024,16 @@ describe('App composer', () => {
 
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('待办进度 1/2')
-    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
-    expect(container.textContent).toContain('代码变更 1 个文件')
-    expect(container.textContent).toContain('+1/-1 行')
+    const turnDiffCard = container.querySelector('[data-slot="turn-diff-entry-unit"]')
+    expect(turnDiffCard).not.toBeNull()
+    expect(turnDiffCard?.querySelector('[data-slot="card-header"]')).not.toBeNull()
+    expect(turnDiffCard?.querySelector('[data-slot="table"]')).not.toBeNull()
+    expect(container.textContent).toContain('已编辑 1 个文件')
+    expect(turnDiffCard?.textContent).toContain('src/App.tsx')
+    expect(turnDiffCard?.textContent).not.toContain('/repo/src/App.tsx')
+    expect(container.textContent).toContain('+1')
+    expect(container.textContent).toContain('-1')
+    expect(container.querySelector('[data-slot="turn-diff-static-actions"]')).not.toBeNull()
     expect(container.querySelector('[data-slot="generated-image-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('已生成 1 张图片')
     expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
@@ -2147,7 +2155,7 @@ describe('App composer', () => {
     expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
   })
 
-  it('expands turn diff file lists beyond the first five files', async () => {
+  it('expands turn diff file lists beyond the three-file preview', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -2166,15 +2174,15 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('file-5.ts')
-    expect(container.textContent).not.toContain('file-6.ts')
+    expect(container.textContent).toContain('file-3.ts')
+    expect(container.textContent).not.toContain('file-4.ts')
 
     await act(async () => {
-      buttonWithText('显示更多 1 条')?.click()
+      buttonWithText('再显示 3 个文件')?.click()
     })
 
     expect(container.textContent).toContain('file-6.ts')
-    expect(container.textContent).toContain('收起')
+    expect(container.textContent).toContain('收起文件')
   })
 
   it('keeps large turn diffs collapsed to file summaries', () => {
@@ -2249,7 +2257,7 @@ describe('App composer', () => {
 
     expect(container.querySelector('[data-slot="live-render-unit-footer"]')).not.toBeNull()
     expect(container.textContent).toContain('待办进度 1/2')
-    expect(container.textContent).toContain('代码变更 1 个文件')
+    expect(container.textContent).toContain('已编辑 1 个文件')
 
     threadMessageState.message.status = { type: 'complete' }
     act(() => {
