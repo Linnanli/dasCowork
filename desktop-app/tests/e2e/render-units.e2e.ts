@@ -68,9 +68,7 @@ test('renders web search and exploration render units through the real desktop c
 
     await activityGroup.locator('[data-slot="tool-group-trigger"]').click()
     await expect(page.locator('[data-slot="web-search-details"]')).toContainText(query)
-    await expect(page.locator('[data-slot="web-search-details"]')).toContainText(
-      '已搜索网页 · 搜索'
-    )
+    await expect(page.locator('[data-slot="web-search-details"]')).toContainText('已搜索网页')
     await expect(activityGroup).toContainText('package.json')
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Web search and exploration render units complete'

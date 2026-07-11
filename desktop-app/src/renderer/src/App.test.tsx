@@ -1841,7 +1841,7 @@ describe('App composer', () => {
     expect(group?.querySelector('[data-slot="collapsed-activity-details"]')).toBeNull()
   })
 
-  it('renders rich MCP content blocks and web search query details', () => {
+  it('renders rich MCP content blocks and compact web search details', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1870,7 +1870,7 @@ describe('App composer', () => {
       }),
       genericToolPart('web-1', 'codex_web_search', 'webSearch', {
         query: 'render unit parity',
-        action: { type: 'search' },
+        action: { type: 'openPage', url: 'https://example.test/docs/render-unit-parity' },
         faviconUrl: 'https://example.test/favicon.ico'
       })
     ]
@@ -1897,9 +1897,16 @@ describe('App composer', () => {
     expect(container.textContent).toContain('Embedded doc')
     expect(container.textContent).toContain('未知内容：custom_block')
     expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
-    expect(container.textContent).toContain('render unit parity')
-    expect(container.textContent).toContain('已搜索网页 · 搜索')
-    expect(container.querySelector('img[src="https://example.test/favicon.ico"]')).not.toBeNull()
+    const webSearchDetail = container.querySelector<HTMLElement>(
+      '[data-slot="web-search-details"] li'
+    )
+    expect(webSearchDetail?.textContent).toContain('已搜索网页')
+    expect(webSearchDetail?.textContent).toContain('https://example.test/docs/render-unit-parity')
+    expect(webSearchDetail?.className).toContain('text-sm')
+    expect(webSearchDetail?.className).toContain('text-muted-foreground')
+    expect(webSearchDetail?.className).not.toMatch(/rounded|border|bg-/)
+    expect(webSearchDetail?.querySelector('[data-slot="web-search-detail-icon"]')).not.toBeNull()
+    expect(container.querySelector('img[src="https://example.test/favicon.ico"]')).toBeNull()
   })
 
   it('renders live web search details from tool input before result item exists', () => {
@@ -1928,10 +1935,10 @@ describe('App composer', () => {
 
     expect(container.querySelector('[data-slot="web-search-details"]')).not.toBeNull()
     expect(container.textContent).toContain('live render unit query')
-    expect(container.textContent).toContain('正在搜索网页 · 搜索')
+    expect(container.textContent).toContain('正在搜索网页')
   })
 
-  it('renders only safe web search favicons', () => {
+  it('renders compact web search details without favicons', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1962,7 +1969,8 @@ describe('App composer', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(container.querySelector('img[src="data:image/png;base64,iVBORw0KGgo="]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-slot="web-search-detail-icon"]')).toHaveLength(3)
+    expect(container.querySelector('img[src="data:image/png;base64,iVBORw0KGgo="]')).toBeNull()
     expect(container.querySelector('img[src^="javascript:"]')).toBeNull()
     expect(container.querySelector('img[src^="file:"]')).toBeNull()
   })

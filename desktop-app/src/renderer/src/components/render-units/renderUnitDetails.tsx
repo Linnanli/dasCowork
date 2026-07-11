@@ -16,6 +16,7 @@ import {
 
 import { Button } from '@/components/ui/button'
 import { FilePath } from '@/components/ui/file-path'
+import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
 import {
@@ -34,6 +35,7 @@ const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const MAX_VISIBLE_ROWS = 3
 const MAX_VISIBLE_DIFF_FILES = 5
 const LARGE_DIFF_TEXT_LENGTH = 50_000
+const WebSearchIcon = toolGroupIconMap['web-search']
 
 export function CollapsedActivityDetails({
   detailRows,
@@ -89,9 +91,9 @@ export function McpToolCallDetails({
 
 export function WebSearchDetails({ parts }: { parts: readonly AnyRecord[] }): React.JSX.Element {
   const items = parts.map(webSearchDetailForPart)
-  const hasAnyQuery = items.some(({ query }) => query)
+  const hasAnyTarget = items.some(({ target }) => target)
 
-  if (!hasAnyQuery) {
+  if (!hasAnyTarget) {
     return (
       <p data-slot="web-search-detail-fallback" className="text-xs text-muted-foreground">
         搜索详情暂不可用
@@ -100,37 +102,27 @@ export function WebSearchDetails({ parts }: { parts: readonly AnyRecord[] }): Re
   }
 
   return (
-    <ol data-slot="web-search-details" className="space-y-2">
-      {items.map(
-        ({ part, item, query: itemQuery, action: itemAction, favicon: itemFavicon }, index) => {
-          const query = itemQuery ?? '未记录查询'
-          const action = webSearchActionLabel(itemAction)
-          const favicon = safeFaviconSrc(
-            stringValue(item?.favicon) ?? stringValue(item?.faviconUrl) ?? itemFavicon
-          )
-          const active = isToolPartActive(part) || isActiveStatus(item?.status)
+    <ol data-slot="web-search-details" className="space-y-1">
+      {items.map(({ part, item, target }, index) => {
+        const active = isToolPartActive(part) || isActiveStatus(item?.status)
 
-          return (
-            <li
-              key={String(item?.id ?? part.toolCallId ?? index)}
-              className="flex min-w-0 items-start gap-2 rounded-md border border-border/50 bg-muted/25 px-2.5 py-2"
-            >
-              {favicon ? (
-                <img alt="" className="mt-0.5 size-4 shrink-0 rounded-sm" src={favicon} />
-              ) : (
-                <LinkIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{query}</p>
-                <p className="text-xs text-muted-foreground">
-                  {active ? '正在搜索网页' : '已搜索网页'}
-                  {action ? ` · ${action}` : null}
-                </p>
-              </div>
-            </li>
-          )
-        }
-      )}
+        return (
+          <li
+            key={String(item?.id ?? part.toolCallId ?? index)}
+            className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground"
+          >
+            <WebSearchIcon
+              aria-hidden
+              data-slot="web-search-detail-icon"
+              className="size-3.5 shrink-0"
+            />
+            <span className="shrink-0 leading-none font-normal">
+              {active ? '正在搜索网页' : '已搜索网页'}
+            </span>
+            <span className="min-w-0 truncate leading-none font-normal">{target}</span>
+          </li>
+        )
+      })}
     </ol>
   )
 }
@@ -138,26 +130,17 @@ export function WebSearchDetails({ parts }: { parts: readonly AnyRecord[] }): Re
 function webSearchDetailForPart(part: AnyRecord): {
   part: AnyRecord
   item?: AnyRecord
-  query?: string
-  action?: unknown
-  favicon?: string
+  target?: string
 } {
   const item = extractThreadItem(part)
   const input = extractToolInput(part)
+  const action = item?.action ?? webSearchActionFromInput(input)
+  const query = stringValue(item?.query) ?? webSearchQueryFromInput(input)
 
   return {
     part,
     item,
-    query: stringValue(item?.query) ?? webSearchQueryFromInput(input),
-    action:
-      item?.action ??
-      webSearchActionFromInput(input) ??
-      (webSearchQueryFromInput(input) ? 'search' : undefined),
-    favicon:
-      stringValue(item?.favicon) ??
-      stringValue(item?.faviconUrl) ??
-      stringValue(recordValue(input)?.favicon) ??
-      stringValue(recordValue(input)?.faviconUrl)
+    target: webSearchUrl(action) ?? query
   }
 }
 
@@ -1334,26 +1317,8 @@ function mcpToolFromToolName(toolName: string | undefined): string | undefined {
   return slashIndex >= 0 ? toolName.slice(slashIndex + 1) || undefined : undefined
 }
 
-function webSearchActionLabel(action: unknown): string | undefined {
-  if (typeof action === 'string') return webSearchActionDisplayLabel(action)
-  const record = recordValue(action)
-  const actionType = stringValue(record?.type)
-  return actionType ? webSearchActionDisplayLabel(actionType) : stringValue(record?.query)
-}
-
-function webSearchActionDisplayLabel(action: string): string {
-  switch (action) {
-    case 'search':
-      return '搜索'
-    case 'openPage':
-    case 'open_page':
-      return '打开网页'
-    case 'findInPage':
-    case 'find_in_page':
-      return '页内查找'
-    default:
-      return action
-  }
+function webSearchUrl(action: unknown): string | undefined {
+  return stringValue(recordValue(action)?.url)
 }
 
 function webSearchQueryFromInput(input: unknown): string | undefined {
@@ -1404,17 +1369,6 @@ function safeRenderableMediaSrc(src: string | undefined): string | undefined {
 
 function isSafeDomMediaSrc(src: string): boolean {
   return src.startsWith('data:')
-}
-
-function safeFaviconSrc(src: string | undefined): string | undefined {
-  if (!src) return undefined
-  if (src.startsWith('data:')) return src
-  try {
-    const parsed = new URL(src)
-    return parsed.protocol === 'https:' ? parsed.href : undefined
-  } catch {
-    return undefined
-  }
 }
 
 function hasUrlScheme(src: string): boolean {
