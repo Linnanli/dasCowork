@@ -1130,7 +1130,7 @@ function ReasoningGroupUnit({
         data-slot="reasoning-group-content"
         className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
       >
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-4">
           {unit.children.map((child) => (
             <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
               <AssistantRenderUnitView unit={child} />

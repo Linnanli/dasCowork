@@ -2497,7 +2497,7 @@ describe('App composer', () => {
     expect(reasoning?.getAttribute('data-state')).toBe('open')
     expect(reasoning?.className).not.toContain('text-sm')
     expect(reasoning?.className).not.toContain('text-muted-foreground')
-    expect(reasoningContent?.className).toBe('min-w-0')
+    expect(reasoningContent?.className).toBe('min-w-0 space-y-4')
     expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
     expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
@@ -2615,6 +2615,12 @@ describe('App composer', () => {
     )
 
     expect(commandGroups).toHaveLength(3)
+    expect(commandGroups.every((group) => !group.className.includes('my-2'))).toBe(true)
+    expect(
+      commandGroups.every(
+        (group) => !group.querySelector('[data-slot="tool-group-trigger"]')?.className.includes('py-1.5')
+      )
+    ).toBe(true)
     expect(commandGroups.map((group) => group.textContent)).toEqual(
       expect.arrayContaining(['已运行 11 条命令', '已运行 3 条命令', '已运行 1 条命令'])
     )
