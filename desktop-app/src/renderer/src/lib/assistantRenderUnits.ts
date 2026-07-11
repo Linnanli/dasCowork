@@ -653,7 +653,10 @@ function toToolGroupRenderUnit(
   isMessageRunning: boolean
 ): AssistantRenderUnit {
   const children = toolItemsForUnit(unit)
-  const summary = summarizeToolGroup(children.map((child) => child.rawPart))
+  // One file-change part can include several files, which are expanded into individual
+  // child items below. Build the group summary from the original parts so those files
+  // are counted once rather than once per expanded child.
+  const summary = summarizeToolGroup(partsForUnit(unit))
   const kind = toolGroupKindForUnit(unit, children)
   const key = toolGroupKey(unit, index, children)
   const status = toolGroupStatus(children)
@@ -736,8 +739,8 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
   if (unit.type === 'entry' && unit.itemType === 'exploration') {
     const childItems = arrayValue(unit.item?.items).map(recordValue).filter(isDefined)
     if (childItems.length > 0) {
-      return childItems.map((item, index) =>
-        toolItemFromPart({
+      return childItems.flatMap((item, index) =>
+        toolItemsFromPart({
           part: unit.part,
           partIndex: unit.partIndices[index] ?? unit.partIndex,
           item,
@@ -748,21 +751,19 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
   }
 
   if (unit.type === 'entry') {
-    return [
-      toolItemFromPart({
-        part: unit.part,
-        partIndex: unit.partIndex,
-        item: unit.item,
-        fallbackKind: unit.itemType,
-        mcpSource: unit.mcpSource,
-        dynamicMetadata: unit.dynamicMetadata,
-        action: unit.action
-      })
-    ]
+    return toolItemsFromPart({
+      part: unit.part,
+      partIndex: unit.partIndex,
+      item: unit.item,
+      fallbackKind: unit.itemType,
+      mcpSource: unit.mcpSource,
+      dynamicMetadata: unit.dynamicMetadata,
+      action: unit.action
+    })
   }
 
-  return partsForUnit(unit).map((part, index) =>
-    toolItemFromPart({
+  return partsForUnit(unit).flatMap((part, index) =>
+    toolItemsFromPart({
       part,
       partIndex: unit.partIndices[index] ?? index,
       mcpSource:
@@ -779,6 +780,38 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
   )
 }
 
+type ToolItemFromPartOptions = {
+  part: AssistantMessagePart
+  partIndex: number
+  item?: Record<string, unknown>
+  fallbackKind?: string
+  mcpSource?: McpSourceMetadata
+  dynamicMetadata?: DynamicToolMetadata
+  action?: string
+}
+
+function toolItemsFromPart(options: ToolItemFromPartOptions): ToolItem[] {
+  const item = toolItemFromPart(options)
+  if (item.kind !== 'fileChange') return [item]
+
+  const source = item.rawItem ?? recordValue(item.input)
+  const changes = arrayValue(source?.changes).map(recordValue).filter(isDefined)
+  if (changes.length <= 1) return [item]
+
+  return changes.map((change, index) => {
+    const id = `${item.id}:file:${index}`
+    return {
+      ...item,
+      id,
+      rawItem: {
+        ...source,
+        id,
+        changes: [change]
+      }
+    }
+  })
+}
+
 function toolItemFromPart({
   part,
   partIndex,
@@ -787,15 +820,7 @@ function toolItemFromPart({
   mcpSource,
   dynamicMetadata,
   action
-}: {
-  part: AssistantMessagePart
-  partIndex: number
-  item?: Record<string, unknown>
-  fallbackKind?: string
-  mcpSource?: McpSourceMetadata
-  dynamicMetadata?: DynamicToolMetadata
-  action?: string
-}): ToolItem {
+}: ToolItemFromPartOptions): ToolItem {
   const toolName = stringValue(part.toolName)
   const rawItem =
     item ??

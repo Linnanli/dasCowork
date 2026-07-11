@@ -85,6 +85,48 @@ describe('buildToolActivityDisplayModel', () => {
     expect(display.items[0]?.fileChangeStats).toEqual({ additions: 2, deletions: 1 })
   })
 
+  it('renders one file edit item and line total for every changed file in a result', () => {
+    const group = toolGroup([
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-many',
+        toolName: 'codex_file_change',
+        result: {
+          item: {
+            id: 'patch-many',
+            type: 'fileChange',
+            status: 'completed',
+            changes: [
+              {
+                path: 'src/App.test.tsx',
+                kind: { type: 'update' },
+                diff: '--- a/src/App.test.tsx\n+++ b/src/App.test.tsx\n-old\n+new\n'
+              },
+              {
+                path: 'src/components/assistant-ui/tool-fallback.tsx',
+                kind: { type: 'update' },
+                diff: '--- a/src/components/assistant-ui/tool-fallback.tsx\n+++ b/src/components/assistant-ui/tool-fallback.tsx\n+first\n+second\n'
+              }
+            ]
+          }
+        }
+      }
+    ])
+
+    const display = buildToolActivityDisplayModel(group)
+
+    expect(display.group.label).toBe('已编辑 2 个文件')
+    expect(display.items).toHaveLength(2)
+    expect(display.items.map((item) => item.filePath)).toEqual([
+      'src/App.test.tsx',
+      'src/components/assistant-ui/tool-fallback.tsx'
+    ])
+    expect(display.items.map((item) => item.fileChangeStats)).toEqual([
+      { additions: 1, deletions: 1 },
+      { additions: 2, deletions: 0 }
+    ])
+  })
+
   it('maps requires-action stopped and error states to display statuses', () => {
     const requiresAction = buildToolActivityDisplayModel(
       toolGroup([

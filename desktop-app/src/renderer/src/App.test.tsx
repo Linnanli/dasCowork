@@ -1626,6 +1626,61 @@ describe('App composer', () => {
     expect(group?.querySelector('[data-slot="tool-fallback-result"]')).toBeNull()
   })
 
+  it('renders each changed file in a file-change result as a separate tool item', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('edit-many', 'codex_file_change', 'fileChange', {
+        changes: [
+          {
+            path: 'src/App.test.tsx',
+            diff: '--- a/src/App.test.tsx\n+++ b/src/App.test.tsx\n-old test\n+new test\n'
+          },
+          {
+            path: 'src/components/assistant-ui/tool-fallback.tsx',
+            diff: '--- a/src/components/assistant-ui/tool-fallback.tsx\n+++ b/src/components/assistant-ui/tool-fallback.tsx\n+first line\n+second line\n'
+          }
+        ]
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('file-change')
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    const toolItems = Array.from(
+      group?.querySelectorAll<HTMLElement>('[data-slot="tool-fallback-root"]') ?? []
+    )
+    const stats = Array.from(
+      group?.querySelectorAll<HTMLElement>('[data-slot="tool-file-change-stats"]') ?? []
+    )
+
+    expect(group?.textContent).toContain('已编辑 2 个文件')
+    expect(toolItems).toHaveLength(2)
+    expect(toolItems.map((item) => item.textContent)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('App.test.tsx'),
+        expect.stringContaining('tool-fallback.tsx')
+      ])
+    )
+    expect(stats.map((item) => item.textContent)).toEqual(['+1-1', '+2-0'])
+
+    await act(async () => {
+      for (const item of toolItems) {
+        item.querySelector<HTMLButtonElement>('[data-slot="tool-fallback-trigger"]')?.click()
+      }
+    })
+
+    expect(group?.querySelectorAll('[data-slot="tool-file-change-diff"]')).toHaveLength(2)
+    expect(group?.textContent).toContain('old test')
+    expect(group?.textContent).toContain('first line')
+  })
+
   it('renders created files from their raw content in Diff Viewer', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }

@@ -3,6 +3,7 @@ import {
   AlertTriangleIcon,
   CheckCircle2Icon,
   ClockIcon,
+  CombineIcon,
   FileIcon,
   ImageIcon,
   LinkIcon,
@@ -187,13 +188,14 @@ export function SpecialEntryRenderer({ unit }: { unit: EntryUnit }): React.JSX.E
     case 'personalityChanged':
     case 'modelChanged':
     case 'modelRerouted':
-    case 'contextCompaction':
     case 'worktreeInit':
     case 'automationUpdate':
     case 'sleep':
     case 'loadedTool':
     case 'subAgentActivity':
       return <CompactEntryUnit unit={unit} />
+    case 'contextCompaction':
+      return <ContextCompactionEntryUnit unit={unit} />
     default:
       return null
   }
@@ -702,6 +704,19 @@ function CompactEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
         </div>
       </div>
     </RenderUnitCard>
+  )
+}
+
+function ContextCompactionEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
+  return (
+    <div
+      data-slot="context-compaction-entry-unit"
+      className="my-2 flex w-full items-center gap-2 py-1.5 text-sm text-muted-foreground"
+      {...renderUnitAttributes(unit)}
+    >
+      <CombineIcon aria-hidden className="size-3.5 shrink-0" />
+      <span className="leading-none font-normal">上下文已自动压缩</span>
+    </div>
   )
 }
 
@@ -1221,8 +1236,6 @@ function compactEntryContent(
         detail: stringValue(item.summary) ?? stringValue(item.name) ?? stringValue(item.action),
         icon: ClockIcon
       }
-    case 'contextCompaction':
-      return { title: '上下文已压缩', detail: stringValue(item.summary), icon: CheckCircle2Icon }
     case 'modelChanged':
       return {
         title: '模型已切换',
