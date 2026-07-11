@@ -56,6 +56,11 @@ describe('RENDER_UNIT_CAPABILITY_MATRIX', () => {
       renderer: 'ToolGroupUnit',
       fallbackLevel: 'none'
     })
+    expect(RENDER_UNIT_CAPABILITY_MATRIX.loadedTool).toMatchObject({
+      renderMode: 'tool',
+      renderer: 'ToolGroupUnit',
+      fallbackLevel: 'none'
+    })
   })
 
   it('marks Phase 2 renderers as complete in the matrix', () => {

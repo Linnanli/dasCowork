@@ -212,6 +212,26 @@ describe('buildAssistantRenderUnits', () => {
     expect(model.units).toHaveLength(1)
   })
 
+  it('groups a loaded tool definition and preserves its name', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [toolPart('load-1', 'loadedTool', { name: 'functions.exec' })]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        kind: 'generic',
+        partIndices: [0],
+        summary: {
+          label: '已加载 1 个工具定义',
+          details: ['已加载工具：functions.exec']
+        },
+        children: [{ label: 'functions.exec' }]
+      }
+    ])
+  })
+
   it('keeps active low-value internals visible in steps prose detail level', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },

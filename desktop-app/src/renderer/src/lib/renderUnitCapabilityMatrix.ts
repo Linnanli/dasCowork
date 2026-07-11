@@ -302,19 +302,19 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     testOwner: 'App.test.tsx'
   },
   loadedTool: {
-    renderMode: 'custom',
+    renderMode: 'tool',
     priority: 'P2',
-    renderer: 'CompactEntryUnit',
+    renderer: 'ToolGroupUnit',
     fallbackLevel: 'none',
-    reason: 'Loaded tool details improve collapsed activity readability.',
+    reason: 'Loaded tool activity is grouped with its tool definition details.',
     testOwner: 'toolGroupSummary.test.ts'
   },
   'loaded-tool': {
-    renderMode: 'custom',
+    renderMode: 'tool',
     priority: 'P2',
-    renderer: 'CompactEntryUnit',
+    renderer: 'ToolGroupUnit',
     fallbackLevel: 'none',
-    reason: 'Kebab-case loaded tool shape.',
+    reason: 'Kebab-case loaded tool activity is grouped with its tool definition details.',
     testOwner: 'toolGroupSummary.test.ts'
   },
   'subagent-activity': {

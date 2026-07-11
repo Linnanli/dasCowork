@@ -450,6 +450,8 @@ export class CodexEventMapper
             case "exitedReviewMode":
             case "hookPrompt":
             case "subAgentActivity":
+            case "loadedTool":
+            case "loaded-tool":
                 this.startProviderToolCall(parts, item, {
                     emitPreliminaryItem: item.type === "mcpToolCall" || item.type === "sleep",
                 });

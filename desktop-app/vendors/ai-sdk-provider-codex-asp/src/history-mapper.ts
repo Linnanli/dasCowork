@@ -25,12 +25,17 @@ type UiMessagePart = UIMessage["parts"][number];
 type DynamicToolUiPart = Extract<UiMessagePart, { type: "dynamic-tool" }>;
 type FileUiPart = Extract<UiMessagePart, { type: "file" }>;
 
-export type CodexThreadForUi = Pick<Thread, "id" | "turns"> & {
+export type CodexTurnForUi =
+    Pick<Turn, "id" | "durationMs">
+    & Partial<Omit<Turn, "id" | "durationMs" | "items">>
+    & { items: readonly CodexRenderableThreadItem[]; };
+
+export type CodexThreadForUi = Pick<Thread, "id"> & {
+    turns: CodexTurnForUi[];
     // Thread-list and history responses may omit cwd or return null for
     // threads created before the working directory was recorded.
     cwd?: Thread["cwd"] | null;
 };
-export type CodexTurnForUi = Pick<Turn, "id" | "items" | "durationMs">;
 
 export function mapCodexThreadToUiMessages(thread: CodexThreadForUi): UIMessage[]
 {
@@ -66,7 +71,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
         assistantParts.push(part);
     };
 
-    for (const item of turn.items as CodexRenderableThreadItem[])
+    for (const item of turn.items)
     {
         switch (item.type)
         {
@@ -113,7 +118,9 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
             case "enteredReviewMode":
             case "exitedReviewMode":
             case "contextCompaction":
-            case "hookPrompt": {
+            case "hookPrompt":
+            case "loadedTool":
+            case "loaded-tool": {
                 const invocation = toolInvocationForItem(item);
                 if (invocation)
                 {
@@ -174,7 +181,7 @@ function fileChangeDiffBatchesForTurn(turn: CodexTurnForUi, initialCwd?: string)
     const batches: FileChangeDiffBatch[] = [];
     let cwd = initialCwd;
 
-    for (const item of turn.items as CodexRenderableThreadItem[])
+    for (const item of turn.items)
     {
         if (item.type === "commandExecution")
         {
@@ -220,7 +227,9 @@ export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiM
         case "enteredReviewMode":
         case "exitedReviewMode":
         case "contextCompaction":
-        case "hookPrompt": {
+        case "hookPrompt":
+        case "loadedTool":
+        case "loaded-tool": {
             const invocation = toolInvocationForItem(item);
             return invocation ? dynamicToolPartForInvocation(invocation) : null;
         }

@@ -14,6 +14,9 @@ export type LaunchAppOptions = {
   userDataDir?: string
   codexHomeDir?: string
   preserveDataDirectories?: boolean
+  executablePath?: string
+  args?: string[]
+  cwd?: string
 }
 
 const appTempDirs = new WeakMap<ElectronApplication, string[]>()
@@ -33,9 +36,9 @@ export async function launchApp(
   try {
     await options.configureCodexHome?.(codexHomeDir)
     app = await electron.launch({
-      executablePath: electronExecutable,
-      args: ['.'],
-      cwd: appRoot,
+      executablePath: options.executablePath ?? electronExecutable,
+      args: options.args ?? ['.'],
+      cwd: options.cwd ?? appRoot,
       env: {
         ...process.env,
         ADMIN_BACKEND_URL: backend.baseUrl,

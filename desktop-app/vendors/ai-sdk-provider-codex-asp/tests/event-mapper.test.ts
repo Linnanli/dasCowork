@@ -639,6 +639,16 @@ describe("CodexEventMapper", () =>
                 toolName: "codex_review_mode_exited",
                 input: { review: "Review current diff" },
             },
+            {
+                item: {
+                    type: "loadedTool",
+                    id: "loaded_1",
+                    name: "functions.exec",
+                    status: "completed",
+                },
+                toolName: "codex_loaded_tool",
+                input: { name: "functions.exec", status: "completed" },
+            },
         ];
 
         const events = [

@@ -10,6 +10,7 @@
     "lint": "eslint --cache .",
     "test": "vitest run",
     "test:e2e": "npm run build && playwright test",
+    "test:e2e:packaged": "node scripts/run-packaged-local-media-smoke.mjs",
     "pretest": "npm run build:codex-asp-provider",
     "pretypecheck": "npm run build:codex-asp-provider",
     "build:codex-asp-provider": "npm --prefix vendors/ai-sdk-provider-codex-asp install && npm --prefix vendors/ai-sdk-provider-codex-asp run build",

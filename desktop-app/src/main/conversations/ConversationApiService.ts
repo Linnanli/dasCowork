@@ -11,6 +11,7 @@ import type {
 } from '../../shared/codexIpcApi'
 import type { ProjectState, ThreadProjectAssignment } from '../../shared/projects/projectTypes'
 import type { AppServerThreadRow } from './AppServerThreadClient'
+import { normalizeLocalMediaUrls } from './localMediaUrls'
 
 export type ConversationThreadClientLike = {
   listThreads(input: {
@@ -167,11 +168,13 @@ export class ConversationApiService {
       this.options.projectStore.getState(),
       this.options.threadClient.readThreadWithFullTurns(input.conversationId)
     ])
+    const messages = normalizeLocalMediaUrls(thread.messages ?? [])
+
     return {
       conversationId: thread.id,
       threadId: thread.id,
       title: thread.title,
-      messages: thread.messages ?? [],
+      messages,
       projectAssignment: resolveAssignment(projectState, thread),
       cwd: thread.cwd
     }

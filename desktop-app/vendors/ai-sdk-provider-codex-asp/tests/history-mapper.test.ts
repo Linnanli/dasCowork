@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     type CodexThreadForUi,
+    type LoadedToolThreadItem,
     mapCodexThreadItemToUiPart,
     mapCodexThreadToUiMessages,
     toolInvocationForItem,
@@ -320,6 +321,32 @@ describe("history mapper", () =>
             output: { item },
             providerExecuted: true,
         });
+    });
+
+    it("maps compatible loaded-tool items in historical turns", () =>
+    {
+        const item = {
+            type: "loadedTool",
+            id: "loaded_1",
+            name: "functions.exec",
+            status: "completed",
+        } satisfies LoadedToolThreadItem;
+        const thread = {
+            id: "thr",
+            turns: [{ id: "turn_loaded", items: [item], durationMs: null }],
+        } satisfies CodexThreadForUi;
+        const expectedPart = {
+            type: "dynamic-tool",
+            toolName: "codex_loaded_tool",
+            toolCallId: "loaded_1",
+            state: "output-available",
+            input: { name: "functions.exec", status: "completed" },
+            output: { item },
+            providerExecuted: true,
+        };
+
+        expect(mapCodexThreadItemToUiPart(item)).toEqual(expectedPart);
+        expect(mapCodexThreadToUiMessages(thread)[0]?.parts).toEqual([expectedPart]);
     });
 
     it("maps imageGeneration history items to file UI parts", () =>

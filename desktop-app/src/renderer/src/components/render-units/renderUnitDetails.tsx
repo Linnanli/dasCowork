@@ -456,7 +456,7 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   return (
     <Card
       data-slot="turn-diff-entry-unit"
-      className="mt-3 gap-0 rounded-2xl py-0 shadow-none"
+      className="mt-6 gap-0 rounded-2xl py-0 shadow-none"
       {...renderUnitAttributes(unit)}
     >
       <CardHeader className="grid-cols-[auto_1fr_auto] items-center gap-3 border-b px-3 py-3 sm:px-4">

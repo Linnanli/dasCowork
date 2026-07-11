@@ -698,6 +698,47 @@ describe('ConversationApiService', () => {
     expect(threadClient.readThread).not.toHaveBeenCalled()
   })
 
+  it('returns local history images as app media URLs without embedding file bytes', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
+      id: 'thread-local',
+      title: 'History with image',
+      preview: 'History with image',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      messages: [
+        {
+          id: 'user-image',
+          role: 'user',
+          parts: [
+            {
+              type: 'file',
+              mediaType: 'image/png',
+              url: 'file:///tmp/codex-clipboard.png'
+            }
+          ]
+        }
+      ]
+    })
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    const opened = await service.openConversation({ conversationId: 'thread-local' })
+
+    expect(opened.messages[0]!.parts[0]).toMatchObject({
+      type: 'file',
+      mediaType: 'image/png',
+      url: 'app://fs/@fs/tmp/codex-clipboard.png'
+    })
+    expect(JSON.stringify(opened.messages)).not.toContain('file:')
+    expect(JSON.stringify(opened.messages)).not.toContain('base64')
+  })
+
   it('does not preserve missing known threads without an explicit ensure request', async () => {
     const threadClient = createClient()
     const service = new ConversationApiService({

@@ -1,4 +1,15 @@
-import { app, shell, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeTheme,
+  net,
+  protocol,
+  session
+} from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -11,6 +22,11 @@ import {
 } from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
 import { createOpenLocalPathHandler } from './localPathOpen'
+import {
+  createAppRendererUrl,
+  registerAppProtocol,
+  registerAppSchemePrivileges
+} from './localMediaProtocol'
 import { createModelCatalogService } from './modelCatalogService'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
@@ -41,6 +57,7 @@ const convergingConversationThreadIds = new Set<string>()
 
 const e2eUserDataPath = process.env.DASCOWORK_E2E_USER_DATA_DIR?.trim()
 if (e2eUserDataPath) app.setPath('userData', e2eUserDataPath)
+registerAppSchemePrivileges(protocol)
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
@@ -226,11 +243,19 @@ function createWindow(runtime: CodexChatRuntimeService): void {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadURL(createAppRendererUrl())
   }
 }
 
 app.whenReady().then(() => {
+  registerAppProtocol({
+    protocol,
+    session: session.defaultSession,
+    rendererRoot: join(__dirname, '../renderer'),
+    devRendererUrl: is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined,
+    netFetch: (url, init) => net.fetch(url, init),
+    logger: console
+  })
   const runtime = createCodexRuntime()
   codexRuntime = runtime
 

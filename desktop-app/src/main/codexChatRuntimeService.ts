@@ -40,6 +40,7 @@ import type {
   CodexStatus
 } from '../shared/codexIpcApi'
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
+import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
 
 export type CodexPortLike = {
   postMessage(message: CodexChatStreamEvent): void
@@ -54,7 +55,7 @@ type StreamTextLikeResult = {
     sendReasoning?: boolean
     sendSources?: boolean
     onError?: (error: unknown) => string
-    messageMetadata?: (options: { part: { providerMetadata?: unknown } }) => unknown
+    messageMetadata?: (options: { part: unknown }) => unknown
   }): AsyncIterable<UIMessageChunk>
 }
 
@@ -357,8 +358,12 @@ export class CodexChatRuntimeService {
               console.error(`failed to publish started thread ${thread.threadId}`, error)
             }
           }
+      const modelInputRequest = {
+        ...request,
+        messages: restoreLocalMediaFileUrlsForModel(request.messages)
+      }
       const result = await this.streamText({
-        request,
+        request: modelInputRequest,
         modelId: streamModelId,
         provider: this.provider,
         abortSignal: activeRun.abortController.signal,
@@ -379,7 +384,8 @@ export class CodexChatRuntimeService {
         originalMessages: request.messages,
         sendReasoning: true,
         sendSources: true,
-        messageMetadata: ({ part }) => codexTurnDurationMessageMetadata(part.providerMetadata),
+        messageMetadata: ({ part }) =>
+          codexTurnDurationMessageMetadata(isRecord(part) ? part['providerMetadata'] : undefined),
         onError: errorMessage
       })) {
         if (chunk.type === 'error') {
@@ -561,9 +567,9 @@ export class CodexChatRuntimeService {
   }
 }
 
-function codexTurnDurationMessageMetadata(providerMetadata: unknown):
-  | { codexTurnDurationMs: number }
-  | undefined {
+function codexTurnDurationMessageMetadata(
+  providerMetadata: unknown
+): { codexTurnDurationMs: number } | undefined {
   if (!providerMetadata || typeof providerMetadata !== 'object') return undefined
   const codexMetadata = (providerMetadata as Record<string, unknown>)[CODEX_PROVIDER_ID]
   if (!codexMetadata || typeof codexMetadata !== 'object') return undefined

@@ -6,6 +6,7 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   type AssistantState,
+  type CompleteAttachment,
   MessagePrimitive,
   ThreadPrimitive,
   type Unstable_DirectiveFormatter,
@@ -1002,17 +1003,38 @@ function UserMessage(): React.JSX.Element {
 function UserMessageAttachments(): React.JSX.Element {
   return (
     <div className="aui-user-message-attachments-end col-span-full col-start-1 row-start-1 flex w-full flex-row justify-end gap-2">
-      <MessagePrimitive.Attachments>{() => <UserMessageAttachment />}</MessagePrimitive.Attachments>
+      <MessagePrimitive.Attachments>
+        {({ attachment }) => <UserMessageAttachment attachment={attachment} />}
+      </MessagePrimitive.Attachments>
     </div>
   )
 }
 
-function UserMessageAttachment(): React.JSX.Element {
+function UserMessageAttachment({
+  attachment
+}: {
+  attachment: CompleteAttachment
+}): React.JSX.Element {
+  const image = attachment.content.find((part) => part.type === 'image')
+  const imageSource = image?.image
+  const [imageFailed, setImageFailed] = useState(false)
+
   return (
     <AttachmentPrimitive.Root className="aui-attachment-root relative">
       <div className="aui-attachment-tile flex size-14 items-center justify-center overflow-hidden rounded-md border bg-muted text-muted-foreground">
-        <AttachmentPrimitive.unstable_Thumb className="size-full object-cover" />
-        <FileTextIcon className="size-6" />
+        {imageSource && !imageFailed ? (
+          <img
+            alt={attachment.name}
+            className="size-full object-cover"
+            onError={() => setImageFailed(true)}
+            src={imageSource}
+          />
+        ) : (
+          <>
+            <AttachmentPrimitive.unstable_Thumb className="size-full object-cover" />
+            <FileTextIcon className="size-6" />
+          </>
+        )}
       </div>
       <span className="sr-only">
         <AttachmentPrimitive.Name />

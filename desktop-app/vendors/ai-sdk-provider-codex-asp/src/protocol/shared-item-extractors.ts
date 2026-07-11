@@ -7,7 +7,19 @@ type CollabAgentThreadItem = Extract<ThreadItem, { type: "collabAgentToolCall" }
 export type LegacyCollabToolCallItem =
     Omit<CollabAgentThreadItem, "type"> & { type: "collabToolCall" };
 
-export type CodexRenderableThreadItem = ThreadItem | LegacyCollabToolCallItem;
+export type LoadedToolThreadItem = {
+    type: "loadedTool" | "loaded-tool";
+    id: string;
+    name?: string | null;
+    toolName?: string | null;
+    title?: string | null;
+    status?: string | null;
+};
+
+export type CodexRenderableThreadItem =
+    | ThreadItem
+    | LegacyCollabToolCallItem
+    | LoadedToolThreadItem;
 
 export type ThreadItemClassification =
     | "user-message"
@@ -75,6 +87,8 @@ export function classifyThreadItem(item: CodexRenderableThreadItem): ThreadItemC
         case "exitedReviewMode":
         case "contextCompaction":
         case "hookPrompt":
+        case "loadedTool":
+        case "loaded-tool":
             return "tool";
         case "imageGeneration":
             return "file";
@@ -110,6 +124,9 @@ export function toolNameForItem(item: CodexRenderableThreadItem): string | null
             return "codex_hook_prompt";
         case "subAgentActivity":
             return "codex_sub_agent_activity";
+        case "loadedTool":
+        case "loaded-tool":
+            return "codex_loaded_tool";
         case "enteredReviewMode":
             return "codex_review_mode_entered";
         case "exitedReviewMode":
@@ -166,6 +183,12 @@ export function toolInputForItem(item: CodexRenderableThreadItem): unknown
             return { fragments: item.fragments };
         case "subAgentActivity":
             return { kind: item.kind, agentThreadId: item.agentThreadId, agentPath: item.agentPath };
+        case "loadedTool":
+        case "loaded-tool":
+            return stripUndefined({
+                name: item.name ?? item.toolName ?? item.title ?? undefined,
+                status: item.status ?? undefined,
+            });
         case "enteredReviewMode":
         case "exitedReviewMode":
             return { review: item.review };

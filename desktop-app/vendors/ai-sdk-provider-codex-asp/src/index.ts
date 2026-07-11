@@ -75,6 +75,7 @@ export type {
     CodexRenderableThreadItem,
     CodexThreadItemToolInvocation,
     LegacyCollabToolCallItem,
+    LoadedToolThreadItem,
     ThreadItemClassification,
 } from "./protocol/shared-item-extractors";
 export {

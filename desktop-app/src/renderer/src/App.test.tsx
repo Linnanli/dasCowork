@@ -600,7 +600,35 @@ vi.mock('@assistant-ui/react', () => {
       Root: primitive('Error.Root')
     },
     MessagePrimitive: {
-      Attachments: primitive('Message.Attachments'),
+      Attachments: ({ children }: PrimitiveProps) => {
+        const attachments =
+          threadMessageState.message.role === 'user'
+            ? threadMessageState.message.content
+                .filter(
+                  (part): part is Extract<
+                    MockMessagePart,
+                    { type: 'file' }
+                  > => part.type === 'file'
+                )
+                .map((part) => ({
+                  type: part.mediaType.startsWith('image/') ? 'image' : 'file',
+                  name: part.name ?? 'file',
+                  content: part.mediaType.startsWith('image/')
+                    ? [{ type: 'image' as const, image: part.url ?? part.data ?? '' }]
+                    : []
+                }))
+            : []
+
+        return (
+          <div data-primitive="Message.Attachments">
+            {typeof children === 'function'
+              ? attachments.map((attachment, index) => (
+                  <div key={index}>{children({ attachment })}</div>
+                ))
+              : children}
+          </div>
+        )
+      },
       Content: primitive('Message.Content'),
       Error: primitive('Message.Error'),
       Parts: ({ components }: PrimitiveProps) => {
@@ -1079,6 +1107,35 @@ describe('App composer', () => {
     expect(container.querySelector('[data-primitive="Message.Parts"]')).not.toBeNull()
     expect(container.querySelector('.aui-user-action-bar-wrapper')).not.toBeNull()
     expect(container.querySelector('.aui-user-action-bar-root')).not.toBeNull()
+  })
+
+  it('renders user image attachments as image previews', () => {
+    threadMessageState.message.content = [
+      { type: 'text', text: '按这个图像风格调整组件样式' },
+      {
+        type: 'file',
+        mediaType: 'image/*',
+        name: 'codex-clipboard.png',
+        url: 'app://fs/@fs/tmp/codex-clipboard.png'
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const preview = container.querySelector<HTMLImageElement>('.aui-attachment-tile img')
+
+    expect(preview?.getAttribute('src')).toBe('app://fs/@fs/tmp/codex-clipboard.png')
+    expect(preview?.getAttribute('alt')).toBe('codex-clipboard.png')
+    expect(container.querySelector('[data-primitive="Attachment.Thumb"]')).toBeNull()
+
+    act(() => {
+      preview?.dispatchEvent(new Event('error'))
+    })
+
+    expect(container.querySelector('.aui-attachment-tile img')).toBeNull()
+    expect(container.querySelector('[data-primitive="Attachment.Thumb"]')).not.toBeNull()
   })
 
   it('renders the edit composer when a user message enters editing state', () => {
@@ -2657,6 +2714,33 @@ describe('App composer', () => {
     }
   })
 
+  it('renders a loaded tool definition in an expandable tool group', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('loaded-1', 'codex_loaded_tool', 'loadedTool', {
+        name: 'functions.exec'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = container.querySelector<HTMLElement>(
+      '[data-slot="tool-group-unit"][data-tool-group-kind="generic"]'
+    )
+    expect(group?.textContent).toContain('已加载 1 个工具定义')
+    expect(container.querySelector('[data-slot="compact-entry-unit"]')).toBeNull()
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    expect(group?.textContent).toContain('functions.exec')
+    expect(group?.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull()
+  })
+
   it('shows thinking separately after completed tool activity while waiting for text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
@@ -2827,7 +2911,7 @@ describe('App composer', () => {
       { type: 'text', text: '## 结论\n\n根因已经确认。' }
     ]
 
-    const renderWithDuration = (durationMs: number) => {
+    const renderWithDuration = (durationMs: number): string | null | undefined => {
       threadMessageState.externalMessages = [
         {
           metadata: { codexTurnDurationMs: durationMs },

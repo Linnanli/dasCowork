@@ -204,6 +204,111 @@ describe('CodexChatRuntimeService', () => {
     expect(port.messages).toEqual([{ type: 'error', error: 'model catalog unavailable' }])
   })
 
+  it('restores app media URLs only in the model-input request copy', async () => {
+    const port = new FakePort()
+    let originalMessages: unknown
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: (options?: { originalMessages?: unknown }) => {
+        originalMessages = options?.originalMessages
+        return emptyUiMessageStream()
+      }
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+    const messages = [
+      {
+        id: 'user-image',
+        role: 'user' as const,
+        parts: [
+          {
+            type: 'file' as const,
+            mediaType: 'image/png',
+            url: 'app://fs/@fs/tmp/codex-clipboard.png'
+          },
+          { type: 'text' as const, text: 'Describe this image' }
+        ]
+      }
+    ]
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-media',
+        trigger: 'submit-message',
+        messages,
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          messages: [
+            expect.objectContaining({
+              parts: [
+                expect.objectContaining({ url: 'file:///tmp/codex-clipboard.png' }),
+                expect.objectContaining({ text: 'Describe this image' })
+              ]
+            })
+          ]
+        })
+      })
+    )
+    expect(originalMessages).toBe(messages)
+    expect(messages[0]!.parts[0]!.url).toBe('app://fs/@fs/tmp/codex-clipboard.png')
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: undefined })
+  })
+
+  it('rejects invalid app media URLs before invoking the provider boundary', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-invalid-media',
+        trigger: 'submit-message',
+        messages: [
+          {
+            id: 'user-image',
+            role: 'user',
+            parts: [
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                url: 'app://fs/@fs/tmp/%252e%252e/secret.png'
+              }
+            ]
+          }
+        ],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).not.toHaveBeenCalled()
+    expect(port.messages).toEqual([
+      { type: 'error', error: 'Invalid local media URL in model input' }
+    ])
+  })
+
   it('uses the configured model catalog for listModels', async () => {
     const catalogList = {
       models: [

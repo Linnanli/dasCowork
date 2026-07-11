@@ -170,15 +170,10 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
       {
         type: 'tool-group',
         kind: 'composite',
-        partIndices: [0, 1],
-        targetIds: ['mkdir-1', 'file-1'],
-        childCount: 2,
-        summaryLabel: '已创建 1 个文件夹，已创建 1 个文件'
-      },
-      {
-        type: 'entry',
-        partIndices: [2],
-        targetIds: ['load-1']
+        partIndices: [0, 1, 2],
+        targetIds: ['mkdir-1', 'file-1', 'load-1'],
+        childCount: 3,
+        summaryLabel: '已创建 1 个文件夹，已创建 1 个文件，已加载 1 个工具定义'
       },
       {
         type: 'entry',

@@ -236,6 +236,7 @@ const STEPS_PROSE_HIDDEN_ACTIVITY_TYPES = new Set([
 const WEB_SEARCH_ITEM_TYPES = new Set(['webSearch', 'web-search'])
 const DYNAMIC_ITEM_TYPES = new Set(['dynamicToolCall', 'dynamic-tool-call'])
 const MCP_ITEM_TYPES = new Set(['mcpToolCall', 'mcp-tool-call'])
+const LOADED_TOOL_ITEM_TYPES = new Set(['loadedTool', 'loaded-tool'])
 const MULTI_AGENT_ITEM_TYPES = new Set([
   'collabAgentToolCall',
   'collabToolCall',
@@ -401,13 +402,14 @@ function groupAdjacentToolActivity(
     options.detailLevel === 'stepsProse'
       ? units.filter((unit) => !isLowValueStepsProseActivityUnit(unit))
       : units
+  const groupedUnits = groupLoadedToolActivity(visibleUnits)
   const result: GroupableUnit[] = []
 
-  for (let index = 0; index < visibleUnits.length; index += 1) {
-    const group = collectConsecutive(visibleUnits, index, isAdjacentToolActivityUnit)
+  for (let index = 0; index < groupedUnits.length; index += 1) {
+    const group = collectConsecutive(groupedUnits, index, isAdjacentToolActivityUnit)
 
     if (group.length === 0) {
-      result.push(visibleUnits[index]!)
+      result.push(groupedUnits[index]!)
       continue
     }
 
@@ -507,6 +509,38 @@ function groupPendingMcpToolCalls(units: readonly GroupableUnit[]): GroupableUni
       result.push(first)
     }
 
+    index = nextIndex - 1
+  }
+
+  return result
+}
+
+function groupLoadedToolActivity(units: readonly GroupableUnit[]): GroupableUnit[] {
+  const result: GroupableUnit[] = []
+
+  for (let index = 0; index < units.length; index += 1) {
+    const first = units[index]
+    if (!first || !isLoadedToolUnit(first)) {
+      first && result.push(first)
+      continue
+    }
+
+    const group = [first]
+    let nextIndex = index + 1
+
+    while (nextIndex < units.length) {
+      const next = units[nextIndex]
+      if (!next || !isLoadedToolUnit(next)) break
+      group.push(next)
+      nextIndex += 1
+    }
+
+    result.push({
+      type: 'tool-group-candidate',
+      kind: 'generic',
+      partIndices: group.flatMap((unit) => [...unit.partIndices]),
+      parts: group.flatMap(partsForUnit)
+    })
     index = nextIndex - 1
   }
 
@@ -929,6 +963,8 @@ function toolItemLabel({
   return (
     stringValue(item?.label) ??
     stringValue(item?.title) ??
+    stringValue(item?.name) ??
+    stringValue(item?.toolName) ??
     stringValue(item?.tool) ??
     humanizeToolName(toolName)
   )
@@ -1144,6 +1180,10 @@ function isMcpToolUnit(unit: GroupableUnit): boolean {
     MCP_ITEM_TYPES.has(unit.itemType ?? '') &&
     unit.mcpSource?.sourceType !== 'computer-use'
   )
+}
+
+function isLoadedToolUnit(unit: GroupableUnit): boolean {
+  return unit.type === 'entry' && LOADED_TOOL_ITEM_TYPES.has(unit.itemType ?? '')
 }
 
 function shouldRenderSingleMcpGroup(unit: GroupableUnit): boolean {
