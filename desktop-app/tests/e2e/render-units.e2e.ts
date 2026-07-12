@@ -21,6 +21,59 @@ import {
 } from './support/mockBackend'
 import { writeFakeChatGptAuth, writeStandaloneWebSearchConfig } from './support/authFixtures'
 
+test('renders completed code-comment directives as one expandable review card', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const responseText = [
+    '检查完成，共发现以下问题。',
+    '::code-comment{title="[P2] 第三个问题" body="第三条完整说明" file="desktop-app/src/third.ts" start=30}',
+    '::code-comment{title="[P0] 首要问题" body="第一条完整说明" file="desktop-app/src/first.ts" start=10 end=12}',
+    '::code-comment{title="[P1] 第二个问题" body="第二条完整说明" file="desktop-app/src/second.ts" start=20}',
+    '::code-comment{title="[P3] 第四个问题" body="第四条完整说明" file="desktop-app/src/fourth.ts" start=40}',
+    '::code-comment{title="无优先级问题" body="第五条完整说明" file="desktop-app/src/fifth.ts" start=50}'
+  ].join('\n')
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('resp-review-comments', 'msg-review-comments', responseText)
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await sendMessage(page, '检查未提交更改。')
+
+    const assistant = page.locator('[data-role="assistant"]').filter({ hasText: '检查完成' })
+    const card = assistant.locator('[data-slot="review-comments-unit"]')
+    await expect(card).toBeVisible()
+    await expect(card).toContainText('5 comments')
+    await expect(assistant).not.toContainText('::code-comment')
+    await expect(card).toContainText('首要问题')
+    await expect(card).toContainText('第二个问题')
+    await expect(card).toContainText('第三个问题')
+    await expect(card).not.toContainText('第四个问题')
+    const expandButton = card.getByRole('button', { name: '再显示 2 条评论' })
+    await expect(expandButton).toHaveAttribute('aria-expanded', 'false')
+    await expandButton.click()
+    await expect(card).toContainText('第四个问题')
+    await expect(card).toContainText('无优先级问题')
+    await expect(card.getByRole('button', { name: '收起评论' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
 test('renders web search and exploration render units through the real desktop chat flow', async ({
   browserName
 }, testInfo) => {

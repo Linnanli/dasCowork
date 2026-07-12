@@ -188,7 +188,7 @@ describe('AppServerThreadClient', () => {
           parts: [{ type: 'text', text: 'Run tests', state: 'done' }]
         },
         {
-          id: 'turn_1:assistant',
+          id: 'assistant:turn_1:cmd_1',
           role: 'assistant',
           parts: [
             {

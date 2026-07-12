@@ -56,7 +56,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
         }
 
         messages.push({
-            id: assistantMessageId ?? `${turn.id}:assistant`,
+            id: assistantMessageId ?? `assistant:${turn.id}:turn-diff`,
             role: "assistant",
             parts: assistantParts,
         });
@@ -65,9 +65,13 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
         assistantMessageId = undefined;
     };
 
-    const appendAssistantPart = (part: UiMessagePart): void =>
+    const appendAssistantPart = (sourceItemId: string, part: UiMessagePart): void =>
     {
-        assistantMessageId ??= `${turn.id}:assistant`;
+        // A turn can contain multiple assistant-side segments separated by a
+        // user message (for example, sub-agent activity before the user's
+        // prompt). Anchor each segment to its first source item so that its
+        // ID is both unique and stable when history is reloaded.
+        assistantMessageId ??= `assistant:${turn.id}:${sourceItemId}`;
         assistantParts.push(part);
     };
 
@@ -92,7 +96,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
                 const text = item.text.trim();
                 if (text)
                 {
-                    appendAssistantPart(agentMessagePart(item, text, turn.durationMs));
+                    appendAssistantPart(item.id, agentMessagePart(item, text, turn.durationMs));
                 }
                 break;
             }
@@ -101,7 +105,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
                 const text = reasoningTextForItem(item);
                 if (text)
                 {
-                    appendAssistantPart({ type: "reasoning", text, state: "done" });
+                    appendAssistantPart(item.id, { type: "reasoning", text, state: "done" });
                 }
                 break;
             }
@@ -124,14 +128,14 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
                 const invocation = toolInvocationForItem(item);
                 if (invocation)
                 {
-                    appendAssistantPart(dynamicToolPartForInvocation(invocation));
+                    appendAssistantPart(item.id, dynamicToolPartForInvocation(invocation));
                 }
                 break;
             }
             case "imageGeneration": {
                 if (item.result)
                 {
-                    appendAssistantPart(imageGenerationFilePart(item));
+                    appendAssistantPart(item.id, imageGenerationFilePart(item));
                 }
                 break;
             }
@@ -143,7 +147,7 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
     const historicalTurnDiffPart = turnDiffPartForTurn(turn, cwd);
     if (historicalTurnDiffPart)
     {
-        appendAssistantPart(historicalTurnDiffPart);
+        appendAssistantPart(`turn-diff:${turn.id}`, historicalTurnDiffPart);
     }
 
     flushAssistant();

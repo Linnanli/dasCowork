@@ -1,4 +1,5 @@
 import { pendingAssistantMessageText } from './assistantMessages'
+import { parseCodeCommentDirectives, type CodeComment } from './codeCommentDirectives'
 import {
   extractToolInput,
   extractThreadItem,
@@ -21,6 +22,8 @@ type AssistantMessageLike = {
   textPhases?: readonly (AssistantMessagePhase | undefined)[]
   processDurationMs?: number
   detailLevel?: AssistantRenderDetailLevel
+  workspaceCwd?: string
+  canOpenLocalPaths?: boolean
 }
 
 export type AssistantRenderTarget = {
@@ -106,6 +109,12 @@ export type AssistantRenderUnit =
       partIndex: number
       text: string
       phase?: AssistantMessagePhase
+    })
+  | (AssistantRenderUnitBase & {
+      type: 'review-comments'
+      comments: readonly CodeComment[]
+      workspaceCwd?: string
+      canOpenLocalPaths: boolean
     })
   | (AssistantRenderUnitBase & {
       type: 'reasoning-group'
@@ -272,9 +281,72 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
     activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning)),
     isRunning
   )
-  const units = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
+  const groupedUnits = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
+  const units = deriveReviewCommentsUnit(
+    groupedUnits,
+    message.status?.type === undefined || message.status.type === 'complete',
+    message.workspaceCwd,
+    message.canOpenLocalPaths !== false
+  )
 
   return { isThinkingOnly: units.length === 1 && units[0]?.type === 'message-thinking', units }
+}
+
+function deriveReviewCommentsUnit(
+  units: readonly AssistantRenderUnit[],
+  shouldParse: boolean,
+  workspaceCwd: string | undefined,
+  canOpenLocalPaths: boolean
+): AssistantRenderUnit[] {
+  if (!shouldParse) return [...units]
+
+  const comments: CodeComment[] = []
+  const commentKeys = new Set<string>()
+  const sourcePartIndices: number[] = []
+  const visibleUnits = units.flatMap((unit): AssistantRenderUnit[] => {
+    if (unit.type !== 'text' || unit.phase === 'commentary') return [unit]
+
+    const parsed = parseCodeCommentDirectives(unit.text)
+    if (parsed.comments.length === 0) return [unit]
+
+    sourcePartIndices.push(...unit.partIndices)
+    for (const comment of parsed.comments) {
+      const key = codeCommentKey(comment)
+      if (commentKeys.has(key)) continue
+      commentKeys.add(key)
+      comments.push(comment)
+    }
+
+    return parsed.visibleText.trim().length > 0 ? [{ ...unit, text: parsed.visibleText }] : []
+  })
+
+  if (comments.length === 0) return visibleUnits
+
+  const partIndices = [...new Set(sourcePartIndices)]
+  return [
+    ...visibleUnits,
+    {
+      type: 'review-comments',
+      key: 'review-comments:model',
+      partIndices,
+      target: {
+        id: 'review-comments:model',
+        itemIds: comments.map(
+          (comment, index) => `review-comment:${index}:${comment.file}:${comment.startLine}`
+        )
+      },
+      comments,
+      workspaceCwd,
+      canOpenLocalPaths,
+      showThinkingFallback: false
+    }
+  ]
+}
+
+function codeCommentKey(comment: CodeComment): string {
+  return [comment.file, comment.startLine, comment.endLine, comment.title, comment.body].join(
+    '\u0000'
+  )
 }
 
 function normalizeParts(

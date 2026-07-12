@@ -2159,6 +2159,122 @@ describe('App composer', () => {
     expect(container.textContent).toContain('自动审批已通过')
   })
 
+  it('renders parsed code comments as a sorted expandable card and opens relative files', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-comments',
+      threadId: 'thread-comments',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'text',
+        text: [
+          '审查完成。',
+          codeCommentDirective('P2 issue', 'details-p2', 'src/p2.ts', 22, 2),
+          codeCommentDirective('P0 issue', 'details-p0', 'src/p0.ts', 2, 0),
+          codeCommentDirective('P1 issue', 'details-p1', 'src/p1.ts', 11, 1),
+          codeCommentDirective('No priority', 'details-none', 'src/none.ts', 50),
+          codeCommentDirective('P3 issue', 'details-p3', 'src/p3.ts', 33, 3)
+        ].join('\n')
+      }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text', providerMetadata: messagePhaseMetadata('final_answer') }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const card = container.querySelector<HTMLElement>('[data-slot="review-comments-unit"]')
+    expect(card).not.toBeNull()
+    expect(card?.textContent).toContain('5 comments')
+    expect(container.textContent).toContain('审查完成。')
+    expect(container.textContent).not.toContain('::code-comment')
+    expect(card?.textContent).not.toContain('details-p0')
+
+    const visibleRows = Array.from(
+      card?.querySelectorAll<HTMLButtonElement>('button[aria-label]') ?? []
+    )
+    expect(visibleRows.map((button) => button.textContent)).toEqual([
+      expect.stringContaining('P0 issue'),
+      expect.stringContaining('P1 issue'),
+      expect.stringContaining('P2 issue')
+    ])
+
+    await act(async () => {
+      visibleRows[0]?.click()
+    })
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: 'src/p0.ts',
+      cwd: '/repo',
+      line: 2
+    })
+
+    await act(async () => {
+      visibleRows[0]?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 650))
+    })
+    expect(document.body.textContent).toContain('details-p0')
+
+    const showMore = buttonWithText('再显示 2 条评论')
+    expect(showMore?.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => {
+      showMore?.click()
+    })
+    expect(card?.textContent).toContain('P3 issue')
+    expect(card?.textContent).toContain('No priority')
+    const collapse = buttonWithText('收起评论')
+    expect(collapse?.getAttribute('aria-expanded')).toBe('true')
+
+    await act(async () => {
+      collapse?.click()
+    })
+    expect(card?.textContent).not.toContain('P3 issue')
+    expect(buttonWithText('再显示 2 条评论')?.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('keeps remote-project code comments visible without opening local files', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-remote-comments',
+      threadId: 'thread-remote-comments',
+      cwd: '/srv/app',
+      projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' }
+    }
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'text',
+        text: codeCommentDirective('Remote issue', 'remote details', 'src/remote.ts', 9, 1)
+      }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text', providerMetadata: messagePhaseMetadata('final_answer') }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const row = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="src/remote.ts:9 无法作为本地文件打开"]'
+    )
+    expect(row).not.toBeNull()
+    expect(row?.getAttribute('aria-disabled')).toBe('true')
+    await act(async () => {
+      row?.click()
+    })
+    expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
+  })
+
   it('opens absolute turn diff file paths from the diff card', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
@@ -3095,6 +3211,17 @@ function messagePhaseMetadata(
       ...(turnDurationMs === undefined ? {} : { turnDurationMs })
     }
   }
+}
+
+function codeCommentDirective(
+  title: string,
+  body: string,
+  file: string,
+  line: number,
+  priority?: number
+): string {
+  const priorityAttribute = priority === undefined ? '' : ` priority=${priority}`
+  return `::code-comment{title="${title}" body="${body}" file="${file}" start=${line}${priorityAttribute}}`
 }
 
 function commandToolPart(

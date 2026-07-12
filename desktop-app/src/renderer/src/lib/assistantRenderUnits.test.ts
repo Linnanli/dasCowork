@@ -71,6 +71,109 @@ describe('buildAssistantRenderUnits', () => {
     expect(JSON.stringify(model.units)).not.toContain('Confirming reasoning visibility')
   })
 
+  it('extracts completed final-answer code comments, removes directives, and appends one card', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        {
+          type: 'text',
+          text: [
+            '检查完成。',
+            '::code-comment{title="空值未处理" body="这里可能抛出异常。" file="src/app.ts" start=12 end=14 priority=1}',
+            '',
+            '其余逻辑正常。'
+          ].join('\n')
+        }
+      ],
+      textPhases: ['final_answer'],
+      workspaceCwd: '/repo'
+    })
+
+    expect(model.units.map((unit) => unit.type)).toEqual(['text', 'review-comments'])
+    expect(model.units[0]).toMatchObject({
+      type: 'text',
+      text: '检查完成。\n\n其余逻辑正常。',
+      phase: 'final_answer'
+    })
+    expect(model.units[1]).toMatchObject({
+      type: 'review-comments',
+      workspaceCwd: '/repo',
+      canOpenLocalPaths: true,
+      comments: [
+        {
+          title: '[P1] 空值未处理',
+          body: '这里可能抛出异常。',
+          file: 'src/app.ts',
+          priority: 'P1',
+          startLine: 12,
+          endLine: 14
+        }
+      ]
+    })
+    expect(JSON.stringify(model.units)).not.toContain('::code-comment')
+  })
+
+  it('does not parse code comments from commentary or a running message', () => {
+    const directive =
+      '::code-comment{title="不应出现" body="仍应作为原始文本显示。" file="src/app.ts" priority=1}'
+    const commentary = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [{ type: 'text', text: directive }],
+      textPhases: ['commentary']
+    })
+    const running = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [{ type: 'text', text: directive }],
+      textPhases: ['final_answer']
+    })
+
+    expect(commentary.units.some((unit) => unit.type === 'review-comments')).toBe(false)
+    expect(JSON.stringify(commentary.units)).toContain('::code-comment')
+    expect(running.units.some((unit) => unit.type === 'review-comments')).toBe(false)
+    expect(JSON.stringify(running.units)).toContain('::code-comment')
+  })
+
+  it('parses completed historical text without phase metadata', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        {
+          type: 'text',
+          text: '::code-comment{title="历史评论" body="兼容旧消息。" file="src/legacy.ts" start=7}'
+        }
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'review-comments',
+        comments: [{ title: '历史评论', file: 'src/legacy.ts', startLine: 7, endLine: 7 }]
+      }
+    ])
+  })
+
+  it('deduplicates identical comments across completed final-answer text parts', () => {
+    const first =
+      '::code-comment{title="重复评论" body="同一问题。" file="src/repeated.ts" start=4 priority=2 confidence=0.9}'
+    const duplicate =
+      '::code-comment{title="[P2] 重复评论" body="同一问题。" file="src/repeated.ts" start=4 priority=2 confidence=0.4}'
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        { type: 'text', text: `第一段。\n${first}` },
+        { type: 'text', text: `第二段。\n${duplicate}` }
+      ],
+      textPhases: ['final_answer', 'final_answer']
+    })
+
+    expect(model.units.map((unit) => unit.type)).toEqual(['text', 'text', 'review-comments'])
+    expect(model.units.filter((unit) => unit.type === 'review-comments')).toMatchObject([
+      {
+        comments: [{ title: '[P2] 重复评论', confidence: 0.9 }]
+      }
+    ])
+  })
+
   it('keeps the commentary process group active until the final answer starts', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },

@@ -110,7 +110,7 @@ describe('codex IPC schemas', () => {
     ).toBe(false)
   })
 
-  it('allows only absolute local paths for local file opening', () => {
+  it('allows absolute paths and relative paths with an absolute local cwd', () => {
     expect(codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/report.md' }).success).toBe(true)
     expect(
       codexOpenLocalPathPayloadSchema.safeParse({ path: 'C:\\Users\\me\\report.md', line: 4 })
@@ -119,13 +119,37 @@ describe('codex IPC schemas', () => {
     expect(
       codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/report.md', line: 0 }).success
     ).toBe(false)
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({
+        path: 'relative/report.md',
+        cwd: '/tmp/workspace'
+      }).success
+    ).toBe(true)
     expect(codexOpenLocalPathPayloadSchema.safeParse({ path: 'relative/report.md' }).success).toBe(
       false
     )
     expect(
+      codexOpenLocalPathPayloadSchema.safeParse({
+        path: 'relative/report.md',
+        cwd: 'relative/workspace'
+      }).success
+    ).toBe(false)
+    expect(
       codexOpenLocalPathPayloadSchema.safeParse({ path: 'file:///tmp/report.md' }).success
     ).toBe(false)
     expect(codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/a\0b' }).success).toBe(false)
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({
+        path: 'https://example.com/report.md',
+        cwd: '/tmp/workspace'
+      }).success
+    ).toBe(false)
+    expect(
+      codexOpenLocalPathPayloadSchema.safeParse({
+        path: '\\\\server\\share\\report.md',
+        cwd: 'C:\\workspace'
+      }).success
+    ).toBe(false)
   })
 
   it('validates local context picker input and references', () => {

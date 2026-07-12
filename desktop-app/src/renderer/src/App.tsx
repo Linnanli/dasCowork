@@ -37,6 +37,7 @@ import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import {
   CollapsedActivityDetails,
   McpToolCallDetails,
+  ReviewCommentsDetails,
   SpecialEntryRenderer,
   UnknownPartRenderer,
   WebSearchDetails
@@ -610,7 +611,13 @@ function ChatThread({
             {({ message }) => {
               if (message.composer.isEditing) return <EditComposer />
               if (message.role === 'user') return <UserMessage />
-              return <AssistantMessage hasBlockingRequest={hasBlockingRequest} />
+              return (
+                <AssistantMessage
+                  hasBlockingRequest={hasBlockingRequest}
+                  workspaceCwd={activeConversation?.cwd ?? undefined}
+                  canOpenLocalPaths={activeConversation?.projectSelection?.projectKind !== 'remote'}
+                />
+              )
             }}
           </ThreadPrimitive.Messages>
         </div>
@@ -830,9 +837,13 @@ function ThreadScrollToBottom(): React.JSX.Element {
 }
 
 function AssistantMessage({
-  hasBlockingRequest
+  hasBlockingRequest,
+  workspaceCwd,
+  canOpenLocalPaths
 }: {
   hasBlockingRequest: boolean
+  workspaceCwd?: string
+  canOpenLocalPaths: boolean
 }): React.JSX.Element {
   const message = useAuiState((state) => state.message)
   const textPartMetadata = useMemo(() => codexTextPartMetadataFor(message), [message])
@@ -844,12 +855,14 @@ function AssistantMessage({
         parts: message.parts,
         status: message.status,
         textPhases: textPartMetadata.map((metadata) => metadata.phase),
+        workspaceCwd,
+        canOpenLocalPaths,
         processDurationMs:
           message.metadata?.timing?.totalStreamTime ??
           turnDurationMs ??
           textPartMetadata.find((metadata) => metadata.turnDurationMs !== undefined)?.turnDurationMs
       }),
-    [message, textPartMetadata, turnDurationMs]
+    [canOpenLocalPaths, message, textPartMetadata, turnDurationMs, workspaceCwd]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
   const isRunning = message.status?.type === 'running'
@@ -1081,6 +1094,8 @@ function AssistantRenderUnitView({
       )
     case 'text':
       return <AssistantText text={unit.text} unit={unit} />
+    case 'review-comments':
+      return <ReviewCommentsDetails unit={unit} />
     case 'reasoning-group':
       return <ReasoningGroupUnit unit={unit} />
     case 'entry':

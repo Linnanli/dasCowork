@@ -69,7 +69,7 @@ describe("history mapper", () =>
                 parts: [{ type: "text", text: "Run tests", state: "done" }],
             },
             {
-                id: "turn_1:assistant",
+                id: "assistant:turn_1:cmd_1",
                 role: "assistant",
                 parts: [
                     {
@@ -122,7 +122,7 @@ describe("history mapper", () =>
 
         expect(mapCodexThreadToUiMessages(thread)).toEqual([
             {
-                id: "turn_1:assistant",
+                id: "assistant:turn_1:file_1",
                 role: "assistant",
                 parts: [
                     {
@@ -242,6 +242,66 @@ describe("history mapper", () =>
             output: invocation?.result,
             providerExecuted: true,
         });
+    });
+
+    it("uses the first source item ID for assistant segments separated by a user message", () =>
+    {
+        const subAgentActivity = {
+            type: "subAgentActivity",
+            id: "subagent_1",
+            kind: "started",
+            agentThreadId: "thr_agent",
+            agentPath: "/repo",
+        } satisfies Extract<ThreadItem, { type: "subAgentActivity" }>;
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_1",
+                    items: [
+                        subAgentActivity,
+                        {
+                            type: "userMessage",
+                            id: "user_1",
+                            clientId: "client_1",
+                            content: [{ type: "text", text: "Review the working tree", text_elements: [] }],
+                        },
+                        {
+                            type: "agentMessage",
+                            id: "agent_1",
+                            text: "I found two changes.",
+                            phase: "final_answer",
+                            memoryCitation: null,
+                        },
+                    ],
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: null,
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toMatchObject([
+            {
+                id: "assistant:turn_1:subagent_1",
+                role: "assistant",
+                parts: [{ type: "dynamic-tool", toolCallId: "subagent_1" }],
+            },
+            {
+                id: "client_1",
+                role: "user",
+                parts: [{ type: "text", text: "Review the working tree" }],
+            },
+            {
+                id: "assistant:turn_1:agent_1",
+                role: "assistant",
+                parts: [{ type: "text", text: "I found two changes." }],
+            },
+        ]);
     });
 
     it("preserves commentary and final-answer phases in historical text parts", () =>

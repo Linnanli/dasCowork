@@ -10,6 +10,7 @@ import {
   ImageIcon,
   LinkIcon,
   ListChecksIcon,
+  MessageSquareMoreIcon,
   ShieldCheckIcon,
   ShieldXIcon,
   Undo2Icon,
@@ -32,6 +33,7 @@ import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { DiffViewer } from '@/components/assistant-ui/diff-viewer'
 import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
+import type { CodeComment } from '@/lib/codeCommentDirectives'
 import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
 import {
   extractToolInput,
@@ -44,6 +46,7 @@ import { renderUnitAttributes } from './renderUnitAttributes'
 
 type AnyRecord = Record<string, unknown>
 type EntryUnit = Extract<AssistantRenderUnit, { type: 'entry' }>
+type ReviewCommentsUnit = Extract<AssistantRenderUnit, { type: 'review-comments' }>
 
 const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const MAX_VISIBLE_ROWS = 3
@@ -658,33 +661,21 @@ function ReviewCommentsEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Eleme
   const comments = arrayValue(unit.item?.comments)
     .map(recordValue)
     .filter(isDefined)
-    .sort(compareReviewCommentPriority)
-  const [expanded, setExpanded] = useState(false)
-  const visible = expanded ? comments : comments.slice(0, MAX_VISIBLE_ROWS)
+    .map(normalizeStructuredReviewComment)
+    .filter(isDefined)
 
+  return <ReviewCommentsCard comments={comments} slot="review-comments-entry-unit" unit={unit} />
+}
+
+export function ReviewCommentsDetails({ unit }: { unit: ReviewCommentsUnit }): React.JSX.Element {
   return (
-    <RenderUnitCard unit={unit} slot="review-comments-entry-unit">
-      <p className="text-sm font-medium">
-        审查评论 {comments.length > 0 ? `${comments.length} 条` : ''}
-      </p>
-      {comments.length === 0 ? (
-        <p className="mt-1 text-xs text-muted-foreground">评论详情暂不可用</p>
-      ) : (
-        <div className="mt-2 space-y-2">
-          {visible.map((comment, index) => (
-            <ReviewCommentRow
-              key={`${stringValue(comment.file) ?? index}:${index}`}
-              comment={comment}
-            />
-          ))}
-          <ShowMoreButton
-            expanded={expanded}
-            hiddenCount={comments.length - visible.length}
-            onClick={() => setExpanded((value) => !value)}
-          />
-        </div>
-      )}
-    </RenderUnitCard>
+    <ReviewCommentsCard
+      comments={unit.comments}
+      slot="review-comments-unit"
+      unit={unit}
+      workspaceCwd={unit.workspaceCwd}
+      canOpenLocalPaths={unit.canOpenLocalPaths}
+    />
   )
 }
 
@@ -914,42 +905,203 @@ function ResourceCard({ resource }: { resource: ResourceCardData }): React.JSX.E
   )
 }
 
-function ReviewCommentRow({ comment }: { comment: AnyRecord }): React.JSX.Element {
-  const priority = stringValue(comment.priority) ?? stringValue(comment.severity) ?? 'P2'
-  const title = stringValue(comment.title) ?? '审查建议'
-  const body = stringValue(comment.body) ?? stringValue(comment.preview) ?? ''
-  const file = stringValue(comment.file) ?? stringValue(comment.path)
-  const line = numberValue(comment.line) ?? numberValue(comment.startLine)
-  const location = [file, line ? `:${line}` : ''].filter(Boolean).join('')
-  const openPath = localFilePath(file)
+function ReviewCommentsCard({
+  comments,
+  unit,
+  slot,
+  workspaceCwd,
+  canOpenLocalPaths = true
+}: {
+  comments: readonly CodeComment[]
+  unit: AssistantRenderUnit
+  slot: string
+  workspaceCwd?: string
+  canOpenLocalPaths?: boolean
+}): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const sortedComments = comments
+    .map((comment, index) => ({ comment, index }))
+    .sort(
+      (left, right) =>
+        reviewCommentPriorityRank(left.comment) - reviewCommentPriorityRank(right.comment) ||
+        left.index - right.index
+    )
+    .map(({ comment }) => comment)
+  const visibleComments = expanded ? sortedComments : sortedComments.slice(0, MAX_VISIBLE_ROWS)
+  const hiddenCount = sortedComments.length - visibleComments.length
+
+  return (
+    <Card
+      data-slot={slot}
+      className="my-3 gap-0 rounded-lg border-border/70 bg-muted/70 py-0 shadow-none"
+      {...renderUnitAttributes(unit)}
+    >
+      <CardHeader className="flex min-h-14 flex-row items-center gap-2.5 px-5 py-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-background/70 text-muted-foreground">
+          <MessageSquareMoreIcon aria-hidden className="size-4" />
+        </span>
+        <CardTitle className="text-base font-normal">{sortedComments.length} comments</CardTitle>
+      </CardHeader>
+      <CardContent className="border-t px-0 py-1">
+        {visibleComments.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-muted-foreground">评论详情暂不可用</p>
+        ) : (
+          <div>
+            {visibleComments.map((comment, index) => (
+              <ReviewCommentRow
+                key={`${comment.file}:${comment.startLine}:${comment.title}:${index}`}
+                comment={comment}
+                workspaceCwd={workspaceCwd}
+                canOpenLocalPaths={canOpenLocalPaths}
+              />
+            ))}
+          </div>
+        )}
+      </CardContent>
+      {expanded || hiddenCount > 0 ? (
+        <CardFooter className="border-0 bg-transparent p-0">
+          <Button
+            aria-expanded={expanded}
+            className="h-auto w-full justify-start gap-2 rounded-none px-6 py-2 text-left text-sm font-normal hover:bg-muted/50 has-[>svg]:px-6"
+            variant="ghost"
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? '收起评论' : `再显示 ${hiddenCount} 条评论`}
+            <ChevronDownIcon
+              aria-hidden
+              className={cn('size-4 transition-transform', expanded && 'rotate-180')}
+            />
+          </Button>
+        </CardFooter>
+      ) : null}
+    </Card>
+  )
+}
+
+function ReviewCommentRow({
+  comment,
+  workspaceCwd,
+  canOpenLocalPaths
+}: {
+  comment: CodeComment
+  workspaceCwd?: string
+  canOpenLocalPaths: boolean
+}): React.JSX.Element {
+  const absolutePath = localFilePath(comment.file)
+  const relativePath = safeRelativeLocalPath(comment.file)
+  const openPath = absolutePath ?? (workspaceCwd && relativePath ? comment.file : undefined)
+  const canOpen = canOpenLocalPaths && Boolean(openPath)
+  const location = reviewCommentLocation(comment)
+  const displayTitle = comment.title.replace(/^\[P[0-3]\]\s*/i, '') || '审查建议'
   const handleOpen = (): void => {
-    if (!openPath) return
-    void window.desktopApp.codex.openLocalPath({ path: openPath, line }).catch(() => undefined)
+    if (!canOpen || !openPath) return
+    void window.desktopApp.codex
+      .openLocalPath({
+        path: openPath,
+        line: comment.startLine,
+        ...(absolutePath ? {} : { cwd: workspaceCwd })
+      })
+      .catch(() => undefined)
   }
 
   return (
-    <div className="min-w-0 rounded-md border border-border/50 px-2.5 py-2 text-sm" title={body}>
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-medium">
-          {priority}
-        </span>
-        <p className="min-w-0 flex-1 truncate font-medium">{title}</p>
-        {openPath ? (
+    <HoverCard openDelay={600} closeDelay={100}>
+      <HoverCardTrigger asChild>
+        <Button
+          aria-disabled={!canOpen}
+          aria-label={canOpen ? `打开 ${location}` : `${location} 无法作为本地文件打开`}
+          className={cn(
+            'flex h-auto w-full min-w-0 items-center justify-start gap-3 rounded-none px-6 py-1.5 text-left hover:bg-muted/40',
+            !canOpen && 'cursor-default'
+          )}
+          variant="ghost"
+          type="button"
+          onClick={handleOpen}
+        >
+          <span className="inline-flex w-fit min-w-7 shrink-0 justify-center rounded-md border border-border/70 bg-muted/20 px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+            {comment.priority ?? '—'}
+          </span>
+          <span className="max-w-[45%] min-w-0 shrink-0 truncate text-sm font-medium text-foreground">
+            {displayTitle}
+          </span>
+          <span
+            className="min-w-0 flex-1 truncate text-left text-sm font-normal text-muted-foreground [direction:rtl]"
+            title={location}
+          >
+            <span className="[direction:ltr]">{location}</span>
+          </span>
+        </Button>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-96 max-w-[calc(100vw-2rem)] space-y-3">
+        <p className="break-all text-xs text-muted-foreground">{location}</p>
+        <div className="space-y-1.5">
+          <p className="text-sm font-semibold">{displayTitle}</p>
+          <p className="whitespace-pre-wrap text-sm text-muted-foreground">{comment.body}</p>
+        </div>
+        {canOpen ? (
           <Button
-            aria-label={`打开 ${location}`}
-            size="icon-xs"
-            variant="ghost"
+            className="gap-2"
+            size="sm"
             type="button"
+            variant="secondary"
             onClick={handleOpen}
           >
             <FileIcon className="size-3.5" />
+            打开文件
           </Button>
-        ) : null}
-      </div>
-      {location ? <p className="mt-1 truncate text-xs text-muted-foreground">{location}</p> : null}
-      {body ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{body}</p> : null}
-    </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {canOpenLocalPaths ? '该路径无法作为本地文件打开' : '远程项目文件暂不支持本地打开'}
+          </p>
+        )}
+      </HoverCardContent>
+    </HoverCard>
   )
+}
+
+function reviewCommentLocation(comment: CodeComment): string {
+  const range =
+    comment.endLine > comment.startLine
+      ? `${comment.startLine}-${comment.endLine}`
+      : String(comment.startLine)
+  return `${comment.file}:${range}`
+}
+
+function reviewCommentPriorityRank(comment: CodeComment): number {
+  return comment.priority ? Number(comment.priority.slice(1)) : 9
+}
+
+function normalizeStructuredReviewComment(comment: AnyRecord): CodeComment | undefined {
+  const file = stringValue(comment.file) ?? stringValue(comment.path)
+  if (!file) return undefined
+
+  const rawTitle = stringValue(comment.title) ?? '审查建议'
+  const titlePriority = rawTitle.match(/^\[(P[0-3])\]/i)?.[1]?.toUpperCase()
+  const rawPriority = stringValue(comment.priority) ?? stringValue(comment.severity)
+  const normalizedPriority = rawPriority?.toUpperCase()
+  const priority =
+    titlePriority ?? (/^P[0-3]$/.test(normalizedPriority ?? '') ? normalizedPriority : undefined)
+  const startLine = Math.max(
+    1,
+    Math.trunc(
+      numberValue(comment.startLine) ?? numberValue(comment.start) ?? numberValue(comment.line) ?? 1
+    )
+  )
+  const endLine = Math.max(
+    startLine,
+    Math.trunc(numberValue(comment.endLine) ?? numberValue(comment.end) ?? startLine)
+  )
+  const title = priority && !/^\[P[0-3]\]/i.test(rawTitle) ? `[${priority}] ${rawTitle}` : rawTitle
+
+  return {
+    title,
+    body: stringValue(comment.body) ?? stringValue(comment.preview) ?? '',
+    file,
+    startLine,
+    endLine,
+    ...(priority ? { priority: priority as CodeComment['priority'] } : {})
+  }
 }
 
 function ShowMoreButton({
@@ -1380,16 +1532,6 @@ function compactEntryContent(
         icon: ClockIcon
       }
   }
-}
-
-function compareReviewCommentPriority(left: AnyRecord, right: AnyRecord): number {
-  return priorityRank(left) - priorityRank(right)
-}
-
-function priorityRank(comment: AnyRecord): number {
-  const priority = stringValue(comment.priority) ?? stringValue(comment.severity) ?? 'P9'
-  const match = priority.match(/\d+/)
-  return match ? Number(match[0]) : 9
 }
 
 function automaticApprovalLabel(value: string | undefined): string {

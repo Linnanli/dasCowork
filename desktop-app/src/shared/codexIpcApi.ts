@@ -172,6 +172,7 @@ export type CodexApprovalResponse =
 export type CodexOpenLocalPathPayload = {
   path: string
   line?: number
+  cwd?: string
 }
 
 export type LocalContextReference =
@@ -225,10 +226,40 @@ export const codexOpenExternalHttpUrlPayloadSchema = z.object({
   url: z.string().url().refine(isExternalHttpUrl, 'external URL must be http(s)')
 })
 
-export const codexOpenLocalPathPayloadSchema = z.object({
-  path: z.string().min(1).refine(isSafeLocalOpenPath, 'path must be an absolute local path'),
-  line: z.number().int().min(1).optional()
-}) satisfies z.ZodType<CodexOpenLocalPathPayload>
+export const codexOpenLocalPathPayloadSchema = z
+  .object({
+    path: z.string().min(1),
+    line: z.number().int().min(1).optional(),
+    cwd: z.string().min(1).optional()
+  })
+  .superRefine((value, context) => {
+    if (isSafeLocalOpenPath(value.path)) {
+      if (value.cwd !== undefined && !isSafeLocalOpenPath(value.cwd)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['cwd'],
+          message: 'cwd must be an absolute local path'
+        })
+      }
+      return
+    }
+
+    if (!isSafeLocalRelativePath(value.path)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['path'],
+        message: 'path must be a local path'
+      })
+    }
+
+    if (value.cwd === undefined || !isSafeLocalOpenPath(value.cwd)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['cwd'],
+        message: 'relative paths require an absolute local cwd'
+      })
+    }
+  }) satisfies z.ZodType<CodexOpenLocalPathPayload>
 
 export const localContextPickerPayloadSchema = z.object({
   kind: z.enum(['files', 'folders'])
@@ -363,8 +394,16 @@ export function isExternalHttpUrl(value: string): boolean {
 
 export function isSafeLocalOpenPath(value: string): boolean {
   if (value.includes('\0')) return false
+  if (value.startsWith('//') || value.startsWith('\\\\')) return false
   if (value.startsWith('/')) return true
   return /^[A-Za-z]:[\\/]/.test(value)
+}
+
+function isSafeLocalRelativePath(value: string): boolean {
+  if (value.includes('\0')) return false
+  if (value.startsWith('//') || value.startsWith('\\\\')) return false
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)) return false
+  return true
 }
 
 function isUiMessage(value: unknown): value is UIMessage {
