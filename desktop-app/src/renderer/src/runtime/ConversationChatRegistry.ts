@@ -342,6 +342,7 @@ export class ConversationChatRegistry {
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
       onStreamStarted: () => {
         entry.acceptedCurrentSend = false
+        this.clearDraft(entry)
         entry.phase = 'submitted'
         entry.error = undefined
         this.emit()
@@ -402,14 +403,17 @@ export class ConversationChatRegistry {
   private markStreamAccepted(entry: InternalConversationChatEntry): void {
     if (!entry.acceptedCurrentSend) {
       entry.acceptedCurrentSend = true
-      if (entry.draft) {
-        entry.draft = ''
-        this.draftStore.set(entry.context.threadId ?? entry.localId, '')
-      }
+      this.clearDraft(entry)
     }
     entry.phase = 'streaming'
     if (entry !== this.activeEntry) entry.unread = true
     this.emit()
+  }
+
+  private clearDraft(entry: InternalConversationChatEntry): void {
+    if (!entry.draft) return
+    entry.draft = ''
+    this.draftStore.set(entry.context.threadId ?? entry.localId, '')
   }
 
   private activate(entry: InternalConversationChatEntry): void {

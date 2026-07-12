@@ -309,7 +309,7 @@ describe('ConversationChatRegistry', () => {
     expect(entryA.unread).toBe(false)
   })
 
-  it('migrates and clears a draft only after the stream is accepted', async () => {
+  it('clears a draft as soon as a message is submitted', async () => {
     const { callbacks, registry } = registryFixture()
     const entry = registry.getSnapshot().activeEntry
     registry.setDraft(entry, 'keep me')
@@ -321,7 +321,7 @@ describe('ConversationChatRegistry', () => {
       abortSignal: undefined
     })
 
-    expect(entry.draft).toBe('keep me')
+    expect(entry.draft).toBe('')
     callbacks.get(entry.chat.id)?.onThreadBound('thread-real')
     expect(entry.draft).toBe('')
   })

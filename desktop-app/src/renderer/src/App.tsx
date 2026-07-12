@@ -677,13 +677,13 @@ function ConversationDraftBridge({
 }): null {
   const aui = useAui()
   const composerText = useAuiState((state) => state.composer.text)
-  const isRunning = useAuiState((state) => state.thread.isRunning)
   const initialDraft = useRef(draft)
   const hydrated = useRef(false)
-  const pendingSend = useRef(false)
+  const skippingSubmittedComposerSync = useRef(false)
 
   useAuiEvent('composer.send', () => {
-    pendingSend.current = true
+    skippingSubmittedComposerSync.current = true
+    onDraftChange('')
   })
 
   useLayoutEffect(() => {
@@ -693,20 +693,12 @@ function ConversationDraftBridge({
 
   useEffect(() => {
     if (!hydrated.current) return
-    if (pendingSend.current && composerText.length === 0) return
-    onDraftChange(composerText)
-  }, [composerText, onDraftChange])
-
-  useEffect(() => {
-    if (isRunning) {
-      if (draft.length === 0) pendingSend.current = false
+    if (skippingSubmittedComposerSync.current) {
+      if (composerText.length === 0) skippingSubmittedComposerSync.current = false
       return
     }
-    if (pendingSend.current && draft.length > 0 && composerText.length === 0) {
-      aui.composer().setText(draft)
-      pendingSend.current = false
-    }
-  }, [aui, composerText, draft, isRunning])
+    onDraftChange(composerText)
+  }, [composerText, onDraftChange])
 
   return null
 }

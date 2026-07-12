@@ -407,6 +407,7 @@ test('shows upstream quota errors returned by the admin backend model provider',
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'The free quota has been exhausted.'
     )
+    await expect(page.locator('.aui-lexical-input[contenteditable="true"]').last()).toHaveText('')
     await expect(page.locator('[data-slot="codex-sidebar"]')).not.toContainText(
       'The free quota has been exhausted.'
     )
