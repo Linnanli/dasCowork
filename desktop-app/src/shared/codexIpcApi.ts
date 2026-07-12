@@ -174,6 +174,26 @@ export type CodexOpenLocalPathPayload = {
   line?: number
 }
 
+export type LocalContextReference =
+  | {
+      kind: 'file' | 'folder'
+      path: string
+      label: string
+    }
+  | {
+      kind: 'image'
+      path: string
+      label: string
+      mediaType: string
+      previewUrl: string
+    }
+
+export type LocalContextPickerKind = 'files' | 'folders'
+
+export type LocalContextPickerPayload = {
+  kind: LocalContextPickerKind
+}
+
 export const codexChatRequestSchema = z.object({
   chatId: z.string().min(1),
   trigger: z.enum(['submit-message', 'regenerate-message']),
@@ -209,6 +229,29 @@ export const codexOpenLocalPathPayloadSchema = z.object({
   path: z.string().min(1).refine(isSafeLocalOpenPath, 'path must be an absolute local path'),
   line: z.number().int().min(1).optional()
 }) satisfies z.ZodType<CodexOpenLocalPathPayload>
+
+export const localContextPickerPayloadSchema = z.object({
+  kind: z.enum(['files', 'folders'])
+}) satisfies z.ZodType<LocalContextPickerPayload>
+
+const localContextPathSchema = z.object({
+  path: z.string().min(1).refine(isSafeLocalOpenPath, 'path must be an absolute local path'),
+  label: z.string().min(1)
+})
+
+export const localContextReferenceSchema = z.discriminatedUnion('kind', [
+  localContextPathSchema.extend({ kind: z.literal('file') }),
+  localContextPathSchema.extend({ kind: z.literal('folder') }),
+  localContextPathSchema.extend({
+    kind: z.literal('image'),
+    mediaType: z.string().regex(/^image\//u, 'media type must be an image'),
+    previewUrl: z
+      .string()
+      .regex(/^app:\/\/fs\/@fs\//u, 'preview URL must use the local media protocol')
+  })
+]) satisfies z.ZodType<LocalContextReference>
+
+export const localContextReferenceListSchema = z.array(localContextReferenceSchema)
 
 export const workspaceFileSearchPayloadSchema = z.object({
   query: z.string().optional(),
@@ -257,6 +300,7 @@ export type DesktopCodexApi = {
   respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void>
   openExternalHttpUrl(url: string): Promise<void>
   openLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
+  pickLocalContext(kind: LocalContextPickerKind): Promise<LocalContextReference[]>
   onStatusChange(callback: (status: CodexStatus) => void): () => void
   onApprovalRequest(callback: (request: CodexApprovalRequest) => void): () => void
 }

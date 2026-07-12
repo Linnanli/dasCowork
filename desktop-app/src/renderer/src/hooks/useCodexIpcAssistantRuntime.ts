@@ -238,6 +238,7 @@ function toModelOptions(list: CodexModelList): ModelOption[] {
     id: model.id,
     name: model.displayName,
     description: model.description,
+    inputModalities: model.inputModalities,
     disabled: false
   }))
 }

@@ -31,7 +31,8 @@ import { code } from '@streamdown/code'
 import { math } from '@streamdown/math'
 import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
-import { UserMessageAttachments } from '@/components/assistant-ui/attachment'
+import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
+import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import {
   CollapsedActivityDetails,
@@ -53,6 +54,7 @@ import {
   CopyIcon,
   FileIcon,
   FileTextIcon,
+  FolderIcon,
   HelpCircleIcon,
   PanelLeftIcon,
   PencilIcon,
@@ -64,6 +66,7 @@ import {
 } from 'lucide-react'
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -108,7 +111,18 @@ import type {
 } from './runtime/ConversationChatRegistry'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
+import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
 import type { ModelOption } from './components/assistant-ui'
+import {
+  appendComposerContextReference,
+  composerContextDirectiveFormatter,
+  dedupeComposerContextReferences,
+  isComposerContextReferenceType
+} from './composer/composerContextDirectiveFormatter'
+import {
+  createLocalImageAttachment,
+  imageAttachmentAdapter
+} from './composer/imageAttachmentAdapter'
 
 type CodexSidebarProps = {
   collapsed: boolean
@@ -384,7 +398,10 @@ function ActiveConversationPane({
   onToggleSidebar: () => void
 }): React.JSX.Element {
   const chat = useChat({ chat: entry.chat })
-  const runtime = useAISDKRuntime(chat, { isDisabled: !entry.loaded })
+  const runtime = useAISDKRuntime(chat, {
+    isDisabled: !entry.loaded,
+    adapters: { attachments: imageAttachmentAdapter }
+  })
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -912,11 +929,14 @@ function codexTextPartMetadataFor(message: ThreadMessage): readonly CodexTextPar
 function codexTurnDurationFor(message: ThreadMessage): number | undefined {
   return getExternalStoreMessages<ExternalAISDKMessage>(message)
     .map((externalMessage) => externalMessage.metadata)
-    .map((metadata) => (metadata && typeof metadata === 'object'
-      ? (metadata as Record<string, unknown>).codexTurnDurationMs
-      : undefined))
-    .find((durationMs): durationMs is number =>
-      typeof durationMs === 'number' && Number.isFinite(durationMs)
+    .map((metadata) =>
+      metadata && typeof metadata === 'object'
+        ? (metadata as Record<string, unknown>).codexTurnDurationMs
+        : undefined
+    )
+    .find(
+      (durationMs): durationMs is number =>
+        typeof durationMs === 'number' && Number.isFinite(durationMs)
     )
 }
 
@@ -1017,7 +1037,7 @@ function QuoteBlock({ text }: QuoteMessagePartProps): React.JSX.Element {
 }
 
 function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
-  const segments = unstable_defaultDirectiveFormatter.parse(text)
+  const segments = composerContextDirectiveFormatter.parse(text)
 
   if (segments.length === 1 && segments[0]?.kind === 'text') return <>{text}</>
 
@@ -1384,6 +1404,7 @@ function EditComposer(): React.JSX.Element {
           <LexicalComposerInput
             autoFocus
             directiveChip={DirectiveChip}
+            formatter={composerContextDirectiveFormatter}
             className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base text-foreground outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
           />
           <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
@@ -1437,7 +1458,14 @@ function DirectiveChip({
   directiveType,
   label
 }: DirectiveChipProps): React.JSX.Element {
-  const showWrench = directiveType !== 'command'
+  const Icon =
+    directiveType === 'file'
+      ? FileIcon
+      : directiveType === 'folder'
+        ? FolderIcon
+        : directiveType === 'command'
+          ? undefined
+          : WrenchIcon
 
   return (
     <span
@@ -1445,9 +1473,9 @@ function DirectiveChip({
       data-directive-id={directiveId}
       data-directive-type={directiveType}
     >
-      {showWrench ? (
+      {Icon ? (
         <span className="aui-directive-chip-icon">
-          <WrenchIcon className="size-3" />
+          <Icon className="size-3" />
         </span>
       ) : null}
       <span className="aui-directive-chip-label">{label}</span>
@@ -1614,17 +1642,23 @@ function Composer({
   onSelectedModelChange,
   projectState
 }: ComposerProps): React.JSX.Element {
+  const aui = useAui()
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
   const effectiveProjectSelection = activeConversation
     ? conversationProjectSelection
     : globalProjectSelection
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
+  const canAddContext =
+    hasProjectContext && effectiveProjectSelection?.projectKind !== 'projectless'
   const projectContext = conversationProjectContext(activeConversation, projectState)
   const workspaceFileSearchEnabled = Boolean(
     hasProjectContext &&
     effectiveProjectSelection &&
     effectiveProjectSelection.projectKind !== 'projectless'
+  )
+  const localContextPickerEnabled = Boolean(
+    workspaceFileSearchEnabled && effectiveProjectSelection?.projectKind !== 'remote'
   )
   const workspaceFileSearch = useWorkspaceFileSearch({
     manager: window.desktopApp.projects,
@@ -1634,7 +1668,19 @@ function Composer({
   })
   const { results: workspaceFileResults, search: searchWorkspaceFilesForMentions } =
     workspaceFileSearch
+  const { error: workspaceFileSearchError, loading: isSearchingWorkspaceFiles } =
+    workspaceFileSearch
   const projectSelectionKey = JSON.stringify(effectiveProjectSelection ?? null)
+  const hasImageAttachments = useAuiState((state) =>
+    state.composer.attachments.some((attachment) => attachment.type === 'image')
+  )
+  const hasUnsendableAttachments = useAuiState((state) =>
+    state.composer.attachments.some(
+      (attachment) =>
+        attachment.status.type === 'running' ||
+        (attachment.status.type === 'incomplete' && attachment.status.reason === 'error')
+    )
+  )
 
   useEffect(() => {
     if (!workspaceFileSearchEnabled) return
@@ -1652,6 +1698,49 @@ function Composer({
       })),
     [workspaceFileResults]
   )
+  const modelContextTools = useMemo<Unstable_TriggerItem[]>(() => {
+    const tools = aui.thread().getModelContext().tools
+    if (!tools) return []
+    return Object.entries(tools).map(([id, tool]) => ({
+      id,
+      type: 'tool',
+      label: id,
+      ...(tool.description ? { description: tool.description } : {}),
+      metadata: { icon: 'tool' }
+    }))
+  }, [aui])
+  const appendContextReference = useCallback(
+    (reference: Parameters<typeof appendComposerContextReference>[1]) => {
+      const composer = aui.composer()
+      composer.setText(appendComposerContextReference(composer.getState().text, reference))
+    },
+    [aui]
+  )
+  const insertContextItem = useCallback(
+    (item: Unstable_TriggerItem) => {
+      if (isComposerContextReferenceType(item.type)) {
+        appendContextReference({ type: item.type, path: item.id, label: item.label })
+        return
+      }
+      const composer = aui.composer()
+      const current = composer.getState().text
+      const directive = composerContextDirectiveFormatter.serialize(item)
+      composer.setText(
+        current.length === 0 || /\s$/u.test(current)
+          ? `${current}${directive}`
+          : `${current} ${directive}`
+      )
+    },
+    [appendContextReference, aui]
+  )
+  const dedupeInsertedContextReference = useCallback(
+    (item: Unstable_TriggerItem) => {
+      if (!isComposerContextReferenceType(item.type)) return
+      const composer = aui.composer()
+      composer.setText(dedupeComposerContextReferences(composer.getState().text))
+    },
+    [aui]
+  )
   const mention = unstable_useMentionAdapter({
     categories:
       fileMentions.length > 0
@@ -1667,6 +1756,8 @@ function Composer({
       category: { id: 'tools', label: 'Tools' },
       icon: 'tool'
     },
+    formatter: composerContextDirectiveFormatter,
+    onInserted: dedupeInsertedContextReference,
     fallbackIcon: WrenchIcon,
     iconMap: { file: FileIcon, tool: WrenchIcon }
   })
@@ -1675,6 +1766,39 @@ function Composer({
     fallbackIcon: SlashIcon,
     iconMap: slashIconMap
   })
+  const selectedModel = models.find((model) => model.id === selectedModelId)
+  const selectedModelSupportsImages = selectedModel?.inputModalities?.includes('image') ?? true
+  const cannotSendImages = hasImageAttachments && !selectedModelSupportsImages
+  const pickLocalContext = useCallback(
+    async (kind: LocalContextPickerKind): Promise<boolean> => {
+      const references = await window.desktopApp.codex.pickLocalContext(kind)
+      if (references.length === 0) return false
+
+      const composer = aui.composer()
+      for (const reference of references) {
+        if (reference.kind === 'image') {
+          await composer.addAttachment(
+            createLocalImageAttachment({
+              label: reference.label,
+              mediaType: reference.mediaType,
+              previewUrl: reference.previewUrl
+            })
+          )
+          continue
+        }
+        appendContextReference({
+          type: reference.kind,
+          path: reference.path,
+          label: reference.label
+        })
+      }
+
+      return true
+    },
+    [appendContextReference, aui]
+  )
+  const sendDisabled =
+    disabled || !hasProjectContext || cannotSendImages || hasUnsendableAttachments
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -1683,13 +1807,27 @@ function Composer({
           data-slot="aui_composer-shell"
           className="flex w-full flex-col gap-2 rounded-3xl border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/30"
         >
+          <ComposerAttachments />
           <LexicalComposerInput
             className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
             directiveChip={DirectiveChip}
+            formatter={composerContextDirectiveFormatter}
             placeholder="输入消息（@ 提及工具，/ 输入命令）"
           />
           <div className="aui-composer-action-wrapper relative flex items-center justify-between">
             <div className="flex min-w-0 items-center gap-1">
+              <ComposerAddContextPopover
+                disabled={disabled || !canAddContext}
+                files={fileMentions}
+                tools={modelContextTools}
+                isSearching={isSearchingWorkspaceFiles}
+                localPickerEnabled={localContextPickerEnabled}
+                onInsertItem={insertContextItem}
+                onSearch={searchWorkspaceFilesForMentions}
+                pickLocalContext={pickLocalContext}
+                searchError={workspaceFileSearchError}
+                searchEnabled={workspaceFileSearchEnabled}
+              />
               <ModelSelector
                 models={models}
                 value={selectedModelId}
@@ -1707,6 +1845,15 @@ function Composer({
                   {modelSelectionError}
                 </span>
               )}
+              {cannotSendImages ? (
+                <span
+                  role="alert"
+                  data-slot="composer-image-model-error"
+                  className="max-w-56 truncate text-xs text-destructive"
+                >
+                  移除照片或切换到支持图片的模型
+                </span>
+              ) : null}
               <span
                 className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
                 title={projectContext.detail ?? projectContext.label}
@@ -1719,7 +1866,7 @@ function Composer({
                 <ComposerPrimitive.Send asChild>
                   <IconButton
                     className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                    disabled={disabled || !hasProjectContext}
+                    disabled={sendDisabled}
                     label="发送消息"
                     title="发送消息"
                   >

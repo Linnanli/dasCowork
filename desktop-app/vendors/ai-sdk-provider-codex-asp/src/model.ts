@@ -330,7 +330,10 @@ export class CodexLanguageModel implements LanguageModelV3
     readonly specificationVersion = "v3" as const;
     readonly provider: string;
     readonly modelId: string;
-    readonly supportedUrls: Record<string, RegExp[]> = {};
+    // Keep selected local image paths intact for the App Server localImage input.
+    readonly supportedUrls: Record<string, RegExp[]> = {
+        "image/*": [/^file:/],
+    };
 
     private readonly settings: CodexLanguageModelSettings;
     private readonly config: CodexModelConfig;

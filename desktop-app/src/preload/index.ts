@@ -9,6 +9,8 @@ import type {
   DesktopCodexChatApi,
   DesktopConversationsApi,
   DesktopProjectsApi,
+  LocalContextPickerKind,
+  LocalContextReference,
   SidebarConversationListState,
   SidebarConversationOpenResult,
   SidebarPreferences,
@@ -40,6 +42,8 @@ const desktopCodex: DesktopCodexApi = {
   openExternalHttpUrl: (url: string) =>
     ipcRenderer.invoke('codex:open-external-http-url', { url }) as Promise<void>,
   openLocalPath: (input) => ipcRenderer.invoke('codex:open-local-path', input) as Promise<void>,
+  pickLocalContext: (kind: LocalContextPickerKind) =>
+    ipcRenderer.invoke('codex:pick-local-context', { kind }) as Promise<LocalContextReference[]>,
   onStatusChange: (callback: (status: CodexStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: CodexStatus): void =>
       callback(status)

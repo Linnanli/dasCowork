@@ -24,6 +24,7 @@ export type MockBackendOptions = {
   searchResponses?: unknown[]
   modelApiBasePath?: string
   modelProvider?: string
+  capabilities?: string[]
 }
 
 export type ResponsesStreamStep = {
@@ -68,7 +69,7 @@ export async function startMockBackend(options: MockBackendOptions): Promise<Moc
           description: null,
           provider: options.modelProvider ?? 'qwen',
           is_default: true,
-          capabilities: ['text'],
+          capabilities: options.capabilities ?? ['text'],
           api_base_url: `${serverBaseUrl(server)}${options.modelApiBasePath ?? ''}`,
           api_key: 'sk-e2e-test-key',
           api_format: 'openai',

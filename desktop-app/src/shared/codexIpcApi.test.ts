@@ -7,6 +7,8 @@ import {
   codexOpenExternalHttpUrlPayloadSchema,
   codexOpenLocalPathPayloadSchema,
   codexSetSelectedModelPayloadSchema,
+  localContextPickerPayloadSchema,
+  localContextReferenceSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
   sidebarConversationRenamePayloadSchema,
@@ -124,6 +126,46 @@ describe('codex IPC schemas', () => {
       codexOpenLocalPathPayloadSchema.safeParse({ path: 'file:///tmp/report.md' }).success
     ).toBe(false)
     expect(codexOpenLocalPathPayloadSchema.safeParse({ path: '/tmp/a\0b' }).success).toBe(false)
+  })
+
+  it('validates local context picker input and references', () => {
+    expect(localContextPickerPayloadSchema.safeParse({ kind: 'files' }).success).toBe(true)
+    expect(localContextPickerPayloadSchema.safeParse({ kind: 'folders' }).success).toBe(true)
+    expect(localContextPickerPayloadSchema.safeParse(undefined).success).toBe(false)
+    expect(localContextPickerPayloadSchema.safeParse({}).success).toBe(false)
+    expect(localContextPickerPayloadSchema.safeParse({ kind: 'both' }).success).toBe(false)
+    expect(
+      localContextReferenceSchema.safeParse({
+        kind: 'file',
+        path: '/tmp/report.md',
+        label: 'report.md'
+      }).success
+    ).toBe(true)
+    expect(
+      localContextReferenceSchema.safeParse({
+        kind: 'folder',
+        path: 'relative/assets',
+        label: 'assets'
+      }).success
+    ).toBe(false)
+    expect(
+      localContextReferenceSchema.safeParse({
+        kind: 'image',
+        path: '/tmp/photo.png',
+        label: 'photo.png',
+        mediaType: 'image/png',
+        previewUrl: 'app://fs/@fs/tmp/photo.png'
+      }).success
+    ).toBe(true)
+    expect(
+      localContextReferenceSchema.safeParse({
+        kind: 'image',
+        path: '/tmp/photo.png',
+        label: 'photo.png',
+        mediaType: 'image/png',
+        previewUrl: 'https://example.com/photo.png'
+      }).success
+    ).toBe(false)
   })
 
   it('validates conversation action payloads', () => {

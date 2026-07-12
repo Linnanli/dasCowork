@@ -49,6 +49,8 @@ export type ModelOption = {
   id: string;
   name: string;
   description?: string;
+  /** Input types accepted by the selected model, such as `text` and `image`. */
+  inputModalities?: readonly string[];
   icon?: ReactNode;
   disabled?: boolean;
   /** Extra terms matched by ModelSelector.Search, in addition to id and name. */

@@ -43,12 +43,21 @@ const useAttachmentSrc = (): string | undefined => {
       if (state.attachment.type !== 'image') return {}
       if (state.attachment.file) return { file: state.attachment.file }
 
-      const image = state.attachment.content?.find((content) => content.type === 'image')
-      return image ? { src: image.image } : {}
+      const content = state.attachment.content?.find(
+        (item) => item.type === 'image' || item.type === 'file'
+      )
+      if (!content) return {}
+      return {
+        src: content.type === 'image' ? content.image : asImageSource(content.data)
+      }
     })
   )
 
   return useFileSrc(file) ?? src
+}
+
+function asImageSource(data: unknown): string | undefined {
+  return typeof data === 'string' ? data : undefined
 }
 
 const AttachmentPreview: FC<{ src: string }> = ({ src }) => {
@@ -94,6 +103,12 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc()
+
+  if (!src) {
+    return (
+      <AttachmentPrimitive.unstable_Thumb className="aui-attachment-tile-fallback flex size-full items-center justify-center bg-muted px-1 text-center text-[10px] font-medium text-muted-foreground" />
+    )
+  }
 
   return (
     <Avatar className="aui-attachment-tile-avatar h-full w-full rounded-none">

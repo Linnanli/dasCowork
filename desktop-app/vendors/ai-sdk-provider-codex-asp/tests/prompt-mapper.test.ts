@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -62,6 +62,7 @@ describe("PromptFileResolver", () =>
         ]);
 
         expect(items).toEqual([
+            { type: "text", text: "", text_elements: [] },
             { type: "image", url: "https://example.com/img.png" },
         ]);
     });
@@ -79,6 +80,7 @@ describe("PromptFileResolver", () =>
         ]);
 
         expect(items).toEqual([
+            { type: "text", text: "", text_elements: [] },
             { type: "localImage", path: "/tmp/test-image.png" },
         ]);
     });
@@ -98,14 +100,34 @@ describe("PromptFileResolver", () =>
             },
         ]);
 
-        expect(items).toHaveLength(1);
-        expect(items[0]!.type).toBe("localImage");
-        const path = (items[0] as { type: "localImage"; path: string }).path;
+        expect(items).toHaveLength(2);
+        expect(items[0]).toEqual({ type: "text", text: "", text_elements: [] });
+        expect(items[1]!.type).toBe("localImage");
+        const path = (items[1] as { type: "localImage"; path: string }).path;
         expect(path).toMatch(/codex-ai-sdk-.*\.png$/);
         expect(existsSync(path)).toBe(true);
 
         await resolver.cleanup();
         expect(existsSync(path)).toBe(false);
+    });
+
+    it("preserves image bytes from a base64 data URL", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const base64Png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+        const items = await resolver.resolve([
+            {
+                role: "user",
+                content: [
+                    { type: "file", mediaType: "image/png", data: `data:image/png;base64,${base64Png}` },
+                ],
+            },
+        ]);
+
+        const path = (items[1] as { type: "localImage"; path: string }).path;
+        expect(readFileSync(path)).toEqual(Buffer.from(base64Png, "base64"));
+
+        await resolver.cleanup();
     });
 
     it("resolves inline image Uint8Array to temp file and cleans up", async () =>
@@ -122,9 +144,10 @@ describe("PromptFileResolver", () =>
             },
         ]);
 
-        expect(items).toHaveLength(1);
-        expect(items[0]!.type).toBe("localImage");
-        const path = (items[0] as { type: "localImage"; path: string }).path;
+        expect(items).toHaveLength(2);
+        expect(items[0]).toEqual({ type: "text", text: "", text_elements: [] });
+        expect(items[1]!.type).toBe("localImage");
+        const path = (items[1] as { type: "localImage"; path: string }).path;
         expect(existsSync(path)).toBe(true);
 
         await resolver.cleanup();
@@ -168,7 +191,7 @@ describe("PromptFileResolver", () =>
         ]);
     });
 
-    it("preserves mixed text + image ordering (text flushed before image)", async () =>
+    it("sends one text input before images, regardless of composer part order", async () =>
     {
         const resolver = new PromptFileResolver();
         const items = await resolver.resolve([
@@ -183,9 +206,75 @@ describe("PromptFileResolver", () =>
         ]);
 
         expect(items).toEqual([
-            { type: "text", text: "Before image", text_elements: [] },
+            { type: "text", text: "Before image\n\nAfter image", text_elements: [] },
             { type: "image", url: "https://example.com/photo.jpg" },
-            { type: "text", text: "After image", text_elements: [] },
+        ]);
+    });
+
+    it("emits an empty text input before photo-only messages", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const items = await resolver.resolve([
+            {
+                role: "user",
+                content: [
+                    { type: "file", mediaType: "image/png", data: new URL("https://example.com/photo.png") },
+                    { type: "file", mediaType: "image/jpeg", data: new URL("https://example.com/photo.jpg") },
+                ],
+            },
+        ]);
+
+        expect(items).toEqual([
+            { type: "text", text: "", text_elements: [] },
+            { type: "image", url: "https://example.com/photo.png" },
+            { type: "image", url: "https://example.com/photo.jpg" },
+        ]);
+    });
+
+    it.each([false, true])("maps local directives into Files mentioned context for fresh and resumed turns", async (isResume) =>
+    {
+        const resolver = new PromptFileResolver();
+        const items = await resolver.resolve(
+            [
+                ...(isResume
+                    ? [{ role: "user" as const, content: [{ type: "text" as const, text: "earlier" }] }]
+                    : []),
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: ":file[%E6%8A%A5%E5%91%8A%20%5D%7D]{name=%2Ftmp%2F%E6%8A%A5%E5%91%8A%20%5D%7D.md} Please inspect.",
+                        },
+                        { type: "file", mediaType: "image/png", data: new URL("https://example.com/photo.png") },
+                        {
+                            type: "text",
+                            text: ":folder[workspace]{name=%2Ftmp%2Fworkspace} :file[relative]{name=docs/readme.md}",
+                        },
+                    ],
+                },
+            ],
+            isResume,
+        );
+
+        expect(items).toEqual([
+            {
+                type: "text",
+                text: [
+                    "# Files mentioned by the user:",
+                    "",
+                    "## \"报告 ]}\": \"/tmp/报告 ]}.md\"",
+                    "",
+                    "## \"workspace\": \"/tmp/workspace\"",
+                    "",
+                    "## My request for Codex:",
+                    "Please inspect.",
+                    "",
+                    ":file[relative]{name=docs/readme.md}",
+                ].join("\n"),
+                text_elements: [],
+            },
+            { type: "image", url: "https://example.com/photo.png" },
         ]);
     });
 
@@ -270,6 +359,7 @@ describe("PromptFileResolver", () =>
 
         // S3 URL → mapped to CodexTurnInputImage.
         expect(items).toEqual([
+            { type: "text", text: "", text_elements: [] },
             { type: "image", url: "https://my-bucket.s3.amazonaws.com/resolved-image.png" },
         ]);
 

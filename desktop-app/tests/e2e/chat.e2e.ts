@@ -1,13 +1,22 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { test, expect } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
-import { attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
-import { sendComposerMessage, sendMessage } from './support/chatActions'
+import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
+import { ensureLocalProjectSelected, sendComposerMessage, sendMessage } from './support/chatActions'
 import {
   assistantMessageResponse,
   deferred,
   providerResponseBodies,
   startMockBackend
 } from './support/mockBackend'
+
+const onePixelPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64'
+)
 
 test('sends a real desktop chat turn through the admin backend model provider', async ({
   browserName
@@ -51,6 +60,130 @@ test('sends a real desktop chat turn through the admin backend model provider', 
     await backend.close()
   }
 })
+
+test('sends a searched local context reference and picker image through the provider', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const prompt = '请结合这个文件和图片说明下一步'
+  const responseText = '已收到文件上下文和图片。'
+  const workspaceFileLabel = 'src/renderer/src/App.tsx'
+  const workspaceFilePath = `${appRoot}/${workspaceFileLabel}`
+  const backend = await startMockBackend({
+    capabilities: ['text', 'image'],
+    responses: [assistantMessageResponse('resp-context-photo', 'msg-context-photo', responseText)]
+  })
+  const localContextDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-local-context-'))
+  const imagePath = join(localContextDir, 'e2e-context.png')
+  await writeFile(imagePath, onePixelPng)
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    await app.evaluate(
+      ({ dialog }, filePaths) => {
+        Object.assign(dialog, {
+          showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
+        })
+      },
+      [imagePath]
+    )
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await expect(page.locator('body')).toContainText('qwen3.7-plus')
+    await ensureLocalProjectSelected(page)
+
+    const composer = page.locator('.aui-lexical-input[contenteditable="true"]').last()
+    await composer.fill(prompt)
+
+    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+    const search = page.locator('[data-slot="command-input"]')
+    await expect(search).toBeVisible()
+    await expect(page.getByText('选择文件', { exact: true })).toBeVisible()
+    await expect(page.getByText('选择文件夹', { exact: true })).toBeVisible()
+    await expect(page.getByText('添加照片', { exact: true })).toHaveCount(0)
+    await search.fill(workspaceFileLabel)
+    const workspaceResult = page.locator('[cmdk-item]').filter({ hasText: workspaceFileLabel })
+    await expect(workspaceResult).toHaveCount(1)
+    await workspaceResult.click()
+
+    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+    await page.getByText('选择文件', { exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
+
+    const sendButton = page.getByRole('button', { name: '发送消息', exact: true })
+    await expect(sendButton).toBeEnabled()
+    await sendButton.click()
+    await expect(page.locator('[data-role="assistant"]')).toContainText(responseText)
+
+    const providerBody = await expectProviderResponseBody(backend)
+    const contents = providerInputContents(providerBody)
+    expect(contents).toContainEqual({
+      type: 'input_text',
+      text:
+        '# Files mentioned by the user:\n\n' +
+        `## ${JSON.stringify(workspaceFileLabel)}: ${JSON.stringify(workspaceFilePath)}` +
+        `\n\n## My request for Codex:\n${prompt}`
+    })
+    expect(contents).toContainEqual(
+      expect.objectContaining({
+        type: 'input_image',
+        image_url: expect.stringMatching(/^data:image\/png;base64,/u)
+      })
+    )
+    expect(
+      contents.some(
+        (content) =>
+          content.type === 'input_text' &&
+          typeof content.text === 'string' &&
+          content.text.startsWith('<image name=[Image #1] path="')
+      )
+    ).toBe(true)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await rm(localContextDir, { recursive: true, force: true })
+  }
+})
+
+async function expectProviderResponseBody(backend: {
+  requests: Array<{ method: string; url: string; body: string }>
+}): Promise<unknown> {
+  await expect
+    .poll(
+      () =>
+        backend.requests.find(
+          (request) => request.method === 'POST' && request.url === '/responses'
+        )?.body,
+      { timeout: 20_000 }
+    )
+    .toBeTruthy()
+
+  const providerRequest = backend.requests.find(
+    (request) => request.method === 'POST' && request.url === '/responses'
+  )
+  if (!providerRequest) throw new Error('Expected provider responses request')
+  return JSON.parse(providerRequest.body) as unknown
+}
+
+function providerInputContents(providerBody: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(providerBody) || !Array.isArray(providerBody.input)) {
+    throw new Error('Expected the provider request to include an input array')
+  }
+
+  return providerBody.input.flatMap((item) => {
+    if (!isRecord(item) || !Array.isArray(item.content)) return []
+    return item.content.filter(isRecord)
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 test('creates a sidebar conversation entry before the provider response returns', async ({
   browserName
@@ -213,6 +346,7 @@ test('stops only the active conversation while a background conversation continu
       sidebar.getByRole('button', { name: new RegExp(`^${secondPrompt}, running`) })
     ).toBeVisible()
     await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeVisible()
+    await expect.poll(() => providerResponseBodies(backend)).toHaveLength(2)
 
     await page.getByRole('button', { name: '停止生成', exact: true }).click()
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()

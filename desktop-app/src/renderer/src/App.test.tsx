@@ -247,7 +247,8 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
     environment: { platform: 'darwin' },
     codex: {
       openExternalHttpUrl: vi.fn(async () => undefined),
-      openLocalPath: vi.fn(async () => undefined)
+      openLocalPath: vi.fn(async () => undefined),
+      pickLocalContext: vi.fn(async () => [])
     },
     chat: {},
     projects: {
@@ -509,6 +510,7 @@ vi.mock('@/components/ui/avatar', () => ({
 vi.mock('@assistant-ui/react', () => {
   const assistantState = {
     composer: {
+      attachments: [],
       dictation: null,
       isEmpty: true,
       text: ''
@@ -585,6 +587,12 @@ vi.mock('@assistant-ui/react', () => {
       return visible ? <>{renderChildren(children)}</> : null
     },
     ComposerPrimitive: {
+      AddAttachment: primitive('Composer.AddAttachment'),
+      Attachments: ({ children }: PrimitiveProps) => (
+        <div data-primitive="Composer.Attachments">
+          {typeof children === 'function' ? [] : children}
+        </div>
+      ),
       Cancel: primitive('Composer.Cancel'),
       Input: (props: PrimitiveProps) => (
         <textarea data-testid="plain-composer-input" {...omitPrimitiveOnlyProps(props)} />
@@ -627,10 +635,7 @@ vi.mock('@assistant-ui/react', () => {
           threadMessageState.message.role === 'user'
             ? threadMessageState.message.content
                 .filter(
-                  (part): part is Extract<
-                    MockMessagePart,
-                    { type: 'file' }
-                  > => part.type === 'file'
+                  (part): part is Extract<MockMessagePart, { type: 'file' }> => part.type === 'file'
                 )
                 .map((part) => ({
                   type: part.mediaType.startsWith('image/') ? 'image' : 'file',
@@ -774,6 +779,7 @@ vi.mock('@assistant-ui/react', () => {
       }),
       thread: () => ({
         append: vi.fn(),
+        getModelContext: () => ({}),
         getState: () => ({ isRunning: false })
       })
     }),
@@ -2711,7 +2717,8 @@ describe('App composer', () => {
     expect(commandGroups.every((group) => !group.className.includes('my-2'))).toBe(true)
     expect(
       commandGroups.every(
-        (group) => !group.querySelector('[data-slot="tool-group-trigger"]')?.className.includes('py-1.5')
+        (group) =>
+          !group.querySelector('[data-slot="tool-group-trigger"]')?.className.includes('py-1.5')
       )
     ).toBe(true)
     expect(commandGroups.map((group) => group.textContent)).toEqual(

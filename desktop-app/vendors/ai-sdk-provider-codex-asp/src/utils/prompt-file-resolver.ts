@@ -7,6 +7,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LanguageModelV3FilePart, LanguageModelV3Prompt } from "@ai-sdk/provider";
 
 import type { CodexTurnInputItem, CodexTurnInputText } from "../protocol/types";
+import {
+    buildFilesMentionedContext,
+    extractLocalContextDirectives,
+    type LocalContextReference,
+} from "./local-context-directives";
 
 /**
  * Extracts system messages from the prompt and concatenates them into a single
@@ -85,7 +90,7 @@ export class LocalFileWriter implements FileWriter
         const filepath = join(tmpdir(), filename);
 
         const buffer = typeof data === "string"
-            ? Buffer.from(data, "base64")
+            ? Buffer.from(base64Payload(data), "base64")
             : data;
 
         await writeFile(filepath, buffer);
@@ -100,6 +105,18 @@ export class LocalFileWriter implements FileWriter
                 .map((u) => unlink(u)),
         );
     }
+}
+
+function base64Payload(data: string): string
+{
+    const marker = ";base64,";
+    const markerIndex = data.indexOf(marker);
+    if (!data.startsWith("data:") || markerIndex < 0)
+    {
+        return data;
+    }
+
+    return data.slice(markerIndex + marker.length);
 }
 
 /**
@@ -138,8 +155,8 @@ export class PromptFileResolver
      * - Unsupported media types are silently skipped.
      *
      * @param isResume - When true only the last user message is extracted.
-     *   When false (fresh thread) all user text is accumulated with images
-     *   flushing the text buffer to preserve ordering.
+     *   When false (fresh thread) all user text is accumulated. Text input is
+     *   always sent before images, whose source order is retained.
      */
     async resolve(
         prompt: LanguageModelV3Prompt,
@@ -230,7 +247,7 @@ export class PromptFileResolver
     }
 
     /**
-     * Resume path: extract parts from the last user message individually.
+     * Resume path: extract parts from the last user message.
      */
     private async resolveResumed(
         prompt: LanguageModelV3Prompt,
@@ -242,90 +259,77 @@ export class PromptFileResolver
 
             if (message?.role === "user")
             {
-                const items: CodexTurnInputItem[] = [];
-
-                for (const part of message.content)
-                {
-                    if (part.type === "text")
-                    {
-                        const text = part.text.trim();
-                        if (text.length > 0)
-                        {
-                            items.push(textItem(text));
-                        }
-                    }
-                    else if (part.type === "file")
-                    {
-                        const mapped = await this.resolveFilePart(part);
-                        if (mapped)
-                        {
-                            items.push(mapped);
-                        }
-                    }
-                }
-
-                return items;
+                return this.resolveUserMessages([message]);
             }
         }
 
-        return [];
+        return [textItem("")];
     }
 
     /**
-     * Fresh thread path: accumulate text chunks across all user messages,
-     * flushing before each image to preserve ordering.
+     * Fresh thread path: collect every user message into a single text item,
+     * followed by image inputs in their original order.
      */
     private async resolveFresh(
         prompt: LanguageModelV3Prompt,
     ): Promise<CodexTurnInputItem[]>
     {
-        const items: CodexTurnInputItem[] = [];
+        return this.resolveUserMessages(prompt);
+    }
+
+    private async resolveUserMessages(
+        messages: readonly LanguageModelV3Prompt[number][],
+    ): Promise<CodexTurnInputItem[]>
+    {
+        const references: LocalContextReference[] = [];
+        const paths = new Set<string>();
         const textChunks: string[] = [];
+        const images: CodexTurnInputItem[] = [];
 
-        const flushText = (): void =>
+        for (const message of messages)
         {
-            if (textChunks.length > 0)
+            if (message.role !== "user")
             {
-                items.push(textItem(textChunks.join("\n\n")));
-                textChunks.length = 0;
+                continue;
             }
-        };
 
-        for (const message of prompt)
-        {
-            if (message.role === "user")
+            for (const part of message.content)
             {
-                for (const part of message.content)
+                if (part.type === "text")
                 {
-                    if (part.type === "text")
+                    const extracted = extractLocalContextDirectives(part.text);
+                    for (const reference of extracted.references)
                     {
-                        const text = part.text.trim();
-                        if (text.length > 0)
+                        if (!paths.has(reference.path))
                         {
-                            textChunks.push(text);
+                            paths.add(reference.path);
+                            references.push(reference);
                         }
                     }
-                    else if (part.type === "file")
+
+                    const text = extracted.text.trim();
+                    if (text.length > 0)
                     {
-                        const mapped = await this.resolveFilePart(part);
-                        if (mapped)
-                        {
-                            if (mapped.type === "text")
-                            {
-                                textChunks.push(mapped.text);
-                            }
-                            else
-                            {
-                                flushText();
-                                items.push(mapped);
-                            }
-                        }
+                        textChunks.push(text);
+                    }
+                }
+                else if (part.type === "file")
+                {
+                    const mapped = await this.resolveFilePart(part);
+                    if (mapped?.type === "text")
+                    {
+                        textChunks.push(mapped.text);
+                    }
+                    else if (mapped)
+                    {
+                        images.push(mapped);
                     }
                 }
             }
         }
 
-        flushText();
-        return items;
+        const request = textChunks.join("\n\n");
+        const text = buildFilesMentionedContext(references, request);
+        return [textItem(text), ...images];
     }
 }

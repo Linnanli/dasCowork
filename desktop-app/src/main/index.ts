@@ -10,6 +10,7 @@ import {
   protocol,
   session
 } from 'electron'
+import { stat } from 'node:fs/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -21,6 +22,7 @@ import {
   type ObservedStartedThread
 } from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
+import { createPickLocalContextHandler } from './localContextPicker'
 import { createOpenLocalPathHandler } from './localPathOpen'
 import {
   createAppRendererUrl,
@@ -281,6 +283,13 @@ app.whenReady().then(() => {
   ipcMain.handle(
     'codex:open-local-path',
     createOpenLocalPathHandler((path) => shell.openPath(path))
+  )
+  ipcMain.handle(
+    'codex:pick-local-context',
+    createPickLocalContextHandler({
+      showOpenDialog: (options) => dialog.showOpenDialog(options),
+      stat
+    })
   )
   ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
   ipcMain.handle('codex:projects:pick-workspace-root', async () => {

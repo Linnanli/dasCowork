@@ -1,3 +1,4 @@
+import { restoreFilesMentionedContext } from "../utils/local-context-directives";
 import { stripUndefined } from "../utils/object";
 import type { ThreadItem } from "./app-server-protocol/v2/ThreadItem";
 import type { UserInput } from "./app-server-protocol/v2/UserInput";
@@ -250,7 +251,7 @@ export function webSearchHasContent(query: string | null | undefined, action: { 
 
 export function userInputText(value: readonly UserInput[]): string
 {
-    return value
+    const text = value
         .map((entry) =>
         {
             switch (entry.type)
@@ -270,6 +271,8 @@ export function userInputText(value: readonly UserInput[]): string
         })
         .filter((text) => text.trim().length > 0)
         .join("\n");
+
+    return restoreFilesMentionedContext(text).text;
 }
 
 export function reasoningTextForItem(item: Extract<ThreadItem, { type: "plan" | "reasoning" }>): string
