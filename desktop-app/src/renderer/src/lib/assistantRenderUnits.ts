@@ -14,16 +14,38 @@ type AssistantMessagePart = Record<string, unknown>
 
 export type AssistantRenderDetailLevel = 'default' | 'stepsProse'
 export type AssistantMessagePhase = 'commentary' | 'final_answer'
+export type ReasoningGroupState = 'thinking' | 'blocked' | 'completed'
 
 type AssistantMessageLike = {
   status?: { type?: string }
   content: readonly AssistantMessagePart[]
   parts?: readonly AssistantMessagePart[]
   textPhases?: readonly (AssistantMessagePhase | undefined)[]
+  hasBlockingRequest?: boolean
   processDurationMs?: number
   detailLevel?: AssistantRenderDetailLevel
   workspaceCwd?: string
   canOpenLocalPaths?: boolean
+}
+
+type AssistantActivityPhase =
+  | 'inactive'
+  | 'blocked'
+  | 'showing-text'
+  | 'exploring'
+  | 'planning'
+  | 'active-activity'
+  | 'thinking'
+
+type ThinkingPresentation =
+  | { type: 'hidden' }
+  | { type: 'process-group' }
+  | { type: 'tool-group'; unitKey: string }
+  | { type: 'standalone' }
+
+type AssistantActivityContext = {
+  isRunning: boolean
+  hasBlockingRequest: boolean
 }
 
 export type AssistantRenderTarget = {
@@ -138,6 +160,7 @@ export type AssistantRenderUnit =
       type: 'reasoning-group'
       children: readonly AssistantRenderUnit[]
       durationMs?: number
+      state: ReasoningGroupState
     })
   | (AssistantRenderUnitBase & {
       type: 'entry'
@@ -283,6 +306,14 @@ const MULTI_AGENT_ITEM_TYPES = new Set([
   'multi-agent-action'
 ])
 const SUBAGENT_ACTIVITY_ITEM_TYPES = new Set(['subAgentActivity', 'subagent-activity'])
+const THINKING_FALLBACK_TOOL_GROUP_KINDS = new Set<ToolGroupKind>([
+  'composite',
+  'command',
+  'file-change',
+  'generic',
+  'mcp',
+  'dynamic'
+])
 type SubagentRenderContext = {
   displayNamesByThreadId: ReadonlyMap<string, string>
   activityStatusesByPartIndex: ReadonlyMap<number, SubagentActivityDisplayStatus>
@@ -319,13 +350,16 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
   const dynamicGrouped = groupDynamicToolCalls(preGrouped)
   const mcpGrouped = groupPendingMcpToolCalls(dynamicGrouped)
   const activityCollapsed = groupAdjacentToolActivity(mcpGrouped, { detailLevel })
-  const visibleUnits = attachMessageThinkingFallback(
-    activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning, subagentContext)),
-    isRunning
+  const visibleUnits = activityCollapsed.map((unit, index) =>
+    toRenderUnit(unit, index, isRunning, subagentContext)
   )
   const groupedUnits = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
+  const unitsWithThinking = applyThinkingPresentation(groupedUnits, {
+    isRunning,
+    hasBlockingRequest: message.hasBlockingRequest === true
+  })
   const units = deriveReviewCommentsUnit(
-    groupedUnits,
+    unitsWithThinking,
     message.status?.type === undefined || message.status.type === 'complete',
     message.workspaceCwd,
     message.canOpenLocalPaths !== false
@@ -693,19 +727,107 @@ function groupLoadedToolActivity(units: readonly GroupableUnit[]): GroupableUnit
   return result
 }
 
-function attachMessageThinkingFallback(
+function applyThinkingPresentation(
   units: readonly AssistantRenderUnit[],
-  isRunning: boolean
+  context: AssistantActivityContext
 ): AssistantRenderUnit[] {
-  const stableUnits = units.map((unit) => ({ ...unit, showThinkingFallback: false }))
-  if (!isRunning) return stableUnits
-  if (stableUnits.length === 0) return [messageThinkingUnit()]
+  const stableUnits = units.map((unit) => {
+    if (unit.type !== 'reasoning-group') return { ...unit, showThinkingFallback: false }
 
-  const latestIndex = findLatestThinkingEligibleUnitIndex(stableUnits)
-  const latestUnit = latestIndex >= 0 ? stableUnits[latestIndex] : undefined
-  if (!latestUnit || latestUnit.active) return stableUnits
+    const state = context.hasBlockingRequest && unit.active === true ? 'blocked' : unit.state
+    return { ...unit, state, showThinkingFallback: false }
+  })
+  const activityPhase = deriveAssistantActivityPhase(stableUnits, context)
+  const presentation = deriveThinkingPresentation(stableUnits, activityPhase)
 
-  return [...stableUnits, messageThinkingUnit()]
+  if (presentation.type === 'standalone') return [...stableUnits, messageThinkingUnit()]
+  if (presentation.type === 'process-group') {
+    return stableUnits.map((unit) =>
+      isActiveReasoningGroup(unit) ? { ...unit, showThinkingFallback: true } : unit
+    )
+  }
+  if (presentation.type === 'hidden') return stableUnits
+
+  return stableUnits.map((unit) =>
+    unit.key === presentation.unitKey ? { ...unit, showThinkingFallback: true } : unit
+  )
+}
+
+function deriveAssistantActivityPhase(
+  units: readonly AssistantRenderUnit[],
+  context: AssistantActivityContext
+): AssistantActivityPhase {
+  if (!context.isRunning) return 'inactive'
+  if (context.hasBlockingRequest) return 'blocked'
+  if (hasVisibleTextAfterLatestActivity(units)) return 'showing-text'
+  if (units.some(isActiveExplorationUnit)) return 'exploring'
+  if (units.some(isActivePlanningUnit)) return 'planning'
+  if (units.some(isActiveActivityUnit)) return 'active-activity'
+  return 'thinking'
+}
+
+function deriveThinkingPresentation(
+  units: readonly AssistantRenderUnit[],
+  activityPhase: AssistantActivityPhase
+): ThinkingPresentation {
+  if (activityPhase !== 'thinking') return { type: 'hidden' }
+  if (units.some(isActiveReasoningGroup)) return { type: 'process-group' }
+
+  const latestUnit = units.at(-1)
+  if (latestUnit && isThinkingFallbackToolGroup(latestUnit)) {
+    return { type: 'tool-group', unitKey: latestUnit.key }
+  }
+
+  return { type: 'standalone' }
+}
+
+function hasVisibleTextAfterLatestActivity(units: readonly AssistantRenderUnit[]): boolean {
+  let latestUnphasedTextIndex = -1
+  let latestActivityIndex = -1
+
+  for (const [index, unit] of units.entries()) {
+    if (unit.type === 'text') {
+      if (unit.phase === 'final_answer') return true
+      if (unit.phase === undefined) latestUnphasedTextIndex = index
+      continue
+    }
+
+    if (isActivityUnit(unit)) latestActivityIndex = index
+  }
+
+  return latestUnphasedTextIndex > latestActivityIndex
+}
+
+function isActivityUnit(unit: AssistantRenderUnit): boolean {
+  return (
+    unit.type === 'entry' || unit.type === 'tool-group' || unit.type === 'subagent-activity-group'
+  )
+}
+
+function isActiveExplorationUnit(unit: AssistantRenderUnit): boolean {
+  return unit.type === 'tool-group' && unit.kind === 'exploration' && unit.active === true
+}
+
+function isActivePlanningUnit(unit: AssistantRenderUnit): boolean {
+  return unit.type === 'entry' && unit.itemType === 'todoList' && unit.active === true
+}
+
+function isActiveActivityUnit(unit: AssistantRenderUnit): boolean {
+  return unit.type !== 'reasoning-group' && unit.active === true
+}
+
+function isActiveReasoningGroup(unit: AssistantRenderUnit): boolean {
+  return unit.type === 'reasoning-group' && unit.active === true
+}
+
+function isThinkingFallbackToolGroup(
+  unit: AssistantRenderUnit
+): unit is Extract<AssistantRenderUnit, { type: 'tool-group' }> {
+  return (
+    unit.type === 'tool-group' &&
+    unit.active !== true &&
+    THINKING_FALLBACK_TOOL_GROUP_KINDS.has(unit.kind)
+  )
 }
 
 function groupCommentaryProcess(
@@ -718,13 +840,11 @@ function groupCommentaryProcess(
   )
   if (commentaryIndex < 0) return [...units]
 
-  const finalAnswerIndex = units.findIndex(
-    (unit) => unit.type === 'text' && unit.phase === 'final_answer'
-  )
-  if (finalAnswerIndex >= 0 && finalAnswerIndex < commentaryIndex) return [...units]
+  const answerIndex = units.findIndex((unit) => unit.type === 'text' && unit.phase !== 'commentary')
+  if (answerIndex >= 0 && answerIndex < commentaryIndex) return [...units]
 
-  const processEnd = finalAnswerIndex >= 0 ? finalAnswerIndex : units.length
-  const children = units.slice(0, processEnd).filter((unit) => unit.type !== 'message-thinking')
+  const processEnd = answerIndex >= 0 ? answerIndex : units.length
+  const children = units.slice(0, processEnd)
   if (children.length === 0) return [...units]
 
   const partIndices = [...new Set(children.flatMap((unit) => [...unit.partIndices]))]
@@ -735,7 +855,8 @@ function groupCommentaryProcess(
     partIndices,
     target: { id: 'reasoning-group', itemIds },
     children,
-    active: isRunning && finalAnswerIndex < 0,
+    active: isRunning && answerIndex < 0,
+    state: isRunning && answerIndex < 0 ? 'thinking' : 'completed',
     durationMs: isRunning ? undefined : processDurationMs,
     showThinkingFallback: false
   }
@@ -752,16 +873,6 @@ function messageThinkingUnit(): AssistantRenderUnit {
     active: true,
     showThinkingFallback: true
   }
-}
-
-function findLatestThinkingEligibleUnitIndex(units: readonly AssistantRenderUnit[]): number {
-  for (let index = units.length - 1; index >= 0; index -= 1) {
-    const unit = units[index]
-    if (!unit || unit.type === 'text' || unit.type === 'unknown') return -1
-    if (isToolLikeUnit(unit)) return index
-  }
-
-  return -1
 }
 
 function toRenderUnit(
@@ -1360,12 +1471,6 @@ function shouldRenderSingleMcpGroup(unit: GroupableUnit): boolean {
 
   const sourceType = unit.mcpSource?.sourceType
   return sourceType !== 'computer-use'
-}
-
-function isToolLikeUnit(unit: AssistantRenderUnit): boolean {
-  return (
-    unit.type === 'entry' || unit.type === 'tool-group' || unit.type === 'subagent-activity-group'
-  )
 }
 
 function partsForUnit(unit: ToolGroupableUnit): readonly AssistantMessagePart[] {

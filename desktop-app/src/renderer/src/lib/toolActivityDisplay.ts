@@ -1,4 +1,5 @@
 import type { AssistantRenderUnit, DynamicToolMetadata, ToolItem } from './assistantRenderUnits'
+import { pendingAssistantMessageText } from './assistantMessages'
 import {
   extractThreadItem,
   extractToolInput,
@@ -26,7 +27,7 @@ export type ToolGroupDisplay = {
   label: string
   icon?: ToolGroupIconName
   status: ToolActivityStatus
-  active: boolean
+  showShimmer: boolean
   count: number
   expandable: boolean
   detailRows: readonly ToolActivityDetailRow[]
@@ -102,13 +103,20 @@ export function buildToolGroupDisplay(
   items: readonly ToolItemDisplay[] = unit.children.map((item) => buildToolItemDisplay(item, unit))
 ): ToolGroupDisplay {
   const status = toolGroupActivityStatus(unit, items)
-  const active = status === 'running' || status === 'requiresAction' || Boolean(unit.active)
+  const showThinkingFallback = unit.showThinkingFallback === true
+  const showShimmer =
+    showThinkingFallback ||
+    status === 'running' ||
+    status === 'requiresAction' ||
+    Boolean(unit.active)
 
   return {
-    label: toolGroupLabel(unit, items, active),
-    icon: toolGroupIcon(unit),
+    label: showThinkingFallback
+      ? pendingAssistantMessageText
+      : toolGroupLabel(unit, items, showShimmer),
+    icon: showThinkingFallback ? undefined : toolGroupIcon(unit),
     status,
-    active,
+    showShimmer,
     count: unit.children.length,
     expandable: !unit.summaryOnly,
     detailRows: groupDetailRows(unit.summary)

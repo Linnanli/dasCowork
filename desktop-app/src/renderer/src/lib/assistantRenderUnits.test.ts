@@ -67,6 +67,7 @@ describe('buildAssistantRenderUnits', () => {
       key: 'reasoning-group',
       partIndices: [1, 2, 4],
       active: false,
+      state: 'completed',
       durationMs: 1250,
       children: [{ type: 'text' }, { type: 'tool-group' }, { type: 'text' }]
     })
@@ -195,10 +196,54 @@ describe('buildAssistantRenderUnits', () => {
         key: 'reasoning-group',
         partIndices: [1, 2],
         active: true,
+        state: 'thinking',
+        showThinkingFallback: true,
         children: [{ type: 'text' }, { type: 'tool-group' }]
       }
     ])
     expect(model.units).toHaveLength(1)
+  })
+
+  it('keeps a blocked commentary process group without a thinking presentation', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [{ type: 'text', text: '等待用户批准。' }],
+      textPhases: ['commentary'],
+      hasBlockingRequest: true
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'reasoning-group',
+        active: true,
+        state: 'blocked',
+        showThinkingFallback: false,
+        children: [{ type: 'text', phase: 'commentary' }]
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+  })
+
+  it('ends the commentary process group before unphased visible answer text', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'text', text: '先检查一下。' },
+        { type: 'text', text: '这是当前结果。' }
+      ],
+      textPhases: ['commentary', undefined]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'reasoning-group',
+        active: false,
+        state: 'completed',
+        showThinkingFallback: false,
+        children: [{ type: 'text', phase: 'commentary' }]
+      },
+      { type: 'text', phase: undefined, text: '这是当前结果。' }
+    ])
   })
 
   it('prevents older tools from owning thinking when text follows them', () => {
@@ -209,6 +254,69 @@ describe('buildAssistantRenderUnits', () => {
 
     expect(model.units.map((unit) => unit.type)).toEqual(['tool-group', 'text'])
     expect(model.units[0]).toMatchObject({ showThinkingFallback: false })
+  })
+
+  it('keeps thinking after completed tools when earlier process text has no phase', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'text', text: 'Let me explore the repository first.' },
+        toolPart('cmd-1', 'commandExecution'),
+        toolPart('file-1', 'fileChange')
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      { type: 'text', phase: undefined, showThinkingFallback: false },
+      {
+        type: 'tool-group',
+        kind: 'composite',
+        active: false,
+        showThinkingFallback: true
+      }
+    ])
+    expect(model.units.some((unit) => unit.type === 'message-thinking')).toBe(false)
+  })
+
+  it('uses only the latest activity boundary for repeated unphased process text', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'text', text: 'Let me inspect the repository.' },
+        toolPart('read-1', 'commandExecution', {
+          commandActions: [{ type: 'read', path: '/repo/README.md', command: 'cat README.md' }]
+        }),
+        { type: 'text', text: 'Let me check one more file.' },
+        toolPart('cmd-2', 'commandExecution')
+      ]
+    })
+
+    expect(model.units.at(-1)).toMatchObject({
+      type: 'tool-group',
+      kind: 'command',
+      active: false,
+      showThinkingFallback: true
+    })
+    expect(model.units.some((unit) => unit.type === 'message-thinking')).toBe(false)
+  })
+
+  it('hides thinking while unphased visible text follows the latest tool', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'text', text: 'Let me inspect the repository.' },
+        toolPart('cmd-1', 'commandExecution'),
+        { type: 'text', text: '这是最终分析。' }
+      ]
+    })
+
+    expect(model.units.at(-1)).toMatchObject({
+      type: 'text',
+      phase: undefined,
+      text: '这是最终分析。',
+      showThinkingFallback: false
+    })
+    expect(model.units.some((unit) => unit.showThinkingFallback)).toBe(false)
   })
 
   it('keeps active latest tool groups on their active summary instead of generic thinking', () => {
@@ -229,7 +337,27 @@ describe('buildAssistantRenderUnits', () => {
     })
   })
 
-  it('adds message-level thinking after completed tool activity while the turn runs', () => {
+  it('keeps tools waiting for approval on their specific activity summary', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        toolPart('cmd-approval', 'commandExecution', {
+          status: { type: 'requires-action', reason: 'approval' }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        active: true,
+        showThinkingFallback: false
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+  })
+
+  it('puts thinking fallback on a completed eligible tool group while the turn runs', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },
       content: [toolPart('cmd-1', 'commandExecution'), toolPart('file-1', 'fileChange')]
@@ -240,14 +368,55 @@ describe('buildAssistantRenderUnits', () => {
         type: 'tool-group',
         kind: 'composite',
         active: false,
-        showThinkingFallback: false
-      },
-      {
-        type: 'message-thinking',
-        key: 'message-thinking',
-        active: true,
         showThinkingFallback: true
       }
+    ])
+    expect(model.units).toHaveLength(1)
+  })
+
+  it('hides thinking while the thread has a blocking request', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [],
+      hasBlockingRequest: true
+    })
+
+    expect(model.units).toEqual([])
+    expect(model.isThinkingOnly).toBe(false)
+  })
+
+  it.each([
+    {
+      name: 'exploration',
+      content: [
+        toolPart('read-1', 'commandExecution', {
+          commandActions: [{ type: 'read', path: '/repo/src/a.ts', command: 'cat src/a.ts' }]
+        })
+      ],
+      kind: 'exploration'
+    },
+    {
+      name: 'web search',
+      content: [toolPart('web-1', 'webSearch')],
+      kind: 'web-search'
+    },
+    {
+      name: 'multi-agent activity',
+      content: [
+        toolPart('agent-1', 'collabAgentToolCall'),
+        toolPart('agent-2', 'collabAgentToolCall')
+      ],
+      kind: 'multi-agent'
+    }
+  ])('uses standalone thinking after completed $name', ({ content, kind }) => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content
+    })
+
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind, active: false, showThinkingFallback: false },
+      { type: 'message-thinking', active: true, showThinkingFallback: true }
     ])
   })
 
@@ -1107,14 +1276,17 @@ describe('buildAssistantRenderUnits', () => {
     })
   })
 
-  it('lets unknown renderable content prevent message-level thinking', () => {
+  it('uses standalone thinking after renderable unknown content', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },
       content: [{ type: 'file', mediaType: 'image/png', data: 'abc' }]
     })
 
     expect(model.isThinkingOnly).toBe(false)
-    expect(model.units).toMatchObject([{ type: 'unknown', showThinkingFallback: false }])
+    expect(model.units).toMatchObject([
+      { type: 'unknown', showThinkingFallback: false },
+      { type: 'message-thinking', showThinkingFallback: true }
+    ])
   })
 
   it('preserves agent message phases through the provider and AI SDK UI stream', async () => {

@@ -2566,6 +2566,8 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="live-render-unit-footer"]')).not.toBeNull()
     expect(container.textContent).toContain('待办进度 1/2')
     expect(container.textContent).toContain('已编辑 1 个文件')
+    expect(container.textContent).not.toContain('正在思考')
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
 
     threadMessageState.message.status = { type: 'complete' }
     act(() => {
@@ -2575,6 +2577,8 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
     expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).not.toContain('正在思考')
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
   })
 
   it('keeps active todo and diff entries in the message body while a server request is blocking', () => {
@@ -2807,6 +2811,9 @@ describe('App composer', () => {
     const reasoningContent = reasoning?.querySelector<HTMLElement>(
       '[data-slot="reasoning-group-content"] > div'
     )
+    const activeTrigger = reasoning?.querySelector<HTMLElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
 
     expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
     expect(container.querySelectorAll('[data-slot="reasoning-process-item"]')).toHaveLength(3)
@@ -2816,6 +2823,8 @@ describe('App composer', () => {
     expect(reasoningContent?.className).toBe('min-w-0 space-y-4')
     expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
+    expect(activeTrigger?.textContent).toContain('正在思考')
+    expect(activeTrigger?.querySelector('.shimmer')).not.toBeNull()
     expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
     expect(container.textContent).not.toContain('Confirming reasoning visibility handling')
 
@@ -2860,6 +2869,30 @@ describe('App composer', () => {
     expect(completedReasoning?.getAttribute('data-state')).toBe('open')
     expect(completedReasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
+  })
+
+  it('shows blocked commentary as waiting for confirmation', () => {
+    runtimeState.serverRequests = [fileChangeApprovalRequest('commentary-blocking-request')]
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [{ type: 'text', text: '请确认这次修改。' }]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text', providerMetadata: messagePhaseMetadata('commentary') }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const trigger = container.querySelector<HTMLElement>('[data-slot="reasoning-group-trigger"]')
+
+    expect(container.querySelector('[data-slot="reasoning-group"]')).not.toBeNull()
+    expect(trigger?.textContent).toBe('等待确认')
+    expect(trigger?.querySelector('.shimmer')).toBeNull()
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
+    expect(container.textContent).not.toContain('正在思考')
   })
 
   it('renders every completed command and wait item in a historical commentary replay', async () => {
@@ -2993,7 +3026,7 @@ describe('App composer', () => {
     expect(group?.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull()
   })
 
-  it('shows thinking separately after completed tool activity while waiting for text', () => {
+  it('embeds thinking in a completed tool group and restores its summary when done', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -3023,17 +3056,38 @@ describe('App composer', () => {
       '[data-slot="tool-group-unit"] [data-slot="tool-group-trigger"]'
     )
 
-    expect(toolGroupTrigger?.textContent).not.toContain('正在思考')
-    expect(container.querySelector('[data-slot="message-thinking-unit"]')?.textContent).toContain(
-      '正在思考'
-    )
+    expect(toolGroupTrigger?.textContent).toContain('正在思考')
+    expect(
+      toolGroupTrigger?.querySelector('[data-slot="tool-group-trigger-shimmer"]')
+    ).not.toBeNull()
+    expect(toolGroupTrigger?.querySelector('[data-slot="tool-group-trigger-icon"]')).toBeNull()
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
     expect(
       container.querySelector('[data-slot="aui_assistant-message-content"]')?.className
     ).not.toContain('shimmer')
     expect(container.querySelector('[data-slot="aui_assistant-message-footer"]')).not.toBeNull()
+
+    await act(async () => {
+      if (toolGroupTrigger instanceof HTMLButtonElement) toolGroupTrigger.click()
+    })
+
+    expect(container.textContent).toContain('已编辑：edit.ts')
+
+    threadMessageState.message.status = { type: 'complete' }
+    act(() => {
+      root.render(<App />)
+    })
+
+    const completedTrigger = container.querySelector(
+      '[data-slot="tool-group-unit"] [data-slot="tool-group-trigger"]'
+    )
+    expect(completedTrigger?.textContent).not.toContain('正在思考')
+    expect(completedTrigger?.textContent).toContain('已编辑 1 个文件')
+    expect(completedTrigger?.querySelector('[data-slot="tool-group-trigger-shimmer"]')).toBeNull()
+    expect(completedTrigger?.querySelector('[data-slot="tool-group-trigger-icon"]')).not.toBeNull()
   })
 
-  it('keeps thinking placeholder outside tool groups when the latest tool is complete', () => {
+  it('shows thinking after the latest completed exploration despite earlier unphased text', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -3053,8 +3107,28 @@ describe('App composer', () => {
     ).filter((trigger) => trigger.textContent?.includes('正在思考'))
 
     expect(thinkingExplorationCards).toHaveLength(0)
-    expect(container.querySelectorAll('[data-slot="message-thinking-unit"]')).toHaveLength(1)
+    const thinkingPlaceholder = container.querySelector('[data-slot="message-thinking-unit"]')
+    expect(thinkingPlaceholder).not.toBeNull()
+    expect(thinkingPlaceholder?.querySelector('.shimmer')).not.toBeNull()
+    expect(container.textContent).toContain('正在思考')
     expect(container.textContent).toContain('先查到一部分')
+  })
+
+  it('hides thinking when unphased visible text follows the latest completed tool', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      commandToolPart('search-1', 'search', { status: { type: 'complete' } }),
+      { type: 'text', text: '这是最终分析' }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
+    expect(container.textContent).not.toContain('正在思考')
+    expect(container.textContent).toContain('这是最终分析')
   })
 
   it('shows active latest tool summary instead of generic thinking', () => {

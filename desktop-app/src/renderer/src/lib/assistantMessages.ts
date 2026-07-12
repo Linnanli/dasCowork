@@ -1,4 +1,5 @@
 export const pendingAssistantMessageText = '正在思考'
+export const blockedAssistantMessageText = '等待确认'
 
 type AssistantMessageContentPart = {
   readonly type: string

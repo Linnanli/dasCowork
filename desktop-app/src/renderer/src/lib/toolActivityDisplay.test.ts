@@ -11,7 +11,7 @@ type ToolGroupUnit = Extract<AssistantRenderUnit, { type: 'tool-group' }>
 
 describe('buildToolActivityDisplayModel', () => {
   it('keeps running command activity in the group header and full shell data on the item', () => {
-    const group = toolGroup([
+    const group = runningToolGroup([
       {
         type: 'tool-call',
         toolCallId: 'cmd-running',
@@ -36,7 +36,7 @@ describe('buildToolActivityDisplayModel', () => {
       label: "正在运行：npm test -- --runInBand --grep 'tool activity display'",
       icon: 'run-command',
       status: 'running',
-      active: true,
+      showShimmer: true,
       count: 1,
       expandable: true,
       detailRows: []
@@ -55,7 +55,7 @@ describe('buildToolActivityDisplayModel', () => {
   })
 
   it('places file line totals on the file edit item instead of the group details', () => {
-    const group = toolGroup([
+    const group = completedToolGroup([
       {
         type: 'tool-call',
         toolCallId: 'patch-1',
@@ -86,7 +86,7 @@ describe('buildToolActivityDisplayModel', () => {
   })
 
   it('renders one file edit item and line total for every changed file in a result', () => {
-    const group = toolGroup([
+    const group = completedToolGroup([
       {
         type: 'tool-call',
         toolCallId: 'patch-many',
@@ -129,7 +129,7 @@ describe('buildToolActivityDisplayModel', () => {
 
   it('maps requires-action stopped and error states to display statuses', () => {
     const requiresAction = buildToolActivityDisplayModel(
-      toolGroup([
+      runningToolGroup([
         {
           type: 'tool-call',
           toolCallId: 'needs-approval',
@@ -141,7 +141,7 @@ describe('buildToolActivityDisplayModel', () => {
       ])
     )
     const stopped = buildToolActivityDisplayModel(
-      toolGroup([
+      completedToolGroup([
         {
           type: 'tool-call',
           toolCallId: 'stopped-file',
@@ -158,7 +158,7 @@ describe('buildToolActivityDisplayModel', () => {
       ])
     )
     const errored = buildToolActivityDisplayModel(
-      toolGroup([
+      completedToolGroup([
         {
           type: 'tool-call',
           toolCallId: 'errored-command',
@@ -187,21 +187,21 @@ describe('buildToolActivityDisplayModel', () => {
 
   it('uses mixed status for terminal groups with different item outcomes', () => {
     const display = buildToolActivityDisplayModel(
-      toolGroup([
+      completedToolGroup([
         fileChangePart('patch-completed', 'completed'),
         fileChangePart('patch-stopped', 'stopped')
       ])
     )
 
     expect(display.group.status).toBe('mixed')
-    expect(display.group.active).toBe(false)
+    expect(display.group.showShimmer).toBe(false)
     expect(display.items.map((item) => item.status)).toEqual(['completed', 'stopped'])
   })
 
   it('uses semantic labels for every multi-agent action and failure', () => {
     const labelFor = (action: string, status = 'completed'): string => {
       const display = buildToolActivityDisplayModel(
-        toolGroup([
+        completedToolGroup([
           {
             type: 'tool-call',
             toolCallId: `${action}-${status}`,
@@ -231,7 +231,7 @@ describe('buildToolActivityDisplayModel', () => {
 
   it('normalizes MCP web search dynamic and Node REPL labels', () => {
     const mcp = buildToolActivityDisplayModel(
-      toolGroup([
+      completedToolGroup([
         {
           type: 'tool-call',
           toolCallId: 'mcp-read',
@@ -249,7 +249,7 @@ describe('buildToolActivityDisplayModel', () => {
       ])
     )
     const web = buildToolActivityDisplayModel(
-      toolGroup([
+      runningToolGroup([
         {
           type: 'dynamic-tool',
           toolCallId: 'web-live',
@@ -261,10 +261,13 @@ describe('buildToolActivityDisplayModel', () => {
       ])
     )
     const dynamic = buildToolActivityDisplayModel(
-      toolGroup([dynamicToolPart('lookup-1', 'lookup'), dynamicToolPart('lookup-2', 'lookup')])
+      completedToolGroup([
+        dynamicToolPart('lookup-1', 'lookup'),
+        dynamicToolPart('lookup-2', 'lookup')
+      ])
     )
     const nodeRepl = buildToolActivityDisplayModel(
-      toolGroup([
+      completedToolGroup([
         {
           type: 'tool-call',
           toolCallId: 'node-js',
@@ -293,7 +296,7 @@ describe('buildToolActivityDisplayModel', () => {
 
   it('uses group summaries instead of a single active query for multiple active web searches', () => {
     const display = buildToolActivityDisplayModel(
-      toolGroup([
+      runningToolGroup([
         webSearchPart('web-live-a', 'first active query'),
         webSearchPart('web-live-b', 'second active query')
       ])
@@ -305,6 +308,44 @@ describe('buildToolActivityDisplayModel', () => {
       '网页搜索：first active query',
       '网页搜索：second active query'
     ])
+  })
+
+  it('shows thinking in a completed group header without changing its completed state', () => {
+    const group = runningToolGroup([
+      {
+        type: 'tool-call',
+        toolCallId: 'cmd-complete',
+        toolName: 'codex_command_execution',
+        status: { type: 'complete' },
+        argsText: JSON.stringify({ command: 'npm test' }),
+        result: {
+          item: {
+            id: 'cmd-complete',
+            type: 'commandExecution',
+            status: 'completed',
+            command: 'npm test',
+            aggregatedOutput: 'PASS\n',
+            exitCode: 0
+          }
+        }
+      }
+    ])
+
+    expect(group).toMatchObject({ status: 'complete', active: false, showThinkingFallback: true })
+
+    const display = buildToolActivityDisplayModel(group)
+
+    expect(display.group).toMatchObject({
+      label: '正在思考',
+      status: 'completed',
+      showShimmer: true,
+      expandable: true
+    })
+    expect(display.group.icon).toBeUndefined()
+    expect(display.items[0]).toMatchObject({
+      status: 'completed',
+      label: '已运行：npm test'
+    })
   })
 
   it('formats command shell output and metadata for item details', () => {
@@ -321,9 +362,20 @@ describe('buildToolActivityDisplayModel', () => {
   })
 })
 
-function toolGroup(content: readonly Record<string, unknown>[]): ToolGroupUnit {
+function runningToolGroup(content: readonly Record<string, unknown>[]): ToolGroupUnit {
+  return toolGroup(content, 'running')
+}
+
+function completedToolGroup(content: readonly Record<string, unknown>[]): ToolGroupUnit {
+  return toolGroup(content, 'complete')
+}
+
+function toolGroup(
+  content: readonly Record<string, unknown>[],
+  messageStatus: 'running' | 'complete'
+): ToolGroupUnit {
   const model = buildAssistantRenderUnits({
-    status: { type: 'running' },
+    status: { type: messageStatus },
     content
   })
   const unit = model.units.find((candidate) => candidate.type === 'tool-group')

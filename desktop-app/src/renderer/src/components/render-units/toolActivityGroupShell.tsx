@@ -45,7 +45,7 @@ export function ToolActivityGroupShell({
         count={display.count}
         label={display.label}
         icon={display.icon as ComponentProps<typeof ToolGroupTrigger>['icon']}
-        active={display.active}
+        active={display.showShimmer}
         disabled={!display.expandable}
         aria-disabled={!display.expandable}
       />

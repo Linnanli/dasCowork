@@ -3,7 +3,9 @@ import type { ElectronApplication } from 'playwright'
 import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
 import { sendComposerMessage, sendMessage } from './support/chatActions'
 import {
+  assistantMessageAndShellCommandResponse,
   assistantMessageResponse,
+  deferred,
   functionCallOutputText,
   providerResponseBodies,
   shellCommandResponse,
@@ -15,19 +17,30 @@ test('approves a command request through the desktop approval panel', async ({
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
+  const releaseFinal = deferred()
   const backend = await startMockBackend({
     responses: [
-      shellCommandResponse('resp-approval-tool', 'call-approved-pwd', {
-        command: 'pwd && printf "\\nE2E_APPROVED_COMMAND"',
-        timeout_ms: 5000,
-        sandbox_permissions: 'require_escalated',
-        justification: 'E2E verifies the desktop approval panel'
-      }),
-      assistantMessageResponse(
-        'resp-approval-final',
-        'msg-approval-final',
-        'Approved command completed'
-      )
+      assistantMessageAndShellCommandResponse(
+        'resp-approval-tool',
+        'msg-approval-commentary',
+        '请确认这条命令。',
+        'call-approved-pwd',
+        {
+          command: 'pwd && printf "\\nE2E_APPROVED_COMMAND"',
+          timeout_ms: 5000,
+          sandbox_permissions: 'require_escalated',
+          justification: 'E2E verifies the desktop approval panel'
+        },
+        { phase: 'commentary' }
+      ),
+      {
+        ...assistantMessageResponse(
+          'resp-approval-final',
+          'msg-approval-final',
+          'Approved command completed'
+        ),
+        beforeResponse: () => releaseFinal.promise
+      }
     ]
   })
   const logs: string[] = []
@@ -43,13 +56,30 @@ test('approves a command request through the desktop approval panel', async ({
     const panel = page.locator('[data-slot="server-request-panel"]')
     await expect(panel).toContainText('Command execution approval')
     await expect(panel).toContainText('pwd')
+    await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('等待确认')
+    await expect(page.locator('[data-slot="message-thinking-unit"]')).toHaveCount(0)
+    await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
+    await expect(page.locator('[data-slot="tool-group-trigger-icon"]')).toBeVisible()
 
     await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+
+    await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('正在思考')
+    await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
+    await expect(page.locator('[data-slot="tool-group-trigger-icon"]')).toBeVisible()
+    await expect(page.locator('[data-slot="message-thinking-unit"]')).toHaveCount(0)
+
+    releaseFinal.resolve()
 
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Approved command completed'
     )
     await expect(panel).toBeHidden()
+    const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]')
+    await expect(completedReasoningTrigger).toContainText('已处理')
+    await completedReasoningTrigger.click()
+    await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
+    await expect(page.locator('[data-slot="tool-group-trigger-icon"]')).toBeVisible()
+    await expect(page.locator('[data-slot="message-thinking-unit"]')).toHaveCount(0)
 
     const providerBodies = providerResponseBodies(backend)
     expect(providerBodies).toHaveLength(2)
@@ -57,6 +87,7 @@ test('approves a command request through the desktop approval panel', async ({
     expect(toolOutput).toContain(appRoot)
     expect(toolOutput).toContain('E2E_APPROVED_COMMAND')
   } finally {
+    releaseFinal.resolve()
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
     await backend.close()

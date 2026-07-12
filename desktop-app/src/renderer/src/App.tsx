@@ -96,7 +96,7 @@ import {
   type ConversationStateController
 } from './sidebar/useConversationState'
 import { cn } from './lib/utils'
-import { pendingAssistantMessageText } from './lib/assistantMessages'
+import { blockedAssistantMessageText, pendingAssistantMessageText } from './lib/assistantMessages'
 import {
   buildAssistantRenderUnits,
   type AssistantMessagePhase,
@@ -875,6 +875,7 @@ function AssistantMessage({
         parts: message.parts,
         status: message.status,
         textPhases: textPartMetadata.map((metadata) => metadata.phase),
+        hasBlockingRequest,
         workspaceCwd,
         canOpenLocalPaths,
         processDurationMs:
@@ -882,7 +883,7 @@ function AssistantMessage({
           turnDurationMs ??
           textPartMetadata.find((metadata) => metadata.turnDurationMs !== undefined)?.turnDurationMs
       }),
-    [canOpenLocalPaths, message, textPartMetadata, turnDurationMs, workspaceCwd]
+    [canOpenLocalPaths, hasBlockingRequest, message, textPartMetadata, turnDurationMs, workspaceCwd]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
   const isRunning = message.status?.type === 'running'
@@ -1120,8 +1121,15 @@ function AssistantRenderUnitView({
   switch (unit.type) {
     case 'message-thinking':
       return (
-        <span data-slot="message-thinking-unit" {...renderUnitAttributes(unit)}>
-          {pendingAssistantMessageText}
+        <span
+          data-slot="message-thinking-unit"
+          className="inline-flex max-w-full min-w-0 items-center overflow-hidden text-sm text-muted-foreground"
+          {...renderUnitAttributes(unit)}
+        >
+          <span aria-hidden className="h-4 w-0 shrink-0" />
+          <span className="shimmer min-w-0 flex-1 truncate select-none leading-none motion-reduce:animate-none">
+            {pendingAssistantMessageText}
+          </span>
         </span>
       )
     case 'text':
@@ -1148,13 +1156,17 @@ function ReasoningGroupUnit({
   unit: Extract<AssistantRenderUnit, { type: 'reasoning-group' }>
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
-  const isStreaming = unit.active === true
+  const isActive = unit.active === true
+  const showThinking = unit.state === 'thinking' && unit.showThinkingFallback === true
+  let label = processedDurationLabel(unit.durationMs)
+  if (unit.state === 'blocked') label = blockedAssistantMessageText
+  else if (showThinking) label = pendingAssistantMessageText
 
   return (
     <Collapsible
-      key={isStreaming ? 'streaming' : 'done'}
+      key={isActive ? 'streaming' : 'done'}
       data-slot="reasoning-group"
-      defaultOpen={isStreaming}
+      defaultOpen={isActive}
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
@@ -1165,10 +1177,10 @@ function ReasoningGroupUnit({
         <span
           className={cn(
             'relative inline-block font-medium',
-            isStreaming && 'shimmer motion-reduce:animate-none'
+            showThinking && 'shimmer motion-reduce:animate-none'
           )}
         >
-          {isStreaming ? '正在思考' : processedDurationLabel(unit.durationMs)}
+          {label}
         </span>
         <ChevronDownIcon
           aria-hidden

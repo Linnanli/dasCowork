@@ -155,6 +155,41 @@ export function assistantMessageResponse(
   }
 }
 
+export function assistantMessageAndShellCommandResponse(
+  responseId: string,
+  messageId: string,
+  text: string,
+  callId: string,
+  args: Record<string, unknown>,
+  options: { phase?: 'commentary' | 'final_answer' } = {}
+): ResponsesStreamStep {
+  return {
+    events: [
+      responseCreated(responseId),
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          role: 'assistant',
+          id: messageId,
+          content: [{ type: 'output_text', text }],
+          ...(options.phase ? { phase: options.phase } : {})
+        }
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'function_call',
+          call_id: callId,
+          name: 'shell_command',
+          arguments: JSON.stringify(args)
+        }
+      },
+      responseCompleted(responseId)
+    ]
+  }
+}
+
 export function shellCommandResponse(
   responseId: string,
   callId: string,
