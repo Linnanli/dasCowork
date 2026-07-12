@@ -334,16 +334,41 @@ function webSearchGroupLabel(unit: ToolGroupUnit, active: boolean): string {
 }
 
 function multiAgentGroupLabel(unit: ToolGroupUnit, active: boolean): string {
-  if (!unit.action) {
-    return active
-      ? `正在处理 ${unit.children.length} 个协作任务`
-      : `已处理 ${unit.children.length} 个协作任务`
+  const count = multiAgentReceiverCount(unit)
+  const failed = unit.status === 'error'
+
+  switch (unit.action) {
+    case 'spawnAgent':
+      if (failed) return `启动 ${count} 个子 agent 失败`
+      return active ? `正在启动 ${count} 个子 agent` : `已启动 ${count} 个子 agent`
+    case 'sendInput':
+      if (failed) return `向 ${count} 个子 agent 发送消息失败`
+      return active ? `正在向 ${count} 个子 agent 发送消息` : `已向 ${count} 个子 agent 发送消息`
+    case 'resumeAgent':
+      if (failed) return `恢复 ${count} 个子 agent 失败`
+      return active ? `正在恢复 ${count} 个子 agent` : `已恢复 ${count} 个子 agent`
+    case 'closeAgent':
+      if (failed) return `关闭 ${count} 个子 agent 失败`
+      return active ? `正在关闭 ${count} 个子 agent` : `已关闭 ${count} 个子 agent`
+    default:
+      if (failed) return `处理 ${count} 个协作任务失败`
+      return active ? `正在处理 ${count} 个协作任务` : `已处理 ${count} 个协作任务`
+  }
+}
+
+function multiAgentReceiverCount(unit: ToolGroupUnit): number {
+  const threadIds = new Set<string>()
+
+  for (const child of unit.children) {
+    const item = child.rawItem
+    const input = recordValue(child.input)
+    const receiverThreadIds = arrayValue(item?.receiverThreadIds ?? input?.receiverThreadIds)
+    for (const threadId of receiverThreadIds) {
+      if (typeof threadId === 'string' && threadId.length > 0) threadIds.add(threadId)
+    }
   }
 
-  const actionLabel = `${unit.action} `
-  return active
-    ? `正在处理 ${unit.children.length} 个 ${actionLabel}协作任务`
-    : `已处理 ${unit.children.length} 个 ${actionLabel}协作任务`
+  return threadIds.size > 0 ? threadIds.size : unit.children.length
 }
 
 function commandCountLabel(count: number): string {

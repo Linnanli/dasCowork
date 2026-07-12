@@ -90,6 +90,24 @@ export type ToolItem = {
   partIndex: number
   dynamicMetadata?: DynamicToolMetadata
   action?: string
+  receiverAgents?: readonly MultiAgentReceiverAgent[]
+}
+
+export type SubagentActivityDisplayStatus = 'active' | 'updated' | 'finished' | 'interrupted'
+
+export type SubagentActivityAgent = {
+  threadId?: string
+  eventId: string
+  agentPath: string
+  displayName: string
+  displayStatus: SubagentActivityDisplayStatus
+}
+
+export type MultiAgentReceiverAgent = {
+  threadId: string
+  displayName: string
+  status?: string
+  message?: string
 }
 
 export type AssistantRenderUnitBase = {
@@ -142,6 +160,11 @@ export type AssistantRenderUnit =
       dynamicMetadata?: DynamicToolMetadata
       action?: string
       summaryOnly?: boolean
+    })
+  | (AssistantRenderUnitBase & {
+      type: 'subagent-activity-group'
+      agents: readonly SubagentActivityAgent[]
+      status: SubagentActivityDisplayStatus
     })
 
 export type AssistantRenderModel = {
@@ -215,6 +238,14 @@ type GroupableUnit =
       dynamicMetadata?: DynamicToolMetadata
       action?: string
     }
+  | {
+      type: 'subagent-activity-group'
+      partIndices: readonly number[]
+      parts: readonly AssistantMessagePart[]
+      anchorEventId: string
+      agents: readonly SubagentActivityAgent[]
+      status: SubagentActivityDisplayStatus
+    }
 
 type ToolGroupableUnit = GroupableUnit & {
   parts?: readonly AssistantMessagePart[]
@@ -251,6 +282,15 @@ const MULTI_AGENT_ITEM_TYPES = new Set([
   'collabToolCall',
   'multi-agent-action'
 ])
+const SUBAGENT_ACTIVITY_ITEM_TYPES = new Set(['subAgentActivity', 'subagent-activity'])
+type SubagentRenderContext = {
+  displayNamesByThreadId: ReadonlyMap<string, string>
+  activityStatusesByPartIndex: ReadonlyMap<number, SubagentActivityDisplayStatus>
+}
+
+type SubagentActivityNormalizedPart = Extract<NormalizedPart, { kind: 'tool' | 'entry' }> & {
+  itemType: 'subAgentActivity' | 'subagent-activity'
+}
 
 const KNOWN_DYNAMIC_TOOL_METADATA: Record<
   string,
@@ -273,12 +313,14 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
   const isRunning = message.status?.type === 'running'
   const detailLevel = message.detailLevel ?? 'default'
   const normalized = normalizeParts(parts, isRunning, message.textPhases)
-  const preGrouped = groupWebSearchAndMultiAgent(normalized)
+  const subagentContext = buildSubagentRenderContext(normalized)
+  const visibleParts = normalized.filter((part) => !isWaitingMultiAgentPart(part))
+  const preGrouped = groupWebSearchAndMultiAgent(visibleParts, subagentContext)
   const dynamicGrouped = groupDynamicToolCalls(preGrouped)
   const mcpGrouped = groupPendingMcpToolCalls(dynamicGrouped)
   const activityCollapsed = groupAdjacentToolActivity(mcpGrouped, { detailLevel })
   const visibleUnits = attachMessageThinkingFallback(
-    activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning)),
+    activityCollapsed.map((unit, index) => toRenderUnit(unit, index, isRunning, subagentContext)),
     isRunning
   )
   const groupedUnits = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
@@ -378,6 +420,8 @@ function normalizeParts(
       const itemType = canonicalItemType(
         typeof normalizedItem?.type === 'string' ? normalizedItem.type : undefined
       )
+      const action = multiAgentAction(normalizedItem, part)
+
       return [
         {
           kind: 'tool',
@@ -387,7 +431,7 @@ function normalizeParts(
           itemType,
           toolName,
           callId: partCallId(part, normalizedItem),
-          action: multiAgentAction(normalizedItem),
+          action,
           mcpSource:
             itemType && MCP_ITEM_TYPES.has(itemType)
               ? mcpSourceForPart(part, normalizedItem)
@@ -410,7 +454,10 @@ function normalizeParts(
   })
 }
 
-function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): GroupableUnit[] {
+function groupWebSearchAndMultiAgent(
+  parts: readonly NormalizedPart[],
+  subagentContext: SubagentRenderContext
+): GroupableUnit[] {
   const units: GroupableUnit[] = []
   let webSearchParts: NormalizedPart[] = []
 
@@ -434,6 +481,33 @@ function groupWebSearchAndMultiAgent(parts: readonly NormalizedPart[]): Groupabl
     }
 
     flushWebSearch()
+
+    if (isSubagentActivityPart(part)) {
+      const group = [part]
+      let nextIndex = index + 1
+
+      while (nextIndex < parts.length) {
+        const next = parts[nextIndex]
+        if (!next || !isSubagentActivityPart(next)) break
+        group.push(next)
+        nextIndex += 1
+      }
+
+      const agents = mergeSubagentActivityAgents(group, subagentContext.activityStatusesByPartIndex)
+      const anchorEventId = subagentActivityAgent(group[0]!)?.eventId
+      if (agents.length > 0) {
+        units.push({
+          type: 'subagent-activity-group',
+          partIndices: group.map((item) => item.partIndex),
+          parts: group.map((item) => item.part),
+          anchorEventId: anchorEventId ?? agents[0]!.eventId,
+          agents,
+          status: subagentActivityGroupStatus(agents)
+        })
+      }
+      index = nextIndex - 1
+      continue
+    }
 
     if (part.kind === 'tool' && MULTI_AGENT_ITEM_TYPES.has(part.itemType ?? '')) {
       const group = [part]
@@ -693,7 +767,8 @@ function findLatestThinkingEligibleUnitIndex(units: readonly AssistantRenderUnit
 function toRenderUnit(
   unit: GroupableUnit,
   index: number,
-  isMessageRunning: boolean
+  isMessageRunning: boolean,
+  subagentContext: SubagentRenderContext
 ): AssistantRenderUnit {
   switch (unit.type) {
     case 'text':
@@ -720,7 +795,7 @@ function toRenderUnit(
     case 'entry': {
       const summary = summarizeToolGroup([unit.part])
       if (shouldRenderEntryAsToolGroup(unit)) {
-        return toToolGroupRenderUnit(unit, index, isMessageRunning)
+        return toToolGroupRenderUnit(unit, index, isMessageRunning, subagentContext)
       }
 
       const key = itemKey(unit.item, unit.partIndex, unit.callId)
@@ -742,7 +817,20 @@ function toRenderUnit(
       }
     }
     case 'tool-group-candidate':
-      return toToolGroupRenderUnit(unit, index, isMessageRunning)
+      return toToolGroupRenderUnit(unit, index, isMessageRunning, subagentContext)
+    case 'subagent-activity-group': {
+      const key = `subagent-activity-group:${unit.anchorEventId}`
+      return {
+        type: 'subagent-activity-group',
+        key,
+        partIndices: unit.partIndices,
+        target: targetForUnit(key, unit),
+        agents: unit.agents,
+        status: unit.status,
+        active: unit.status === 'active' || unit.status === 'updated',
+        showThinkingFallback: false
+      }
+    }
   }
 }
 
@@ -756,9 +844,10 @@ function shouldRenderEntryAsToolGroup(unit: EntryGroupableUnit): boolean {
 function toToolGroupRenderUnit(
   unit: GroupableUnit,
   index: number,
-  isMessageRunning: boolean
+  isMessageRunning: boolean,
+  subagentContext: SubagentRenderContext
 ): AssistantRenderUnit {
-  const children = toolItemsForUnit(unit)
+  const children = toolItemsForUnit(unit, subagentContext)
   // One file-change part can include several files, which are expanded into individual
   // child items below. Build the group summary from the original parts so those files
   // are counted once rather than once per expanded child.
@@ -841,7 +930,7 @@ function normalizedToUnit(part: NormalizedPart): GroupableUnit {
   }
 }
 
-function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
+function toolItemsForUnit(unit: GroupableUnit, subagentContext: SubagentRenderContext): ToolItem[] {
   if (unit.type === 'entry' && unit.itemType === 'exploration') {
     const childItems = arrayValue(unit.item?.items).map(recordValue).filter(isDefined)
     if (childItems.length > 0) {
@@ -850,7 +939,8 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
           part: unit.part,
           partIndex: unit.partIndices[index] ?? unit.partIndex,
           item,
-          fallbackKind: canonicalItemType(stringValue(item.type)) ?? 'exploration'
+          fallbackKind: canonicalItemType(stringValue(item.type)) ?? 'exploration',
+          subagentContext
         })
       )
     }
@@ -864,7 +954,8 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
       fallbackKind: unit.itemType,
       mcpSource: unit.mcpSource,
       dynamicMetadata: unit.dynamicMetadata,
-      action: unit.action
+      action: unit.action,
+      subagentContext
     })
   }
 
@@ -881,7 +972,8 @@ function toolItemsForUnit(unit: GroupableUnit): ToolItem[] {
       action:
         unit.type === 'tool-group-candidate' && unit.kind === 'multi-agent'
           ? unit.action
-          : undefined
+          : undefined,
+      subagentContext
     })
   )
 }
@@ -894,6 +986,7 @@ type ToolItemFromPartOptions = {
   mcpSource?: McpSourceMetadata
   dynamicMetadata?: DynamicToolMetadata
   action?: string
+  subagentContext: SubagentRenderContext
 }
 
 function toolItemsFromPart(options: ToolItemFromPartOptions): ToolItem[] {
@@ -925,7 +1018,8 @@ function toolItemFromPart({
   fallbackKind,
   mcpSource,
   dynamicMetadata,
-  action
+  action,
+  subagentContext
 }: ToolItemFromPartOptions): ToolItem {
   const toolName = stringValue(part.toolName)
   const rawItem =
@@ -962,7 +1056,10 @@ function toolItemFromPart({
       (DYNAMIC_ITEM_TYPES.has(kind) || part.type === 'dynamic-tool'
         ? dynamicMetadataForPart(part, rawItem)
         : undefined),
-    action: action ?? multiAgentAction(rawItem)
+    action: action ?? multiAgentAction(rawItem, part),
+    receiverAgents: MULTI_AGENT_ITEM_TYPES.has(kind)
+      ? receiverAgentsForMultiAgentItem(rawItem, input, subagentContext)
+      : undefined
   }
 }
 
@@ -1160,7 +1257,7 @@ function collectConsecutive(
 }
 
 function isAdjacentToolActivityUnit(unit: GroupableUnit): boolean {
-  if (unit.type === 'tool-group-candidate') return true
+  if (unit.type === 'tool-group-candidate') return unit.kind !== 'multi-agent'
   if (unit.type !== 'entry') return false
 
   const renderMode = entryRenderModeFor(unit.itemType)
@@ -1266,7 +1363,9 @@ function shouldRenderSingleMcpGroup(unit: GroupableUnit): boolean {
 }
 
 function isToolLikeUnit(unit: AssistantRenderUnit): boolean {
-  return unit.type === 'entry' || unit.type === 'tool-group'
+  return (
+    unit.type === 'entry' || unit.type === 'tool-group' || unit.type === 'subagent-activity-group'
+  )
 }
 
 function partsForUnit(unit: ToolGroupableUnit): readonly AssistantMessagePart[] {
@@ -1569,12 +1668,175 @@ function partCallId(
   return stringValue(item?.callId) ?? stringValue(item?.id) ?? stringValue(part.toolCallId)
 }
 
-function multiAgentAction(item: Record<string, unknown> | undefined): string | undefined {
+function multiAgentAction(
+  item: Record<string, unknown> | undefined,
+  part?: AssistantMessagePart
+): string | undefined {
+  const input = part ? recordValue(extractToolInput(part)) : undefined
   return (
+    stringValue(item?.tool) ??
+    stringValue(input?.tool) ??
+    stringValue(input?.action) ??
     stringValue(item?.action) ??
     stringValue(recordValue(item?.metadata)?.action) ??
     stringValue(recordValue(item?.display)?.action)
   )
+}
+
+export function displayNameForSubagentPath(agentPath: string): string {
+  const segment = agentPath
+    .split('/')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && value !== 'root')
+    .at(-1)
+  if (!segment) return '子 agent'
+
+  const displayName = segment.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  return displayName ? `${displayName[0]?.toUpperCase() ?? ''}${displayName.slice(1)}` : '子 agent'
+}
+
+function buildSubagentRenderContext(parts: readonly NormalizedPart[]): SubagentRenderContext {
+  const displayNamesByThreadId = new Map<string, string>()
+  const activityStatusesByPartIndex = new Map<number, SubagentActivityDisplayStatus>()
+  const latestActivityPartIndexByThreadId = new Map<string, number>()
+
+  for (const part of parts) {
+    const activity = subagentActivityAgent(part)
+    if (activity?.threadId) {
+      displayNamesByThreadId.set(activity.threadId, activity.displayName)
+      latestActivityPartIndexByThreadId.set(activity.threadId, part.partIndex)
+    }
+
+    if (!isMultiAgentPart(part)) continue
+    const states = recordValue(part.item?.agentsStates)
+    if (!states) continue
+
+    for (const [threadId, value] of Object.entries(states)) {
+      const state = recordValue(value)
+      const activityPartIndex = latestActivityPartIndexByThreadId.get(threadId)
+      const displayStatus = subagentActivityStatusFromState(state)
+      if (activityPartIndex !== undefined && displayStatus) {
+        activityStatusesByPartIndex.set(activityPartIndex, displayStatus)
+      }
+    }
+  }
+
+  return { displayNamesByThreadId, activityStatusesByPartIndex }
+}
+
+function isSubagentActivityPart(part: NormalizedPart): part is SubagentActivityNormalizedPart {
+  return (
+    (part.kind === 'tool' || part.kind === 'entry') &&
+    SUBAGENT_ACTIVITY_ITEM_TYPES.has(part.itemType ?? '')
+  )
+}
+
+function isMultiAgentPart(part: NormalizedPart): part is Extract<NormalizedPart, { kind: 'tool' }> {
+  return part.kind === 'tool' && MULTI_AGENT_ITEM_TYPES.has(part.itemType ?? '')
+}
+
+function isWaitingMultiAgentPart(part: NormalizedPart): boolean {
+  return isMultiAgentPart(part) && part.action === 'wait'
+}
+
+function mergeSubagentActivityAgents(
+  parts: readonly NormalizedPart[],
+  activityStatusesByPartIndex: ReadonlyMap<number, SubagentActivityDisplayStatus>
+): SubagentActivityAgent[] {
+  const agents = new Map<string, SubagentActivityAgent>()
+
+  for (const part of parts) {
+    const agent = subagentActivityAgent(part)
+    if (!agent) continue
+    const displayStatus = activityStatusesByPartIndex.get(part.partIndex) ?? agent.displayStatus
+    agents.set(agent.threadId ?? agent.eventId, { ...agent, displayStatus })
+  }
+
+  return [...agents.values()]
+}
+
+function subagentActivityAgent(part: NormalizedPart): SubagentActivityAgent | undefined {
+  if (!isSubagentActivityPart(part)) return undefined
+  const item = part.item
+  const input = part.kind === 'tool' ? recordValue(extractToolInput(part.part)) : undefined
+  const eventId =
+    stringValue(item?.id) ??
+    (part.kind === 'tool' ? part.callId : undefined) ??
+    stringValue(part.part.id) ??
+    `subagent-activity:${part.partIndex}`
+  const threadId = stringValue(item?.agentThreadId) ?? stringValue(input?.agentThreadId)
+  const agentPath = stringValue(item?.agentPath) ?? stringValue(input?.agentPath) ?? ''
+  const kind = stringValue(item?.kind) ?? stringValue(input?.kind)
+
+  return {
+    ...(threadId ? { threadId } : {}),
+    eventId,
+    agentPath,
+    displayName: displayNameForSubagentPath(agentPath),
+    displayStatus: subagentActivityStatusFromKind(kind)
+  }
+}
+
+function subagentActivityStatusFromKind(kind: string | undefined): SubagentActivityDisplayStatus {
+  switch (kind) {
+    case 'interacted':
+    case 'updated':
+      return 'updated'
+    case 'interrupted':
+      return 'interrupted'
+    case 'started':
+    default:
+      return 'active'
+  }
+}
+
+function subagentActivityStatusFromState(
+  state: Record<string, unknown> | undefined
+): SubagentActivityDisplayStatus | undefined {
+  const status = stringValue(state?.status)
+  if (status === 'completed' || status === 'complete') return 'finished'
+  return undefined
+}
+
+function subagentActivityGroupStatus(
+  agents: readonly SubagentActivityAgent[]
+): SubagentActivityDisplayStatus {
+  if (agents.some((agent) => agent.displayStatus === 'interrupted')) return 'interrupted'
+  if (agents.some((agent) => agent.displayStatus === 'updated')) return 'updated'
+  if (agents.length > 0 && agents.every((agent) => agent.displayStatus === 'finished')) {
+    return 'finished'
+  }
+  return 'active'
+}
+
+function receiverAgentsForMultiAgentItem(
+  item: Record<string, unknown> | undefined,
+  input: unknown,
+  context: SubagentRenderContext
+): readonly MultiAgentReceiverAgent[] | undefined {
+  const inputRecord = recordValue(input)
+  const agentsStates = recordValue(item?.agentsStates) ?? {}
+  const threadIds = [
+    ...arrayValue(item?.receiverThreadIds),
+    ...arrayValue(inputRecord?.receiverThreadIds),
+    ...Object.keys(agentsStates)
+  ]
+    .map(stringValue)
+    .filter(isDefined)
+  const uniqueThreadIds = [...new Set(threadIds)]
+  if (uniqueThreadIds.length === 0) return undefined
+
+  return uniqueThreadIds.map((threadId) => {
+    const state = recordValue(agentsStates[threadId])
+    return {
+      threadId,
+      displayName:
+        context.displayNamesByThreadId.get(threadId) ??
+        `子 agent ${threadId.length > 10 ? `${threadId.slice(0, 8)}…` : threadId}`,
+      ...(stringValue(state?.status) ? { status: stringValue(state?.status) } : {}),
+      ...(stringValue(state?.message) ? { message: stringValue(state?.message) } : {})
+    }
+  })
 }
 
 function dynamicMetadataForPart(

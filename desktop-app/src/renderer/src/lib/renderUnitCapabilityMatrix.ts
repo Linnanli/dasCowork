@@ -318,20 +318,20 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     testOwner: 'toolGroupSummary.test.ts'
   },
   'subagent-activity': {
-    renderMode: 'custom',
+    renderMode: 'tool',
     priority: 'P2',
-    renderer: 'CompactEntryUnit',
+    renderer: 'SubagentActivityGroup',
     fallbackLevel: 'none',
-    reason: 'Subagent activity is a compact status row.',
-    testOwner: 'App.test.tsx'
+    reason: 'Subagent activity is grouped by adjacent agent timeline events before rendering.',
+    testOwner: 'assistantRenderUnits.test.ts'
   },
   subAgentActivity: {
-    renderMode: 'custom',
+    renderMode: 'tool',
     priority: 'P2',
-    renderer: 'CompactEntryUnit',
+    renderer: 'SubagentActivityGroup',
     fallbackLevel: 'none',
-    reason: 'Canonical camelCase subagent activity shape.',
-    testOwner: 'App.test.tsx'
+    reason: 'Canonical camelCase activity is rendered through the adjacent activity group.',
+    testOwner: 'assistantRenderUnits.test.ts'
   },
   'generated-image': {
     renderMode: 'custom',

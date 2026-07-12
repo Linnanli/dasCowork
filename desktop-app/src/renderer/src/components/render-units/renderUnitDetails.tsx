@@ -192,7 +192,6 @@ export function SpecialEntryRenderer({ unit }: { unit: EntryUnit }): React.JSX.E
     case 'automationUpdate':
     case 'sleep':
     case 'loadedTool':
-    case 'subAgentActivity':
       return <CompactEntryUnit unit={unit} />
     case 'contextCompaction':
       return <ContextCompactionEntryUnit unit={unit} />
@@ -1517,12 +1516,6 @@ function compactEntryContent(
       return {
         title: '已加载工具定义',
         detail: stringValue(item.name) ?? stringValue(item.toolName) ?? stringValue(item.title),
-        icon: WrenchIcon
-      }
-    case 'subAgentActivity':
-      return {
-        title: '子任务活动',
-        detail: [stringValue(item.kind), stringValue(item.agentPath)].filter(Boolean).join(' · '),
         icon: WrenchIcon
       }
     default:

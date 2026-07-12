@@ -54,7 +54,7 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
     ]
   },
   {
-    name: 'adjacent multi-agent tools stay in one group when the action changes',
+    name: 'adjacent multi-agent tools split when the action changes',
     status: { type: 'complete' },
     parts: [
       toolPart('agent-1', 'collabAgentToolCall', { action: 'review' }),
@@ -65,9 +65,18 @@ export const assistantRenderUnitFixtures: readonly AssistantRenderUnitFixture[] 
       {
         type: 'tool-group',
         kind: 'multi-agent',
-        partIndices: [0, 1, 2],
-        targetIds: ['agent-1', 'agent-2', 'agent-3'],
-        childCount: 3
+        partIndices: [0, 1],
+        action: 'review',
+        targetIds: ['agent-1', 'agent-2'],
+        childCount: 2
+      },
+      {
+        type: 'tool-group',
+        kind: 'multi-agent',
+        partIndices: [2],
+        action: 'implement',
+        targetIds: ['agent-3'],
+        childCount: 1
       }
     ]
   },

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { CodexEventMapper } from '@janole/ai-sdk-provider-codex-asp'
+import {
+  CodexEventMapper,
+  mapCodexThreadItemToUiPart,
+  type ThreadItem
+} from '@janole/ai-sdk-provider-codex-asp'
 import type {
   LanguageModelV3,
   LanguageModelV3GenerateResult,
@@ -8,7 +12,7 @@ import type {
 } from '@ai-sdk/provider'
 import { readUIMessageStream, streamText, type UIMessage } from 'ai'
 
-import { buildAssistantRenderUnits } from './assistantRenderUnits'
+import { buildAssistantRenderUnits, displayNameForSubagentPath } from './assistantRenderUnits'
 import { assistantRenderUnitFixtures } from './__fixtures__/assistantRenderUnitFixtures'
 
 describe('buildAssistantRenderUnits', () => {
@@ -795,6 +799,296 @@ describe('buildAssistantRenderUnits', () => {
     ])
   })
 
+  it('groups consecutive subagent activity and keeps the latest event per thread', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        subagentActivityPart('activity-a-started', 'started', 'thread-a', '/root/review_changes'),
+        subagentActivityPart('activity-b-started', 'started', 'thread-b', '/root/run-tests'),
+        subagentActivityPart('activity-a-updated', 'interacted', 'thread-a', '/root/review_changes')
+      ]
+    })
+
+    expect(model.units).toHaveLength(1)
+    expect(model.units[0]).toMatchObject({
+      type: 'subagent-activity-group',
+      key: 'subagent-activity-group:activity-a-started',
+      partIndices: [0, 1, 2],
+      status: 'updated',
+      active: true,
+      agents: [
+        {
+          threadId: 'thread-a',
+          eventId: 'activity-a-updated',
+          agentPath: '/root/review_changes',
+          displayName: 'Review changes',
+          displayStatus: 'updated'
+        },
+        {
+          threadId: 'thread-b',
+          eventId: 'activity-b-started',
+          displayName: 'Run tests',
+          displayStatus: 'active'
+        }
+      ]
+    })
+  })
+
+  it('keeps non-consecutive subagent activity in separate groups', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart('activity-a', 'started', 'thread-a', '/root/first'),
+        { type: 'text', text: '中间有一条消息。' },
+        subagentActivityPart('activity-b', 'interrupted', 'thread-b', '/root/second')
+      ]
+    })
+
+    expect(model.units.map((unit) => unit.type)).toEqual([
+      'subagent-activity-group',
+      'text',
+      'subagent-activity-group'
+    ])
+    expect(model.units[0]).toMatchObject({ status: 'active' })
+    expect(model.units[2]).toMatchObject({ status: 'interrupted' })
+  })
+
+  it('projects nine activity events into five groups and eight agent rows', () => {
+    const activity = (
+      id: string,
+      threadId: string,
+      kind: 'started' | 'interacted' | 'interrupted',
+      path = `/root/${threadId}`
+    ): Record<string, unknown> => subagentActivityPart(id, kind, threadId, path)
+    const separator = (text: string): Record<string, unknown> => ({ type: 'text', text })
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        activity('g1-a', 'a', 'started'),
+        activity('g1-b', 'b', 'started'),
+        separator('一'),
+        activity('g2-c', 'c', 'started'),
+        collabAgentPart('g2-c-wait', {
+          tool: 'wait',
+          receiverThreadIds: ['c'],
+          agentsStates: { c: { status: 'completed', message: 'done' } }
+        }),
+        separator('二'),
+        activity('g3-d-interrupted', 'd', 'interrupted'),
+        activity('g3-e', 'e', 'started'),
+        activity('g3-d-interacted', 'd', 'interacted'),
+        separator('三'),
+        activity('g4-f', 'f', 'started'),
+        activity('g4-g', 'g', 'started'),
+        collabAgentPart('g4-g-wait', {
+          tool: 'wait',
+          receiverThreadIds: ['g'],
+          agentsStates: { g: { status: 'completed', message: 'done' } }
+        }),
+        separator('四'),
+        activity('g5-h', 'h', 'started')
+      ]
+    })
+
+    const groups = model.units.filter((unit) => unit.type === 'subagent-activity-group')
+    expect(groups).toHaveLength(5)
+    expect(groups.reduce((count, group) => count + group.agents.length, 0)).toBe(8)
+    expect(groups[2]).toMatchObject({
+      status: 'updated',
+      agents: [
+        { threadId: 'd', eventId: 'g3-d-interacted', displayStatus: 'updated' },
+        { threadId: 'e', eventId: 'g3-e', displayStatus: 'active' }
+      ]
+    })
+  })
+
+  it('applies collab completion only to the latest activity for the same thread', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart('activity-a-first', 'started', 'thread-a', '/root/first-step'),
+        { type: 'text', text: '开始下一阶段。' },
+        subagentActivityPart('activity-a-latest', 'interacted', 'thread-a', '/root/latest-step'),
+        collabAgentPart('wait-status', {
+          tool: 'wait',
+          receiverThreadIds: ['thread-a'],
+          agentsStates: {
+            'thread-a': { status: 'completed', message: 'done' }
+          }
+        })
+      ]
+    })
+
+    expect(model.units[0]).toMatchObject({
+      type: 'subagent-activity-group',
+      status: 'active',
+      agents: [{ threadId: 'thread-a', eventId: 'activity-a-first', displayStatus: 'active' }]
+    })
+    expect(model.units[2]).toMatchObject({
+      type: 'subagent-activity-group',
+      status: 'finished',
+      agents: [{ threadId: 'thread-a', eventId: 'activity-a-latest', displayStatus: 'finished' }]
+    })
+  })
+
+  it('uses hidden wait state to finish visible subagent activity', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart('activity-a', 'started', 'thread-a', '/root/finished-agent'),
+        collabAgentPart('wait-status', {
+          tool: 'wait',
+          receiverThreadIds: ['thread-a'],
+          agentsStates: {
+            'thread-a': { status: 'completed', message: 'done' }
+          }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'subagent-activity-group',
+        status: 'finished',
+        agents: [{ threadId: 'thread-a', displayStatus: 'finished' }]
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+    expect(JSON.stringify(model.units)).not.toContain('wait-status')
+  })
+
+  it('does not invent interrupted activity from an errored wait state', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart('activity-a', 'started', 'thread-a', '/root/failed-agent'),
+        collabAgentPart('wait-status', {
+          tool: 'wait',
+          status: 'failed',
+          receiverThreadIds: ['thread-a'],
+          agentsStates: {
+            'thread-a': { status: 'errored', message: 'failed' }
+          }
+        })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'subagent-activity-group',
+        status: 'active',
+        agents: [{ threadId: 'thread-a', displayStatus: 'active' }]
+      }
+    ])
+    expect(JSON.stringify(model.units)).not.toContain('wait-status')
+    expect(JSON.stringify(model.units)).not.toContain('"message":"failed"')
+  })
+
+  it('does not let a hidden wait call split consecutive activity', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart('activity-a', 'started', 'thread-a', '/root/first-agent'),
+        collabAgentPart('wait-between', { tool: 'wait' }),
+        subagentActivityPart('activity-b', 'interacted', 'thread-b', '/root/second-agent')
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'subagent-activity-group',
+        partIndices: [0, 2],
+        status: 'updated',
+        agents: [{ threadId: 'thread-a' }, { threadId: 'thread-b' }]
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+    expect(JSON.stringify(model.units)).not.toContain('wait-between')
+  })
+
+  it('reads canonical multi-agent items and filters wait', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        collabAgentPart('spawn-item-tool', { tool: 'spawnAgent' }),
+        collabAgentPart('resume-item-tool', {
+          tool: 'resumeAgent',
+          receiverThreadIds: ['thread-a'],
+          agentsStates: {
+            'thread-a': { status: 'completed', message: 'resumed' }
+          }
+        }),
+        collabAgentPart('wait-item', { tool: 'wait' })
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      { type: 'tool-group', kind: 'multi-agent', action: 'spawnAgent' },
+      {
+        type: 'tool-group',
+        kind: 'multi-agent',
+        action: 'resumeAgent',
+        children: [
+          {
+            receiverAgents: [
+              {
+                threadId: 'thread-a',
+                status: 'completed',
+                message: 'resumed'
+              }
+            ]
+          }
+        ]
+      }
+    ])
+    expect(model.units).toHaveLength(2)
+    expect(JSON.stringify(model.units)).not.toContain('wait-item')
+  })
+
+  it('enriches multi-agent children with activity names and agent state', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        subagentActivityPart(
+          'activity-a',
+          'started',
+          'thread-a',
+          '/root/check_uncommitted_changes'
+        ),
+        collabAgentPart('spawn-a', {
+          tool: 'spawnAgent',
+          receiverThreadIds: ['thread-a'],
+          agentsStates: {
+            'thread-a': { status: 'running', message: 'Inspecting files' }
+          }
+        })
+      ]
+    })
+
+    expect(model.units[1]).toMatchObject({
+      type: 'tool-group',
+      kind: 'multi-agent',
+      children: [
+        {
+          action: 'spawnAgent',
+          receiverAgents: [
+            {
+              threadId: 'thread-a',
+              displayName: 'Check uncommitted changes',
+              status: 'running',
+              message: 'Inspecting files'
+            }
+          ]
+        }
+      ]
+    })
+  })
+
+  it('derives readable subagent names from agent paths', () => {
+    expect(displayNameForSubagentPath('/root/agent_data-flow')).toBe('Agent data flow')
+    expect(displayNameForSubagentPath('/root')).toBe('子 agent')
+  })
+
   it('keeps stable keys and target ids for grouped internal items', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'complete' },
@@ -1166,6 +1460,53 @@ describe('buildAssistantRenderUnits', () => {
     ])
   })
 })
+
+type CollabAgentThreadItem = Extract<ThreadItem, { type: 'collabAgentToolCall' }>
+type SubagentActivityThreadItem = Extract<ThreadItem, { type: 'subAgentActivity' }>
+
+function collabAgentPart(
+  id: string,
+  overrides: Pick<CollabAgentThreadItem, 'tool'> &
+    Partial<Omit<CollabAgentThreadItem, 'type' | 'id' | 'tool'>>
+): Record<string, unknown> {
+  const item: CollabAgentThreadItem = {
+    type: 'collabAgentToolCall',
+    id,
+    status: 'completed',
+    senderThreadId: 'thread-parent',
+    receiverThreadIds: [],
+    prompt: null,
+    model: null,
+    reasoningEffort: null,
+    agentsStates: {},
+    ...overrides
+  }
+
+  return mappedThreadItemPart(item)
+}
+
+function subagentActivityPart(
+  id: string,
+  kind: SubagentActivityThreadItem['kind'],
+  agentThreadId: string,
+  agentPath: string
+): Record<string, unknown> {
+  return mappedThreadItemPart({
+    type: 'subAgentActivity',
+    id,
+    kind,
+    agentThreadId,
+    agentPath
+  })
+}
+
+function mappedThreadItemPart(
+  item: CollabAgentThreadItem | SubagentActivityThreadItem
+): Record<string, unknown> {
+  const part = mapCodexThreadItemToUiPart(item)
+  if (!part) throw new Error(`Expected ${item.type} to map to a UI message part`)
+  return part as unknown as Record<string, unknown>
+}
 
 function toolPart(
   id: string,

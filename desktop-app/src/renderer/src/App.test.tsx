@@ -1869,7 +1869,108 @@ describe('App composer', () => {
     expect(container.textContent).toContain('已使用 github')
     expect(container.textContent).toContain('已运行命令')
     expect(container.textContent).toContain('已使用 Browser')
-    expect(container.textContent).toContain('已处理 2 个 review 协作任务')
+    expect(container.textContent).toContain('已处理 2 个协作任务')
+  })
+
+  it('renders adjacent subagent activity as compact deduplicated agent chips', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('activity-a-started', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'started',
+        agentThreadId: 'agent-a',
+        agentPath: '/root/code_quality_review'
+      }),
+      genericToolPart('activity-a-updated', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'interacted',
+        agentThreadId: 'agent-a',
+        agentPath: '/root/code_quality_review'
+      }),
+      genericToolPart('activity-b', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'started',
+        agentThreadId: 'agent-b',
+        agentPath: '/root/architecture_review'
+      }),
+      genericToolPart('activity-c', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'started',
+        agentThreadId: 'agent-c',
+        agentPath: '/root/reviewer'
+      }),
+      genericToolPart('activity-d', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'started',
+        agentThreadId: 'agent-d',
+        agentPath: '/root/architect'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = container.querySelector<HTMLElement>('[data-slot="subagent-activity-group"]')
+    const chips = group?.querySelectorAll<HTMLButtonElement>(
+      '[data-slot="subagent-activity-agent"]'
+    )
+    expect(group?.textContent).toContain('已更新')
+    expect(group?.textContent).toContain('Code quality review')
+    expect(group?.textContent).toContain('另有 1 个子 agent')
+    expect(chips).toHaveLength(3)
+    expect(container.textContent).not.toContain('子任务活动')
+
+    await act(async () => {
+      chips?.[0]?.click()
+    })
+
+    expect(runtimeState.openConversation).toHaveBeenCalledWith({ conversationId: 'agent-a' })
+  })
+
+  it('renders semantic multi-agent details and opens the receiver conversation', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('spawn-agent', 'codex_collab_agent', 'collabAgentToolCall', {
+        tool: 'spawnAgent',
+        receiverThreadIds: ['agent-architecture'],
+        prompt: '检查架构边界',
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        agentsStates: {
+          'agent-architecture': { status: 'running', message: '正在检查模块边界' }
+        }
+      }),
+      genericToolPart('activity-architecture', 'codex_sub_agent_activity', 'subAgentActivity', {
+        kind: 'started',
+        agentThreadId: 'agent-architecture',
+        agentPath: '/root/architecture_review'
+      })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const group = toolGroup('multi-agent')
+    expect(group?.textContent).toContain('已启动 1 个子 agent')
+
+    await act(async () => {
+      group?.querySelector<HTMLButtonElement>('[data-slot="tool-group-trigger"]')?.click()
+    })
+
+    const receiver = group?.querySelector<HTMLButtonElement>(
+      '[data-slot="multi-agent-detail-row"][data-agent-thread-id="agent-architecture"]'
+    )
+    expect(receiver?.textContent).toContain('Architecture review')
+    expect(receiver?.textContent).toContain('gpt-5.5 · high')
+    expect(receiver?.textContent).toContain('检查架构边界')
+    expect(receiver?.textContent).toContain('正在检查模块边界')
+
+    await act(async () => {
+      receiver?.click()
+    })
+
+    expect(runtimeState.openConversation).toHaveBeenCalledWith({
+      conversationId: 'agent-architecture'
+    })
   })
 
   it('keeps the missing metadata diagnostic for unknown dynamic tool groups', async () => {

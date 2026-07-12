@@ -198,6 +198,37 @@ describe('buildToolActivityDisplayModel', () => {
     expect(display.items.map((item) => item.status)).toEqual(['completed', 'stopped'])
   })
 
+  it('uses semantic labels for every multi-agent action and failure', () => {
+    const labelFor = (action: string, status = 'completed'): string => {
+      const display = buildToolActivityDisplayModel(
+        toolGroup([
+          {
+            type: 'tool-call',
+            toolCallId: `${action}-${status}`,
+            toolName: 'codex_collab_agent',
+            result: {
+              item: {
+                id: `${action}-${status}`,
+                type: 'collabAgentToolCall',
+                tool: action,
+                status,
+                receiverThreadIds: ['agent-a'],
+                agentsStates: {}
+              }
+            }
+          }
+        ])
+      )
+      return display.group.label
+    }
+
+    expect(labelFor('spawnAgent')).toBe('已启动 1 个子 agent')
+    expect(labelFor('sendInput')).toBe('已向 1 个子 agent 发送消息')
+    expect(labelFor('resumeAgent')).toBe('已恢复 1 个子 agent')
+    expect(labelFor('closeAgent')).toBe('已关闭 1 个子 agent')
+    expect(labelFor('spawnAgent', 'failed')).toBe('启动 1 个子 agent 失败')
+  })
+
   it('normalizes MCP web search dynamic and Node REPL labels', () => {
     const mcp = buildToolActivityDisplayModel(
       toolGroup([

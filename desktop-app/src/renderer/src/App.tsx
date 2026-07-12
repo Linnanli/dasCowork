@@ -43,6 +43,11 @@ import {
   WebSearchDetails
 } from '@/components/render-units/renderUnitDetails'
 import { ToolActivityGroupShell } from '@/components/render-units/toolActivityGroupShell'
+import {
+  MultiAgentToolItemDetails,
+  SubagentActivityGroup,
+  type OpenSubagentConversation
+} from '@/components/render-units/subagentActivity'
 import { renderUnitAttributes } from '@/components/render-units/renderUnitAttributes'
 import {
   ActivityIcon,
@@ -154,6 +159,7 @@ type ChatThreadProps = ComposerProps & {
   loading: boolean
   loadError?: Error
   onRetryLoad: () => void
+  onOpenConversation: OpenSubagentConversation
   scrollSnapshot?: ConversationScrollSnapshot
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
 }
@@ -303,6 +309,12 @@ function App(): React.JSX.Element {
   const handleSelectedModelChange = (modelId: string): void => {
     void setSelectedModelId(modelId).catch(() => undefined)
   }
+  const handleOpenConversation = useCallback<OpenSubagentConversation>(
+    (conversationId) => {
+      void openConversation({ conversationId })
+    },
+    [openConversation]
+  )
 
   const resolveApprovalConversationTitle = (threadId: string | undefined): string => {
     const registryTitle = getConversationTitle(threadId)
@@ -349,6 +361,7 @@ function App(): React.JSX.Element {
             onRetryLoad={() => {
               void openConversation({ conversationId: activeEntry.localId })
             }}
+            onOpenConversation={handleOpenConversation}
             onScrollSnapshotChange={setActiveScroll}
             onSelectedModelChange={handleSelectedModelChange}
             projectState={projectState}
@@ -378,6 +391,7 @@ function ActiveConversationPane({
   modelSelectionError,
   onDraftChange,
   onRetryLoad,
+  onOpenConversation,
   onScrollSnapshotChange,
   onSelectedModelChange,
   projectState,
@@ -392,6 +406,7 @@ function ActiveConversationPane({
   modelSelectionError?: string
   onDraftChange: (draft: string) => void
   onRetryLoad: () => void
+  onOpenConversation: OpenSubagentConversation
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
   onSelectedModelChange: (modelId: string) => void
   projectState: ProjectStateController
@@ -424,6 +439,7 @@ function ActiveConversationPane({
           selectedModelId={selectedModelId}
           modelSelectionError={modelSelectionError}
           onRetryLoad={onRetryLoad}
+          onOpenConversation={onOpenConversation}
           onScrollSnapshotChange={onScrollSnapshotChange}
           onSelectedModelChange={onSelectedModelChange}
           projectState={projectState}
@@ -561,6 +577,7 @@ function ChatThread({
   selectedModelId,
   modelSelectionError,
   onRetryLoad,
+  onOpenConversation,
   onSelectedModelChange,
   projectState,
   scrollSnapshot,
@@ -616,6 +633,7 @@ function ChatThread({
                   hasBlockingRequest={hasBlockingRequest}
                   workspaceCwd={activeConversation?.cwd ?? undefined}
                   canOpenLocalPaths={activeConversation?.projectSelection?.projectKind !== 'remote'}
+                  onOpenConversation={onOpenConversation}
                 />
               )
             }}
@@ -839,11 +857,13 @@ function ThreadScrollToBottom(): React.JSX.Element {
 function AssistantMessage({
   hasBlockingRequest,
   workspaceCwd,
-  canOpenLocalPaths
+  canOpenLocalPaths,
+  onOpenConversation
 }: {
   hasBlockingRequest: boolean
   workspaceCwd?: string
   canOpenLocalPaths: boolean
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const message = useAuiState((state) => state.message)
   const textPartMetadata = useMemo(() => codexTextPartMetadataFor(message), [message])
@@ -891,9 +911,13 @@ function AssistantMessage({
         ) : (
           <>
             {visibleUnits.map((unit) => (
-              <AssistantRenderUnitView key={unit.key} unit={unit} />
+              <AssistantRenderUnitView
+                key={unit.key}
+                unit={unit}
+                onOpenConversation={onOpenConversation}
+              />
             ))}
-            <LiveRenderUnitFooter units={liveFooterUnits} />
+            <LiveRenderUnitFooter units={liveFooterUnits} onOpenConversation={onOpenConversation} />
           </>
         )}
         <MessagePrimitive.Error>
@@ -969,9 +993,11 @@ function messageMetadataFromProviderMetadata(providerMetadata: unknown): CodexTe
 }
 
 function LiveRenderUnitFooter({
-  units
+  units,
+  onOpenConversation
 }: {
   units: readonly AssistantRenderUnit[]
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element | null {
   if (units.length === 0) return null
 
@@ -981,7 +1007,11 @@ function LiveRenderUnitFooter({
       className="mt-3 space-y-1 rounded-md border border-border/50 bg-background/80 p-1.5 shadow-sm"
     >
       {units.map((unit) => (
-        <AssistantRenderUnitView key={unit.key} unit={unit} />
+        <AssistantRenderUnitView
+          key={unit.key}
+          unit={unit}
+          onOpenConversation={onOpenConversation}
+        />
       ))}
     </div>
   )
@@ -1081,9 +1111,11 @@ function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
 }
 
 function AssistantRenderUnitView({
-  unit
+  unit,
+  onOpenConversation
 }: {
   unit: AssistantRenderUnit
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element | null {
   switch (unit.type) {
     case 'message-thinking':
@@ -1097,20 +1129,24 @@ function AssistantRenderUnitView({
     case 'review-comments':
       return <ReviewCommentsDetails unit={unit} />
     case 'reasoning-group':
-      return <ReasoningGroupUnit unit={unit} />
+      return <ReasoningGroupUnit unit={unit} onOpenConversation={onOpenConversation} />
+    case 'subagent-activity-group':
+      return <SubagentActivityGroup unit={unit} onOpenConversation={onOpenConversation} />
     case 'entry':
       return <EntryUnit unit={unit} />
     case 'tool-group':
-      return <ToolGroupUnit unit={unit} />
+      return <ToolGroupUnit unit={unit} onOpenConversation={onOpenConversation} />
     case 'unknown':
       return <UnknownUnit unit={unit} />
   }
 }
 
 function ReasoningGroupUnit({
-  unit
+  unit,
+  onOpenConversation
 }: {
   unit: Extract<AssistantRenderUnit, { type: 'reasoning-group' }>
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isStreaming = unit.active === true
 
@@ -1146,7 +1182,7 @@ function ReasoningGroupUnit({
         <div className="min-w-0 space-y-4">
           {unit.children.map((child) => (
             <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
-              <AssistantRenderUnitView unit={child} />
+              <AssistantRenderUnitView unit={child} onOpenConversation={onOpenConversation} />
             </div>
           ))}
         </div>
@@ -1193,9 +1229,11 @@ function AssistantText({
 }
 
 function ToolGroupUnit({
-  unit
+  unit,
+  onOpenConversation
 }: {
   unit: Extract<AssistantRenderUnit, { type: 'tool-group' }>
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const displayModel = buildToolActivityDisplayModel(unit)
 
@@ -1217,6 +1255,7 @@ function ToolGroupUnit({
           display={displayModel.items[index] ?? buildToolItemDisplay(item, unit)}
           index={index}
           group={unit}
+          onOpenConversation={onOpenConversation}
         />
       ))}
     </ToolActivityGroupShell>
@@ -1227,12 +1266,14 @@ function ToolItemRenderer({
   item,
   display,
   index,
-  group
+  group,
+  onOpenConversation
 }: {
   item: ToolItem
   display: ToolItemDisplay
   index: number
   group: Extract<AssistantRenderUnit, { type: 'tool-group' }>
+  onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   if (item.kind === 'mcpToolCall') {
     return <McpToolCallDetails parts={[item.rawPart]} mcpSource={item.source ?? group.mcpSource} />
@@ -1240,6 +1281,10 @@ function ToolItemRenderer({
 
   if (item.kind === 'webSearch') {
     return <WebSearchDetails parts={[item.rawPart]} />
+  }
+
+  if (item.kind === 'collabAgentToolCall' || item.kind === 'collabToolCall') {
+    return <MultiAgentToolItemDetails item={item} onOpenConversation={onOpenConversation} />
   }
 
   return (
