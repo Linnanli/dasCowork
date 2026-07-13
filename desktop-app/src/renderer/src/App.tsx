@@ -1150,7 +1150,6 @@ function ReasoningGroupUnit({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isActive = unit.active === true
-  const isTurnRunning = unit.turnRunning
   const [completedProcessOpen, setCompletedProcessOpen] = useState(false)
   const measuredDurationMs = useReasoningElapsedDuration(isActive)
   let label = isActive
@@ -1161,19 +1160,19 @@ function ReasoningGroupUnit({
   return (
     <Collapsible
       data-slot="reasoning-group"
-      open={isTurnRunning || completedProcessOpen}
-      onOpenChange={isTurnRunning ? undefined : setCompletedProcessOpen}
-      disabled={isTurnRunning}
+      open={isActive || completedProcessOpen}
+      onOpenChange={isActive ? undefined : setCompletedProcessOpen}
+      disabled={isActive}
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
       <div data-slot="reasoning-group-header">
         <CollapsibleTrigger
           data-slot="reasoning-group-trigger"
-          disabled={isTurnRunning}
+          disabled={isActive}
           className={cn(
             'group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground',
-            isTurnRunning && 'cursor-default hover:text-muted-foreground'
+            isActive && 'cursor-default hover:text-muted-foreground'
           )}
         >
           <span data-slot="reasoning-group-label" className="relative inline-block">

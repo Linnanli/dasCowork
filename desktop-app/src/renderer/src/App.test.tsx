@@ -2875,6 +2875,21 @@ describe('App composer', () => {
         ]
       }
     ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const streamingAnswerReasoning = container.querySelector('[data-slot="reasoning-group"]')
+    const streamingAnswerTrigger = streamingAnswerReasoning?.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
+
+    expect(streamingAnswerReasoning?.getAttribute('data-state')).toBe('closed')
+    expect(streamingAnswerTrigger?.disabled).toBe(false)
+    expect(streamingAnswerReasoning?.textContent).not.toContain('根因已经确认')
+    expect(container.textContent).toContain('根因已经确认')
+
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.metadata = undefined
 
@@ -2902,7 +2917,7 @@ describe('App composer', () => {
     expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
   })
 
-  it('keeps an inferred process open while running and collapses it when the turn completes', () => {
+  it('collapses an inferred process when the candidate answer starts', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -2921,18 +2936,16 @@ describe('App composer', () => {
     })
 
     const runningReasoning = container.querySelector<HTMLElement>('[data-slot="reasoning-group"]')
-    const runningProcessTexts = runningReasoning?.querySelectorAll(
-      '[data-slot="assistant-render-text"]'
+    const runningReasoningTrigger = runningReasoning?.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
     )
     const candidateAnswer = Array.from(
       container.querySelectorAll<HTMLElement>('[data-slot="assistant-render-text"]')
     ).find((element) => element.textContent?.includes('最终结论'))
 
-    expect(runningReasoning?.getAttribute('data-state')).toBe('open')
-    expect(runningReasoning?.textContent).toContain('执行过程')
+    expect(runningReasoning?.getAttribute('data-state')).toBe('closed')
+    expect(runningReasoningTrigger?.disabled).toBe(false)
     expect(runningReasoning?.textContent).not.toContain('最终结论')
-    expect(runningProcessTexts).toHaveLength(1)
-    expect(runningReasoning?.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
     expect(candidateAnswer?.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
 
     threadMessageState.message.status = { type: 'complete' }
@@ -2981,7 +2994,7 @@ describe('App composer', () => {
     )
     const chevron = inactiveTrigger?.querySelector('svg')
 
-    expect(inactiveTrigger?.disabled).toBe(true)
+    expect(inactiveTrigger?.disabled).toBe(false)
     expect(chevron).not.toBeNull()
 
     threadMessageState.message.content = [
