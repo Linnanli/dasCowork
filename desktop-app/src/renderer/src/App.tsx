@@ -96,7 +96,11 @@ import {
   type ConversationStateController
 } from './sidebar/useConversationState'
 import { cn } from './lib/utils'
-import { blockedAssistantMessageText, pendingAssistantMessageText } from './lib/assistantMessages'
+import {
+  blockedAssistantMessageText,
+  pendingAssistantMessageText,
+  processingAssistantMessageText
+} from './lib/assistantMessages'
 import {
   buildAssistantRenderUnits,
   type AssistantMessagePhase,
@@ -1149,17 +1153,18 @@ function ReasoningGroupUnit({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isActive = unit.active === true
-  const showThinking = unit.state === 'thinking' && unit.showThinkingFallback === true
-  let label = processedDurationLabel(unit.durationMs)
+  const shouldAutoCollapse = unit.autoCollapseOnComplete
+  const [inferredProcessOpen, setInferredProcessOpen] = useState(true)
+  let label = isActive ? processingAssistantMessageText : processedDurationLabel(unit.durationMs)
   if (unit.state === 'blocked') label = blockedAssistantMessageText
-  else if (showThinking) label = pendingAssistantMessageText
 
   return (
     <Collapsible
-      key={isActive ? 'streaming' : 'done'}
+      key={shouldAutoCollapse ? (isActive ? 'streaming' : 'done') : 'stable'}
       data-slot="reasoning-group"
-      defaultOpen={isActive}
-      open={isActive ? true : undefined}
+      defaultOpen={shouldAutoCollapse ? isActive : undefined}
+      open={shouldAutoCollapse ? (isActive ? true : undefined) : isActive || inferredProcessOpen}
+      onOpenChange={shouldAutoCollapse ? undefined : setInferredProcessOpen}
       disabled={isActive}
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
@@ -1172,15 +1177,8 @@ function ReasoningGroupUnit({
           isActive && 'cursor-default hover:text-muted-foreground'
         )}
       >
-        <span
-          className={cn(
-            'relative inline-block font-medium',
-            showThinking && 'shimmer motion-reduce:animate-none'
-          )}
-        >
-          {label}
-        </span>
-        {isActive ? null : (
+        <span className="relative inline-block font-medium">{label}</span>
+        {isActive && shouldAutoCollapse ? null : (
           <ChevronDownIcon
             aria-hidden
             className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"

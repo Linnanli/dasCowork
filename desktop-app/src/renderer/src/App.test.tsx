@@ -2823,10 +2823,13 @@ describe('App composer', () => {
     expect(reasoningContent?.className).toBe('min-w-0 space-y-4')
     expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
-    expect(activeTrigger?.textContent).toContain('正在思考')
-    expect(activeTrigger?.querySelector('.shimmer')).not.toBeNull()
+    expect(activeTrigger?.textContent).toBe('处理中')
+    expect(activeTrigger?.querySelector('.shimmer')).toBeNull()
     expect(activeTrigger?.disabled).toBe(true)
     expect(activeTrigger?.querySelectorAll('svg')).toHaveLength(0)
+    const thinkingPlaceholder = container.querySelector('[data-slot="message-thinking-unit"]')
+    expect(thinkingPlaceholder?.textContent).toBe('正在思考')
+    expect(thinkingPlaceholder?.querySelector('.shimmer')).not.toBeNull()
     expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
     expect(container.textContent).not.toContain('Confirming reasoning visibility handling')
 
@@ -2877,6 +2880,105 @@ describe('App composer', () => {
     expect(completedReasoning?.getAttribute('data-state')).toBe('open')
     expect(completedReasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
+  })
+
+  it('keeps an inferred unphased process group open with the candidate answer outside', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '## 执行过程\n\n先检查项目。' },
+      commandToolPart('qwen-search-1', 'search', { status: { type: 'complete' } }),
+      { type: 'text', text: '## 最终结论\n\n根因已经确认。' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text' }, { type: 'text' }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const runningReasoning = container.querySelector<HTMLElement>('[data-slot="reasoning-group"]')
+    const runningProcessTexts = runningReasoning?.querySelectorAll(
+      '[data-slot="assistant-render-text"]'
+    )
+    const candidateAnswer = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="assistant-render-text"]')
+    ).find((element) => element.textContent?.includes('最终结论'))
+
+    expect(runningReasoning?.getAttribute('data-state')).toBe('open')
+    expect(runningReasoning?.textContent).toContain('执行过程')
+    expect(runningReasoning?.textContent).not.toContain('最终结论')
+    expect(runningProcessTexts).toHaveLength(1)
+    expect(runningReasoning?.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
+    expect(candidateAnswer?.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
+
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.externalMessages = [
+      {
+        metadata: { codexTurnDurationMs: 1250 },
+        parts: [{ type: 'text' }, { type: 'text' }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const completedReasoning = container.querySelector<HTMLElement>('[data-slot="reasoning-group"]')
+    const completedTrigger = completedReasoning?.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
+
+    expect(completedReasoning?.getAttribute('data-state')).toBe('open')
+    expect(completedTrigger?.textContent).toBe('已处理 · 耗时 1 秒')
+    expect(completedReasoning?.textContent).not.toContain('最终结论')
+    expect(container.textContent).toContain('根因已经确认')
+  })
+
+  it('keeps the inferred process chevron mounted when a candidate becomes process', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '先检查项目。' },
+      commandToolPart('qwen-check-1', 'search', { status: { type: 'complete' } }),
+      { type: 'text', text: '目前看是配置问题。' }
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text' }, { type: 'text' }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const inactiveTrigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
+    const chevron = inactiveTrigger?.querySelector('svg')
+
+    expect(inactiveTrigger?.disabled).toBe(false)
+    expect(chevron).not.toBeNull()
+
+    threadMessageState.message.content = [
+      ...threadMessageState.message.content,
+      commandToolPart('qwen-check-2', 'search', { status: { type: 'complete' } })
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const activeTrigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="reasoning-group-trigger"]'
+    )
+
+    expect(activeTrigger?.disabled).toBe(true)
+    expect(activeTrigger?.querySelector('svg')).toBe(chevron)
   })
 
   it('shows blocked commentary as waiting for confirmation', () => {
@@ -3115,6 +3217,10 @@ describe('App composer', () => {
     ).filter((trigger) => trigger.textContent?.includes('正在思考'))
 
     expect(thinkingExplorationCards).toHaveLength(0)
+    const reasoningTrigger = container.querySelector('[data-slot="reasoning-group-trigger"]')
+    expect(reasoningTrigger).not.toBeNull()
+    expect(reasoningTrigger?.textContent).toBe('处理中')
+    expect(reasoningTrigger?.querySelector('.shimmer')).toBeNull()
     const thinkingPlaceholder = container.querySelector('[data-slot="message-thinking-unit"]')
     expect(thinkingPlaceholder).not.toBeNull()
     expect(thinkingPlaceholder?.querySelector('.shimmer')).not.toBeNull()

@@ -39,7 +39,6 @@ type AssistantActivityPhase =
 
 type ThinkingPresentation =
   | { type: 'hidden' }
-  | { type: 'process-group' }
   | { type: 'tool-group'; unitKey: string }
   | { type: 'standalone' }
 
@@ -161,6 +160,7 @@ export type AssistantRenderUnit =
       children: readonly AssistantRenderUnit[]
       durationMs?: number
       state: ReasoningGroupState
+      autoCollapseOnComplete: boolean
     })
   | (AssistantRenderUnitBase & {
       type: 'entry'
@@ -353,7 +353,7 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
   const visibleUnits = activityCollapsed.map((unit, index) =>
     toRenderUnit(unit, index, isRunning, subagentContext)
   )
-  const groupedUnits = groupCommentaryProcess(visibleUnits, isRunning, message.processDurationMs)
+  const groupedUnits = groupAssistantProcess(visibleUnits, isRunning, message.processDurationMs)
   const unitsWithThinking = applyThinkingPresentation(groupedUnits, {
     isRunning,
     hasBlockingRequest: message.hasBlockingRequest === true
@@ -741,11 +741,6 @@ function applyThinkingPresentation(
   const presentation = deriveThinkingPresentation(stableUnits, activityPhase)
 
   if (presentation.type === 'standalone') return [...stableUnits, messageThinkingUnit()]
-  if (presentation.type === 'process-group') {
-    return stableUnits.map((unit) =>
-      isActiveReasoningGroup(unit) ? { ...unit, showThinkingFallback: true } : unit
-    )
-  }
   if (presentation.type === 'hidden') return stableUnits
 
   return stableUnits.map((unit) =>
@@ -760,9 +755,12 @@ function deriveAssistantActivityPhase(
   if (!context.isRunning) return 'inactive'
   if (context.hasBlockingRequest) return 'blocked'
   if (hasVisibleTextAfterLatestActivity(units)) return 'showing-text'
-  if (units.some(isActiveExplorationUnit)) return 'exploring'
-  if (units.some(isActivePlanningUnit)) return 'planning'
-  if (units.some(isActiveActivityUnit)) return 'active-activity'
+  const processUnits = units.flatMap((unit) =>
+    unit.type === 'reasoning-group' ? unit.children : [unit]
+  )
+  if (processUnits.some(isActiveExplorationUnit)) return 'exploring'
+  if (processUnits.some(isActivePlanningUnit)) return 'planning'
+  if (processUnits.some(isActiveActivityUnit)) return 'active-activity'
   return 'thinking'
 }
 
@@ -771,7 +769,6 @@ function deriveThinkingPresentation(
   activityPhase: AssistantActivityPhase
 ): ThinkingPresentation {
   if (activityPhase !== 'thinking') return { type: 'hidden' }
-  if (units.some(isActiveReasoningGroup)) return { type: 'process-group' }
 
   const latestUnit = units.at(-1)
   if (latestUnit && isThinkingFallbackToolGroup(latestUnit)) {
@@ -816,10 +813,6 @@ function isActiveActivityUnit(unit: AssistantRenderUnit): boolean {
   return unit.type !== 'reasoning-group' && unit.active === true
 }
 
-function isActiveReasoningGroup(unit: AssistantRenderUnit): boolean {
-  return unit.type === 'reasoning-group' && unit.active === true
-}
-
 function isThinkingFallbackToolGroup(
   unit: AssistantRenderUnit
 ): unit is Extract<AssistantRenderUnit, { type: 'tool-group' }> {
@@ -828,6 +821,20 @@ function isThinkingFallbackToolGroup(
     unit.active !== true &&
     THINKING_FALLBACK_TOOL_GROUP_KINDS.has(unit.kind)
   )
+}
+
+function groupAssistantProcess(
+  units: readonly AssistantRenderUnit[],
+  isRunning: boolean,
+  processDurationMs: number | undefined
+): AssistantRenderUnit[] {
+  const hasCommentary = units.some((unit) => unit.type === 'text' && unit.phase === 'commentary')
+  if (hasCommentary) return groupCommentaryProcess(units, isRunning, processDurationMs)
+
+  const hasExplicitPhase = units.some((unit) => unit.type === 'text' && unit.phase !== undefined)
+  if (hasExplicitPhase) return [...units]
+
+  return groupUnphasedAssistantProcess(units, isRunning, processDurationMs)
 }
 
 function groupCommentaryProcess(
@@ -858,6 +865,43 @@ function groupCommentaryProcess(
     active: isRunning && answerIndex < 0,
     state: isRunning && answerIndex < 0 ? 'thinking' : 'completed',
     durationMs: isRunning ? undefined : processDurationMs,
+    autoCollapseOnComplete: true,
+    showThinkingFallback: false
+  }
+
+  return [group, ...units.slice(processEnd)]
+}
+
+function groupUnphasedAssistantProcess(
+  units: readonly AssistantRenderUnit[],
+  isRunning: boolean,
+  processDurationMs: number | undefined
+): AssistantRenderUnit[] {
+  // Without provider phases, only the trailing assistant text is a provisional answer.
+  // A later activity item moves that text back into the process group on the next render.
+  if (!units.some((unit) => unit.type === 'text')) return [...units]
+
+  const tail = units.at(-1)
+  if (!tail || (tail.type !== 'text' && !isActivityUnit(tail))) return [...units]
+
+  const candidateAnswerIndex = tail.type === 'text' ? units.length - 1 : -1
+  const processEnd = candidateAnswerIndex >= 0 ? candidateAnswerIndex : units.length
+  const children = units.slice(0, processEnd)
+  if (children.length === 0) return [...units]
+
+  const partIndices = [...new Set(children.flatMap((unit) => [...unit.partIndices]))]
+  const itemIds = [...new Set(children.flatMap((unit) => [...unit.target.itemIds]))]
+  const active = isRunning && candidateAnswerIndex < 0
+  const group: AssistantRenderUnit = {
+    type: 'reasoning-group',
+    key: 'reasoning-group',
+    partIndices,
+    target: { id: 'reasoning-group', itemIds },
+    children,
+    active,
+    state: active ? 'thinking' : 'completed',
+    durationMs: isRunning ? undefined : processDurationMs,
+    autoCollapseOnComplete: false,
     showThinkingFallback: false
   }
 
