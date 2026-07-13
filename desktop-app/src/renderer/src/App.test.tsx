@@ -1812,7 +1812,7 @@ describe('App composer', () => {
     ).toContain('export const created = true')
   })
 
-  it('uses dedicated renderers when tool runs are separated by text', () => {
+  it('uses dedicated renderers when tool runs are separated by text', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
     threadMessageState.message.content = [
@@ -1857,6 +1857,13 @@ describe('App composer', () => {
 
     act(() => {
       root.render(<App />)
+    })
+
+    const reasoning = container.querySelector<HTMLElement>('[data-slot="reasoning-group"]')
+    expect(reasoning?.dataset.state).toBe('closed')
+
+    await act(async () => {
+      reasoning?.querySelector<HTMLButtonElement>('[data-slot="reasoning-group-trigger"]')?.click()
     })
 
     const webSearchGroup = toolGroup('web-search')
@@ -2839,7 +2846,7 @@ describe('App composer', () => {
     expect(activeTrigger?.textContent).toBe('已处理 · 耗时 0 秒')
     expect(activeTrigger?.querySelector('.shimmer')).toBeNull()
     expect(activeTrigger?.disabled).toBe(true)
-    expect(activeTrigger?.querySelectorAll('svg')).toHaveLength(0)
+    expect(activeTrigger?.querySelectorAll('svg')).toHaveLength(1)
     const thinkingPlaceholder = container.querySelector('[data-slot="message-thinking-unit"]')
     expect(thinkingPlaceholder?.textContent).toBe('正在思考')
     expect(thinkingPlaceholder?.querySelector('.shimmer')).not.toBeNull()
@@ -2895,7 +2902,7 @@ describe('App composer', () => {
     expect(completedReasoning?.textContent).toContain('现已核对实时流与历史记录')
   })
 
-  it('keeps an inferred unphased process group open with the candidate answer outside', () => {
+  it('keeps an inferred process open while running and collapses it when the turn completes', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -2945,7 +2952,7 @@ describe('App composer', () => {
       '[data-slot="reasoning-group-trigger"]'
     )
 
-    expect(completedReasoning?.getAttribute('data-state')).toBe('open')
+    expect(completedReasoning?.getAttribute('data-state')).toBe('closed')
     expect(completedTrigger?.textContent).toBe('已处理 · 耗时 1 秒')
     expect(completedReasoning?.textContent).not.toContain('最终结论')
     expect(container.textContent).toContain('根因已经确认')
@@ -2974,7 +2981,7 @@ describe('App composer', () => {
     )
     const chevron = inactiveTrigger?.querySelector('svg')
 
-    expect(inactiveTrigger?.disabled).toBe(false)
+    expect(inactiveTrigger?.disabled).toBe(true)
     expect(chevron).not.toBeNull()
 
     threadMessageState.message.content = [

@@ -1150,8 +1150,8 @@ function ReasoningGroupUnit({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isActive = unit.active === true
-  const shouldAutoCollapse = unit.autoCollapseOnComplete
-  const [inferredProcessOpen, setInferredProcessOpen] = useState(true)
+  const isTurnRunning = unit.turnRunning
+  const [completedProcessOpen, setCompletedProcessOpen] = useState(false)
   const measuredDurationMs = useReasoningElapsedDuration(isActive)
   let label = isActive
     ? `已处理 · 耗时 ${formatProcessedDuration(measuredDurationMs ?? 0)}`
@@ -1160,33 +1160,29 @@ function ReasoningGroupUnit({
 
   return (
     <Collapsible
-      key={shouldAutoCollapse ? (isActive ? 'streaming' : 'done') : 'stable'}
       data-slot="reasoning-group"
-      defaultOpen={shouldAutoCollapse ? isActive : undefined}
-      open={shouldAutoCollapse ? (isActive ? true : undefined) : isActive || inferredProcessOpen}
-      onOpenChange={shouldAutoCollapse ? undefined : setInferredProcessOpen}
-      disabled={isActive}
+      open={isTurnRunning || completedProcessOpen}
+      onOpenChange={isTurnRunning ? undefined : setCompletedProcessOpen}
+      disabled={isTurnRunning}
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
       <div data-slot="reasoning-group-header">
         <CollapsibleTrigger
           data-slot="reasoning-group-trigger"
-          disabled={isActive}
+          disabled={isTurnRunning}
           className={cn(
             'group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground',
-            isActive && 'cursor-default hover:text-muted-foreground'
+            isTurnRunning && 'cursor-default hover:text-muted-foreground'
           )}
         >
           <span data-slot="reasoning-group-label" className="relative inline-block">
             {label}
           </span>
-          {isActive && shouldAutoCollapse ? null : (
-            <ChevronDownIcon
-              aria-hidden
-              className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
-            />
-          )}
+          <ChevronDownIcon
+            aria-hidden
+            className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
+          />
         </CollapsibleTrigger>
       </div>
       <hr data-slot="reasoning-group-divider" className="mb-4 border-border" />

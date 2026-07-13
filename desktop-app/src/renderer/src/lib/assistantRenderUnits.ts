@@ -160,7 +160,7 @@ export type AssistantRenderUnit =
       children: readonly AssistantRenderUnit[]
       durationMs?: number
       state: ReasoningGroupState
-      autoCollapseOnComplete: boolean
+      turnRunning: boolean
     })
   | (AssistantRenderUnitBase & {
       type: 'entry'
@@ -865,7 +865,7 @@ function groupCommentaryProcess(
     active: isRunning && answerIndex < 0,
     state: isRunning && answerIndex < 0 ? 'thinking' : 'completed',
     durationMs: isRunning ? undefined : processDurationMs,
-    autoCollapseOnComplete: true,
+    turnRunning: isRunning,
     showThinkingFallback: false
   }
 
@@ -901,7 +901,7 @@ function groupUnphasedAssistantProcess(
     active,
     state: active ? 'thinking' : 'completed',
     durationMs: isRunning ? undefined : processDurationMs,
-    autoCollapseOnComplete: false,
+    turnRunning: isRunning,
     showThinkingFallback: false
   }
 

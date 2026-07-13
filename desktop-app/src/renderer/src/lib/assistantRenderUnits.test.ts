@@ -69,7 +69,7 @@ describe('buildAssistantRenderUnits', () => {
       active: false,
       state: 'completed',
       durationMs: 1250,
-      autoCollapseOnComplete: true,
+      turnRunning: false,
       children: [{ type: 'text' }, { type: 'tool-group' }, { type: 'text' }]
     })
     expect(model.units[1]).toMatchObject({ type: 'text', phase: 'final_answer' })
@@ -259,7 +259,7 @@ describe('buildAssistantRenderUnits', () => {
       type: 'reasoning-group',
       active: false,
       state: 'completed',
-      autoCollapseOnComplete: false,
+      turnRunning: true,
       showThinkingFallback: false,
       children: [{ type: 'tool-group' }]
     })
@@ -281,7 +281,7 @@ describe('buildAssistantRenderUnits', () => {
         type: 'reasoning-group',
         active: true,
         state: 'thinking',
-        autoCollapseOnComplete: false,
+        turnRunning: true,
         showThinkingFallback: false,
         children: [
           { type: 'text', phase: undefined },
@@ -311,7 +311,7 @@ describe('buildAssistantRenderUnits', () => {
         type: 'reasoning-group',
         active: true,
         state: 'thinking',
-        autoCollapseOnComplete: false,
+        turnRunning: true,
         showThinkingFallback: false,
         children: [
           { type: 'text', text: 'Let me inspect the repository.' },
@@ -340,7 +340,7 @@ describe('buildAssistantRenderUnits', () => {
       type: 'reasoning-group',
       active: false,
       state: 'completed',
-      autoCollapseOnComplete: false,
+      turnRunning: true,
       showThinkingFallback: false,
       children: [{ type: 'text' }, { type: 'tool-group' }]
     })
@@ -376,7 +376,7 @@ describe('buildAssistantRenderUnits', () => {
       {
         type: 'reasoning-group',
         active: false,
-        autoCollapseOnComplete: false,
+        turnRunning: true,
         children: [{ type: 'text' }, { type: 'tool-group' }]
       },
       { type: 'text', text: '目前看是配置问题。' }
@@ -385,7 +385,7 @@ describe('buildAssistantRenderUnits', () => {
       {
         type: 'reasoning-group',
         active: true,
-        autoCollapseOnComplete: false,
+        turnRunning: true,
         children: [
           { type: 'text', text: '先检查项目。' },
           { type: 'tool-group' },
@@ -1123,7 +1123,7 @@ describe('buildAssistantRenderUnits', () => {
     expect(model.units).toMatchObject([
       {
         type: 'reasoning-group',
-        autoCollapseOnComplete: false,
+        turnRunning: false,
         children: [
           { type: 'subagent-activity-group', status: 'active' },
           { type: 'text', text: '中间有一条消息。' },
@@ -1171,7 +1171,7 @@ describe('buildAssistantRenderUnits', () => {
     })
 
     const process = model.units[0]
-    expect(process).toMatchObject({ type: 'reasoning-group', autoCollapseOnComplete: false })
+    expect(process).toMatchObject({ type: 'reasoning-group', turnRunning: false })
     const groups =
       process?.type === 'reasoning-group'
         ? process.children.filter((unit) => unit.type === 'subagent-activity-group')
@@ -1207,7 +1207,7 @@ describe('buildAssistantRenderUnits', () => {
     expect(model.units).toMatchObject([
       {
         type: 'reasoning-group',
-        autoCollapseOnComplete: false,
+        turnRunning: false,
         children: [
           {
             type: 'subagent-activity-group',
