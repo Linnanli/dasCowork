@@ -2811,7 +2811,7 @@ describe('App composer', () => {
     const reasoningContent = reasoning?.querySelector<HTMLElement>(
       '[data-slot="reasoning-group-content"] > div'
     )
-    const activeTrigger = reasoning?.querySelector<HTMLElement>(
+    const activeTrigger = reasoning?.querySelector<HTMLButtonElement>(
       '[data-slot="reasoning-group-trigger"]'
     )
 
@@ -2825,8 +2825,16 @@ describe('App composer', () => {
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
     expect(activeTrigger?.textContent).toContain('正在思考')
     expect(activeTrigger?.querySelector('.shimmer')).not.toBeNull()
+    expect(activeTrigger?.disabled).toBe(true)
+    expect(activeTrigger?.querySelectorAll('svg')).toHaveLength(0)
     expect(container.textContent).not.toContain('Clarifying state initialization and active flags')
     expect(container.textContent).not.toContain('Confirming reasoning visibility handling')
+
+    act(() => {
+      activeTrigger?.click()
+    })
+
+    expect(reasoning?.getAttribute('data-state')).toBe('open')
 
     threadMessageState.message.content = [
       ...threadMessageState.message.content,

@@ -1159,12 +1159,18 @@ function ReasoningGroupUnit({
       key={isActive ? 'streaming' : 'done'}
       data-slot="reasoning-group"
       defaultOpen={isActive}
+      open={isActive ? true : undefined}
+      disabled={isActive}
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
       <CollapsibleTrigger
         data-slot="reasoning-group-trigger"
-        className="group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground"
+        disabled={isActive}
+        className={cn(
+          'group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground',
+          isActive && 'cursor-default hover:text-muted-foreground'
+        )}
       >
         <span
           className={cn(
@@ -1174,10 +1180,12 @@ function ReasoningGroupUnit({
         >
           {label}
         </span>
-        <ChevronDownIcon
-          aria-hidden
-          className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
-        />
+        {isActive ? null : (
+          <ChevronDownIcon
+            aria-hidden
+            className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
+          />
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent
         data-slot="reasoning-group-content"
