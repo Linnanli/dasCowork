@@ -74,6 +74,7 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -96,11 +97,7 @@ import {
   type ConversationStateController
 } from './sidebar/useConversationState'
 import { cn } from './lib/utils'
-import {
-  blockedAssistantMessageText,
-  pendingAssistantMessageText,
-  processingAssistantMessageText
-} from './lib/assistantMessages'
+import { blockedAssistantMessageText, pendingAssistantMessageText } from './lib/assistantMessages'
 import {
   buildAssistantRenderUnits,
   type AssistantMessagePhase,
@@ -1155,7 +1152,10 @@ function ReasoningGroupUnit({
   const isActive = unit.active === true
   const shouldAutoCollapse = unit.autoCollapseOnComplete
   const [inferredProcessOpen, setInferredProcessOpen] = useState(true)
-  let label = isActive ? processingAssistantMessageText : processedDurationLabel(unit.durationMs)
+  const measuredDurationMs = useReasoningElapsedDuration(isActive)
+  let label = isActive
+    ? `已处理 · 耗时 ${formatProcessedDuration(measuredDurationMs ?? 0)}`
+    : processedDurationLabel(unit.durationMs ?? measuredDurationMs)
   if (unit.state === 'blocked') label = blockedAssistantMessageText
 
   return (
@@ -1169,22 +1169,27 @@ function ReasoningGroupUnit({
       className="group/reasoning my-2 w-full"
       {...renderUnitAttributes(unit)}
     >
-      <CollapsibleTrigger
-        data-slot="reasoning-group-trigger"
-        disabled={isActive}
-        className={cn(
-          'group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground',
-          isActive && 'cursor-default hover:text-muted-foreground'
-        )}
-      >
-        <span className="relative inline-block font-medium">{label}</span>
-        {isActive && shouldAutoCollapse ? null : (
-          <ChevronDownIcon
-            aria-hidden
-            className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
-          />
-        )}
-      </CollapsibleTrigger>
+      <div data-slot="reasoning-group-header">
+        <CollapsibleTrigger
+          data-slot="reasoning-group-trigger"
+          disabled={isActive}
+          className={cn(
+            'group/trigger flex w-fit items-center gap-2 py-1.5 text-muted-foreground transition-colors hover:text-foreground',
+            isActive && 'cursor-default hover:text-muted-foreground'
+          )}
+        >
+          <span data-slot="reasoning-group-label" className="relative inline-block">
+            {label}
+          </span>
+          {isActive && shouldAutoCollapse ? null : (
+            <ChevronDownIcon
+              aria-hidden
+              className="size-3.5 transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90"
+            />
+          )}
+        </CollapsibleTrigger>
+      </div>
+      <hr data-slot="reasoning-group-divider" className="mb-4 border-border" />
       <CollapsibleContent
         data-slot="reasoning-group-content"
         className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
@@ -1199,6 +1204,63 @@ function ReasoningGroupUnit({
       </CollapsibleContent>
     </Collapsible>
   )
+}
+
+type ReasoningTimerState = {
+  active: boolean
+  startedAt?: number
+  updatedAt: number
+  completedDurationMs?: number
+}
+
+function useReasoningElapsedDuration(isActive: boolean): number | undefined {
+  const [timer, setTimer] = useState<ReasoningTimerState>(() => {
+    const now = Date.now()
+    return {
+      active: isActive,
+      startedAt: isActive ? now : undefined,
+      updatedAt: now
+    }
+  })
+  const wasActive = useRef(isActive)
+  const startTimer = useEffectEvent(() => {
+    const startedAt = Date.now()
+    setTimer({ active: true, startedAt, updatedAt: startedAt })
+  })
+  const stopTimer = useEffectEvent(() => {
+    setTimer((current) => {
+      if (!current.active || current.startedAt === undefined) return current
+      const completedAt = Date.now()
+      return {
+        active: false,
+        updatedAt: completedAt,
+        completedDurationMs: Math.max(0, completedAt - current.startedAt)
+      }
+    })
+  })
+
+  useEffect(() => {
+    if (!wasActive.current && isActive) startTimer()
+    if (wasActive.current && !isActive) stopTimer()
+    wasActive.current = isActive
+  }, [isActive])
+
+  useEffect(() => {
+    if (!isActive) return
+
+    const intervalId = window.setInterval(() => {
+      setTimer((current) => (current.active ? { ...current, updatedAt: Date.now() } : current))
+    }, 1_000)
+
+    return () => window.clearInterval(intervalId)
+  }, [isActive])
+
+  if (isActive) {
+    if (!timer.active || timer.startedAt === undefined) return 0
+    return Math.max(0, timer.updatedAt - timer.startedAt)
+  }
+
+  return timer.completedDurationMs
 }
 
 function processedDurationLabel(durationMs: number | undefined): string {

@@ -834,6 +834,7 @@ describe('App composer', () => {
       root.unmount()
     })
     container.remove()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -2811,8 +2812,17 @@ describe('App composer', () => {
     const reasoningContent = reasoning?.querySelector<HTMLElement>(
       '[data-slot="reasoning-group-content"] > div'
     )
+    const reasoningHeader = reasoning?.querySelector<HTMLElement>(
+      '[data-slot="reasoning-group-header"]'
+    )
+    const reasoningDivider = reasoning?.querySelector<HTMLElement>(
+      '[data-slot="reasoning-group-divider"]'
+    )
     const activeTrigger = reasoning?.querySelector<HTMLButtonElement>(
       '[data-slot="reasoning-group-trigger"]'
+    )
+    const reasoningLabel = reasoning?.querySelector<HTMLElement>(
+      '[data-slot="reasoning-group-label"]'
     )
 
     expect(container.querySelectorAll('[data-slot="reasoning-group"]')).toHaveLength(1)
@@ -2820,10 +2830,13 @@ describe('App composer', () => {
     expect(reasoning?.getAttribute('data-state')).toBe('open')
     expect(reasoning?.className).not.toContain('text-sm')
     expect(reasoning?.className).not.toContain('text-muted-foreground')
+    expect(reasoningHeader).not.toBeNull()
+    expect(reasoningDivider?.className).toBe('mb-4 border-border')
+    expect(reasoningLabel?.className).not.toContain('font-medium')
     expect(reasoningContent?.className).toBe('min-w-0 space-y-4')
     expect(reasoning?.textContent).toContain('我会按“只分析、不改代码”的方式')
     expect(reasoning?.textContent).toContain('现已核对实时流与历史记录')
-    expect(activeTrigger?.textContent).toBe('处理中')
+    expect(activeTrigger?.textContent).toBe('已处理 · 耗时 0 秒')
     expect(activeTrigger?.querySelector('.shimmer')).toBeNull()
     expect(activeTrigger?.disabled).toBe(true)
     expect(activeTrigger?.querySelectorAll('svg')).toHaveLength(0)
@@ -3219,7 +3232,7 @@ describe('App composer', () => {
     expect(thinkingExplorationCards).toHaveLength(0)
     const reasoningTrigger = container.querySelector('[data-slot="reasoning-group-trigger"]')
     expect(reasoningTrigger).not.toBeNull()
-    expect(reasoningTrigger?.textContent).toBe('处理中')
+    expect(reasoningTrigger?.textContent).toBe('已处理 · 耗时 0 秒')
     expect(reasoningTrigger?.querySelector('.shimmer')).toBeNull()
     const thinkingPlaceholder = container.querySelector('[data-slot="message-thinking-unit"]')
     expect(thinkingPlaceholder).not.toBeNull()
@@ -3372,6 +3385,46 @@ describe('App composer', () => {
     expect(renderWithDuration(1250)).toBe('已处理 · 耗时 1 秒')
     expect(renderWithDuration(65_000)).toBe('已处理 · 耗时 1 分 5 秒')
     expect(renderWithDuration(3_661_000)).toBe('已处理 · 耗时 1 小时 1 分 1 秒')
+  })
+
+  it('shows a live stopwatch while reasoning and freezes the locally measured duration', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-13T08:00:00.000Z'))
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      { type: 'text', text: '我会先读取仓库记录，再收集实际证据。' },
+      commandToolPart('timer-search', 'search', { status: { type: 'running' } })
+    ]
+    threadMessageState.externalMessages = [
+      {
+        parts: [{ type: 'text', providerMetadata: messagePhaseMetadata('commentary') }]
+      }
+    ]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const runningLabel = (): string | null | undefined =>
+      container.querySelector('[data-slot="reasoning-group-trigger"]')?.textContent
+
+    expect(runningLabel()).toBe('已处理 · 耗时 0 秒')
+
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(runningLabel()).toBe('已处理 · 耗时 2 秒')
+
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.externalMessages = []
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(runningLabel()).toBe('已处理 · 耗时 2 秒')
   })
 
   it('does not show thinking for a finished empty assistant message', () => {
