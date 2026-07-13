@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createPickLocalContextHandler, pickLocalContext } from './localContextPicker'
 
 describe('localContextPicker', () => {
-  it('uses a file picker and returns unique existing files', async () => {
+  it('uses one picker and returns unique existing files and folders', async () => {
     const showOpenDialog = vi.fn(async () => ({
       canceled: false,
       filePaths: [
@@ -25,7 +25,7 @@ describe('localContextPicker', () => {
         isDirectory: () => path === '/tmp/folder'
       }
     })
-    await expect(pickLocalContext({ showOpenDialog, stat }, 'files')).resolves.toEqual([
+    await expect(pickLocalContext({ showOpenDialog, stat }, 'filesAndFolders')).resolves.toEqual([
       { kind: 'file', path: '/tmp/report.md', label: 'report.md' },
       {
         kind: 'image',
@@ -33,37 +33,61 @@ describe('localContextPicker', () => {
         label: 'photo.png',
         mediaType: 'image/png',
         previewUrl: 'app://fs/@fs/tmp/photo.png'
-      }
+      },
+      { kind: 'folder', path: '/tmp/folder', label: 'folder' }
     ])
     expect(showOpenDialog).toHaveBeenCalledWith({
-      properties: ['openFile', 'multiSelections']
+      properties: ['openFile', 'openDirectory', 'multiSelections']
     })
     expect(stat).toHaveBeenCalledTimes(4)
   })
 
-  it('uses a directory picker and ignores files returned by the dialog', async () => {
+  it('uses a file-only picker when the platform cannot combine both kinds', async () => {
     const showOpenDialog = vi.fn(async () => ({
       canceled: false,
-      filePaths: ['/tmp/folder', '/tmp/report.md']
+      filePaths: ['/tmp/report.md', '/tmp/folder']
     }))
     const stat = vi.fn(async (path: string) => ({
       isFile: () => path === '/tmp/report.md',
       isDirectory: () => path === '/tmp/folder'
     }))
 
-    await expect(pickLocalContext({ showOpenDialog, stat }, 'folders')).resolves.toEqual([
-      { kind: 'folder', path: '/tmp/folder', label: 'folder' }
-    ])
+    await expect(
+      pickLocalContext(
+        {
+          choosePickerKind: async () => 'files',
+          showOpenDialog,
+          stat
+        },
+        'filesAndFolders'
+      )
+    ).resolves.toEqual([{ kind: 'file', path: '/tmp/report.md', label: 'report.md' }])
     expect(showOpenDialog).toHaveBeenCalledWith({
-      properties: ['openDirectory', 'multiSelections']
+      properties: ['openFile', 'multiSelections']
     })
+  })
+
+  it('does not open a picker when the platform kind prompt is cancelled', async () => {
+    const showOpenDialog = vi.fn()
+
+    await expect(
+      pickLocalContext(
+        {
+          choosePickerKind: async () => null,
+          showOpenDialog,
+          stat: vi.fn()
+        },
+        'filesAndFolders'
+      )
+    ).resolves.toEqual([])
+    expect(showOpenDialog).not.toHaveBeenCalled()
   })
 
   it('returns no references when the dialog is cancelled', async () => {
     const showOpenDialog = vi.fn(async () => ({ canceled: true, filePaths: ['/tmp/report.md'] }))
     const stat = vi.fn()
 
-    await expect(pickLocalContext({ showOpenDialog, stat }, 'files')).resolves.toEqual([])
+    await expect(pickLocalContext({ showOpenDialog, stat }, 'filesAndFolders')).resolves.toEqual([])
     expect(stat).not.toHaveBeenCalled()
   })
 
@@ -74,7 +98,7 @@ describe('localContextPicker', () => {
       stat: vi.fn()
     })
 
-    await expect(handler(undefined, { kind: 'both' })).rejects.toThrow()
+    await expect(handler(undefined, { kind: 'files' })).rejects.toThrow()
     expect(showOpenDialog).not.toHaveBeenCalled()
   })
 
@@ -89,7 +113,7 @@ describe('localContextPicker', () => {
             throw error
           }
         },
-        'files'
+        'filesAndFolders'
       )
     ).rejects.toThrow('Unable to inspect selected path: permission denied')
   })
@@ -101,7 +125,7 @@ describe('localContextPicker', () => {
           showOpenDialog: async () => ({ canceled: false, filePaths: ['/tmp/photo.png'] }),
           stat: async () => ({ isFile: () => true, isDirectory: () => false })
         },
-        'files'
+        'filesAndFolders'
       )
     ).resolves.toEqual([
       {

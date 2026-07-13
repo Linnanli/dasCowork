@@ -85,6 +85,7 @@ test('sends a searched local context reference and picker image through the prov
     await app.evaluate(
       ({ dialog }, filePaths) => {
         Object.assign(dialog, {
+          showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
           showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
         })
       },
@@ -102,8 +103,9 @@ test('sends a searched local context reference and picker image through the prov
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
     const search = page.locator('[data-slot="command-input"]')
     await expect(search).toBeVisible()
-    await expect(page.getByText('选择文件', { exact: true })).toBeVisible()
-    await expect(page.getByText('选择文件夹', { exact: true })).toBeVisible()
+    await expect(page.getByText('选择文件文件夹', { exact: true })).toBeVisible()
+    await expect(page.getByText('选择文件', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('选择文件夹', { exact: true })).toHaveCount(0)
     await expect(page.getByText('添加照片', { exact: true })).toHaveCount(0)
     await search.fill(workspaceFileLabel)
     const workspaceResult = page.locator('[cmdk-item]').filter({ hasText: workspaceFileLabel })
@@ -111,7 +113,7 @@ test('sends a searched local context reference and picker image through the prov
     await workspaceResult.click()
 
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
-    await page.getByText('选择文件', { exact: true }).click()
+    await page.getByText('选择文件文件夹', { exact: true }).click()
     await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
 
     const sendButton = page.getByRole('button', { name: '发送消息', exact: true })

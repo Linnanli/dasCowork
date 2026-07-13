@@ -95,6 +95,22 @@ async function pickWorkspaceRootPath(): Promise<string | null> {
   return result.canceled ? null : (result.filePaths[0] ?? null)
 }
 
+async function chooseLocalContextPickerKind(): Promise<'files' | 'folders' | null> {
+  const result = await dialog.showMessageBox({
+    type: 'question',
+    title: '选择文件文件夹',
+    message: '请选择要添加的内容',
+    buttons: ['选择文件', '选择文件夹', '取消'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true
+  })
+
+  if (result.response === 0) return 'files'
+  if (result.response === 1) return 'folders'
+  return null
+}
+
 async function openExternalHttpUrl(url: string): Promise<void> {
   if (!isExternalHttpUrl(url)) throw new Error('external URL must be http(s)')
   await shell.openExternal(url)
@@ -287,6 +303,7 @@ app.whenReady().then(() => {
   ipcMain.handle(
     'codex:pick-local-context',
     createPickLocalContextHandler({
+      choosePickerKind: process.platform === 'darwin' ? undefined : chooseLocalContextPickerKind,
       showOpenDialog: (options) => dialog.showOpenDialog(options),
       stat
     })

@@ -153,11 +153,12 @@ describe('codex IPC schemas', () => {
   })
 
   it('validates local context picker input and references', () => {
-    expect(localContextPickerPayloadSchema.safeParse({ kind: 'files' }).success).toBe(true)
-    expect(localContextPickerPayloadSchema.safeParse({ kind: 'folders' }).success).toBe(true)
+    expect(localContextPickerPayloadSchema.safeParse({ kind: 'filesAndFolders' }).success).toBe(
+      true
+    )
     expect(localContextPickerPayloadSchema.safeParse(undefined).success).toBe(false)
     expect(localContextPickerPayloadSchema.safeParse({}).success).toBe(false)
-    expect(localContextPickerPayloadSchema.safeParse({ kind: 'both' }).success).toBe(false)
+    expect(localContextPickerPayloadSchema.safeParse({ kind: 'files' }).success).toBe(false)
     expect(
       localContextReferenceSchema.safeParse({
         kind: 'file',

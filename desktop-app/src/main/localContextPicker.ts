@@ -9,11 +9,14 @@ import {
 } from '../shared/codexIpcApi'
 import { mediaTypeForPath, toAppMediaUrl } from './localMediaProtocol'
 
+type LocalContextDialogKind = LocalContextPickerKind | 'files' | 'folders'
+
 export type LocalContextPickerDialogOptions = {
   properties: Array<'openFile' | 'openDirectory' | 'multiSelections'>
 }
 
 export type LocalContextPickerDependencies = {
+  choosePickerKind?: () => Promise<'files' | 'folders' | null>
   showOpenDialog(options: LocalContextPickerDialogOptions): Promise<{
     canceled: boolean
     filePaths: string[]
@@ -28,8 +31,13 @@ export async function pickLocalContext(
   dependencies: LocalContextPickerDependencies,
   pickerKind: LocalContextPickerKind
 ): Promise<LocalContextReference[]> {
+  const dialogKind = dependencies.choosePickerKind
+    ? await dependencies.choosePickerKind()
+    : pickerKind
+  if (dialogKind === null) return []
+
   const result = await dependencies.showOpenDialog({
-    properties: dialogPropertiesFor(pickerKind)
+    properties: dialogPropertiesFor(dialogKind)
   })
 
   if (result.canceled) return []
@@ -57,7 +65,7 @@ export async function pickLocalContext(
     }
 
     const selectedKind = selectedPathKind(stats)
-    if (selectedKind !== expectedPathKind(pickerKind)) continue
+    if (!acceptsSelectedKind(dialogKind, selectedKind)) continue
 
     const label = basename(path) || path
     const mediaType = selectedKind === 'file' ? mediaTypeForPath(path) : undefined
@@ -89,13 +97,21 @@ export function createPickLocalContextHandler(dependencies: LocalContextPickerDe
 }
 
 function dialogPropertiesFor(
-  kind: LocalContextPickerKind
+  kind: LocalContextDialogKind
 ): LocalContextPickerDialogOptions['properties'] {
-  return kind === 'files' ? ['openFile', 'multiSelections'] : ['openDirectory', 'multiSelections']
+  if (kind === 'files') return ['openFile', 'multiSelections']
+  if (kind === 'folders') return ['openDirectory', 'multiSelections']
+  return ['openFile', 'openDirectory', 'multiSelections']
 }
 
-function expectedPathKind(kind: LocalContextPickerKind): 'file' | 'folder' {
-  return kind === 'files' ? 'file' : 'folder'
+function acceptsSelectedKind(
+  dialogKind: LocalContextDialogKind,
+  selectedKind: 'file' | 'folder' | null
+): selectedKind is 'file' | 'folder' {
+  if (selectedKind === null) return false
+  if (dialogKind === 'files') return selectedKind === 'file'
+  if (dialogKind === 'folders') return selectedKind === 'folder'
+  return true
 }
 
 function isMissingPathError(error: unknown): boolean {

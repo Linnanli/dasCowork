@@ -189,7 +189,7 @@ export type LocalContextReference =
       previewUrl: string
     }
 
-export type LocalContextPickerKind = 'files' | 'folders'
+export type LocalContextPickerKind = 'filesAndFolders'
 
 export type LocalContextPickerPayload = {
   kind: LocalContextPickerKind
@@ -262,7 +262,7 @@ export const codexOpenLocalPathPayloadSchema = z
   }) satisfies z.ZodType<CodexOpenLocalPathPayload>
 
 export const localContextPickerPayloadSchema = z.object({
-  kind: z.enum(['files', 'folders'])
+  kind: z.literal('filesAndFolders')
 }) satisfies z.ZodType<LocalContextPickerPayload>
 
 const localContextPathSchema = z.object({

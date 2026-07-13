@@ -1,5 +1,12 @@
 import { type Unstable_TriggerItem } from '@assistant-ui/react'
-import { FileIcon, FolderIcon, Loader2Icon, PlusIcon, WrenchIcon } from 'lucide-react'
+import {
+  FileIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  Loader2Icon,
+  PlusIcon,
+  WrenchIcon
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import type { LocalContextPickerKind } from '../../../../shared/codexIpcApi'
@@ -117,26 +124,15 @@ export function ComposerAddContextPopover({
           <CommandList>
             <CommandGroup heading="添加">
               {localPickerEnabled ? (
-                <>
-                  <CommandItem
-                    disabled={isPicking}
-                    value="local-files"
-                    onSelect={() => void pick('files')}
-                  >
-                    <FileIcon className="size-4" />
-                    <span className="flex-1">选择文件</span>
-                    {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                  </CommandItem>
-                  <CommandItem
-                    disabled={isPicking}
-                    value="local-folders"
-                    onSelect={() => void pick('folders')}
-                  >
-                    <FolderIcon className="size-4" />
-                    <span className="flex-1">选择文件夹</span>
-                    {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                  </CommandItem>
-                </>
+                <CommandItem
+                  disabled={isPicking}
+                  value="local-files-and-folders"
+                  onSelect={() => void pick('filesAndFolders')}
+                >
+                  <FolderOpenIcon className="size-4" />
+                  <span className="flex-1">选择文件文件夹</span>
+                  {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
+                </CommandItem>
               ) : null}
             </CommandGroup>
             {pickerError ? <ContextAlert message={pickerError} /> : null}
