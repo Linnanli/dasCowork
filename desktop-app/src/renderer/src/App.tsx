@@ -1770,23 +1770,20 @@ function Composer({
   projectState
 }: ComposerProps): React.JSX.Element {
   const aui = useAui()
+  const [composerShellElement, setComposerShellElement] = useState<HTMLDivElement | null>(null)
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
   const effectiveProjectSelection = activeConversation
     ? conversationProjectSelection
     : globalProjectSelection
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
-  const canAddContext =
-    hasProjectContext && effectiveProjectSelection?.projectKind !== 'projectless'
   const projectContext = conversationProjectContext(activeConversation, projectState)
   const workspaceFileSearchEnabled = Boolean(
     hasProjectContext &&
     effectiveProjectSelection &&
     effectiveProjectSelection.projectKind !== 'projectless'
   )
-  const localContextPickerEnabled = Boolean(
-    workspaceFileSearchEnabled && effectiveProjectSelection?.projectKind !== 'remote'
-  )
+  const localContextPickerEnabled = effectiveProjectSelection?.projectKind !== 'remote'
   const workspaceFileSearch = useWorkspaceFileSearch({
     manager: window.desktopApp.projects,
     enabled: workspaceFileSearchEnabled,
@@ -1931,6 +1928,7 @@ function Composer({
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         <div
+          ref={setComposerShellElement}
           data-slot="aui_composer-shell"
           className="flex w-full flex-col gap-2 rounded-3xl border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/30"
         >
@@ -1944,7 +1942,7 @@ function Composer({
           <div className="aui-composer-action-wrapper relative flex items-center justify-between">
             <div className="flex min-w-0 items-center gap-1">
               <ComposerAddContextPopover
-                disabled={disabled || !canAddContext}
+                anchorElement={composerShellElement}
                 files={fileMentions}
                 tools={modelContextTools}
                 isSearching={isSearchingWorkspaceFiles}

@@ -61,6 +61,64 @@ test('sends a real desktop chat turn through the admin backend model provider', 
   }
 })
 
+test('renders the add-context menu above and aligned with the composer', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({ responses: [] })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await expect(page.locator('body')).toContainText('qwen3.7-plus')
+    await page.evaluate(async () => {
+      await window.desktopApp.projects.selectProject({ projectKind: 'projectless' })
+    })
+    await expect(page.locator('body')).toContainText('Working in: Projectless')
+    const addContextButton = page.getByRole('button', { name: '添加文件和更多', exact: true })
+    await expect(addContextButton).toBeEnabled()
+    await addContextButton.click()
+
+    const popover = page.locator('.aui-composer-add-context-popover')
+    const composer = page.locator('[data-slot="aui_composer-shell"]')
+    await expect(popover).toBeVisible()
+    await expect(popover.locator('[data-slot="card"]')).toBeVisible()
+    await expect(popover).toHaveCSS('height', '320px')
+    await popover.evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map((animation) => animation.finished))
+    })
+
+    const [popoverBox, composerBox] = await Promise.all([
+      popover.boundingBox(),
+      composer.boundingBox()
+    ])
+    expect(popoverBox).not.toBeNull()
+    expect(composerBox).not.toBeNull()
+    if (!popoverBox || !composerBox) throw new Error('Could not measure composer add menu')
+
+    expect(Math.abs(popoverBox.x - composerBox.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(popoverBox.width - composerBox.width)).toBeLessThanOrEqual(1)
+    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeGreaterThanOrEqual(3)
+    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeLessThanOrEqual(5)
+
+    const screenshotPath = testInfo.outputPath('composer-add-menu.png')
+    await page.screenshot({ path: screenshotPath })
+    await testInfo.attach('composer-add-menu.png', {
+      contentType: 'image/png',
+      path: screenshotPath
+    })
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
 test('sends a searched local context reference and picker image through the provider', async ({
   browserName
 }, testInfo) => {

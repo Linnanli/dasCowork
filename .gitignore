@@ -2,3 +2,9 @@
 .vscode
 /node_modules/
 /reference-projects/
+
+# Local OMX runtime state and one-off capture output.
+/.omx/artifacts/
+/.omx/context/
+/.omx/state/
+/.omx/tmux-hook.json

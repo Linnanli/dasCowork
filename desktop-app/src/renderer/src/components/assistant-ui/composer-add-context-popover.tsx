@@ -19,9 +19,11 @@ import {
   CommandItem,
   CommandList
 } from '@/components/ui/command'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Card } from '@/components/ui/card'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 
 export type ComposerAddContextPopoverProps = {
+  anchorElement: HTMLDivElement | null
   disabled?: boolean
   files: readonly Unstable_TriggerItem[]
   tools: readonly Unstable_TriggerItem[]
@@ -34,7 +36,11 @@ export type ComposerAddContextPopoverProps = {
   searchEnabled: boolean
 }
 
+const contextMenuItemClassName =
+  'cursor-pointer rounded-lg px-2.5 py-2 text-popover-foreground/75 transition-colors hover:bg-foreground/5 hover:text-popover-foreground focus:bg-foreground/5 focus:text-popover-foreground data-[selected=true]:bg-foreground/5 data-[selected=true]:text-popover-foreground data-[selected=true]:opacity-100 dark:hover:bg-foreground/8 dark:focus:bg-foreground/8 dark:data-[selected=true]:bg-foreground/8'
+
 export function ComposerAddContextPopover({
+  anchorElement,
   disabled = false,
   files,
   tools,
@@ -78,6 +84,11 @@ export function ComposerAddContextPopover({
     close()
   }
 
+  const toggle = (): void => {
+    if (disabled) return
+    setOpen((currentOpen) => !currentOpen)
+  }
+
   const selectItem = (item: Unstable_TriggerItem): void => {
     onInsertItem(item)
     close()
@@ -98,60 +109,70 @@ export function ComposerAddContextPopover({
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          aria-label="添加文件和更多"
-          title="添加文件和更多"
-          className="aui-composer-add-context inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <PlusIcon className="size-4.5 stroke-[1.75px]" />
-        </button>
-      </PopoverTrigger>
+      {anchorElement ? <PopoverAnchor virtualRef={{ current: anchorElement }} /> : null}
+      <button
+        type="button"
+        disabled={disabled}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label="添加文件和更多"
+        title="添加文件和更多"
+        onClick={toggle}
+        data-state={open ? 'open' : 'closed'}
+        className="aui-composer-add-context inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors outline-none hover:bg-foreground/5 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-foreground/8 data-[state=open]:bg-foreground/5 dark:data-[state=open]:bg-foreground/8"
+      >
+        <PlusIcon className="size-4.5 stroke-[1.75px]" />
+      </button>
       <PopoverContent
         align="start"
         side="top"
-        className="aui-composer-add-context-popover w-80 p-0"
+        collisionPadding={8}
+        className="aui-composer-add-context-popover h-80 w-(--radix-popover-trigger-width) border-0 bg-transparent p-0 shadow-none"
       >
-        <Command shouldFilter={false} className="rounded-md">
-          <CommandInput
-            value={query}
-            onValueChange={setQuery}
-            placeholder="搜索文件和工具"
-            aria-label="搜索当前上下文"
-          />
-          <CommandList>
-            <CommandGroup heading="添加">
-              {localPickerEnabled ? (
-                <CommandItem
-                  disabled={isPicking}
-                  value="local-files-and-folders"
-                  onSelect={() => void pick('filesAndFolders')}
-                >
-                  <FolderOpenIcon className="size-4" />
-                  <span className="flex-1">选择文件文件夹</span>
-                  {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                </CommandItem>
-              ) : null}
-            </CommandGroup>
-            {pickerError ? <ContextAlert message={pickerError} /> : null}
-            {searchError ? <ContextAlert message={searchError} /> : null}
-            {isSearching ? (
-              <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
-                <Loader2Icon className="size-4 animate-spin" />
-                正在搜索…
-              </div>
-            ) : (
-              <ContextSearchResults
-                files={files}
-                query={query}
-                tools={tools}
-                onSelect={selectItem}
-              />
-            )}
-          </CommandList>
-        </Command>
+        <Card className="h-full gap-0 rounded-2xl border-border bg-popover/80 p-1 text-popover-foreground shadow-none backdrop-blur-sm">
+          <Command
+            shouldFilter={false}
+            className="min-h-0 rounded-xl bg-transparent text-popover-foreground"
+          >
+            <CommandInput
+              value={query}
+              onValueChange={setQuery}
+              placeholder="搜索文件和工具"
+              aria-label="搜索当前上下文"
+            />
+            <CommandList className="min-h-0 max-h-none flex-1">
+              <CommandGroup heading="添加">
+                {localPickerEnabled ? (
+                  <CommandItem
+                    disabled={isPicking}
+                    value="local-files-and-folders"
+                    onSelect={() => void pick('filesAndFolders')}
+                    className={contextMenuItemClassName}
+                  >
+                    <FolderOpenIcon className="size-4" />
+                    <span className="flex-1">选择文件文件夹</span>
+                    {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
+                  </CommandItem>
+                ) : null}
+              </CommandGroup>
+              {pickerError ? <ContextAlert message={pickerError} /> : null}
+              {searchError ? <ContextAlert message={searchError} /> : null}
+              {isSearching ? (
+                <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+                  <Loader2Icon className="size-4 animate-spin" />
+                  正在搜索…
+                </div>
+              ) : (
+                <ContextSearchResults
+                  files={files}
+                  query={query}
+                  tools={tools}
+                  onSelect={selectItem}
+                />
+              )}
+            </CommandList>
+          </Command>
+        </Card>
       </PopoverContent>
     </Popover>
   )
@@ -210,7 +231,11 @@ function ContextItem({
 }): React.JSX.Element {
   const Icon = type === 'tool' ? WrenchIcon : type === 'folder' ? FolderIcon : FileIcon
   return (
-    <CommandItem value={`${item.label} ${item.id}`} onSelect={() => onSelect(item)}>
+    <CommandItem
+      value={`${item.label} ${item.id}`}
+      onSelect={() => onSelect(item)}
+      className={contextMenuItemClassName}
+    >
       <Icon className="size-4" />
       <span className="min-w-0 flex-1 truncate">{item.label}</span>
       {item.description ? (

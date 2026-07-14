@@ -986,6 +986,77 @@ describe('App composer', () => {
     )
   })
 
+  it('opens the add-context menu in a projectless conversation', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-projectless',
+      threadId: 'thread-projectless',
+      title: 'Quick chat',
+      projectSelection: { projectKind: 'projectless' },
+      cwd: '/tmp/projectless'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const addContextButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加文件和更多"]'
+    )
+    expect(addContextButton?.disabled).toBe(false)
+
+    await act(async () => {
+      addContextButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('选择文件文件夹')
+  })
+
+  it('opens the add-context menu before a project is selected', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-without-project'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const addContextButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加文件和更多"]'
+    )
+    expect(addContextButton?.disabled).toBe(false)
+
+    await act(async () => {
+      addContextButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('选择文件文件夹')
+  })
+
+  it('keeps the add-context menu available while a new conversation awaits project selection', async () => {
+    runtimeState.activeEntry.loaded = false
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-awaiting-project'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const addContextButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加文件和更多"]'
+    )
+    expect(addContextButton?.disabled).toBe(false)
+
+    await act(async () => {
+      addContextButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('选择文件文件夹')
+  })
+
   it('does not reuse the global project when a conversation workspace is unknown', async () => {
     const searchFiles = vi.fn(async () => ({ results: [] }))
     window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
