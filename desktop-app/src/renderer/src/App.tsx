@@ -837,7 +837,7 @@ function ThreadScrollToBottom(): React.JSX.Element {
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <IconButton
-        className="aui-thread-scroll-to-bottom absolute -top-12 z-10 self-center rounded-full border border-border bg-background p-4 shadow-sm disabled:invisible"
+        className="aui-thread-scroll-to-bottom absolute -top-12 z-10 size-10 self-center rounded-full border border-border bg-background p-0 shadow-sm disabled:invisible"
         label="滚动到底部"
         title="滚动到底部"
       >
