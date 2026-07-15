@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    buildFilesMentionedContext,
     type CodexThreadForUi,
     type LoadedToolThreadItem,
     mapCodexThreadItemToUiPart,
@@ -431,5 +432,49 @@ describe("history mapper", () =>
                 },
             },
         });
+    });
+
+    it("restores context mentions and degrades server history file context to path mentions", () =>
+    {
+        const thread = {
+            id: "thr",
+            turns: [{
+                id: "turn_context",
+                durationMs: null,
+                items: [{
+                    type: "userMessage",
+                    id: "user_context",
+                    clientId: null,
+                    content: [
+                        {
+                            type: "text",
+                            text: buildFilesMentionedContext([
+                                { type: "file", label: "report.pdf", path: "/tmp/report.pdf" },
+                                { type: "folder", label: "workspace", path: "/tmp/workspace" },
+                            ], "Use $github and @sample@local."),
+                            text_elements: [],
+                        },
+                        { type: "mention", name: "github", path: "app://github" },
+                        { type: "mention", name: "sample@local", path: "plugin://sample@local" },
+                    ],
+                }],
+            }],
+        } as unknown as CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toEqual([{
+            id: "user_context",
+            role: "user",
+            parts: [
+                {
+                    type: "text",
+                    text: [
+                        ":file[report.pdf]{name=%2Ftmp%2Freport.pdf}",
+                        ":file[workspace]{name=%2Ftmp%2Fworkspace}",
+                        "Use :app[github]{name=app%3A%2F%2Fgithub} and :plugin[sample%40local]{name=plugin%3A%2F%2Fsample%40local}.",
+                    ].join("\n"),
+                    state: "done",
+                },
+            ],
+        }]);
     });
 });

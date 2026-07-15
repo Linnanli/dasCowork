@@ -7,6 +7,7 @@ import type {
   CodexStatus,
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopComposerContextApi,
   DesktopConversationsApi,
   DesktopProjectsApi,
   LocalContextPickerKind,
@@ -25,6 +26,7 @@ import type {
   WorkspaceRootOption
 } from '../shared/projects/projectTypes'
 import { createChatStreamBridge } from './chatStreamBridge'
+import { createComposerContextBridge } from './composerContextBridge'
 
 const desktopEnvironment = {
   platform: process.platform
@@ -65,6 +67,16 @@ const desktopCodexChat: DesktopCodexChatApi = createChatStreamBridge({
     ipcRenderer.postMessage('codex-chat:start', request, [port])
   }
 })
+
+const desktopComposerContext: DesktopComposerContextApi = createComposerContextBridge(
+  (channel, payload) => ipcRenderer.invoke(channel, payload),
+  (channel, callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void =>
+      callback(payload)
+    ipcRenderer.on(channel, listener)
+    return () => ipcRenderer.removeListener(channel, listener)
+  }
+)
 
 const desktopProjects: DesktopProjectsApi = {
   getState: () => ipcRenderer.invoke('codex:projects:get-state') as Promise<ProjectState>,
@@ -135,6 +147,7 @@ const desktopApp = {
   environment: desktopEnvironment,
   codex: desktopCodex,
   chat: desktopCodexChat,
+  composerContext: desktopComposerContext,
   projects: desktopProjects,
   conversations: desktopConversations
 }

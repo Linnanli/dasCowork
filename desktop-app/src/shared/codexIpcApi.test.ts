@@ -163,14 +163,24 @@ describe('codex IPC schemas', () => {
       localContextReferenceSchema.safeParse({
         kind: 'file',
         path: '/tmp/report.md',
-        label: 'report.md'
+        label: 'report.md',
+        fileUrl: 'file:///tmp/report.md'
       }).success
     ).toBe(true)
     expect(
       localContextReferenceSchema.safeParse({
         kind: 'folder',
         path: 'relative/assets',
-        label: 'assets'
+        label: 'assets',
+        fileUrl: 'file:///tmp/assets'
+      }).success
+    ).toBe(false)
+    expect(
+      localContextReferenceSchema.safeParse({
+        kind: 'file',
+        path: '/tmp/report.md',
+        label: 'report.md',
+        fileUrl: 'https://example.com/report.md'
       }).success
     ).toBe(false)
     expect(

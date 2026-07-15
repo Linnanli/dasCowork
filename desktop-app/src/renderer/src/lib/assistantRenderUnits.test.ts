@@ -1715,13 +1715,13 @@ describe('buildAssistantRenderUnits', () => {
     ].flatMap((event) => mapper.map(event))
 
     const aiSdkParts = await messagePartsFromProviderStreamParts(streamParts)
-    const model = buildAssistantRenderUnits({ status: { type: 'running' }, content: aiSdkParts })
+    const model = buildAssistantRenderUnits({ status: { type: 'complete' }, content: aiSdkParts })
 
     expect(aiSdkParts).toMatchObject([
       { type: 'step-start' },
       {
         type: 'dynamic-tool',
-        toolCallId: 'turn-diff:turn-diff:1',
+        toolCallId: 'turn-diff:turn-diff',
         toolName: 'codex_turn_diff',
         state: 'output-available',
         output: { item: { type: 'turnDiff', diff } }
@@ -1732,7 +1732,7 @@ describe('buildAssistantRenderUnits', () => {
         type: 'entry',
         itemType: 'turnDiff',
         renderMode: 'custom',
-        active: true
+        active: false
       }
     ])
   })

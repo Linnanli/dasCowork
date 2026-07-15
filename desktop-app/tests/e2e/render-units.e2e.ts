@@ -112,6 +112,13 @@ test('renders web search and exploration render units through the real desktop c
 
     await sendMessage(page, '搜索 render unit parity，然后总结。')
 
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'Web search and exploration render units complete'
+    )
+    const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]').last()
+    await expect(completedReasoningTrigger).toContainText('已处理')
+    await completedReasoningTrigger.click()
+
     const activityGroup = page.locator(
       '[data-slot="tool-group-unit"][data-tool-group-kind="composite"]'
     )
@@ -123,10 +130,6 @@ test('renders web search and exploration render units through the real desktop c
     await expect(page.locator('[data-slot="web-search-details"]')).toContainText(query)
     await expect(page.locator('[data-slot="web-search-details"]')).toContainText('已搜索网页')
     await expect(activityGroup).toContainText('package.json')
-    await expect(page.locator('[data-role="assistant"]')).toContainText(
-      'Web search and exploration render units complete'
-    )
-
     const searchRequest = backend.requests.find(
       (request) => request.method === 'POST' && request.url === '/api/codex/alpha/search'
     )
@@ -199,6 +202,22 @@ test('renders turn diff render unit after a real file change through the desktop
       await expect(panel).toBeHidden()
     }
 
+    await expect(page.locator('[data-role="assistant"]')).toContainText(
+      'Turn diff render unit complete'
+    )
+    const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]').last()
+    await expect(completedReasoningTrigger).toContainText('已处理')
+    await completedReasoningTrigger.click()
+    const completedReasoningContent = page.locator('[data-slot="reasoning-group-content"]').last()
+    await expect(completedReasoningContent).toHaveAttribute('data-state', 'open')
+    await completedReasoningContent.evaluate(async (content) => {
+      await Promise.all(
+        content
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished.catch(() => undefined))
+      )
+    })
+
     const turnDiffCard = page.locator('[data-slot="turn-diff-entry-unit"]').first()
     await expect(turnDiffCard).toBeVisible()
     await expect(turnDiffCard).toContainText('已编辑 1 个文件')
@@ -206,10 +225,14 @@ test('renders turn diff render unit after a real file change through the desktop
     await expect(turnDiffCard).toContainText('+1')
     await expect(turnDiffCard).toContainText('-1')
     await expect(turnDiffCard.locator('[data-slot="turn-diff-line-summary"]')).toBeVisible()
-    await turnDiffCard.locator('[data-slot="turn-diff-file-path"]').hover()
-    const diffViewer = page.locator('[data-slot="diff-viewer"]')
-    await expect(diffViewer).toBeVisible()
-    await expect(page.locator('[data-slot="hover-card-content"]')).toHaveAttribute(
+    const hoverCardTrigger = turnDiffCard.locator('[data-slot="hover-card-trigger"]')
+    await hoverCardTrigger.hover()
+    await expect(hoverCardTrigger).toHaveAttribute('data-state', 'open')
+    const diffPopover = page.locator('[data-radix-popper-content-wrapper]').filter({
+      has: page.locator('[data-slot="diff-viewer"]')
+    })
+    await expect(diffPopover.locator('[data-slot="diff-viewer"]')).toBeVisible()
+    await expect(diffPopover.locator('[data-slot="hover-card-content"]')).toHaveAttribute(
       'data-side',
       'top'
     )

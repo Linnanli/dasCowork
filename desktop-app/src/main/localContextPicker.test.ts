@@ -26,7 +26,12 @@ describe('localContextPicker', () => {
       }
     })
     await expect(pickLocalContext({ showOpenDialog, stat }, 'filesAndFolders')).resolves.toEqual([
-      { kind: 'file', path: '/tmp/report.md', label: 'report.md' },
+      {
+        kind: 'file',
+        path: '/tmp/report.md',
+        label: 'report.md',
+        fileUrl: 'file:///tmp/report.md'
+      },
       {
         kind: 'image',
         path: '/tmp/photo.png',
@@ -34,7 +39,12 @@ describe('localContextPicker', () => {
         mediaType: 'image/png',
         previewUrl: 'app://fs/@fs/tmp/photo.png'
       },
-      { kind: 'folder', path: '/tmp/folder', label: 'folder' }
+      {
+        kind: 'folder',
+        path: '/tmp/folder',
+        label: 'folder',
+        fileUrl: 'file:///tmp/folder'
+      }
     ])
     expect(showOpenDialog).toHaveBeenCalledWith({
       properties: ['openFile', 'openDirectory', 'multiSelections']
@@ -61,7 +71,14 @@ describe('localContextPicker', () => {
         },
         'filesAndFolders'
       )
-    ).resolves.toEqual([{ kind: 'file', path: '/tmp/report.md', label: 'report.md' }])
+    ).resolves.toEqual([
+      {
+        kind: 'file',
+        path: '/tmp/report.md',
+        label: 'report.md',
+        fileUrl: 'file:///tmp/report.md'
+      }
+    ])
     expect(showOpenDialog).toHaveBeenCalledWith({
       properties: ['openFile', 'multiSelections']
     })

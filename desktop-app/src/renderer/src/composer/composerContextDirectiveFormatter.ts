@@ -5,7 +5,15 @@ import {
   unstable_defaultDirectiveFormatter
 } from '@assistant-ui/react'
 
-export type ComposerContextReferenceType = 'file' | 'folder'
+export type ComposerContextReferenceType =
+  | 'file'
+  | 'folder'
+  | 'chat'
+  | 'agent'
+  | 'agentRole'
+  | 'skill'
+  | 'app'
+  | 'plugin'
 
 export type ComposerContextReference = {
   type: ComposerContextReferenceType
@@ -80,7 +88,7 @@ export function serializeComposerContextReference(reference: ComposerContextRefe
 export function parseComposerContextReferences(text: string): readonly ComposerContextReference[] {
   return composerContextDirectiveFormatter.parse(text).flatMap((segment) => {
     if (segment.kind !== 'mention' || !isComposerContextReferenceType(segment.type)) return []
-    if (!isAbsolutePath(segment.id)) return []
+    if (!isValidReferencePath(segment.type, segment.id)) return []
     return [{ type: segment.type, path: segment.id, label: segment.label }]
   })
 }
@@ -90,8 +98,14 @@ export function appendComposerContextReference(
   draft: string,
   reference: ComposerContextReference
 ): string {
-  if (!isAbsolutePath(reference.path) || reference.label.length === 0) return draft
-  if (parseComposerContextReferences(draft).some((item) => item.path === reference.path)) {
+  if (!isValidReferencePath(reference.type, reference.path) || reference.label.length === 0) {
+    return draft
+  }
+  if (
+    parseComposerContextReferences(draft).some(
+      (item) => item.type === reference.type && item.path === reference.path
+    )
+  ) {
     return draft
   }
 
@@ -101,7 +115,7 @@ export function appendComposerContextReference(
 }
 
 export function dedupeComposerContextReferences(draft: string): string {
-  const seenPaths = new Set<string>()
+  const seenReferences = new Set<string>()
   const segments = composerContextDirectiveFormatter.parse(draft)
 
   return segments
@@ -111,8 +125,14 @@ export function dedupeComposerContextReferences(draft: string): string {
           ? segment.text
           : unstable_defaultDirectiveFormatter.serialize(segment)
       }
-      if (!isAbsolutePath(segment.id) || seenPaths.has(segment.id)) return ''
-      seenPaths.add(segment.id)
+      const canonicalId =
+        segment.type === 'file' || segment.type === 'folder'
+          ? `path:${segment.id}`
+          : `${segment.type}:${segment.id}`
+      if (!isValidReferencePath(segment.type, segment.id) || seenReferences.has(canonicalId)) {
+        return ''
+      }
+      seenReferences.add(canonicalId)
       return serializeComposerContextReference({
         type: segment.type,
         path: segment.id,
@@ -125,7 +145,16 @@ export function dedupeComposerContextReferences(draft: string): string {
 export function isComposerContextReferenceType(
   value: string
 ): value is ComposerContextReferenceType {
-  return value === 'file' || value === 'folder'
+  return (
+    value === 'file' ||
+    value === 'folder' ||
+    value === 'chat' ||
+    value === 'agent' ||
+    value === 'agentRole' ||
+    value === 'skill' ||
+    value === 'app' ||
+    value === 'plugin'
+  )
 }
 
 export function isAbsolutePath(value: string): boolean {
@@ -143,8 +172,31 @@ function decodeComposerContextReference({
 }): ComposerContextReference | undefined {
   const label = decodeUriComponentSafely(encodedLabel)
   const path = decodeUriComponentSafely(encodedPath)
-  if (!label || !path || !isAbsolutePath(path)) return undefined
+  if (!label || !path || !isValidReferencePath(type, path)) return undefined
   return { type, label, path }
+}
+
+function isValidReferencePath(type: ComposerContextReferenceType, path: string): boolean {
+  switch (type) {
+    case 'file':
+    case 'folder':
+    case 'skill':
+      return isAbsolutePath(path)
+    case 'chat':
+      return hasSchemeIdentifier(path, 'thread://')
+    case 'agent':
+      return hasSchemeIdentifier(path, 'agent://')
+    case 'agentRole':
+      return hasSchemeIdentifier(path, 'subagent://')
+    case 'app':
+      return hasSchemeIdentifier(path, 'app://')
+    case 'plugin':
+      return hasSchemeIdentifier(path, 'plugin://')
+  }
+}
+
+function hasSchemeIdentifier(path: string, scheme: string): boolean {
+  return path.startsWith(scheme) && path.length > scheme.length
 }
 
 function decodeUriComponentSafely(value: string): string {

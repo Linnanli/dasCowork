@@ -67,6 +67,24 @@ describe('composerContextDirectiveFormatter', () => {
     ).toBe(':tool[Search]{name=web_search}')
   })
 
+  it('round-trips every non-file context URI without treating it as a local path', () => {
+    const references = [
+      { type: 'chat' as const, label: '计划讨论', path: 'thread://thread-1' },
+      { type: 'agent' as const, label: 'Explore', path: 'agent://thread-child' },
+      { type: 'agentRole' as const, label: 'reviewer', path: 'subagent://reviewer' },
+      { type: 'app' as const, label: 'Slack', path: 'app://slack' },
+      { type: 'plugin' as const, label: 'GitHub', path: 'plugin://github' }
+    ]
+    const serialized = references.map(serializeComposerContextReference).join(' ')
+
+    expect(parseComposerContextReferences(serialized)).toEqual(references)
+  })
+
+  it('rejects a context URI whose scheme does not match its directive type', () => {
+    const input = ':chat[wrong]{name=agent%3A%2F%2Fchild}'
+    expect(composerContextDirectiveFormatter.parse(input)).toEqual([{ kind: 'text', text: input }])
+  })
+
   it('appends exactly once by absolute path and preserves the draft text', () => {
     const reference = { type: 'folder' as const, label: 'app', path: '/repo/app' }
     const once = appendComposerContextReference('检查一下', reference)

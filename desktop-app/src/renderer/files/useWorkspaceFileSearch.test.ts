@@ -65,28 +65,28 @@ describe('useWorkspaceFileSearch', () => {
     })
 
     await act(async () => {
-      secondSearch.resolve({ results: [{ path: '/repo/new.ts' }] })
+      secondSearch.resolve({ results: [{ kind: 'file', path: '/repo/new.ts' }] })
       await secondRequest
     })
-    expect(searchState?.results).toEqual([{ path: '/repo/new.ts' }])
+    expect(searchState?.results).toEqual([{ kind: 'file', path: '/repo/new.ts' }])
 
     await act(async () => {
-      firstSearch.resolve({ results: [{ path: '/repo/old.ts' }] })
+      firstSearch.resolve({ results: [{ kind: 'file', path: '/repo/old.ts' }] })
       await firstRequest
     })
-    expect(searchState?.results).toEqual([{ path: '/repo/new.ts' }])
+    expect(searchState?.results).toEqual([{ kind: 'file', path: '/repo/new.ts' }])
   })
 
   it('clears results when file search becomes disabled', async () => {
     const manager = createSequencedManager([
-      Promise.resolve({ results: [{ path: '/repo/app.ts' }] })
+      Promise.resolve({ results: [{ kind: 'file', path: '/repo/app.ts' }] })
     ])
 
     await renderProbe(manager)
     await act(async () => {
       await searchState?.search('app')
     })
-    expect(searchState?.results).toEqual([{ path: '/repo/app.ts' }])
+    expect(searchState?.results).toEqual([{ kind: 'file', path: '/repo/app.ts' }])
 
     await act(async () => {
       root.render(createElement(Probe, { manager, enabled: false, onState: captureState }))

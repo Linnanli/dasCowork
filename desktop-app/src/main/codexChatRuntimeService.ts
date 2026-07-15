@@ -9,6 +9,7 @@ import {
   CODEX_PROVIDER_ID,
   codexCallOptions,
   type CodexCallOptions,
+  type CodexAgentLifecycleEvent,
   type CodexLanguageModelSettings,
   type CodexModelProviderInfo,
   type CodexProvider,
@@ -41,6 +42,7 @@ import type {
 } from '../shared/codexIpcApi'
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
+import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
 
 export type CodexPortLike = {
   postMessage(message: CodexChatStreamEvent): void
@@ -68,6 +70,7 @@ type StreamTextLike = (input: {
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
+  onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 type ActiveConversationRun = {
@@ -97,6 +100,7 @@ export type CodexChatRuntimeServiceOptions = {
   projectService?: ProjectServiceLike
   projectStore?: ProjectStoreLike
   streamText?: StreamTextLike
+  onAgentLifecycle?: (event: CodexAgentLifecycleEvent) => void | Promise<void>
 }
 
 export type CodexChatRunResult = {
@@ -126,6 +130,7 @@ export class CodexChatRuntimeService {
   private readonly projectService: ProjectServiceLike | undefined
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
+  private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private selectedModelId: string | undefined
   private status: CodexStatus
@@ -141,6 +146,7 @@ export class CodexChatRuntimeService {
         resourcesPath: process.resourcesPath
       })
     this.streamText = options.streamText ?? defaultStreamText
+    this.onAgentLifecycle = options.onAgentLifecycle
     this.modelCatalog = options.modelCatalog
     this.projectService = options.projectService
     this.projectStore = options.projectStore
@@ -282,10 +288,16 @@ export class CodexChatRuntimeService {
         ? await this.modelCatalog.resolveClientModel(modelId)
         : undefined
       const streamModelId = clientModel?.model_id ?? modelId
+      const localAttachmentCount = await validateLocalAttachmentsInLatestUserMessage(
+        request.messages
+      )
       const conversation = await startConversation({
         request,
         projectService: this.projectService
       })
+      if (localAttachmentCount > 0 && conversation.projectAssignment?.projectKind === 'remote') {
+        throw new Error('Local attachments are not available for remote execution')
+      }
       const projectAssignmentKey = request.body?.conversationId ?? request.chatId
       let normalizedProjectAssignmentThreadId: string | undefined
       let projectAssignmentQueue = Promise.resolve()
@@ -370,7 +382,8 @@ export class CodexChatRuntimeService {
         clientModel,
         executionTarget: conversation.executionTarget,
         resumeThreadId: activeRun.threadId,
-        onThreadStarted
+        onThreadStarted,
+        onAgentLifecycle: this.onAgentLifecycle
       })
       if (this.status.state !== 'stopping') {
         this.status = {
@@ -587,7 +600,8 @@ async function defaultStreamText({
   clientModel,
   executionTarget,
   resumeThreadId,
-  onThreadStarted
+  onThreadStarted,
+  onAgentLifecycle
 }: {
   request: CodexChatRequest
   modelId: string
@@ -597,6 +611,7 @@ async function defaultStreamText({
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
+  onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
 }): Promise<StreamTextLikeResult> {
   const modelMessages = await convertToModelMessages(request.messages)
   const system = typeof request.body?.system === 'string' ? request.body.system : undefined
@@ -606,7 +621,8 @@ async function defaultStreamText({
       modelId,
       executionTarget,
       resumeThreadId: resumeThreadId ?? request.body?.threadId,
-      onThreadStarted
+      onThreadStarted,
+      onAgentLifecycle
     })
   )
 
@@ -623,18 +639,21 @@ function codexCallOptionsInput({
   modelId,
   executionTarget,
   resumeThreadId,
-  onThreadStarted
+  onThreadStarted,
+  onAgentLifecycle
 }: {
   modelId: string
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
+  onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
 }): CodexCallOptions {
   return {
     model: modelId,
     summary: 'auto' as const,
     ...(resumeThreadId ? { resumeThreadId } : {}),
     ...(onThreadStarted ? { onThreadStarted } : {}),
+    ...(onAgentLifecycle ? { onAgentLifecycle } : {}),
     ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
     ...(executionTarget?.runtimeWorkspaceRoots
       ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }

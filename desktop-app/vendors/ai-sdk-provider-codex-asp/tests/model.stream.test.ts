@@ -137,6 +137,50 @@ class CompactionFailingTransport extends ScriptedTransport
     }
 }
 
+class AgentLifecycleTransport extends ScriptedTransport
+{
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
+    {
+        if (!("id" in message) || message.id === undefined || !("method" in message) || message.method !== "turn/start")
+        {
+            await super.sendMessage(message);
+            return;
+        }
+
+        await MockTransport.prototype.sendMessage.call(this, message);
+        this.emitMessage({ id: message.id, result: { turnId: "turn_1" } });
+        queueMicrotask(() =>
+        {
+            this.emitMessage({
+                method: "turn/started",
+                params: { threadId: "thr_1", turn: { id: "turn_1" } },
+            });
+            this.emitMessage({
+                method: "item/started",
+                params: {
+                    threadId: "thr_1",
+                    turnId: "turn_1",
+                    startedAtMs: 123,
+                    item: {
+                        type: "subAgentActivity",
+                        id: "activity-1",
+                        kind: "started",
+                        agentThreadId: "agent-1",
+                        agentPath: "/repo",
+                    },
+                },
+            });
+            this.emitMessage({
+                method: "turn/completed",
+                params: {
+                    threadId: "thr_1",
+                    turn: { id: "turn_1", items: [], status: "completed", error: null },
+                },
+            });
+        });
+    }
+}
+
 class InterruptAwareTransport extends MockTransport
 {
     override async sendMessage(message: JsonRpcMessage): Promise<void>
@@ -279,6 +323,34 @@ describe("CodexLanguageModel.doStream", () =>
         expect(turnStartMessage).toBeDefined();
         expect(turnStartMessage?.params).toMatchObject({
             input: [{ type: "text", text: "hi", text_elements: [] }],
+        });
+    });
+
+    it("delivers normalized agent lifecycle events from the same active stream", async () =>
+    {
+        const transport = new AgentLifecycleTransport();
+        const onAgentLifecycle = vi.fn();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ onAgentLifecycle }),
+        });
+        await readAll(stream);
+
+        expect(onAgentLifecycle).toHaveBeenCalledWith({
+            kind: "started",
+            threadId: "thr_1",
+            turnId: "turn_1",
+            agentThreadId: "agent-1",
+            agentPath: "/repo",
+            status: "started",
+            toolCallId: "activity-1",
+            timestampMs: 123,
         });
     });
 

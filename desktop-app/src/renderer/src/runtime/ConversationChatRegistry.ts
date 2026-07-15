@@ -11,7 +11,7 @@ import {
   ElectronIpcChatTransport,
   type ActiveConversationContext
 } from '../lib/ElectronIpcChatTransport'
-import { ConversationDraftStore } from './ConversationDraftStore'
+import { ConversationDraftStore, type ConversationDraftAttachment } from './ConversationDraftStore'
 
 export type ConversationScrollSnapshot = {
   scrollTop: number
@@ -32,6 +32,7 @@ export type ConversationChatEntry = {
   modelSelectionError?: string
   unread: boolean
   draft: string
+  draftAttachments: readonly ConversationDraftAttachment[]
   scroll?: ConversationScrollSnapshot
   loaded: boolean
 }
@@ -210,6 +211,7 @@ export class ConversationChatRegistry {
     this.bindAlias(entry, threadId)
     entry.context = { ...entry.context, threadId }
     entry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
+    entry.draftAttachments = this.draftStore.getAttachments(threadId)
     entry.loaded = true
     this.emit()
     return entry
@@ -263,6 +265,17 @@ export class ConversationChatRegistry {
     if (entry.draft === draft) return
     entry.draft = draft
     this.draftStore.set(entry.context.threadId ?? entry.localId, draft)
+    this.emit()
+  }
+
+  setDraftAttachments(
+    entryOrIdentity: ConversationChatEntry | string,
+    attachments: readonly ConversationDraftAttachment[]
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    if (JSON.stringify(entry.draftAttachments) === JSON.stringify(attachments)) return
+    entry.draftAttachments = attachments.map((attachment) => ({ ...attachment }))
+    this.draftStore.setAttachments(entry.context.threadId ?? entry.localId, entry.draftAttachments)
     this.emit()
   }
 
@@ -342,7 +355,6 @@ export class ConversationChatRegistry {
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
       onStreamStarted: () => {
         entry.acceptedCurrentSend = false
-        this.clearDraft(entry)
         entry.phase = 'submitted'
         entry.error = undefined
         this.emit()
@@ -392,6 +404,7 @@ export class ConversationChatRegistry {
       selectedModelId: this.defaultSelectedModelId,
       unread: false,
       draft: this.draftStore.get(stableDraftIdentity),
+      draftAttachments: this.draftStore.getAttachments(stableDraftIdentity),
       loaded: input.loaded,
       acceptedCurrentSend: false
     } satisfies InternalConversationChatEntry)
@@ -411,9 +424,10 @@ export class ConversationChatRegistry {
   }
 
   private clearDraft(entry: InternalConversationChatEntry): void {
-    if (!entry.draft) return
+    if (!entry.draft && entry.draftAttachments.length === 0) return
     entry.draft = ''
-    this.draftStore.set(entry.context.threadId ?? entry.localId, '')
+    entry.draftAttachments = []
+    this.draftStore.clear(entry.context.threadId ?? entry.localId)
   }
 
   private activate(entry: InternalConversationChatEntry): void {
@@ -451,6 +465,7 @@ export class ConversationChatRegistry {
       cwd: placeholder.context.cwd ?? liveEntry.context.cwd
     }
     liveEntry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
+    liveEntry.draftAttachments = this.draftStore.getAttachments(threadId)
     liveEntry.scroll ??= placeholder.scroll
     liveEntry.loaded = true
     liveEntry.unread ||= placeholder.unread

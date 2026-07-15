@@ -63,7 +63,7 @@ test('approves a command request through the desktop approval panel', async ({
 
     await panel.getByRole('button', { name: 'Approve', exact: true }).click()
 
-    await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('正在思考')
+    await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('已处理')
     await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
     await expect(page.locator('[data-slot="tool-group-trigger-icon"]')).toBeVisible()
     await expect(page.locator('[data-slot="message-thinking-unit"]')).toHaveCount(0)

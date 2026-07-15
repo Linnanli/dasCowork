@@ -1,247 +1,331 @@
-import { type Unstable_TriggerItem } from '@assistant-ui/react'
+import type { Unstable_TriggerItem } from '@assistant-ui/react'
 import {
+  BotIcon,
   FileIcon,
   FolderIcon,
   FolderOpenIcon,
   Loader2Icon,
+  MessageSquareIcon,
+  PackageIcon,
   PlusIcon,
+  PuzzleIcon,
+  RefreshCwIcon,
+  SparklesIcon,
   WrenchIcon
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type { LocalContextPickerKind } from '../../../../shared/codexIpcApi'
-import { type ComposerContextReferenceType } from '@/composer/composerContextDirectiveFormatter'
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList
-} from '@/components/ui/command'
-import { Card } from '@/components/ui/card'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+  useComposerContextSuggestion,
+  type ComposerContextSuggestionEntry
+} from '@/composer/composerContextSuggestionController'
+import { cn } from '@/lib/utils'
+
+export type ComposerContextMenuSection = {
+  id: string
+  label: string
+  items: readonly Unstable_TriggerItem[]
+  error?: string | null
+  loading?: boolean
+  onRetry?: () => void
+  preFiltered?: boolean
+}
 
 export type ComposerAddContextPopoverProps = {
-  anchorElement: HTMLDivElement | null
   disabled?: boolean
-  files: readonly Unstable_TriggerItem[]
-  tools: readonly Unstable_TriggerItem[]
-  isSearching: boolean
   localPickerEnabled: boolean
-  onInsertItem: (item: Unstable_TriggerItem) => void
-  onSearch: (query: string) => void
+  onQueryChange?: (query: string) => void
   pickLocalContext: (kind: LocalContextPickerKind) => Promise<boolean>
-  searchError: string | null
-  searchEnabled: boolean
+  sections: readonly ComposerContextMenuSection[]
 }
 
 const contextMenuItemClassName =
-  'cursor-pointer rounded-lg px-2.5 py-2 text-popover-foreground/75 transition-colors hover:bg-foreground/5 hover:text-popover-foreground focus:bg-foreground/5 focus:text-popover-foreground data-[selected=true]:bg-foreground/5 data-[selected=true]:text-popover-foreground data-[selected=true]:opacity-100 dark:hover:bg-foreground/8 dark:focus:bg-foreground/8 dark:data-[selected=true]:bg-foreground/8'
+  'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-popover-foreground/75 transition-colors outline-none hover:bg-foreground/5 hover:text-popover-foreground focus-visible:bg-foreground/5 data-[highlighted=true]:bg-foreground/5 data-[highlighted=true]:text-popover-foreground dark:hover:bg-foreground/8 dark:focus-visible:bg-foreground/8 dark:data-[highlighted=true]:bg-foreground/8'
+
+const contextItemIcons: Record<string, typeof FileIcon> = {
+  folder: FolderIcon,
+  chat: MessageSquareIcon,
+  agent: BotIcon,
+  agentRole: BotIcon,
+  skill: SparklesIcon,
+  plugin: PuzzleIcon,
+  app: PackageIcon,
+  tool: WrenchIcon
+}
 
 export function ComposerAddContextPopover({
-  anchorElement,
   disabled = false,
-  files,
-  tools,
-  isSearching,
   localPickerEnabled,
-  onInsertItem,
-  onSearch,
+  onQueryChange,
   pickLocalContext,
-  searchError,
-  searchEnabled
+  sections
 }: ComposerAddContextPopoverProps): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
+  const { controller, state } = useComposerContextSuggestion()
   const [pickerError, setPickerError] = useState<string | null>(null)
   const [isPicking, setIsPicking] = useState(false)
+  const normalizedQuery = state.query.trim().toLocaleLowerCase()
+  const visibleSections = useMemo(
+    () =>
+      sections.map((section) => ({
+        ...section,
+        items:
+          section.preFiltered || !normalizedQuery
+            ? section.items
+            : section.items.filter((item) => fuzzyMatches(item, normalizedQuery))
+      })),
+    [normalizedQuery, sections]
+  )
+  const indexedSections = useMemo(() => {
+    const firstSectionIndex = !normalizedQuery && localPickerEnabled ? 1 : 0
+    return visibleSections.map((section, sectionIndex) => ({
+      section,
+      startIndex:
+        firstSectionIndex +
+        visibleSections
+          .slice(0, sectionIndex)
+          .reduce((itemCount, previous) => itemCount + previous.items.length, 0)
+    }))
+  }, [localPickerEnabled, normalizedQuery, visibleSections])
 
   useEffect(() => {
-    if (!open || !searchEnabled) return
-    const timeout = window.setTimeout(() => onSearch(query), 150)
+    if (!onQueryChange) return undefined
+    if (!state.open) {
+      onQueryChange('')
+      return undefined
+    }
+    const timeout = window.setTimeout(() => onQueryChange(state.query), 150)
     return () => window.clearTimeout(timeout)
-  }, [onSearch, open, query, searchEnabled])
+  }, [onQueryChange, state.open, state.query])
 
-  const close = (): void => {
-    setOpen(false)
-    setQuery('')
-    setPickerError(null)
-    requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLElement>(
-          '.aui-composer-input.aui-lexical-input, .aui-composer-input .aui-lexical-input'
-        )
-        ?.focus()
-    })
-  }
+  const pick = useCallback(
+    async (kind: LocalContextPickerKind): Promise<void> => {
+      setPickerError(null)
+      setIsPicking(true)
+      try {
+        if (!(await pickLocalContext(kind))) return
+        controller.dismiss({ removeQuery: true })
+      } catch (error) {
+        setPickerError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setIsPicking(false)
+      }
+    },
+    [controller, pickLocalContext]
+  )
 
-  const handleOpenChange = (nextOpen: boolean): void => {
-    if (nextOpen) {
-      setOpen(true)
-      return
+  useEffect(() => {
+    const entries: ComposerContextSuggestionEntry[] = []
+    if (!normalizedQuery && localPickerEnabled) {
+      entries.push({ id: 'add:files-and-folders', select: () => void pick('filesAndFolders') })
     }
-    close()
-  }
-
-  const toggle = (): void => {
-    if (disabled) return
-    setOpen((currentOpen) => !currentOpen)
-  }
-
-  const selectItem = (item: Unstable_TriggerItem): void => {
-    onInsertItem(item)
-    close()
-  }
-
-  const pick = async (kind: LocalContextPickerKind): Promise<void> => {
-    setPickerError(null)
-    setIsPicking(true)
-    try {
-      if (!(await pickLocalContext(kind))) return
-      close()
-    } catch (error) {
-      setPickerError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsPicking(false)
+    for (const { section } of indexedSections) {
+      for (const item of section.items) {
+        entries.push({ id: `${section.id}:${item.id}`, select: () => controller.selectItem(item) })
+      }
     }
-  }
+    controller.setNavigationEntries(entries)
+    return () => controller.setNavigationEntries([])
+  }, [controller, indexedSections, localPickerEnabled, normalizedQuery, pick])
+
+  useEffect(() => {
+    if (!state.open) return undefined
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (
+        target.closest('[data-composer-context-keep-open]') ||
+        target.closest('.aui-lexical-input')
+      ) {
+        return
+      }
+      controller.dismiss()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [controller, state.open])
+
+  const localPickerIndex = !normalizedQuery && localPickerEnabled ? 0 : -1
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
-      {anchorElement ? <PopoverAnchor virtualRef={{ current: anchorElement }} /> : null}
+    <div data-composer-context-keep-open>
       <button
         type="button"
         disabled={disabled}
-        aria-expanded={open}
-        aria-haspopup="dialog"
+        aria-expanded={state.open}
+        aria-haspopup="listbox"
         aria-label="添加文件和更多"
-        title="添加文件和更多"
-        onClick={toggle}
-        data-state={open ? 'open' : 'closed'}
+        title="添加文件和更多（@）"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => controller.togglePlus()}
+        data-state={state.open ? 'open' : 'closed'}
         className="aui-composer-add-context inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors outline-none hover:bg-foreground/5 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-foreground/8 data-[state=open]:bg-foreground/5 dark:data-[state=open]:bg-foreground/8"
       >
         <PlusIcon className="size-4.5 stroke-[1.75px]" />
       </button>
-      <PopoverContent
-        align="start"
-        side="top"
-        collisionPadding={8}
-        className="aui-composer-add-context-popover h-80 w-(--radix-popover-trigger-width) border-0 bg-transparent p-0 shadow-none"
-      >
-        <Card className="h-full gap-0 rounded-2xl border-border bg-popover/80 p-1 text-popover-foreground shadow-none backdrop-blur-sm">
-          <Command
-            shouldFilter={false}
-            className="min-h-0 rounded-xl bg-transparent text-popover-foreground"
-          >
-            <CommandInput
-              value={query}
-              onValueChange={setQuery}
-              placeholder="搜索文件和工具"
-              aria-label="搜索当前上下文"
-            />
-            <CommandList className="min-h-0 max-h-none flex-1">
-              <CommandGroup heading="添加">
-                {localPickerEnabled ? (
-                  <CommandItem
-                    disabled={isPicking}
-                    value="local-files-and-folders"
-                    onSelect={() => void pick('filesAndFolders')}
-                    className={contextMenuItemClassName}
-                  >
-                    <FolderOpenIcon className="size-4" />
-                    <span className="flex-1">选择文件文件夹</span>
-                    {isPicking ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                  </CommandItem>
-                ) : null}
-              </CommandGroup>
-              {pickerError ? <ContextAlert message={pickerError} /> : null}
-              {searchError ? <ContextAlert message={searchError} /> : null}
-              {isSearching ? (
-                <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
-                  <Loader2Icon className="size-4 animate-spin" />
-                  正在搜索…
-                </div>
-              ) : (
-                <ContextSearchResults
-                  files={files}
-                  query={query}
-                  tools={tools}
-                  onSelect={selectItem}
+
+      {state.open ? (
+        <div
+          role="listbox"
+          aria-label="添加上下文"
+          className="aui-composer-context-panel absolute right-0 bottom-full left-0 z-50 mb-3 max-h-80 overflow-y-auto rounded-2xl border border-border bg-popover/90 p-1 text-popover-foreground shadow-lg backdrop-blur-md"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {!normalizedQuery ? (
+            <ContextSection label="Add">
+              {localPickerEnabled ? (
+                <ContextActionItem
+                  highlighted={state.highlightedIndex === localPickerIndex}
+                  disabled={isPicking}
+                  icon={isPicking ? Loader2Icon : FolderOpenIcon}
+                  label="Files and folders"
+                  onMouseEnter={() => controller.highlight(localPickerIndex)}
+                  onSelect={() => void pick('filesAndFolders')}
+                  spinning={isPicking}
                 />
-              )}
-            </CommandList>
-          </Command>
-        </Card>
-      </PopoverContent>
-    </Popover>
+              ) : null}
+            </ContextSection>
+          ) : null}
+
+          {pickerError ? <ContextAlert message={pickerError} /> : null}
+
+          {indexedSections.map(({ section, startIndex }) => {
+            if (!section.loading && !section.error && section.items.length === 0) return null
+
+            return (
+              <ContextSection key={section.id} label={section.label}>
+                {section.loading ? (
+                  <div className="flex items-center gap-2 px-2.5 py-2 text-sm text-muted-foreground">
+                    <Loader2Icon className="size-4 animate-spin" />
+                    正在加载…
+                  </div>
+                ) : null}
+                {section.error ? (
+                  <div className="flex items-center gap-2 px-2.5 py-2 text-sm text-destructive">
+                    <span className="min-w-0 flex-1 truncate">{section.error}</span>
+                    {section.onRetry ? (
+                      <button
+                        type="button"
+                        className="rounded-md p-1 hover:bg-destructive/10"
+                        aria-label={`重试加载 ${section.label}`}
+                        onClick={section.onRetry}
+                      >
+                        <RefreshCwIcon className="size-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {section.items.map((item, itemIndex) => {
+                  const index = startIndex + itemIndex
+                  return (
+                    <ContextItem
+                      key={`${section.id}:${item.id}`}
+                      item={item}
+                      highlighted={state.highlightedIndex === index}
+                      onMouseEnter={() => controller.highlight(index)}
+                      onSelect={() => controller.selectItem(item)}
+                    />
+                  )
+                })}
+              </ContextSection>
+            )
+          })}
+
+          {!isPicking &&
+          !pickerError &&
+          visibleSections.every(
+            (section) => !section.loading && !section.error && section.items.length === 0
+          ) &&
+          (normalizedQuery || !localPickerEnabled) ? (
+            <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+              {normalizedQuery ? '没有匹配的上下文' : '没有可引用的上下文'}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
-function ContextSearchResults({
-  files,
-  query,
-  tools,
-  onSelect
+function ContextSection({
+  children,
+  label
 }: {
-  files: readonly Unstable_TriggerItem[]
-  query: string
-  tools: readonly Unstable_TriggerItem[]
-  onSelect: (item: Unstable_TriggerItem) => void
+  children: React.ReactNode
+  label: string
 }): React.JSX.Element {
-  const normalizedQuery = query.trim().toLocaleLowerCase()
-  const matchingFiles = files.filter((item) => matches(item, normalizedQuery))
-  const matchingTools = tools.filter((item) => matches(item, normalizedQuery))
-  const hasResults = matchingFiles.length > 0 || matchingTools.length > 0
-
-  if (!hasResults) {
-    return (
-      <CommandEmpty>{normalizedQuery ? '没有匹配的文件或工具' : '没有可引用的上下文'}</CommandEmpty>
-    )
-  }
-
   return (
-    <>
-      {matchingFiles.length > 0 ? (
-        <CommandGroup heading="文件">
-          {matchingFiles.map((item) => (
-            <ContextItem key={`file-${item.id}`} item={item} onSelect={onSelect} type="file" />
-          ))}
-        </CommandGroup>
-      ) : null}
-      {matchingTools.length > 0 ? (
-        <CommandGroup heading="工具">
-          {matchingTools.map((item) => (
-            <ContextItem key={`tool-${item.id}`} item={item} onSelect={onSelect} type="tool" />
-          ))}
-        </CommandGroup>
-      ) : null}
-    </>
+    <section className="py-1" aria-label={label}>
+      <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+        {label}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function ContextActionItem({
+  disabled,
+  highlighted,
+  icon: Icon,
+  label,
+  onMouseEnter,
+  onSelect,
+  spinning = false
+}: {
+  disabled?: boolean
+  highlighted: boolean
+  icon: typeof FolderOpenIcon
+  label: string
+  onMouseEnter: () => void
+  onSelect: () => void
+  spinning?: boolean
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={highlighted}
+      data-highlighted={highlighted}
+      disabled={disabled}
+      className={contextMenuItemClassName}
+      onMouseEnter={onMouseEnter}
+      onClick={onSelect}
+    >
+      <Icon className={cn('size-4', spinning && 'animate-spin')} />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
   )
 }
 
 function ContextItem({
+  highlighted,
   item,
-  onSelect,
-  type
+  onMouseEnter,
+  onSelect
 }: {
+  highlighted: boolean
   item: Unstable_TriggerItem
-  onSelect: (item: Unstable_TriggerItem) => void
-  type: ComposerContextReferenceType | 'tool'
+  onMouseEnter: () => void
+  onSelect: () => void
 }): React.JSX.Element {
-  const Icon = type === 'tool' ? WrenchIcon : type === 'folder' ? FolderIcon : FileIcon
+  const Icon = contextItemIcons[item.type] ?? FileIcon
   return (
-    <CommandItem
-      value={`${item.label} ${item.id}`}
-      onSelect={() => onSelect(item)}
+    <button
+      type="button"
+      role="option"
+      aria-selected={highlighted}
+      data-highlighted={highlighted}
       className={contextMenuItemClassName}
+      onMouseEnter={onMouseEnter}
+      onClick={onSelect}
     >
-      <Icon className="size-4" />
+      <Icon className="size-4 shrink-0" />
       <span className="min-w-0 flex-1 truncate">{item.label}</span>
       {item.description ? (
-        <span className="max-w-32 truncate text-xs text-muted-foreground">{item.description}</span>
+        <span className="max-w-52 truncate text-xs text-muted-foreground">{item.description}</span>
       ) : null}
-    </CommandItem>
+    </button>
   )
 }
 
@@ -253,9 +337,15 @@ function ContextAlert({ message }: { message: string }): React.JSX.Element {
   )
 }
 
-function matches(item: Unstable_TriggerItem, query: string): boolean {
-  if (!query) return true
-  return [item.id, item.label, item.description]
+function fuzzyMatches(item: Unstable_TriggerItem, query: string): boolean {
+  const haystack = [item.label, item.id, item.description]
     .filter((value): value is string => typeof value === 'string')
-    .some((value) => value.toLocaleLowerCase().includes(query))
+    .join(' ')
+    .toLocaleLowerCase()
+  let queryIndex = 0
+  for (const character of haystack) {
+    if (character === query[queryIndex]) queryIndex += 1
+    if (queryIndex === query.length) return true
+  }
+  return false
 }

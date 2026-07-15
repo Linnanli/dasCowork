@@ -89,6 +89,56 @@ function createClient(): ConversationThreadClientLike {
 }
 
 describe('ConversationApiService', () => {
+  it('deduplicates the initial load and then serves the snapshot without another list request', async () => {
+    const threadClient = createClient()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    expect(service.getConversationSnapshot().loaded).toBe(false)
+    const first = service.ensureConversationListLoaded()
+    const second = service.ensureConversationListLoaded()
+    const sidebarLoad = service.getConversationList()
+
+    expect(first).toBe(second)
+    await Promise.all([first, second, sidebarLoad])
+    expect(service.getConversationSnapshot().loaded).toBe(true)
+    await service.ensureConversationListLoaded()
+    expect(threadClient.listThreads).toHaveBeenCalledTimes(1)
+  })
+
+  it('reprojects the loaded snapshot for project-state changes without listing threads again', async () => {
+    const threadClient = createClient()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+    await service.refreshConversationList()
+    vi.mocked(threadClient.listThreads).mockClear()
+
+    const state = service.applyProjectState({
+      ...baseProjectState,
+      threadProjectAssignments: {
+        ...baseProjectState.threadProjectAssignments,
+        'thread-local': {
+          projectKind: 'projectless',
+          cwd: null,
+          workspaceRoot: null,
+          outputDirectory: null
+        }
+      }
+    })
+
+    expect(state.conversations.find(({ id }) => id === 'thread-local')?.projectAssignment).toEqual({
+      projectKind: 'projectless',
+      cwd: null,
+      workspaceRoot: null,
+      outputDirectory: null
+    })
+    expect(threadClient.listThreads).not.toHaveBeenCalled()
+  })
+
   it('joins app-server thread rows with project assignments', async () => {
     const service = new ConversationApiService({
       threadClient: createClient(),

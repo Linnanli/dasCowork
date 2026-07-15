@@ -47,6 +47,7 @@ export type WorkspaceRootOption = {
 }
 
 export type WorkspaceFileSearchResult = {
+  kind: 'file' | 'folder'
   path: string
   label?: string
   root?: string

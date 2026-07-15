@@ -1,6 +1,7 @@
 import type {
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopComposerContextApi,
   DesktopConversationsApi,
   DesktopProjectsApi
 } from '../shared/codexIpcApi'
@@ -11,6 +12,7 @@ export type DesktopAppApi = {
   }
   codex: DesktopCodexApi
   chat: DesktopCodexChatApi
+  composerContext: DesktopComposerContextApi
   projects: DesktopProjectsApi
   conversations: DesktopConversationsApi
 }

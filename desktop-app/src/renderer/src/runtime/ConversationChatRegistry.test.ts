@@ -309,10 +309,18 @@ describe('ConversationChatRegistry', () => {
     expect(entryA.unread).toBe(false)
   })
 
-  it('clears a draft as soon as a message is submitted', async () => {
+  it('keeps a draft until the stream is accepted and preserves it on early failure', async () => {
     const { callbacks, registry } = registryFixture()
     const entry = registry.getSnapshot().activeEntry
     registry.setDraft(entry, 'keep me')
+    registry.setDraftAttachments(entry, [
+      {
+        kind: 'file',
+        path: '/repo/missing.txt',
+        fileUrl: 'file:///repo/missing.txt',
+        label: 'missing.txt'
+      }
+    ])
     await entry.transport.sendMessages({
       chatId: entry.chat.id,
       trigger: 'submit-message',
@@ -321,9 +329,21 @@ describe('ConversationChatRegistry', () => {
       abortSignal: undefined
     })
 
-    expect(entry.draft).toBe('')
+    expect(entry.draft).toBe('keep me')
+    callbacks.get(entry.chat.id)?.onError('attachment validation failed')
+    expect(entry.draft).toBe('keep me')
+    expect(entry.draftAttachments).toHaveLength(1)
+
+    await entry.transport.sendMessages({
+      chatId: entry.chat.id,
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
     callbacks.get(entry.chat.id)?.onThreadBound('thread-real')
     expect(entry.draft).toBe('')
+    expect(entry.draftAttachments).toEqual([])
   })
 
   it('keeps model selection scoped to each entry and snapshots it per send', async () => {

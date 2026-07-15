@@ -160,7 +160,11 @@ describe("createCodexAppServer", () =>
         expect(model.specificationVersion).toBe("v3");
         expect(model.provider).toBe(CODEX_PROVIDER_ID);
         expect(model.modelId).toBe("gpt-5.5");
-        expect(model.supportedUrls).toEqual({ "image/*": [/^file:/] });
+        expect(model.supportedUrls).toEqual({
+            "image/*": [/^file:/],
+            "application/vnd.dascowork.local-file": [/^file:/],
+            "application/vnd.dascowork.local-folder": [/^file:/],
+        });
     });
 
     it("supports callable provider and chat alias", () => 

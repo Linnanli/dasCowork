@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectService } from './ProjectService'
 import { ProjectStore, createDefaultProjectState } from './ProjectStore'
@@ -48,6 +48,7 @@ describe('WorkspaceFileSearchService', () => {
 
       expect(response.results).toEqual([
         expect.objectContaining({
+          kind: 'file',
           path: join(tempRoot, 'src', 'App.tsx'),
           label: 'src/App.tsx',
           root: tempRoot
@@ -64,8 +65,58 @@ describe('WorkspaceFileSearchService', () => {
         projectSelection: { projectKind: 'path', path: tempRoot }
       })
       expect(entryScopedResponse.results).toEqual([
-        expect.objectContaining({ path: join(tempRoot, 'src', 'App.tsx') })
+        expect.objectContaining({ kind: 'file', path: join(tempRoot, 'src', 'App.tsx') })
       ])
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('returns matching folders as well as fuzzy-only file matches', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'dascowork-folder-search-'))
+
+    try {
+      await mkdir(join(tempRoot, 'source', 'components'), { recursive: true })
+      await writeFile(join(tempRoot, 'source', 'components', 'Composer.tsx'), '', 'utf8')
+      const store = ProjectStore.inMemory({
+        ...createDefaultProjectState(),
+        activeProjectSelection: { projectKind: 'path', path: tempRoot },
+        workspaceRootOptions: [
+          {
+            root: tempRoot,
+            hostId: 'local',
+            addedAt: now,
+            lastOpenedAt: now
+          }
+        ]
+      })
+      const projectService = new ProjectService({
+        store,
+        validateLocalRoot: async (path) => ({ realPath: path }),
+        validateRemoteRoot: async () => undefined,
+        createProjectlessWorkspace: async () => ({
+          cwd: '/tmp/projectless',
+          workspaceRoot: '/tmp/projectless',
+          outputDirectory: '/tmp/projectless/out'
+        })
+      })
+      const search = new WorkspaceFileSearchService({ projectStore: store, projectService })
+
+      const folders = await search.createFuzzyFileSearchSession({ query: 'components' })
+      expect(folders.results).toContainEqual(
+        expect.objectContaining({
+          kind: 'folder',
+          path: join(tempRoot, 'source', 'components')
+        })
+      )
+
+      const fuzzy = await search.createFuzzyFileSearchSession({ query: 'cmpsr' })
+      expect(fuzzy.results).toContainEqual(
+        expect.objectContaining({
+          kind: 'file',
+          path: join(tempRoot, 'source', 'components', 'Composer.tsx')
+        })
+      )
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
     }
@@ -89,5 +140,28 @@ describe('WorkspaceFileSearchService', () => {
     await expect(search.createFuzzyFileSearchSession({ query: 'app' })).resolves.toEqual({
       results: []
     })
+  })
+
+  it('does not resolve or search remote projects', async () => {
+    const store = ProjectStore.inMemory({
+      ...createDefaultProjectState(),
+      activeProjectSelection: {
+        projectKind: 'remote',
+        projectId: 'remote-project',
+        hostId: 'ssh-dev'
+      }
+    })
+    const resolveNewThreadTarget = vi.fn(async () => {
+      throw new Error('remote resolver must not be called')
+    })
+    const search = new WorkspaceFileSearchService({
+      projectStore: store,
+      projectService: { resolveNewThreadTarget }
+    })
+
+    await expect(search.createFuzzyFileSearchSession({ query: 'app' })).resolves.toEqual({
+      results: []
+    })
+    expect(resolveNewThreadTarget).not.toHaveBeenCalled()
   })
 })

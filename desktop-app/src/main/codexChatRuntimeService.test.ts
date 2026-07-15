@@ -309,6 +309,53 @@ describe('CodexChatRuntimeService', () => {
     ])
   })
 
+  it('revalidates local path attachments before invoking the provider boundary', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () => emptyUiMessageStream()
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-invalid-local-attachment',
+        trigger: 'submit-message',
+        messages: [
+          {
+            id: 'user-file',
+            role: 'user',
+            parts: [
+              {
+                type: 'file',
+                mediaType: 'application/vnd.dascowork.local-file',
+                filename: 'missing.txt',
+                url: 'file:///definitely-missing-dascowork-runtime.txt'
+              }
+            ]
+          }
+        ],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).not.toHaveBeenCalled()
+    expect(port.messages).toEqual([
+      {
+        type: 'error',
+        error: 'Invalid local attachment “missing.txt”: path does not exist or is not readable'
+      }
+    ])
+  })
+
   it('uses the configured model catalog for listModels', async () => {
     const catalogList = {
       models: [
@@ -1207,6 +1254,37 @@ describe('CodexChatRuntimeService', () => {
     )
 
     expect(port.messages).toEqual([{ type: 'error', error: 'boom' }])
+  })
+
+  it('passes the live-agent lifecycle observer into the active stream call', async () => {
+    const port = new FakePort()
+    const onAgentLifecycle = vi.fn()
+    let observedCallback: unknown
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      onAgentLifecycle,
+      streamText: async (input) => {
+        observedCallback = input.onAgentLifecycle
+        return { toUIMessageStream: () => emptyUiMessageStream() }
+      }
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(observedCallback).toBe(onAgentLifecycle)
   })
 
   it('broadcasts approval requests', async () => {

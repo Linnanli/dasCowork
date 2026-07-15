@@ -118,10 +118,11 @@ test('shows the correct thinking state across repeated unphased tool rounds', as
     const thinkingToolGroupTrigger = page.locator('[data-slot="tool-group-trigger"]').last()
     await expect(
       thinkingToolGroupTrigger.locator('[data-slot="tool-group-trigger-icon"]')
-    ).toHaveCount(0)
+    ).toBeVisible()
     await expect(
       thinkingToolGroupTrigger.locator('[data-slot="tool-group-trigger-shimmer"]')
-    ).toBeVisible()
+    ).toHaveCount(0)
+    await expect(page.locator('[data-slot="message-thinking-unit"]')).toBeVisible()
 
     releaseFinal.resolve()
     await expect(page.locator('[data-role="assistant"]')).toContainText(
@@ -165,8 +166,10 @@ test('shows the correct thinking state across repeated unphased tool rounds', as
     expect(snapshots.whileSecondToolRunning.at(-1)?.triggerText).toContain('正在')
     expect(thinkingSnapshots.whileSecondToolRunning).toBe('')
     expect(snapshots.afterSecondToolBeforeFinalResponse).toHaveLength(2)
-    expect(snapshots.afterSecondToolBeforeFinalResponse.at(-1)?.triggerText).toContain('正在思考')
-    expect(thinkingSnapshots.afterSecondToolBeforeFinalResponse).toBe('')
+    expect(snapshots.afterSecondToolBeforeFinalResponse.at(-1)?.triggerText).toContain(
+      '已运行 1 条命令'
+    )
+    expect(thinkingSnapshots.afterSecondToolBeforeFinalResponse).toContain('正在思考')
     expect(snapshots.afterFinalResponse).toHaveLength(2)
     expect(snapshots.afterFinalResponse[0]?.triggerText).toContain('已探索')
     expect(snapshots.afterFinalResponse.at(-1)?.triggerText).toContain('已运行 1 条命令')
@@ -233,6 +236,9 @@ test('keeps adjacent tool activity in one group without intervening text', async
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Adjacent tool analysis complete'
     )
+    const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]')
+    await expect(completedReasoningTrigger).toContainText('已处理')
+    await completedReasoningTrigger.click()
     await expect(page.locator('[data-slot="tool-group-unit"]')).toHaveCount(1)
     const groupsAfterFinal = await snapshotToolGroups(page)
     expect(groupsAfterFinal[0]?.triggerText).toContain('已读取 1 个文件')

@@ -94,6 +94,21 @@ export interface CodexCustomModelProviderSettings
     customModelProviders?: Record<string, CodexModelProviderInfo>;
 }
 
+export type CodexAgentLifecycleKind = "started" | "updated" | "completed" | "closed";
+
+/** Normalized sub-agent state projected from the active app-server stream. */
+export interface CodexAgentLifecycleEvent
+{
+    kind: CodexAgentLifecycleKind;
+    threadId: string;
+    turnId: string;
+    agentThreadId: string;
+    agentPath?: string;
+    status?: string;
+    toolCallId: string;
+    timestampMs?: number;
+}
+
 /**
  * Per-call overrides passed via `providerOptions[CODEX_PROVIDER_ID]` in
  * `streamText()` / `generateText()`. Values here take precedence over
@@ -123,6 +138,11 @@ export interface CodexCallOptions
      * host-side persistence can prepare local UI state before the first turn.
      */
     onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>;
+    /**
+     * Receives normalized live-agent lifecycle events from this call's active
+     * app-server connection. Callback failures do not fail the model stream.
+     */
+    onAgentLifecycle?: (event: CodexAgentLifecycleEvent) => void | Promise<void>;
 
     // — Turn-level —
 

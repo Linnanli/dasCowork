@@ -1,3 +1,4 @@
+export { agentLifecycleEvents } from "./agent-lifecycle";
 export type {
     ApprovalsDispatcherSettings,
     CodexCommandApprovalRequest,
@@ -29,6 +30,21 @@ export type { CodexWorkerSettings, PendingToolCall } from "./client/worker";
 export { CodexWorker } from "./client/worker";
 export type { CodexWorkerPoolSettings } from "./client/worker-pool";
 export { CodexWorkerPool } from "./client/worker-pool";
+export type {
+    CodexAgentRole,
+    CodexAgentRoleListParams,
+    CodexAppsListParams,
+    CodexAppsPage,
+    CodexCatalogApp,
+    CodexCatalogPlugin,
+    CodexCatalogSkill,
+    CodexContextCatalogClientSettings,
+    CodexContextCatalogJsonRpcClientLike,
+} from "./context-catalog-client";
+export {
+    CodexContextCatalogClient,
+    createCodexContextCatalogClient,
+} from "./context-catalog-client";
 export type {
     DynamicToolDefinition,
     DynamicToolExecutionContext,
@@ -144,10 +160,25 @@ export {
     createCodexAppServer,
     createCodexProvider,
 } from "./provider";
-export type { CodexCustomModelProviderSettings, TransportContext } from "./provider-settings";
+export type {
+    CodexAgentLifecycleEvent,
+    CodexAgentLifecycleKind,
+    CodexCustomModelProviderSettings,
+    TransportContext,
+} from "./provider-settings";
 export type { CodexSession } from "./session";
 export type { CodexStartedThread, CodexThreadStartOptions } from "./thread-client";
 export { CodexThreadClient, createCodexThreadClient } from "./thread-client";
+export type {
+    ComposerContextDirective,
+    ComposerContextDirectiveType,
+    ExtractedComposerContext,
+} from "./utils/context-codec";
+export {
+    extractComposerContextDirectives,
+    restoreComposerContextInputs,
+    serializeComposerContextDirective,
+} from "./utils/context-codec";
 export type {
     ExtractedLocalContext,
     LocalContextDirectiveType,
@@ -162,4 +193,9 @@ export {
 } from "./utils/local-context-directives";
 export type { FileWriter } from "./utils/prompt-file-resolver";
 export { mapSystemPrompt } from "./utils/prompt-file-resolver";
-export { LocalFileWriter, PromptFileResolver } from "./utils/prompt-file-resolver";
+export {
+    LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+    LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE,
+    LocalFileWriter,
+    PromptFileResolver,
+} from "./utils/prompt-file-resolver";

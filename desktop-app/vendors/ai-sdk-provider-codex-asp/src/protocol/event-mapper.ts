@@ -27,7 +27,7 @@ import {
     toolInvocationForItem,
     webSearchHasContent,
 } from "./shared-item-extractors";
-import { turnDiffItem } from "./turn-diff";
+import { type TurnDiffItem, turnDiffItem } from "./turn-diff";
 import type { CodexDynamicToolCallItem } from "./types";
 
 export interface CodexEventMapperInput
@@ -167,16 +167,23 @@ function todoListItemForPlanUpdate(notification: TurnPlanUpdatedNotification, it
 function turnDiffItemForNotification(
     notification: TurnDiffUpdatedNotification,
     itemId: string,
+    status: TurnDiffItem["status"],
     cwd?: string,
 ): Record<string, unknown>
 {
     return { ...turnDiffItem({
         id: itemId,
-        status: "inProgress",
+        status,
         cwd,
         diff: notification.diff,
     }) };
 }
+
+type TurnDiffState = {
+    toolCallId: string;
+    cwd?: string | undefined;
+    diff: string;
+};
 
 export interface CodexEventMapperOptions
 {
@@ -216,6 +223,7 @@ export class CodexEventMapper
      * would cause handleTurnCompleted to emit spurious error tool-results).
      */
     private readonly _sdkDynamicToolCallIds = new Set<string>();
+    private readonly turnDiffByTurnId = new Map<string, TurnDiffState>();
     /**
      * Set to true by enableCrossCallMode() when PersistentTransport + SDK tools
      * are active. In cross-call mode the mapper stays silent for dynamicToolCall
@@ -695,25 +703,35 @@ export class CodexEventMapper
 
         const parts: LanguageModelV3StreamPart[] = [];
         this.ensureStreamStarted(parts);
-        const toolCallId = `turn-diff:${p.turnId}:${this.nextPlanSequence(`diff:${p.turnId}`)}`;
+        const tracked = this.turnDiffByTurnId.get(p.turnId);
+        const toolCallId = tracked?.toolCallId ?? `turn-diff:${p.turnId}`;
         const toolName = "codex_turn_diff";
-        const item = turnDiffItemForNotification(p, toolCallId, this.threadCwd);
+        const item = turnDiffItemForNotification(p, toolCallId, "inProgress", this.threadCwd);
 
-        parts.push(this.withMeta({
-            type: "tool-call",
-            toolCallId,
-            toolName,
-            input: JSON.stringify({ turnId: p.turnId }),
-            providerExecuted: true,
-            dynamic: true,
-        }));
+        if (!tracked)
+        {
+            parts.push(this.withMeta({
+                type: "tool-call",
+                toolCallId,
+                toolName,
+                input: JSON.stringify({ turnId: p.turnId }),
+                providerExecuted: true,
+                dynamic: true,
+            }));
+        }
 
         parts.push(this.withMeta({
             type: "tool-result",
             toolCallId,
             toolName,
             result: asToolResult({ item }),
+            ...(tracked ? { preliminary: true } : {}),
         }));
+        this.turnDiffByTurnId.set(p.turnId, {
+            toolCallId,
+            cwd: this.threadCwd,
+            diff: p.diff,
+        });
 
         return parts;
     }
@@ -998,6 +1016,23 @@ export class CodexEventMapper
 
         if (completed.turn?.id)
         {
+            const turnDiff = this.turnDiffByTurnId.get(completed.turn.id);
+            if (turnDiff)
+            {
+                const item = turnDiffItem({
+                    id: turnDiff.toolCallId,
+                    status: "completed",
+                    cwd: turnDiff.cwd,
+                    diff: turnDiff.diff,
+                });
+                parts.push(this.withMeta({
+                    type: "tool-result",
+                    toolCallId: turnDiff.toolCallId,
+                    toolName: "codex_turn_diff",
+                    result: asToolResult({ item }),
+                }));
+                this.turnDiffByTurnId.delete(completed.turn.id);
+            }
             this.planSequenceByTurnId.delete(completed.turn.id);
             this.planSequenceByTurnId.delete(`diff:${completed.turn.id}`);
         }

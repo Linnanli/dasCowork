@@ -69,7 +69,8 @@ export function useWorkspaceFileSearch({
 }): WorkspaceFileSearchState {
   const projectSelectionKey = JSON.stringify(projectSelection ?? null)
   const scope = useMemo<symbol | null>(
-    () => (manager && enabled ? Symbol('workspace-file-search-scope') : null),
+    () =>
+      manager && enabled ? Symbol(`workspace-file-search-scope:${projectSelectionKey}`) : null,
     [enabled, manager, projectSelectionKey]
   )
   const [snapshot, setSnapshot] = useState<WorkspaceFileSearchSnapshot>({

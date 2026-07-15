@@ -1,7 +1,8 @@
+import { restoreComposerContextInputs } from "../utils/context-codec";
 import { restoreFilesMentionedContext } from "../utils/local-context-directives";
 import { stripUndefined } from "../utils/object";
 import type { ThreadItem } from "./app-server-protocol/v2/ThreadItem";
-import type { UserInput } from "./app-server-protocol/v2/UserInput";
+import type { CodexTurnInputItem } from "./types";
 
 type CollabAgentThreadItem = Extract<ThreadItem, { type: "collabAgentToolCall" }>;
 
@@ -249,29 +250,9 @@ export function webSearchHasContent(query: string | null | undefined, action: { 
     return action.type !== "other";
 }
 
-export function userInputText(value: readonly UserInput[]): string
+export function userInputText(value: readonly CodexTurnInputItem[]): string
 {
-    const text = value
-        .map((entry) =>
-        {
-            switch (entry.type)
-            {
-                case "text":
-                    return entry.text;
-                case "skill":
-                    return `$${entry.name}`;
-                case "mention":
-                    return `@${entry.name}`;
-                case "image":
-                case "localImage":
-                    return "";
-                default:
-                    return assertNever(entry);
-            }
-        })
-        .filter((text) => text.trim().length > 0)
-        .join("\n");
-
+    const text = restoreComposerContextInputs(value);
     return restoreFilesMentionedContext(text).text;
 }
 

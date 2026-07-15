@@ -14,7 +14,6 @@ import {
   type Unstable_SlashCommand,
   type Unstable_TriggerItem,
   unstable_defaultDirectiveFormatter,
-  unstable_useMentionAdapter,
   unstable_useSlashCommandAdapter,
   getExternalStoreMessages,
   useAui,
@@ -33,6 +32,8 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
+import { ContextLexicalInput } from '@/composer/contextLexicalInput'
+import { ComposerContextSuggestionProvider } from '@/composer/composerContextSuggestionController'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import {
   CollapsedActivityDetails,
@@ -53,6 +54,7 @@ import {
   ActivityIcon,
   ArrowDownIcon,
   ArrowUpIcon,
+  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -62,11 +64,15 @@ import {
   FileTextIcon,
   FolderIcon,
   HelpCircleIcon,
+  MessageSquareIcon,
+  PackageIcon,
   PanelLeftIcon,
   PencilIcon,
   PlusIcon,
+  PuzzleIcon,
   QuoteIcon,
   SlashIcon,
+  SparklesIcon,
   SquareIcon,
   WrenchIcon
 } from 'lucide-react'
@@ -116,19 +122,17 @@ import type {
   ConversationChatEntry,
   ConversationScrollSnapshot
 } from './runtime/ConversationChatRegistry'
+import type { ConversationDraftAttachment } from './runtime/ConversationDraftStore'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
-import { useWorkspaceFileSearch } from '../files/useWorkspaceFileSearch'
 import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
 import type { ModelOption } from './components/assistant-ui'
-import {
-  appendComposerContextReference,
-  composerContextDirectiveFormatter,
-  dedupeComposerContextReferences,
-  isComposerContextReferenceType
-} from './composer/composerContextDirectiveFormatter'
+import { composerContextDirectiveFormatter } from './composer/composerContextDirectiveFormatter'
+import { useComposerContextCatalog } from './composer/useComposerContextCatalog'
 import {
   createLocalImageAttachment,
-  imageAttachmentAdapter
+  createLocalPathAttachment,
+  imageAttachmentAdapter,
+  localPathAttachmentIdentityFromId
 } from './composer/imageAttachmentAdapter'
 
 type CodexSidebarProps = {
@@ -170,6 +174,17 @@ type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 }
 
 type IconComponent = FC<{ className?: string }>
+
+const directiveChipIcons: Record<string, IconComponent> = {
+  file: FileIcon,
+  folder: FolderIcon,
+  chat: MessageSquareIcon,
+  agent: BotIcon,
+  agentRole: BotIcon,
+  skill: SparklesIcon,
+  plugin: PuzzleIcon,
+  app: PackageIcon
+}
 
 type DirectiveBehaviorProps = {
   formatter?: Unstable_DirectiveFormatter
@@ -274,6 +289,7 @@ function App(): React.JSX.Element {
     startNewConversation,
     openConversation,
     setActiveDraft,
+    setActiveDraftAttachments,
     setActiveScroll,
     syncConversationMetadata,
     getConversationIndicator,
@@ -359,6 +375,7 @@ function App(): React.JSX.Element {
             selectedModelId={selectedModelId}
             modelSelectionError={modelSelectionError}
             onDraftChange={setActiveDraft}
+            onDraftAttachmentsChange={setActiveDraftAttachments}
             onRetryLoad={() => {
               void openConversation({ conversationId: activeEntry.localId })
             }}
@@ -391,6 +408,7 @@ function ActiveConversationPane({
   selectedModelId,
   modelSelectionError,
   onDraftChange,
+  onDraftAttachmentsChange,
   onRetryLoad,
   onOpenConversation,
   onScrollSnapshotChange,
@@ -406,6 +424,7 @@ function ActiveConversationPane({
   selectedModelId: string | undefined
   modelSelectionError?: string
   onDraftChange: (draft: string) => void
+  onDraftAttachmentsChange: (attachments: readonly ConversationDraftAttachment[]) => void
   onRetryLoad: () => void
   onOpenConversation: OpenSubagentConversation
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
@@ -422,7 +441,13 @@ function ActiveConversationPane({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ConversationDraftBridge draft={entry.draft} onDraftChange={onDraftChange} />
+      <ConversationDraftBridge
+        draft={entry.draft}
+        draftAttachments={entry.draftAttachments}
+        phase={entry.phase}
+        onDraftChange={onDraftChange}
+        onDraftAttachmentsChange={onDraftAttachmentsChange}
+      />
       <ConversationFocusBridge entryId={entry.localId} />
       <Header
         activeConversation={activeConversation}
@@ -671,37 +696,126 @@ function ChatThread({
 
 function ConversationDraftBridge({
   draft,
-  onDraftChange
+  draftAttachments,
+  phase,
+  onDraftChange,
+  onDraftAttachmentsChange
 }: {
   draft: string
+  draftAttachments: readonly ConversationDraftAttachment[]
+  phase: ConversationChatEntry['phase']
   onDraftChange: (draft: string) => void
+  onDraftAttachmentsChange: (attachments: readonly ConversationDraftAttachment[]) => void
 }): null {
   const aui = useAui()
   const composerText = useAuiState((state) => state.composer.text)
+  const composerAttachments = useAuiState((state) => state.composer.attachments)
   const initialDraft = useRef(draft)
+  const initialDraftAttachments = useRef(draftAttachments)
   const hydrated = useRef(false)
-  const skippingSubmittedComposerSync = useRef(false)
+  const latestDraft = useRef({ text: draft, attachments: [...draftAttachments] })
+  const pendingSend = useRef<{
+    text: string
+    attachments: ConversationDraftAttachment[]
+  } | null>(null)
 
   useAuiEvent('composer.send', () => {
-    skippingSubmittedComposerSync.current = true
-    onDraftChange('')
+    pendingSend.current = {
+      text: latestDraft.current.text,
+      attachments: latestDraft.current.attachments.map((attachment) => ({ ...attachment }))
+    }
   })
 
   useLayoutEffect(() => {
     aui.composer().setText(initialDraft.current)
-    hydrated.current = true
+    const markHydrated = (): void => {
+      hydrated.current = true
+    }
+    void Promise.all(
+      initialDraftAttachments.current.map((attachment) =>
+        aui.composer().addAttachment(
+          createLocalPathAttachment({
+            fileUrl: attachment.fileUrl,
+            kind: attachment.kind,
+            label: attachment.label,
+            path: attachment.path
+          })
+        )
+      )
+    ).then(markHydrated, markHydrated)
   }, [aui])
 
   useEffect(() => {
-    if (!hydrated.current) return
-    if (skippingSubmittedComposerSync.current) {
-      if (composerText.length === 0) skippingSubmittedComposerSync.current = false
+    if (!hydrated.current || pendingSend.current) return
+    latestDraft.current.text = composerText
+    onDraftChange(composerText)
+  }, [composerAttachments.length, composerText, onDraftChange])
+
+  useEffect(() => {
+    if (!hydrated.current || pendingSend.current) return
+    const attachments = localDraftAttachments(composerAttachments)
+    latestDraft.current.attachments = attachments
+    onDraftAttachmentsChange(attachments)
+  }, [composerAttachments, onDraftAttachmentsChange])
+
+  useEffect(() => {
+    const snapshot = pendingSend.current
+    if (!snapshot) return
+
+    const storedDraftWasCleared = draft.length === 0 && draftAttachments.length === 0
+    if ((phase === 'streaming' || phase === 'ready') && storedDraftWasCleared) {
+      pendingSend.current = null
+      const nextAttachments = localDraftAttachments(composerAttachments)
+      latestDraft.current = { text: composerText, attachments: nextAttachments }
+      onDraftChange(composerText)
+      onDraftAttachmentsChange(nextAttachments)
       return
     }
-    onDraftChange(composerText)
-  }, [composerText, onDraftChange])
+    if (phase !== 'error') return
+
+    const currentAttachments = localDraftAttachments(composerAttachments)
+    if (composerText.length > 0 || composerAttachments.length > 0) {
+      latestDraft.current = { text: composerText, attachments: currentAttachments }
+      pendingSend.current = null
+      onDraftChange(composerText)
+      onDraftAttachmentsChange(currentAttachments)
+      return
+    }
+
+    aui.composer().setText(snapshot.text)
+    const restoreDraft = (): void => {
+      latestDraft.current = snapshot
+      pendingSend.current = null
+      onDraftChange(snapshot.text)
+      onDraftAttachmentsChange(snapshot.attachments)
+    }
+    void Promise.all(
+      snapshot.attachments.map((attachment) =>
+        aui.composer().addAttachment(createLocalPathAttachment(attachment))
+      )
+    ).then(restoreDraft, restoreDraft)
+  }, [
+    aui,
+    composerAttachments,
+    composerText,
+    draft,
+    draftAttachments,
+    onDraftAttachmentsChange,
+    onDraftChange,
+    phase
+  ])
 
   return null
+}
+
+function localDraftAttachments(
+  attachments: readonly { id: string; name: string }[]
+): ConversationDraftAttachment[] {
+  return attachments.flatMap((attachment): ConversationDraftAttachment[] => {
+    const identity = localPathAttachmentIdentityFromId(attachment.id)
+    if (!identity) return []
+    return [{ ...identity, label: attachment.name }]
+  })
 }
 
 function ConversationFocusBridge({ entryId }: { entryId: string }): null {
@@ -1586,13 +1700,7 @@ function DirectiveChip({
   label
 }: DirectiveChipProps): React.JSX.Element {
   const Icon =
-    directiveType === 'file'
-      ? FileIcon
-      : directiveType === 'folder'
-        ? FolderIcon
-        : directiveType === 'command'
-          ? undefined
-          : WrenchIcon
+    directiveType === 'command' ? undefined : (directiveChipIcons[directiveType] ?? WrenchIcon)
 
   return (
     <span
@@ -1770,33 +1878,28 @@ function Composer({
   projectState
 }: ComposerProps): React.JSX.Element {
   const aui = useAui()
-  const [composerShellElement, setComposerShellElement] = useState<HTMLDivElement | null>(null)
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
   const effectiveProjectSelection = activeConversation
     ? conversationProjectSelection
     : globalProjectSelection
+  const isRemoteExecution = effectiveProjectSelection?.projectKind === 'remote'
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const projectContext = conversationProjectContext(activeConversation, projectState)
-  const workspaceFileSearchEnabled = Boolean(
-    hasProjectContext &&
-    effectiveProjectSelection &&
-    effectiveProjectSelection.projectKind !== 'projectless'
-  )
-  const localContextPickerEnabled = effectiveProjectSelection?.projectKind !== 'remote'
-  const workspaceFileSearch = useWorkspaceFileSearch({
-    manager: window.desktopApp.projects,
-    enabled: workspaceFileSearchEnabled,
-    limit: 40,
-    projectSelection: effectiveProjectSelection
+  const localContextPickerEnabled = !isRemoteExecution
+  const composerContextCatalog = useComposerContextCatalog({
+    cwd: resolveComposerCwd(activeConversation, projectState),
+    enabled: hasProjectContext,
+    projectSelection: effectiveProjectSelection,
+    threadId: activeConversation?.threadId
   })
-  const { results: workspaceFileResults, search: searchWorkspaceFilesForMentions } =
-    workspaceFileSearch
-  const { error: workspaceFileSearchError, loading: isSearchingWorkspaceFiles } =
-    workspaceFileSearch
-  const projectSelectionKey = JSON.stringify(effectiveProjectSelection ?? null)
   const hasImageAttachments = useAuiState((state) =>
     state.composer.attachments.some((attachment) => attachment.type === 'image')
+  )
+  const hasLocalPathAttachments = useAuiState((state) =>
+    state.composer.attachments.some((attachment) =>
+      Boolean(localPathAttachmentIdentityFromId(attachment.id))
+    )
   )
   const hasUnsendableAttachments = useAuiState((state) =>
     state.composer.attachments.some(
@@ -1806,22 +1909,6 @@ function Composer({
     )
   )
 
-  useEffect(() => {
-    if (!workspaceFileSearchEnabled) return
-    void searchWorkspaceFilesForMentions('')
-  }, [projectSelectionKey, searchWorkspaceFilesForMentions, workspaceFileSearchEnabled])
-
-  const fileMentions = useMemo(
-    () =>
-      workspaceFileResults.map((result) => ({
-        id: result.path,
-        type: 'file',
-        label: result.label ?? result.path,
-        description: result.root ? result.path.replace(`${result.root}/`, '') : result.path,
-        icon: 'file'
-      })),
-    [workspaceFileResults]
-  )
   const modelContextTools = useMemo<Unstable_TriggerItem[]>(() => {
     const tools = aui.thread().getModelContext().tools
     if (!tools) return []
@@ -1833,58 +1920,6 @@ function Composer({
       metadata: { icon: 'tool' }
     }))
   }, [aui])
-  const appendContextReference = useCallback(
-    (reference: Parameters<typeof appendComposerContextReference>[1]) => {
-      const composer = aui.composer()
-      composer.setText(appendComposerContextReference(composer.getState().text, reference))
-    },
-    [aui]
-  )
-  const insertContextItem = useCallback(
-    (item: Unstable_TriggerItem) => {
-      if (isComposerContextReferenceType(item.type)) {
-        appendContextReference({ type: item.type, path: item.id, label: item.label })
-        return
-      }
-      const composer = aui.composer()
-      const current = composer.getState().text
-      const directive = composerContextDirectiveFormatter.serialize(item)
-      composer.setText(
-        current.length === 0 || /\s$/u.test(current)
-          ? `${current}${directive}`
-          : `${current} ${directive}`
-      )
-    },
-    [appendContextReference, aui]
-  )
-  const dedupeInsertedContextReference = useCallback(
-    (item: Unstable_TriggerItem) => {
-      if (!isComposerContextReferenceType(item.type)) return
-      const composer = aui.composer()
-      composer.setText(dedupeComposerContextReferences(composer.getState().text))
-    },
-    [aui]
-  )
-  const mention = unstable_useMentionAdapter({
-    categories:
-      fileMentions.length > 0
-        ? [
-            {
-              id: 'workspace-files',
-              label: 'Files',
-              items: fileMentions
-            }
-          ]
-        : undefined,
-    includeModelContextTools: {
-      category: { id: 'tools', label: 'Tools' },
-      icon: 'tool'
-    },
-    formatter: composerContextDirectiveFormatter,
-    onInserted: dedupeInsertedContextReference,
-    fallbackIcon: WrenchIcon,
-    iconMap: { file: FileIcon, tool: WrenchIcon }
-  })
   const slash = unstable_useSlashCommandAdapter({
     commands: slashCommands,
     fallbackIcon: SlashIcon,
@@ -1910,113 +1945,138 @@ function Composer({
           )
           continue
         }
-        appendContextReference({
-          type: reference.kind,
-          path: reference.path,
-          label: reference.label
-        })
+        await composer.addAttachment(
+          createLocalPathAttachment({
+            fileUrl: reference.fileUrl,
+            kind: reference.kind,
+            label: reference.label,
+            path: reference.path
+          })
+        )
       }
 
       return true
     },
-    [appendContextReference, aui]
+    [aui]
   )
   const sendDisabled =
-    disabled || !hasProjectContext || cannotSendImages || hasUnsendableAttachments
+    disabled ||
+    !hasProjectContext ||
+    cannotSendImages ||
+    hasUnsendableAttachments ||
+    (isRemoteExecution && hasLocalPathAttachments)
+
+  const contextSections = useMemo(() => {
+    const catalogSections = composerContextCatalog.sections
+      .filter((section) => !isRemoteExecution || section.id !== 'files')
+      .map((section) => ({
+        id: section.id,
+        label: composerContextSectionLabel(section.id),
+        items: composerContextCatalog.loading ? [] : section.items,
+        loading: composerContextCatalog.loading,
+        error: section.error,
+        onRetry: () => composerContextCatalog.refresh(section.id),
+        preFiltered: true
+      }))
+    return [...catalogSections, { id: 'tools', label: 'Tools', items: modelContextTools }]
+  }, [composerContextCatalog, isRemoteExecution, modelContextTools])
 
   return (
-    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-        <div
-          ref={setComposerShellElement}
-          data-slot="aui_composer-shell"
-          className="flex w-full flex-col gap-2 rounded-3xl border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/30"
-        >
-          <ComposerAttachments />
-          <LexicalComposerInput
-            className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
-            directiveChip={DirectiveChip}
-            formatter={composerContextDirectiveFormatter}
-            placeholder="输入消息（@ 提及工具，/ 输入命令）"
-          />
-          <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-            <div className="flex min-w-0 items-center gap-1">
-              <ComposerAddContextPopover
-                anchorElement={composerShellElement}
-                files={fileMentions}
-                tools={modelContextTools}
-                isSearching={isSearchingWorkspaceFiles}
-                localPickerEnabled={localContextPickerEnabled}
-                onInsertItem={insertContextItem}
-                onSearch={searchWorkspaceFilesForMentions}
-                pickLocalContext={pickLocalContext}
-                searchError={workspaceFileSearchError}
-                searchEnabled={workspaceFileSearchEnabled}
-              />
-              <ModelSelector
-                models={models}
-                value={selectedModelId}
-                onValueChange={onSelectedModelChange}
-                variant="ghost"
-                size="sm"
-              />
-              {modelSelectionError && (
-                <span
-                  role="alert"
-                  data-slot="model-selection-error"
-                  className="text-destructive max-w-56 truncate text-xs"
-                  title={modelSelectionError}
-                >
-                  {modelSelectionError}
-                </span>
-              )}
-              {cannotSendImages ? (
-                <span
-                  role="alert"
-                  data-slot="composer-image-model-error"
-                  className="max-w-56 truncate text-xs text-destructive"
-                >
-                  移除照片或切换到支持图片的模型
-                </span>
-              ) : null}
-              <span
-                className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
-                title={projectContext.detail ?? projectContext.label}
-              >
-                Working in: {projectContext.label}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <AuiIf condition={(state) => !state.thread.isRunning}>
-                <ComposerPrimitive.Send asChild>
-                  <IconButton
-                    className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                    disabled={sendDisabled}
-                    label="发送消息"
-                    title="发送消息"
+    <ComposerContextSuggestionProvider>
+      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+        <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+          <div
+            data-slot="aui_composer-shell"
+            className="flex w-full flex-col gap-2 rounded-3xl border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/30"
+          >
+            <ComposerAttachments />
+            <ContextLexicalInput
+              className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
+              directiveChip={DirectiveChip}
+              formatter={composerContextDirectiveFormatter}
+              placeholder="输入消息（@ 提及工具，/ 输入命令）"
+            />
+            <div className="aui-composer-action-wrapper flex items-center justify-between">
+              <div className="flex min-w-0 items-center gap-1">
+                <ComposerAddContextPopover
+                  localPickerEnabled={localContextPickerEnabled}
+                  onQueryChange={composerContextCatalog.setQuery}
+                  pickLocalContext={pickLocalContext}
+                  sections={contextSections}
+                />
+                <ModelSelector
+                  models={models}
+                  value={selectedModelId}
+                  onValueChange={onSelectedModelChange}
+                  variant="ghost"
+                  size="sm"
+                />
+                {modelSelectionError && (
+                  <span
+                    role="alert"
+                    data-slot="model-selection-error"
+                    className="text-destructive max-w-56 truncate text-xs"
+                    title={modelSelectionError}
                   >
-                    <ArrowUpIcon className="size-4.5" />
-                  </IconButton>
-                </ComposerPrimitive.Send>
-              </AuiIf>
-              <AuiIf condition={(state) => state.thread.isRunning}>
-                <ComposerPrimitive.Cancel asChild>
-                  <IconButton
-                    className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                    label="停止生成"
-                    title="停止生成"
+                    {modelSelectionError}
+                  </span>
+                )}
+                {cannotSendImages ? (
+                  <span
+                    role="alert"
+                    data-slot="composer-image-model-error"
+                    className="max-w-56 truncate text-xs text-destructive"
                   >
-                    <SquareIcon className="size-3.5 fill-current" />
-                  </IconButton>
-                </ComposerPrimitive.Cancel>
-              </AuiIf>
+                    移除照片或切换到支持图片的模型
+                  </span>
+                ) : null}
+                {isRemoteExecution && hasLocalPathAttachments ? (
+                  <span
+                    role="alert"
+                    data-slot="composer-remote-local-attachment-error"
+                    className="max-w-64 truncate text-xs text-destructive"
+                  >
+                    移除本地文件附件后才能发送到远程项目
+                  </span>
+                ) : null}
+                <span
+                  className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
+                  title={projectContext.detail ?? projectContext.label}
+                >
+                  Working in: {projectContext.label}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <AuiIf condition={(state) => !state.thread.isRunning}>
+                  <ComposerPrimitive.Send asChild>
+                    <IconButton
+                      className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      disabled={sendDisabled}
+                      label="发送消息"
+                      title="发送消息"
+                    >
+                      <ArrowUpIcon className="size-4.5" />
+                    </IconButton>
+                  </ComposerPrimitive.Send>
+                </AuiIf>
+                <AuiIf condition={(state) => state.thread.isRunning}>
+                  <ComposerPrimitive.Cancel asChild>
+                    <IconButton
+                      className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      label="停止生成"
+                      title="停止生成"
+                    >
+                      <SquareIcon className="size-3.5 fill-current" />
+                    </IconButton>
+                  </ComposerPrimitive.Cancel>
+                </AuiIf>
+              </div>
             </div>
           </div>
-        </div>
-        <ComposerTriggerPopover char="@" {...mention} />
-        <ComposerTriggerPopover char="/" emptyItemsLabel="没有匹配命令" {...slash} />
-      </ComposerPrimitive.Root>
-    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+          <ComposerTriggerPopover char="/" emptyItemsLabel="没有匹配命令" {...slash} />
+        </ComposerPrimitive.Root>
+      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+    </ComposerContextSuggestionProvider>
   )
 }
 
@@ -2028,6 +2088,40 @@ function hasConversationProjectContext(
   return Boolean(
     activeConversation.threadId || activeConversation.projectSelection || activeConversation.cwd
   )
+}
+
+function resolveComposerCwd(
+  activeConversation: ActiveConversationContext | undefined,
+  projectState: ProjectStateController
+): string | undefined {
+  if (activeConversation?.cwd) return activeConversation.cwd
+  const selection =
+    activeConversation?.projectSelection ?? projectState.state?.activeProjectSelection
+  if (selection?.projectKind === 'path') return selection.path
+  if (selection?.projectKind === 'local') {
+    const project = projectState.state?.localProjects[selection.projectId]
+    return project?.defaultCwd ?? project?.writableRoots[0]
+  }
+  return projectState.state?.activeWorkspaceRoots?.[0]
+}
+
+function composerContextSectionLabel(sectionId: string): string {
+  switch (sectionId) {
+    case 'files':
+      return 'Files'
+    case 'chats':
+      return 'Chats'
+    case 'agents':
+      return 'Agents'
+    case 'skills':
+      return 'Skills'
+    case 'plugins':
+      return 'Plugins'
+    case 'apps':
+      return 'Apps'
+    default:
+      return sectionId
+  }
 }
 
 function conversationProjectContext(

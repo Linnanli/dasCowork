@@ -1639,7 +1639,7 @@ describe("CodexEventMapper", () =>
         ]);
     });
 
-    it("maps turn diff updates to capped turnDiff tool items with thread cwd", () =>
+    it("maps turn diff updates to one completed turnDiff tool item with thread cwd", () =>
     {
         const mapper = new CodexEventMapper();
         mapper.setThreadCwd("/repo");
@@ -1668,7 +1668,7 @@ describe("CodexEventMapper", () =>
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
-                toolCallId: "turn-diff:turn_diff:1",
+                toolCallId: "turn-diff:turn_diff",
                 toolName: "codex_turn_diff",
                 input: JSON.stringify({ turnId: "turn_diff" }),
                 providerExecuted: true,
@@ -1676,17 +1676,123 @@ describe("CodexEventMapper", () =>
             },
             {
                 type: "tool-result",
-                toolCallId: "turn-diff:turn_diff:1",
+                toolCallId: "turn-diff:turn_diff",
                 toolName: "codex_turn_diff",
                 result: {
                     item: {
-                        id: "turn-diff:turn_diff:1",
+                        id: "turn-diff:turn_diff",
                         type: "turnDiff",
                         status: "inProgress",
                         cwd: "/repo",
                         diff: diff.slice(0, 50_000),
                         truncated: true,
                         originalLength: diff.length,
+                    },
+                },
+            },
+            {
+                type: "tool-result",
+                toolCallId: "turn-diff:turn_diff",
+                toolName: "codex_turn_diff",
+                result: {
+                    item: {
+                        id: "turn-diff:turn_diff",
+                        type: "turnDiff",
+                        status: "completed",
+                        cwd: "/repo",
+                        diff: diff.slice(0, 50_000),
+                        truncated: true,
+                        originalLength: diff.length,
+                    },
+                },
+            },
+            {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "completed" },
+                usage: EMPTY_USAGE,
+            },
+        ]);
+    });
+
+    it("replaces intermediate turn diff previews instead of appending tool items", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const firstDiff = "diff --git a/a.ts b/a.ts\n+first\n";
+        const latestDiff = "diff --git a/a.ts b/a.ts\n+latest\n";
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_diff" } } },
+            {
+                method: "turn/diff/updated",
+                params: { threadId: "thr", turnId: "turn_diff", diff: firstDiff },
+            },
+            {
+                method: "turn/diff/updated",
+                params: { threadId: "thr", turnId: "turn_diff", diff: latestDiff },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn_diff", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        expect(parts).toEqual([
+            { type: "stream-start", warnings: [] },
+            {
+                type: "tool-call",
+                toolCallId: "turn-diff:turn_diff",
+                toolName: "codex_turn_diff",
+                input: JSON.stringify({ turnId: "turn_diff" }),
+                providerExecuted: true,
+                dynamic: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "turn-diff:turn_diff",
+                toolName: "codex_turn_diff",
+                result: {
+                    item: {
+                        id: "turn-diff:turn_diff",
+                        type: "turnDiff",
+                        status: "inProgress",
+                        cwd: "/repo",
+                        diff: firstDiff,
+                        truncated: false,
+                    },
+                },
+            },
+            {
+                type: "tool-result",
+                toolCallId: "turn-diff:turn_diff",
+                toolName: "codex_turn_diff",
+                result: {
+                    item: {
+                        id: "turn-diff:turn_diff",
+                        type: "turnDiff",
+                        status: "inProgress",
+                        cwd: "/repo",
+                        diff: latestDiff,
+                        truncated: false,
+                    },
+                },
+                preliminary: true,
+            },
+            {
+                type: "tool-result",
+                toolCallId: "turn-diff:turn_diff",
+                toolName: "codex_turn_diff",
+                result: {
+                    item: {
+                        id: "turn-diff:turn_diff",
+                        type: "turnDiff",
+                        status: "completed",
+                        cwd: "/repo",
+                        diff: latestDiff,
+                        truncated: false,
                     },
                 },
             },

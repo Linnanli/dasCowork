@@ -3,7 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { FileWriter } from "../src/utils/prompt-file-resolver";
-import { mapSystemPrompt, PromptFileResolver } from "../src/utils/prompt-file-resolver";
+import {
+    LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+    LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE,
+    mapSystemPrompt,
+    PromptFileResolver,
+} from "../src/utils/prompt-file-resolver";
 
 describe("PromptFileResolver", () =>
 {
@@ -231,7 +236,7 @@ describe("PromptFileResolver", () =>
         ]);
     });
 
-    it.each([false, true])("maps local directives into Files mentioned context for fresh and resumed turns", async (isResume) =>
+    it.each([false, true])("maps workspace directives into existing files-mentioned text for fresh and resumed turns", async (isResume) =>
     {
         const resolver = new PromptFileResolver();
         const items = await resolver.resolve(
@@ -276,6 +281,65 @@ describe("PromptFileResolver", () =>
             },
             { type: "image", url: "https://example.com/photo.png" },
         ]);
+    });
+
+    it("maps path-backed vendor file parts without reading or uploading them", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const items = await resolver.resolve([
+            {
+                role: "user",
+                content: [
+                    {
+                        type: "file",
+                        filename: "report.pdf",
+                        mediaType: LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+                        data: new URL("file:///tmp/report.pdf"),
+                    },
+                    {
+                        type: "file",
+                        filename: "workspace",
+                        mediaType: LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE,
+                        data: new URL("file:///tmp/workspace"),
+                    },
+                ],
+            },
+        ]);
+
+        expect(items).toEqual([
+            {
+                type: "text",
+                text: [
+                    "# Files mentioned by the user:",
+                    "",
+                    "## \"report.pdf\": \"/tmp/report.pdf\"",
+                    "",
+                    "## \"workspace\": \"/tmp/workspace\"",
+                    "",
+                    "## My request for Codex:",
+                    "",
+                ].join("\n"),
+                text_elements: [],
+            },
+        ]);
+    });
+
+    it("rejects vendor file parts that are not backed by a local file URL", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const items = await resolver.resolve([
+            {
+                role: "user",
+                content: [{
+                    type: "file",
+                    filename: "remote.pdf",
+                    mediaType: LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+                    data: new URL("https://example.com/remote.pdf"),
+                }],
+            },
+        ]);
+
+        expect(items).toEqual([{ type: "text", text: "", text_elements: [] }]);
     });
 
     it("resume mode with text + image returns both items", async () =>

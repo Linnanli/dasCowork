@@ -1,6 +1,8 @@
 import type { UIMessage, UIMessageChunk } from 'ai'
 import { z } from 'zod'
 
+export * from './composerContext'
+
 import { projectSelectionSchema } from './projects/projectSchemas'
 import type {
   LocalProject,
@@ -180,6 +182,7 @@ export type LocalContextReference =
       kind: 'file' | 'folder'
       path: string
       label: string
+      fileUrl: string
     }
   | {
       kind: 'image'
@@ -270,9 +273,13 @@ const localContextPathSchema = z.object({
   label: z.string().min(1)
 })
 
+const localContextFileSystemPathSchema = localContextPathSchema.extend({
+  fileUrl: z.string().refine(isLocalFileUrl, 'file URL must use the file: scheme')
+})
+
 export const localContextReferenceSchema = z.discriminatedUnion('kind', [
-  localContextPathSchema.extend({ kind: z.literal('file') }),
-  localContextPathSchema.extend({ kind: z.literal('folder') }),
+  localContextFileSystemPathSchema.extend({ kind: z.literal('file') }),
+  localContextFileSystemPathSchema.extend({ kind: z.literal('folder') }),
   localContextPathSchema.extend({
     kind: z.literal('image'),
     mediaType: z.string().regex(/^image\//u, 'media type must be an image'),
@@ -397,6 +404,14 @@ export function isSafeLocalOpenPath(value: string): boolean {
   if (value.startsWith('//') || value.startsWith('\\\\')) return false
   if (value.startsWith('/')) return true
   return /^[A-Za-z]:[\\/]/.test(value)
+}
+
+function isLocalFileUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'file:'
+  } catch {
+    return false
+  }
 }
 
 function isSafeLocalRelativePath(value: string): boolean {

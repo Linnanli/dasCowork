@@ -14,6 +14,7 @@ import {
   type ConversationChatEntry,
   type ConversationScrollSnapshot
 } from '../runtime/ConversationChatRegistry'
+import type { ConversationDraftAttachment } from '../runtime/ConversationDraftStore'
 import type { ActiveConversationContext } from '../lib/ElectronIpcChatTransport'
 
 export type ConversationRuntimeIndicator = {
@@ -35,6 +36,7 @@ export type CodexIpcAssistantRuntimeState = {
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
   setSelectedModelId: (modelId: string) => Promise<void>
   setActiveDraft: (draft: string) => void
+  setActiveDraftAttachments: (attachments: readonly ConversationDraftAttachment[]) => void
   setActiveScroll: (scroll: ConversationScrollSnapshot) => void
   syncConversationMetadata: (conversations: readonly SidebarConversation[]) => void
   getConversationIndicator: (conversation: SidebarConversation) => ConversationRuntimeIndicator
@@ -138,6 +140,11 @@ export function useCodexIpcAssistantRuntime(
     (draft: string) => registry.setDraft(activeEntry, draft),
     [activeEntry, registry]
   )
+  const setActiveDraftAttachments = useCallback(
+    (attachments: readonly ConversationDraftAttachment[]) =>
+      registry.setDraftAttachments(activeEntry, attachments),
+    [activeEntry, registry]
+  )
 
   const setActiveScroll = useCallback(
     (scroll: ConversationScrollSnapshot) => registry.setScroll(activeEntry, scroll),
@@ -217,6 +224,7 @@ export function useCodexIpcAssistantRuntime(
     openConversation,
     setSelectedModelId,
     setActiveDraft,
+    setActiveDraftAttachments,
     setActiveScroll,
     syncConversationMetadata,
     getConversationIndicator,

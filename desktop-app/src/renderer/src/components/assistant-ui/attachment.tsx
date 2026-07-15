@@ -148,7 +148,7 @@ const AttachmentUI: FC = () => {
   )
   const errorMessage = useAuiState((state) =>
     state.attachment.status.type === 'incomplete' && state.attachment.status.reason === 'error'
-      ? 'Upload failed'
+      ? '无法读取本地附件'
       : undefined
   )
   const isUploading = uploadState === 'uploading'
@@ -168,7 +168,7 @@ const AttachmentUI: FC = () => {
                 role="button"
                 tabIndex={0}
                 aria-label={`${typeLabel} attachment${
-                  isError ? ', upload failed' : isUploading ? ', uploading' : ''
+                  isError ? '，附件不可用' : isUploading ? '，正在检查' : ''
                 }`}
               >
                 <AttachmentThumb />

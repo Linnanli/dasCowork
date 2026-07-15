@@ -84,11 +84,10 @@ test('renders the add-context menu above and aligned with the composer', async (
     await expect(addContextButton).toBeEnabled()
     await addContextButton.click()
 
-    const popover = page.locator('.aui-composer-add-context-popover')
+    const popover = page.getByRole('listbox', { name: '添加上下文' })
     const composer = page.locator('[data-slot="aui_composer-shell"]')
     await expect(popover).toBeVisible()
-    await expect(popover.locator('[data-slot="card"]')).toBeVisible()
-    await expect(popover).toHaveCSS('height', '320px')
+    await expect(popover).toHaveCSS('max-height', '320px')
     await popover.evaluate(async (element) => {
       await Promise.all(element.getAnimations().map((animation) => animation.finished))
     })
@@ -103,8 +102,8 @@ test('renders the add-context menu above and aligned with the composer', async (
 
     expect(Math.abs(popoverBox.x - composerBox.x)).toBeLessThanOrEqual(1)
     expect(Math.abs(popoverBox.width - composerBox.width)).toBeLessThanOrEqual(1)
-    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeGreaterThanOrEqual(3)
-    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeLessThanOrEqual(5)
+    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeGreaterThanOrEqual(11)
+    expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeLessThanOrEqual(13)
 
     const screenshotPath = testInfo.outputPath('composer-add-menu.png')
     await page.screenshot({ path: screenshotPath })
@@ -119,7 +118,7 @@ test('renders the add-context menu above and aligned with the composer', async (
   }
 })
 
-test('sends a searched local context reference and picker image through the provider', async ({
+test('sends a workspace reference, local file attachment and image through the provider', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -133,7 +132,9 @@ test('sends a searched local context reference and picker image through the prov
     responses: [assistantMessageResponse('resp-context-photo', 'msg-context-photo', responseText)]
   })
   const localContextDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-local-context-'))
+  const attachmentPath = join(localContextDir, 'e2e-notes.txt')
   const imagePath = join(localContextDir, 'e2e-context.png')
+  await writeFile(attachmentPath, 'Local attachment contents must not be uploaded.')
   await writeFile(imagePath, onePixelPng)
   const logs: string[] = []
   let app: ElectronApplication | undefined
@@ -147,7 +148,7 @@ test('sends a searched local context reference and picker image through the prov
           showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
         })
       },
-      [imagePath]
+      [attachmentPath, imagePath]
     )
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
@@ -156,22 +157,17 @@ test('sends a searched local context reference and picker image through the prov
     await ensureLocalProjectSelected(page)
 
     const composer = page.locator('.aui-lexical-input[contenteditable="true"]').last()
-    await composer.fill(prompt)
+    await composer.fill(`${prompt} @${workspaceFileLabel}`)
 
-    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
-    const search = page.locator('[data-slot="command-input"]')
-    await expect(search).toBeVisible()
-    await expect(page.getByText('选择文件文件夹', { exact: true })).toBeVisible()
-    await expect(page.getByText('选择文件', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('选择文件夹', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('添加照片', { exact: true })).toHaveCount(0)
-    await search.fill(workspaceFileLabel)
-    const workspaceResult = page.locator('[cmdk-item]').filter({ hasText: workspaceFileLabel })
+    const contextPanel = page.getByRole('listbox', { name: '添加上下文' })
+    await expect(contextPanel).toBeVisible()
+    const workspaceResult = contextPanel.getByRole('option').filter({ hasText: workspaceFileLabel })
     await expect(workspaceResult).toHaveCount(1)
     await workspaceResult.click()
 
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
-    await page.getByText('选择文件文件夹', { exact: true }).click()
+    await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
 
     const sendButton = page.getByRole('button', { name: '发送消息', exact: true })
@@ -185,9 +181,13 @@ test('sends a searched local context reference and picker image through the prov
       type: 'input_text',
       text:
         '# Files mentioned by the user:\n\n' +
-        `## ${JSON.stringify(workspaceFileLabel)}: ${JSON.stringify(workspaceFilePath)}` +
+        `## ${JSON.stringify(workspaceFileLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
+        `## ${JSON.stringify('e2e-notes.txt')}: ${JSON.stringify(attachmentPath)}` +
         `\n\n## My request for Codex:\n${prompt}`
     })
+    expect(JSON.stringify(providerBody)).not.toContain(
+      'Local attachment contents must not be uploaded.'
+    )
     expect(contents).toContainEqual(
       expect.objectContaining({
         type: 'input_image',

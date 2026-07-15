@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import {
   localContextPickerPayloadSchema,
@@ -52,7 +53,8 @@ export async function pickLocalContext(
     const parsedPath = localContextReferenceSchema.safeParse({
       kind: 'file',
       path,
-      label: path
+      label: path,
+      fileUrl: pathToFileURL(path).href
     })
     if (!parsedPath.success) continue
 
@@ -68,13 +70,14 @@ export async function pickLocalContext(
     if (!acceptsSelectedKind(dialogKind, selectedKind)) continue
 
     const label = basename(path) || path
+    const fileUrl = pathToFileURL(path).href
     const mediaType = selectedKind === 'file' ? mediaTypeForPath(path) : undefined
     const previewUrl = mediaType?.startsWith('image/') ? toAppMediaUrl(path) : null
 
     references.push(
       mediaType && previewUrl
         ? { kind: 'image', path, label, mediaType, previewUrl }
-        : { kind: selectedKind, path, label }
+        : { kind: selectedKind, path, label, fileUrl }
     )
   }
 

@@ -1,17 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { LanguageModelV3FilePart, LanguageModelV3Prompt } from "@ai-sdk/provider";
 
-import type { CodexTurnInputItem, CodexTurnInputText } from "../protocol/types";
+import type {
+    CodexTurnInputItem,
+    CodexTurnInputText,
+} from "../protocol/types";
+import { extractComposerContextDirectives } from "./context-codec";
 import {
     buildFilesMentionedContext,
-    extractLocalContextDirectives,
     type LocalContextReference,
 } from "./local-context-directives";
+
+export const LOCAL_FILE_ATTACHMENT_MEDIA_TYPE = "application/vnd.dascowork.local-file";
+export const LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE = "application/vnd.dascowork.local-folder";
 
 /**
  * Extracts system messages from the prompt and concatenates them into a single
@@ -152,6 +158,9 @@ export class PromptFileResolver
      *   {@link FileWriter} and converted to `localImage` or `image` items.
      * - URL-based image file parts are converted directly.
      * - Inline text file data is decoded and inlined as text.
+     * - DasCowork vendor file/folder parts with a `file:` URL are added to the
+     *   existing plain-text "Files mentioned" context without reading or
+     *   uploading bytes.
      * - Unsupported media types are silently skipped.
      *
      * @param isResume - When true only the last user message is extracted.
@@ -246,6 +255,32 @@ export class PromptFileResolver
         return null;
     }
 
+    private mapLocalAttachmentReference(part: LanguageModelV3FilePart): LocalContextReference | null
+    {
+        const type = part.mediaType === LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE ? "folder" : "file";
+        if (type === "file" && part.mediaType !== LOCAL_FILE_ATTACHMENT_MEDIA_TYPE)
+        {
+            return null;
+        }
+
+        const url = part.data instanceof URL
+            ? part.data
+            : typeof part.data === "string" && part.data.startsWith("file:")
+                ? new URL(part.data)
+                : null;
+        if (!url || url.protocol !== "file:")
+        {
+            return null;
+        }
+
+        const path = fileURLToPath(url);
+        return {
+            type,
+            path,
+            label: part.filename?.trim() || basename(path),
+        };
+    }
+
     /**
      * Resume path: extract parts from the last user message.
      */
@@ -281,10 +316,12 @@ export class PromptFileResolver
         messages: readonly LanguageModelV3Prompt[number][],
     ): Promise<CodexTurnInputItem[]>
     {
-        const references: LocalContextReference[] = [];
-        const paths = new Set<string>();
         const textChunks: string[] = [];
-        const images: CodexTurnInputItem[] = [];
+        const contextInputs: CodexTurnInputItem[] = [];
+        const contextInputKeys = new Set<string>();
+        const localReferences: LocalContextReference[] = [];
+        const localReferencePaths = new Set<string>();
+        const attachments: CodexTurnInputItem[] = [];
 
         for (const message of messages)
         {
@@ -297,13 +334,28 @@ export class PromptFileResolver
             {
                 if (part.type === "text")
                 {
-                    const extracted = extractLocalContextDirectives(part.text);
+                    const extracted = extractComposerContextDirectives(part.text);
+                    for (const input of extracted.inputs)
+                    {
+                        const key = `${input.type}:${input.path}`;
+                        if (!contextInputKeys.has(key))
+                        {
+                            contextInputKeys.add(key);
+                            contextInputs.push(input);
+                        }
+                    }
+
                     for (const reference of extracted.references)
                     {
-                        if (!paths.has(reference.path))
+                        if ((reference.type === "file" || reference.type === "folder")
+                            && !localReferencePaths.has(reference.path))
                         {
-                            paths.add(reference.path);
-                            references.push(reference);
+                            localReferencePaths.add(reference.path);
+                            localReferences.push({
+                                type: reference.type,
+                                label: reference.label,
+                                path: reference.path,
+                            });
                         }
                     }
 
@@ -315,6 +367,17 @@ export class PromptFileResolver
                 }
                 else if (part.type === "file")
                 {
+                    const localReference = this.mapLocalAttachmentReference(part);
+                    if (localReference)
+                    {
+                        if (!localReferencePaths.has(localReference.path))
+                        {
+                            localReferencePaths.add(localReference.path);
+                            localReferences.push(localReference);
+                        }
+                        continue;
+                    }
+
                     const mapped = await this.resolveFilePart(part);
                     if (mapped?.type === "text")
                     {
@@ -322,14 +385,13 @@ export class PromptFileResolver
                     }
                     else if (mapped)
                     {
-                        images.push(mapped);
+                        attachments.push(mapped);
                     }
                 }
             }
         }
 
-        const request = textChunks.join("\n\n");
-        const text = buildFilesMentionedContext(references, request);
-        return [textItem(text), ...images];
+        const text = buildFilesMentionedContext(localReferences, textChunks.join("\n\n"));
+        return [textItem(text), ...contextInputs, ...attachments];
     }
 }

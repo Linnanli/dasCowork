@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createLocalImageAttachment,
+  createLocalPathAttachment,
   imageAttachmentAdapter,
+  localFileAttachmentMediaType,
+  localFolderAttachmentMediaType,
+  localPathAttachmentIdentityFromId,
   readFileAsDataUrl
 } from './imageAttachmentAdapter'
 
@@ -35,17 +39,45 @@ describe('imageAttachmentAdapter', () => {
     })
   })
 
-  it('accepts only images and keeps the image type while pending', async () => {
+  it('accepts images and path-backed local references while keeping images pending', async () => {
     const file = new File(['photo'], 'photo.webp', { type: 'image/webp' })
     const attachment = await imageAttachmentAdapter.add({ file })
 
-    expect(imageAttachmentAdapter.accept).toBe('image/*')
+    expect(imageAttachmentAdapter.accept).toBe(
+      `image/*,${localFileAttachmentMediaType},${localFolderAttachmentMediaType}`
+    )
     expect(attachment).toMatchObject({
       type: 'image',
       name: 'photo.webp',
       contentType: 'image/webp',
       file,
       status: { type: 'requires-action', reason: 'composer-send' }
+    })
+  })
+
+  it('creates a completed local folder attachment without reading the folder bytes', () => {
+    const attachment = createLocalPathAttachment({
+      kind: 'folder',
+      path: '/repo/docs',
+      fileUrl: 'file:///repo/docs',
+      label: 'docs'
+    })
+
+    expect(localPathAttachmentIdentityFromId(attachment.id ?? '')).toEqual({
+      kind: 'folder',
+      path: '/repo/docs',
+      fileUrl: 'file:///repo/docs'
+    })
+    expect(attachment).toMatchObject({
+      type: 'file',
+      content: [
+        {
+          type: 'file',
+          filename: 'docs',
+          mimeType: localFolderAttachmentMediaType,
+          data: 'file:///repo/docs'
+        }
+      ]
     })
   })
 

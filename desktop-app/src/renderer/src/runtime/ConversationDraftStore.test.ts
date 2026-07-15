@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { ConversationDraftStore, conversationDraftStorageKey } from './ConversationDraftStore'
+import {
+  ConversationDraftStore,
+  conversationDraftStorageKey,
+  legacyConversationDraftStorageKey
+} from './ConversationDraftStore'
 
 class MemoryStorage {
   private readonly values = new Map<string, string>()
@@ -20,6 +24,41 @@ describe('ConversationDraftStore', () => {
     new ConversationDraftStore(storage).set('thread-a', 'draft A')
 
     expect(new ConversationDraftStore(storage).get('thread-a')).toBe('draft A')
+  })
+
+  it('restores path-backed attachments without storing file bytes', () => {
+    const storage = new MemoryStorage()
+    const store = new ConversationDraftStore(storage)
+    store.setAttachments('thread-a', [
+      {
+        kind: 'folder',
+        path: '/repo/docs',
+        label: 'docs',
+        fileUrl: 'file:///repo/docs'
+      }
+    ])
+
+    expect(new ConversationDraftStore(storage).getAttachments('thread-a')).toEqual([
+      {
+        kind: 'folder',
+        path: '/repo/docs',
+        label: 'docs',
+        fileUrl: 'file:///repo/docs'
+      }
+    ])
+    expect(storage.getItem(conversationDraftStorageKey)).not.toContain('file contents')
+  })
+
+  it('migrates legacy text-only drafts into the v2 in-memory shape', () => {
+    const storage = new MemoryStorage()
+    storage.setItem(
+      legacyConversationDraftStorageKey,
+      JSON.stringify({ version: 1, drafts: { 'thread-a': 'legacy draft' } })
+    )
+
+    const store = new ConversationDraftStore(storage)
+    expect(store.get('thread-a')).toBe('legacy draft')
+    expect(store.getAttachments('thread-a')).toEqual([])
   })
 
   it('migrates a local draft to the bound thread and removes the local key', () => {

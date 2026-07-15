@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 
 import {
@@ -15,7 +15,7 @@ import {
 import { sendComposerMessage, sendMessage } from './support/chatActions'
 import { assistantMessageResponse, startMockBackend } from './support/mockBackend'
 
-const draftStorageKey = 'das-cowork.conversation-drafts.v1'
+const draftStorageKey = 'das-cowork.conversation-drafts.v2'
 
 test('restores per-thread drafts after restart but keeps scroll restoration session-only', async ({
   browserName
@@ -64,11 +64,20 @@ test('restores per-thread drafts after restart but keeps scroll restoration sess
     await sendComposerMessage(page, secondPrompt)
     await expect(page.locator('[data-role="assistant"]')).toContainText(secondResponse)
 
+    let contextPanel = await openComposerContextPanel(page)
+    await expect(contextPanel.getByRole('option').filter({ hasText: firstPrompt })).toHaveCount(1)
+    await expect(contextPanel.getByRole('option').filter({ hasText: secondPrompt })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
     let input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
     await input.fill(secondDraft)
     await expectDraftStorageToContain(page, secondDraft)
 
     await sidebar.getByRole('button', { name: new RegExp(`^${firstPrompt}`) }).click()
+    contextPanel = await openComposerContextPanel(page)
+    await expect(contextPanel.getByRole('option').filter({ hasText: secondPrompt })).toHaveCount(1)
+    await expect(contextPanel.getByRole('option').filter({ hasText: firstPrompt })).toHaveCount(0)
+    await page.keyboard.press('Escape')
     input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
     await input.fill(firstDraft)
     await expectDraftStorageToContain(page, firstDraft)
@@ -127,6 +136,13 @@ test('restores per-thread drafts after restart but keeps scroll restoration sess
     await cleanupTempDirs([userDataDir, codexHomeDir])
   }
 })
+
+async function openComposerContextPanel(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+  const panel = page.getByRole('listbox', { name: '添加上下文' })
+  await expect(panel).toBeVisible()
+  return panel
+}
 
 async function expectDraftStorageToContain(
   page: Awaited<ReturnType<ElectronApplication['firstWindow']>>,

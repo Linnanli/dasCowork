@@ -137,7 +137,7 @@ describe("local context directives", () =>
         ])).toBe([
             ":file[workspace]{name=%2Ftmp%2Fworkspace}",
             "Run the tests.",
-            "@connected-app",
+            ":app[connected-app]{name=app%3A%2F%2Fconnected-app}",
         ].join("\n"));
     });
 });

@@ -78,6 +78,7 @@ export class ConversationApiService {
     archivedConversationIds: [],
     loaded: false
   }
+  private initialLoadPromise: Promise<SidebarConversationListState> | undefined
 
   constructor(private readonly options: ConversationApiServiceOptions) {}
 
@@ -100,7 +101,32 @@ export class ConversationApiService {
   }
 
   async getConversationList(): Promise<SidebarConversationListState> {
+    if (!this.lastState.loaded) return this.ensureConversationListLoaded()
     return this.refreshConversationList()
+  }
+
+  getConversationSnapshot(): SidebarConversationListState {
+    return this.lastState
+  }
+
+  ensureConversationListLoaded(): Promise<SidebarConversationListState> {
+    if (this.lastState.loaded) return Promise.resolve(this.lastState)
+    if (this.initialLoadPromise) return this.initialLoadPromise
+
+    const loading = this.refreshConversationList().finally(() => {
+      if (this.initialLoadPromise === loading) this.initialLoadPromise = undefined
+    })
+    this.initialLoadPromise = loading
+    return loading
+  }
+
+  applyProjectState(projectState: ProjectState): SidebarConversationListState {
+    this.lastProjectState = projectState
+    if (!this.lastState.loaded) return this.lastState
+    return this.updateLastState({
+      projectState,
+      threads: this.mergeObservedStartedThreads(this.authoritativeThreadRows)
+    })
   }
 
   /**
@@ -418,7 +444,31 @@ function userInputText(value: unknown): string {
   const inputs = value
     .map(toCodexTurnInputItem)
     .filter((entry): entry is CodexTurnInputItem => Boolean(entry))
-  return codexUserInputText(inputs)
+  return humanizeComposerContextDirectives(codexUserInputText(inputs))
+}
+
+function humanizeComposerContextDirectives(value: string): string {
+  return value.replace(
+    /:([\w-]{1,64})\[([^\]\n]{1,1024})\]\{name=([^}\n]{1,4096})\}/gu,
+    (_directive, type: string, encodedLabel: string, encodedPath: string) => {
+      const label = decodeDirectiveField(encodedLabel)
+      const path = decodeDirectiveField(encodedPath)
+      if (type === 'skill' || type === 'app') return `$${label}`
+      if (type === 'plugin' || type === 'chat' || type === 'agent' || type === 'agentRole') {
+        return `@${label}`
+      }
+      if (type === 'file' || type === 'folder') return label
+      return path.length > 0 ? label : _directive
+    }
+  )
+}
+
+function decodeDirectiveField(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
 }
 
 function toCodexTurnInputItem(entry: unknown): CodexTurnInputItem | null {

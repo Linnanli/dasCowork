@@ -1,10 +1,18 @@
 import type { AttachmentAdapter, CreateAttachment } from '@assistant-ui/react'
 
+import {
+  LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+  LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE
+} from '../../../shared/composerContext'
+
 type LocalImageAttachmentSource = {
   label: string
   mediaType: string
   previewUrl: string
 }
+
+export const localFileAttachmentMediaType = LOCAL_FILE_ATTACHMENT_MEDIA_TYPE
+export const localFolderAttachmentMediaType = LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE
 
 function createAttachmentId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -49,13 +57,72 @@ export function createLocalImageAttachment({
   }
 }
 
+export function createLocalPathAttachment({
+  fileUrl,
+  kind,
+  label,
+  path
+}: {
+  fileUrl: string
+  kind: 'file' | 'folder'
+  label: string
+  path: string
+}): CreateAttachment {
+  const contentType =
+    kind === 'folder' ? localFolderAttachmentMediaType : localFileAttachmentMediaType
+  const identity = { fileUrl, kind, path } satisfies LocalPathAttachmentIdentity
+  return {
+    id: `local-context:${encodeURIComponent(JSON.stringify(identity))}`,
+    type: 'file',
+    name: label,
+    contentType,
+    content: [
+      {
+        type: 'file',
+        filename: label,
+        mimeType: contentType,
+        data: fileUrl
+      }
+    ]
+  }
+}
+
+export type LocalPathAttachmentIdentity = {
+  fileUrl: string
+  kind: 'file' | 'folder'
+  path: string
+}
+
+export function localPathAttachmentIdentityFromId(
+  attachmentId: string
+): LocalPathAttachmentIdentity | undefined {
+  const prefix = 'local-context:'
+  if (!attachmentId.startsWith(prefix)) return undefined
+  try {
+    const value = JSON.parse(decodeURIComponent(attachmentId.slice(prefix.length))) as unknown
+    if (!value || typeof value !== 'object') return undefined
+    const identity = value as Partial<LocalPathAttachmentIdentity>
+    if (
+      (identity.kind !== 'file' && identity.kind !== 'folder') ||
+      typeof identity.path !== 'string' ||
+      typeof identity.fileUrl !== 'string' ||
+      !identity.fileUrl.startsWith('file:')
+    ) {
+      return undefined
+    }
+    return identity as LocalPathAttachmentIdentity
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Image-only adapter for AI SDK UIMessage file parts. Keeping the completed
  * content as a `file` part preserves the selected file's MIME type—assistant-ui's
  * `image` content part otherwise assumes image/png when creating a UIMessage.
  */
 export const imageAttachmentAdapter = {
-  accept: 'image/*',
+  accept: `image/*,${localFileAttachmentMediaType},${localFolderAttachmentMediaType}`,
 
   async add({ file }) {
     return {

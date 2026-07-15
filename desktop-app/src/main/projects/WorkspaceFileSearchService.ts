@@ -8,6 +8,11 @@ import type {
 import type { ProjectStore } from './ProjectStore'
 import type { ProjectService } from './ProjectService'
 
+type WorkspaceEntry = {
+  kind: 'file' | 'folder'
+  path: string
+}
+
 type ProjectServiceLike = Pick<ProjectService, 'resolveNewThreadTarget'>
 type ProjectStoreLike = Pick<ProjectStore, 'getState'>
 
@@ -44,7 +49,13 @@ export class WorkspaceFileSearchService {
   }: WorkspaceFileSearchRequest): Promise<{ results: WorkspaceFileSearchResult[] }> {
     const state = await this.options.projectStore.getState()
     const selection = projectSelection ?? state.activeProjectSelection
-    if (!selection || selection.projectKind === 'projectless') return { results: [] }
+    if (
+      !selection ||
+      selection.projectKind === 'projectless' ||
+      selection.projectKind === 'remote'
+    ) {
+      return { results: [] }
+    }
 
     const target = await this.options.projectService.resolveNewThreadTarget({
       selection,
@@ -76,17 +87,18 @@ async function searchLocalWorkspaceFiles({
   const seenPaths = new Set<string>()
 
   for (const root of roots) {
-    for await (const filePath of walkFiles(root)) {
-      if (seenPaths.has(filePath)) continue
-      seenPaths.add(filePath)
+    for await (const entry of walkWorkspaceEntries(root)) {
+      if (seenPaths.has(entry.path)) continue
+      seenPaths.add(entry.path)
 
-      const relativePath = relative(root, filePath)
+      const relativePath = relative(root, entry.path)
       const score = scoreFile(relativePath, normalizedQuery)
       if (score === null) continue
 
       results.push({
-        path: filePath,
-        label: relativePath || basename(filePath),
+        kind: entry.kind,
+        path: entry.path,
+        label: relativePath || basename(entry.path),
         root,
         score
       })
@@ -96,7 +108,7 @@ async function searchLocalWorkspaceFiles({
   return results.sort(compareSearchResults).slice(0, limit)
 }
 
-async function* walkFiles(root: string, depth = 0): AsyncGenerator<string> {
+async function* walkWorkspaceEntries(root: string, depth = 0): AsyncGenerator<WorkspaceEntry> {
   if (depth > 5) return
 
   let directory
@@ -112,10 +124,11 @@ async function* walkFiles(root: string, depth = 0): AsyncGenerator<string> {
 
     const entryPath = join(root, entry.name)
     if (entry.isDirectory()) {
-      yield* walkFiles(entryPath, depth + 1)
+      yield { kind: 'folder', path: entryPath }
+      yield* walkWorkspaceEntries(entryPath, depth + 1)
       continue
     }
-    if (entry.isFile()) yield entryPath
+    if (entry.isFile()) yield { kind: 'file', path: entryPath }
   }
 }
 

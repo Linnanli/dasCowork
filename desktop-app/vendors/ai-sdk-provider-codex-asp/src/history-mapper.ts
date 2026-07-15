@@ -5,7 +5,6 @@ import type { UIMessage } from "ai";
 import type { Thread } from "./protocol/app-server-protocol/v2/Thread";
 import type { ThreadItem } from "./protocol/app-server-protocol/v2/ThreadItem";
 import type { Turn } from "./protocol/app-server-protocol/v2/Turn";
-import type { UserInput } from "./protocol/app-server-protocol/v2/UserInput";
 import { CODEX_PROVIDER_ID } from "./protocol/provider-metadata";
 import {
     type CodexRenderableThreadItem,
@@ -19,6 +18,7 @@ import {
     turnDiffItem,
     unifiedDiffForFileChangeBatches,
 } from "./protocol/turn-diff";
+import type { CodexTurnInputItem } from "./protocol/types";
 import { stripUndefined } from "./utils/object";
 
 type UiMessagePart = UIMessage["parts"][number];
@@ -270,13 +270,14 @@ function agentMessagePart(
 function userMessageParts(item: Extract<ThreadItem, { type: "userMessage" }>): UIMessage["parts"]
 {
     const parts: UIMessage["parts"] = [];
-    const text = userInputText(item.content);
+    const content = item.content;
+    const text = userInputText(content);
     if (text)
     {
         parts.push({ type: "text", text, state: "done" });
     }
 
-    for (const entry of item.content)
+    for (const entry of content)
     {
         const filePart = userInputFilePart(entry);
         if (filePart)
@@ -288,7 +289,7 @@ function userMessageParts(item: Extract<ThreadItem, { type: "userMessage" }>): U
     return parts;
 }
 
-function userInputFilePart(entry: UserInput): FileUiPart | null
+function userInputFilePart(entry: CodexTurnInputItem): FileUiPart | null
 {
     switch (entry.type)
     {

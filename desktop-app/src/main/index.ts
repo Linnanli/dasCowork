@@ -13,6 +13,10 @@ import {
 import { stat } from 'node:fs/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import {
+  createCodexContextCatalogClient,
+  type CodexContextCatalogClient
+} from '@janole/ai-sdk-provider-codex-asp'
 import icon from '../../resources/icon.png?asset'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
@@ -30,6 +34,14 @@ import {
   registerAppSchemePrivileges
 } from './localMediaProtocol'
 import { createModelCatalogService } from './modelCatalogService'
+import { ComposerContextCatalogService } from './composerContext/ComposerContextCatalogService'
+import { ComposerContextChangeBroker } from './composerContext/ComposerContextChangeBroker'
+import {
+  createListComposerContextHandler,
+  createRefreshComposerContextHandler
+} from './composerContext/composerContextIpc'
+import { LiveAgentRegistry } from './composerContext/LiveAgentRegistry'
+import { createValidateLocalAttachmentsHandler } from './composerContext/localAttachmentValidation'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
@@ -45,6 +57,7 @@ import {
   projectSelectPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema,
+  type ComposerContextCatalogChangeEvent,
   sidebarConversationActionPayloadSchema,
   sidebarConversationRenamePayloadSchema,
   sidebarPreferencesPatchSchema,
@@ -55,6 +68,9 @@ let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
 let workspaceFileSearch: WorkspaceFileSearchService | undefined
 let conversationApi: ConversationApiService | undefined
+let composerContextCatalog: ComposerContextCatalogService | undefined
+let composerContextChanges: ComposerContextChangeBroker | undefined
+let composerContextClient: CodexContextCatalogClient | undefined
 const convergingConversationThreadIds = new Set<string>()
 
 const e2eUserDataPath = process.env.DASCOWORK_E2E_USER_DATA_DIR?.trim()
@@ -74,16 +90,53 @@ function createCodexRuntime(): CodexChatRuntimeService {
     mainDir: __dirname,
     resourcesPath: process.resourcesPath
   })
+  const threadClient = new AppServerThreadClient({ launch })
   conversationApi = new ConversationApiService({
-    threadClient: new AppServerThreadClient({ launch }),
+    threadClient,
     projectStore: projectRuntimeServices.projectStore
+  })
+  const liveAgents = new LiveAgentRegistry(threadClient)
+  composerContextClient = createCodexContextCatalogClient({
+    clientInfo: {
+      name: 'dascowork_desktop_composer_context',
+      title: 'dasCowork Desktop Composer Context',
+      version: '1.0.0'
+    },
+    experimentalApi: true,
+    transport: {
+      type: 'stdio',
+      stdio: {
+        command: launch.command,
+        args: launch.args,
+        cwd: launch.cwd,
+        env: launch.env
+      }
+    }
+  })
+  composerContextCatalog = new ComposerContextCatalogService({
+    provider: composerContextClient,
+    conversations: conversationApi,
+    workspaceSearch: projectRuntimeServices.workspaceFileSearch,
+    liveAgents,
+    defaultCwd: app.getAppPath()
+  })
+  composerContextChanges?.dispose()
+  composerContextChanges = new ComposerContextChangeBroker({
+    publish: broadcastComposerContextChange
   })
 
   return new CodexChatRuntimeService({
     launch,
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
     projectService: projectRuntimeServices.projectService,
-    projectStore: projectRuntimeServices.projectStore
+    projectStore: projectRuntimeServices.projectStore,
+    onAgentLifecycle: (event) => {
+      liveAgents.observe(event)
+      composerContextChanges?.notify({
+        sectionIds: ['agents'],
+        scope: { threadId: event.threadId }
+      })
+    }
   })
 }
 
@@ -131,6 +184,11 @@ function requireConversationApi(): ConversationApiService {
   return conversationApi
 }
 
+function requireComposerContextCatalog(): ComposerContextCatalogService {
+  if (!composerContextCatalog) throw new Error('Composer context catalog is not initialized')
+  return composerContextCatalog
+}
+
 function broadcastStatus(): void {
   if (!codexRuntime) return
   const status = codexRuntime.getStatus()
@@ -144,6 +202,14 @@ async function broadcastProjectState(): Promise<void> {
   const state = await projectApi.getState()
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:projects-state-change', state)
+  }
+  const conversationState = conversationApi?.applyProjectState(state)
+  if (conversationState?.loaded) sendConversationState(conversationState)
+}
+
+function broadcastComposerContextChange(event: ComposerContextCatalogChangeEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('codex:composer-context-change', event)
   }
 }
 
@@ -193,6 +259,7 @@ function sendConversationState(
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:conversations-state-change', state)
   }
+  composerContextChanges?.notify({ sectionIds: ['chats'] })
 }
 
 function startConversationListConvergence(
@@ -307,6 +374,18 @@ app.whenReady().then(() => {
       showOpenDialog: (options) => dialog.showOpenDialog(options),
       stat
     })
+  )
+  ipcMain.handle(
+    'codex:composer-context:list',
+    createListComposerContextHandler(requireComposerContextCatalog())
+  )
+  ipcMain.handle(
+    'codex:composer-context:refresh',
+    createRefreshComposerContextHandler(requireComposerContextCatalog())
+  )
+  ipcMain.handle(
+    'codex:composer-context:validate-local-attachments',
+    createValidateLocalAttachmentsHandler({ stat })
   )
   ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
   ipcMain.handle('codex:projects:pick-workspace-root', async () => {
@@ -431,5 +510,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  composerContextChanges?.dispose()
   void codexRuntime?.stop()
+  void composerContextClient?.shutdown()
 })

@@ -8,6 +8,7 @@ import type {
     LanguageModelV3Usage,
 } from "@ai-sdk/provider";
 
+import { agentLifecycleEvents } from "./agent-lifecycle";
 import { ApprovalsDispatcher } from "./approvals";
 import { AppServerClient } from "./client/app-server-client";
 import { PersistentTransport } from "./client/transport-persistent";
@@ -46,7 +47,12 @@ import type {
 import { CodexSessionImpl } from "./session";
 import { mergeThreadConfig, resolveCustomModelProviderSettings } from "./thread-start-config";
 import { stripUndefined } from "./utils/object";
-import { mapSystemPrompt, PromptFileResolver } from "./utils/prompt-file-resolver";
+import {
+    LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+    LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE,
+    mapSystemPrompt,
+    PromptFileResolver,
+} from "./utils/prompt-file-resolver";
 
 export type CodexLanguageModelSettings = CodexCustomModelProviderSettings;
 
@@ -107,6 +113,47 @@ async function notifyThreadStarted({
         debugLog?.("inbound", "onThreadStarted:error", {
             message: errorMessage(error),
         });
+    }
+}
+
+function notifyAgentLifecycle({
+    callOptions,
+    debugLog,
+    method,
+    params,
+}: {
+    callOptions: CodexCallOptions | undefined;
+    debugLog: DebugLog | undefined;
+    method: string;
+    params: unknown;
+}): void
+{
+    const callback = callOptions?.onAgentLifecycle;
+    if (!callback)
+    {
+        return;
+    }
+
+    for (const event of agentLifecycleEvents(method, params))
+    {
+        try
+        {
+            const result = callback(event);
+            void Promise.resolve(result).catch((error) =>
+            {
+                debugLog?.("inbound", "onAgentLifecycle:error", {
+                    message: errorMessage(error),
+                    event,
+                });
+            });
+        }
+        catch (error)
+        {
+            debugLog?.("inbound", "onAgentLifecycle:error", {
+                message: errorMessage(error),
+                event,
+            });
+        }
     }
 }
 
@@ -333,6 +380,8 @@ export class CodexLanguageModel implements LanguageModelV3
     // Keep selected local image paths intact for the App Server localImage input.
     readonly supportedUrls: Record<string, RegExp[]> = {
         "image/*": [/^file:/],
+        [LOCAL_FILE_ATTACHMENT_MEDIA_TYPE]: [/^file:/],
+        [LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE]: [/^file:/],
     };
 
     private readonly settings: CodexLanguageModelSettings;
@@ -764,6 +813,7 @@ export class CodexLanguageModel implements LanguageModelV3
 
                             client.onAnyNotification((method, params) =>
                             {
+                                notifyAgentLifecycle({ callOptions, debugLog, method, params });
                                 const parts = mapper.map({ method, params });
                                 for (const part of parts)
                                 {
@@ -848,6 +898,8 @@ export class CodexLanguageModel implements LanguageModelV3
                             {
                                 return;
                             }
+
+                            notifyAgentLifecycle({ callOptions, debugLog, method, params });
 
                             const parts = mapper.map({ method, params });
 

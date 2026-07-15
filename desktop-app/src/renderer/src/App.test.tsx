@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-import type { CodexApprovalRequest, DesktopProjectsApi } from '../../shared/codexIpcApi'
+import type {
+  CodexApprovalRequest,
+  ComposerContextCatalogResult,
+  DesktopProjectsApi
+} from '../../shared/codexIpcApi'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 
 type MockPartStatus =
@@ -112,6 +116,7 @@ const runtimeState = vi.hoisted<{
     error?: Error
     unread: boolean
     draft: string
+    draftAttachments: []
     loaded: boolean
     chat: object
     transport: object
@@ -127,6 +132,7 @@ const runtimeState = vi.hoisted<{
   startNewConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
   setActiveDraft: ReturnType<typeof vi.fn>
+  setActiveDraftAttachments: ReturnType<typeof vi.fn>
   setActiveScroll: ReturnType<typeof vi.fn>
 }>(() => ({
   activeEntry: {
@@ -136,6 +142,7 @@ const runtimeState = vi.hoisted<{
     phase: 'ready',
     unread: false,
     draft: '',
+    draftAttachments: [],
     loaded: true,
     chat: {},
     transport: {}
@@ -150,6 +157,7 @@ const runtimeState = vi.hoisted<{
   startNewConversation: vi.fn(),
   openConversation: vi.fn(),
   setActiveDraft: vi.fn(),
+  setActiveDraftAttachments: vi.fn(),
   setActiveScroll: vi.fn()
 }))
 
@@ -159,9 +167,31 @@ const mentionAdapterState = vi.hoisted<{
   calls: []
 }))
 
+const modelContextState = vi.hoisted<{ tools?: Record<string, { description?: string }> }>(
+  () => ({})
+)
+
 const aiSdkRuntimeState = vi.hoisted<{
   options?: { isDisabled?: boolean }
 }>(() => ({}))
+
+const composerState = vi.hoisted<{
+  attachments: Array<{
+    id: string
+    type: 'file' | 'image'
+    name: string
+    status: { type: 'complete' }
+    content: []
+  }>
+  dictation: null
+  isEmpty: boolean
+  text: string
+}>(() => ({ attachments: [], dictation: null, isEmpty: true, text: '' }))
+
+const composerRuntimeState = vi.hoisted<{
+  eventHandlers: Record<string, (() => void) | undefined>
+  setTextCalls: string[]
+}>(() => ({ eventHandlers: {}, setTextCalls: [] }))
 
 const projectHookState = vi.hoisted(() => ({
   controller: {
@@ -229,9 +259,11 @@ function resetThreadMessageState(): void {
   delete runtimeState.activeEntry.error
   runtimeState.activeEntry.loaded = true
   runtimeState.activeEntry.draft = ''
+  runtimeState.activeEntry.draftAttachments = []
   delete runtimeState.activeEntry.scroll
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
+  modelContextState.tools = undefined
   aiSdkRuntimeState.options = undefined
 }
 
@@ -243,6 +275,15 @@ function setDesktopPlatform(platform: NodeJS.Platform): void {
 }
 
 function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
+  const emptyComposerContextResult = {
+    version: 1 as const,
+    generatedAt: '2026-07-14T00:00:00.000Z',
+    sections: (['files', 'chats', 'agents', 'skills', 'plugins', 'apps'] as const).map((id) => ({
+      id,
+      status: 'ready' as const,
+      items: []
+    }))
+  }
   vi.stubGlobal('desktopApp', {
     environment: { platform: 'darwin' },
     codex: {
@@ -251,6 +292,16 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       pickLocalContext: vi.fn(async () => [])
     },
     chat: {},
+    composerContext: {
+      list: vi.fn(async () => emptyComposerContextResult),
+      refresh: vi.fn(async () => emptyComposerContextResult),
+      onDidChange: vi.fn(() => () => undefined),
+      validateLocalAttachments: vi.fn(async ({ references }) => ({
+        version: 1 as const,
+        valid: true,
+        entries: references.map((reference) => ({ reference, valid: true }))
+      }))
+    },
     projects: {
       getState: vi.fn(),
       pickWorkspaceRoot: vi.fn(),
@@ -417,6 +468,7 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       openConversation: runtimeState.openConversation,
       setSelectedModelId: runtimeState.setSelectedModelId,
       setActiveDraft: runtimeState.setActiveDraft,
+      setActiveDraftAttachments: runtimeState.setActiveDraftAttachments,
       setActiveScroll: runtimeState.setActiveScroll,
       syncConversationMetadata: vi.fn(),
       getConversationIndicator: (conversation: { running?: boolean; unread?: boolean }) => ({
@@ -455,6 +507,38 @@ vi.mock('@assistant-ui/react-lexical', () => ({
     />
   )
 }))
+
+vi.mock('@/composer/contextLexicalInput', async () => {
+  const { useEffect: useMockEffect } = await import('react')
+  const { useComposerContextSuggestion } =
+    await import('@/composer/composerContextSuggestionController')
+
+  return {
+    ContextLexicalInput: ({ placeholder, directiveChip, className }: PrimitiveProps) => {
+      const { controller } = useComposerContextSuggestion()
+      useMockEffect(
+        () =>
+          controller.registerEditorController({
+            dismiss: () => controller.closeFromEditor(),
+            insert: () => controller.closeFromEditor(),
+            togglePlus: () => {
+              if (controller.getSnapshot().open) controller.closeFromEditor()
+              else controller.openFromEditor('plus', '')
+            }
+          }),
+        [controller]
+      )
+      return (
+        <div
+          className={className}
+          data-has-directive-chip={String(Boolean(directiveChip))}
+          data-placeholder={placeholder}
+          data-testid="lexical-composer-input"
+        />
+      )
+    }
+  }
+})
 
 vi.mock('@assistant-ui/react-streamdown', () => ({
   StreamdownTextPrimitive: (props: Record<string, unknown>) => {
@@ -509,12 +593,7 @@ vi.mock('@/components/ui/avatar', () => ({
 
 vi.mock('@assistant-ui/react', () => {
   const assistantState = {
-    composer: {
-      attachments: [],
-      dictation: null,
-      isEmpty: true,
-      text: ''
-    },
+    composer: composerState,
     message: {
       ...threadMessageState.message,
       parts: currentMessageParts(),
@@ -543,6 +622,28 @@ vi.mock('@assistant-ui/react', () => {
       isCopied: false
     }
   })
+
+  const mockAui = {
+    attachment: {
+      source: 'message'
+    },
+    on: () => vi.fn(),
+    composer: () => ({
+      getState: () => ({ runConfig: undefined }),
+      setText: (text: string) => {
+        composerRuntimeState.setTextCalls.push(text)
+        composerState.text = text
+      }
+    }),
+    modelContext: () => ({
+      register: vi.fn(() => vi.fn())
+    }),
+    thread: () => ({
+      append: vi.fn(),
+      getModelContext: () => ({ tools: modelContextState.tools }),
+      getState: () => ({ isRunning: false })
+    })
+  }
 
   const renderChildren = (children: PrimitiveProps['children']): ReactNode => {
     if (typeof children === 'function') return children({ message: { role: 'assistant' } })
@@ -764,25 +865,10 @@ vi.mock('@assistant-ui/react', () => {
     unstable_useSlashCommandAdapter: () => ({ action: { onExecute: vi.fn() }, adapter: {} }),
     groupPartByType: () => () => undefined,
     useScrollLock: () => vi.fn(),
-    useAuiEvent: () => undefined,
-    useAui: () => ({
-      attachment: {
-        source: 'message'
-      },
-      on: () => vi.fn(),
-      composer: () => ({
-        getState: () => ({ runConfig: undefined }),
-        setText: vi.fn()
-      }),
-      modelContext: () => ({
-        register: vi.fn(() => vi.fn())
-      }),
-      thread: () => ({
-        append: vi.fn(),
-        getModelContext: () => ({}),
-        getState: () => ({ isRunning: false })
-      })
-    }),
+    useAuiEvent: (event: string, handler: () => void) => {
+      composerRuntimeState.eventHandlers[event] = handler
+    },
+    useAui: () => mockAui,
     useMessageTiming: () => null,
     useAuiState: (selector: (state: Record<string, unknown>) => unknown) => {
       const attachment = threadMessageState.message.content
@@ -820,6 +906,13 @@ describe('App composer', () => {
 
   beforeEach(() => {
     resetThreadMessageState()
+    composerState.attachments = []
+    composerState.isEmpty = true
+    composerState.text = ''
+    composerRuntimeState.eventHandlers = {}
+    composerRuntimeState.setTextCalls = []
+    runtimeState.setActiveDraft.mockReset()
+    runtimeState.setActiveDraftAttachments.mockReset()
     installDesktopApp()
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -838,7 +931,7 @@ describe('App composer', () => {
     vi.unstubAllGlobals()
   })
 
-  it('uses the Lexical composer input with mention and slash trigger popovers', () => {
+  it('uses the shared Lexical context input while keeping the slash trigger popover', () => {
     act(() => {
       root.render(<App />)
     })
@@ -860,14 +953,47 @@ describe('App composer', () => {
       'dark:bg-muted/30'
     )
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
-    expect(triggerChars).toEqual(['/', '@'])
+    expect(triggerChars).toEqual(['/'])
   })
 
-  it('prefetches selected project files for composer mentions', async () => {
-    const searchFiles = vi.fn(async () => ({
-      results: [{ path: '/repo/src/App.tsx', label: 'src/App.tsx', root: '/repo' }]
-    }))
-    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
+  it('preserves a new draft when the preceding send fails before acceptance', async () => {
+    runtimeState.activeEntry.draft = 'failed request'
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const send = composerRuntimeState.eventHandlers['composer.send']
+    expect(send).toBeTypeOf('function')
+    composerRuntimeState.setTextCalls = []
+    runtimeState.setActiveDraft.mockClear()
+    runtimeState.setActiveDraftAttachments.mockClear()
+
+    act(() => {
+      send?.()
+      composerState.text = 'next request'
+      composerState.isEmpty = false
+      root.render(<App />)
+    })
+    act(() => {
+      runtimeState.activeEntry.phase = 'error'
+      runtimeState.activeEntry.error = new Error('attachment validation failed')
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(composerRuntimeState.setTextCalls).toEqual([])
+    expect(runtimeState.setActiveDraft).toHaveBeenLastCalledWith('next request')
+    expect(runtimeState.setActiveDraftAttachments).toHaveBeenLastCalledWith([])
+  })
+
+  it('loads the unified context catalog for the selected project', async () => {
+    const listContext = vi.mocked(window.desktopApp.composerContext.list)
 
     act(() => {
       root.render(<App />)
@@ -878,19 +1004,226 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(searchFiles).toHaveBeenCalledWith({
+    expect(listContext).toHaveBeenCalledWith({
+      version: 1,
+      cwd: '/repo',
       query: '',
       limit: 40,
       projectSelection: { projectKind: 'path', path: '/repo' }
     })
+  })
+
+  it('renders the unified context sections in the reference order', async () => {
+    modelContextState.tools = { shell: { description: 'Run a command' } }
+    const result: ComposerContextCatalogResult = {
+      version: 1,
+      generatedAt: '2026-07-14T00:00:00.000Z',
+      sections: [
+        {
+          id: 'files',
+          status: 'error',
+          error: 'remote files must stay hidden',
+          items: [
+            {
+              version: 1,
+              kind: 'file',
+              canonicalId: 'file:/repo/src/App.tsx',
+              label: 'App.tsx',
+              presentation: 'mention',
+              path: '/repo/src/App.tsx',
+              root: '/repo'
+            }
+          ]
+        },
+        {
+          id: 'chats',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'chat',
+              canonicalId: 'chat:thread-1',
+              label: 'Earlier chat',
+              presentation: 'mention',
+              threadId: 'thread-1',
+              uri: 'thread://thread-1'
+            }
+          ]
+        },
+        {
+          id: 'agents',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'configuredAgent',
+              canonicalId: 'configured-agent:reviewer',
+              label: 'reviewer',
+              presentation: 'mention',
+              roleName: 'reviewer',
+              uri: 'subagent://reviewer'
+            }
+          ]
+        },
+        {
+          id: 'skills',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'skill',
+              canonicalId: 'skill:/skills/review/SKILL.md',
+              label: 'review',
+              presentation: 'mention',
+              name: 'review',
+              path: '/skills/review/SKILL.md'
+            }
+          ]
+        },
+        {
+          id: 'plugins',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'plugin',
+              canonicalId: 'plugin:github',
+              label: 'GitHub',
+              presentation: 'mention',
+              pluginId: 'github',
+              uri: 'plugin://github'
+            }
+          ]
+        },
+        {
+          id: 'apps',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'app',
+              canonicalId: 'app:slack',
+              label: 'Slack',
+              presentation: 'mention',
+              appId: 'slack',
+              uri: 'app://slack'
+            }
+          ]
+        }
+      ]
+    }
+    vi.mocked(window.desktopApp.composerContext.list).mockResolvedValue(result)
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="添加文件和更多"]')?.click()
+      await Promise.resolve()
+    })
+
     expect(
-      mentionAdapterState.calls.some((call) => {
-        const categories = (call as { categories?: Array<{ items?: Array<{ id?: string }> }> })
-          .categories
-        return categories?.some((category) =>
-          category.items?.some((item) => item.id === '/repo/src/App.tsx')
-        )
+      Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
+        section.getAttribute('aria-label')
+      )
+    ).toEqual(['Add', 'Files', 'Chats', 'Agents', 'Skills', 'Plugins', 'Apps', 'Tools'])
+    expect(document.body.textContent).not.toContain('Appshot')
+    const panel = document.querySelector('.aui-composer-context-panel')
+    expect(panel?.className).toContain('left-0')
+    expect(panel?.className).toContain('right-0')
+  })
+
+  it('hides local attachment and workspace file entries for remote conversations', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'remote-thread',
+      threadId: 'remote-thread',
+      projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' },
+      cwd: '/srv/app'
+    }
+    const result: ComposerContextCatalogResult = {
+      version: 1,
+      generatedAt: '2026-07-14T00:00:00.000Z',
+      sections: [
+        {
+          id: 'files',
+          status: 'ready',
+          items: [
+            {
+              version: 1,
+              kind: 'file',
+              canonicalId: 'file:/srv/app/remote.ts',
+              label: 'remote.ts',
+              presentation: 'mention',
+              path: '/srv/app/remote.ts'
+            }
+          ]
+        },
+        { id: 'chats', status: 'ready', items: [] },
+        { id: 'agents', status: 'ready', items: [] },
+        { id: 'skills', status: 'ready', items: [] },
+        { id: 'plugins', status: 'ready', items: [] },
+        { id: 'apps', status: 'ready', items: [] }
+      ]
+    }
+    vi.mocked(window.desktopApp.composerContext.list).mockResolvedValue(result)
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      container.querySelector<HTMLButtonElement>('button[aria-label="添加文件和更多"]')?.click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).not.toContain('Files and folders')
+    expect(
+      Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
+        section.getAttribute('aria-label')
+      )
+    ).not.toContain('Files')
+    expect(document.body.textContent).not.toContain('remote.ts')
+    expect(document.body.textContent).not.toContain('remote files must stay hidden')
+    expect(document.body.textContent).not.toContain('Appshot')
+  })
+
+  it('blocks remote sends while a local path attachment is still in the composer', () => {
+    runtimeState.activeConversation = {
+      conversationId: 'remote-with-local-attachment',
+      threadId: 'remote-with-local-attachment',
+      projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' },
+      cwd: '/srv/app'
+    }
+    const identity = encodeURIComponent(
+      JSON.stringify({
+        kind: 'file',
+        path: '/Users/test/local.txt',
+        fileUrl: 'file:///Users/test/local.txt'
       })
+    )
+    composerState.attachments = [
+      {
+        id: `local-context:${identity}`,
+        type: 'file',
+        name: 'local.txt',
+        status: { type: 'complete' },
+        content: []
+      }
+    ]
+    composerState.isEmpty = false
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('移除本地文件附件后才能发送到远程项目')
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')?.disabled
     ).toBe(true)
   })
 
@@ -961,8 +1294,7 @@ describe('App composer', () => {
   })
 
   it('uses the active conversation project for the composer context', async () => {
-    const searchFiles = vi.fn(async () => ({ results: [] }))
-    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
+    const listContext = vi.mocked(window.desktopApp.composerContext.list)
     runtimeState.activeConversation = {
       conversationId: 'conversation-remote',
       threadId: 'thread-remote',
@@ -979,8 +1311,11 @@ describe('App composer', () => {
     })
 
     expect(container.textContent).toContain('Working in: Remote App')
-    expect(searchFiles).toHaveBeenCalledWith(
+    expect(listContext).toHaveBeenCalledWith(
       expect.objectContaining({
+        version: 1,
+        cwd: '/srv/app',
+        threadId: 'thread-remote',
         projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' }
       })
     )
@@ -1009,7 +1344,7 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(document.body.textContent).toContain('选择文件文件夹')
+    expect(document.body.textContent).toContain('Files and folders')
   })
 
   it('opens the add-context menu before a project is selected', async () => {
@@ -1031,7 +1366,7 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(document.body.textContent).toContain('选择文件文件夹')
+    expect(document.body.textContent).toContain('Files and folders')
   })
 
   it('keeps the add-context menu available while a new conversation awaits project selection', async () => {
@@ -1054,12 +1389,11 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(document.body.textContent).toContain('选择文件文件夹')
+    expect(document.body.textContent).toContain('Files and folders')
   })
 
   it('does not reuse the global project when a conversation workspace is unknown', async () => {
-    const searchFiles = vi.fn(async () => ({ results: [] }))
-    window.desktopApp.projects.createFuzzyFileSearchSession = searchFiles
+    const listContext = vi.mocked(window.desktopApp.composerContext.list)
     runtimeState.activeConversation = {
       conversationId: 'conversation-unassigned',
       threadId: 'thread-unassigned',
@@ -1075,7 +1409,17 @@ describe('App composer', () => {
     })
 
     expect(container.textContent).toContain('Working in: unassigned')
-    expect(searchFiles).not.toHaveBeenCalled()
+    expect(listContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/srv/unassigned',
+        threadId: 'thread-unassigned'
+      })
+    )
+    expect(listContext).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectSelection: { projectKind: 'path', path: '/repo' }
+      })
+    )
   })
 
   it('keeps sidebar navigation available while a response is streaming', () => {
