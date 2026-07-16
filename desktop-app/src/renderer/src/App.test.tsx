@@ -2945,6 +2945,9 @@ describe('App composer', () => {
       ...Array.from({ length: 8 }, (_, index) => `Pending step ${index + 1}`)
     ])
     expect(planSteps[0]?.querySelector('span')?.className).toContain('[overflow-wrap:anywhere]')
+    expect(planSteps[0]?.querySelector('span')?.className).toContain('text-foreground/60')
+    expect(planSteps[1]?.querySelector('span')?.className).toContain('text-foreground/90')
+    expect(planSteps[1]?.querySelector('svg')?.className.baseVal).toContain('size-[1em]')
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))

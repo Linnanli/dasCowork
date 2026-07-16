@@ -195,7 +195,7 @@ function PlanStepRow({ step }: { step: ComposerPlanStep }): React.JSX.Element {
       <span
         className={cn(
           'min-w-0 break-words leading-snug [overflow-wrap:anywhere]',
-          completed ? 'text-muted-foreground' : 'text-foreground'
+          completed ? 'text-foreground/60' : 'text-foreground/90'
         )}
       >
         {step.label}
@@ -206,17 +206,17 @@ function PlanStepRow({ step }: { step: ComposerPlanStep }): React.JSX.Element {
 
 function PlanStepStatusIcon({ status }: { status: ComposerPlanStep['status'] }): React.JSX.Element {
   if (status === 'completed') {
-    return <CheckCircle2Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+    return <CheckCircle2Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-foreground/60" />
   }
 
   if (status === 'in-progress') {
     return (
       <Loader2Icon
         aria-hidden
-        className="mt-0.5 size-4 shrink-0 animate-spin text-foreground motion-reduce:animate-none"
+        className="mt-0.5 size-[1em] shrink-0 animate-spin text-foreground/90 motion-reduce:animate-none"
       />
     )
   }
 
-  return <CircleIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+  return <CircleIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-foreground/60" />
 }
