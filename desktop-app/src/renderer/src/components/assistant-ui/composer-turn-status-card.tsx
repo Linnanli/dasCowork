@@ -144,7 +144,7 @@ function PlanProgressRing({ progressPercent }: { progressPercent: number }): Rea
     <svg
       aria-hidden
       data-slot="composer-turn-plan-progress"
-      className="size-5 shrink-0 -rotate-90"
+      className="size-[1em] shrink-0 -rotate-90"
       viewBox="0 0 20 20"
     >
       <circle
