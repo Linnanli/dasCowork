@@ -7,6 +7,7 @@ import { afterEach, vi } from 'vitest'
 
 import type {
   ComposerContextCatalogChangeEvent,
+  ComposerContextCatalogResult,
   ComposerContextReference
 } from '../../../shared/codexIpcApi'
 import {
@@ -111,7 +112,8 @@ describe('composerContextReferenceToTriggerItem', () => {
         label: 'GitHub',
         presentation: 'mention',
         pluginId: 'github',
-        uri: 'plugin://github'
+        uri: 'plugin://github',
+        mentionName: 'github'
       },
       { type: 'plugin', id: 'plugin://github' }
     ],
@@ -123,7 +125,8 @@ describe('composerContextReferenceToTriggerItem', () => {
         label: 'Slack',
         presentation: 'mention',
         appId: 'slack',
-        uri: 'app://slack'
+        uri: 'app://slack',
+        mentionName: 'slack'
       },
       { type: 'app', id: 'app://slack' }
     ]
@@ -131,6 +134,25 @@ describe('composerContextReferenceToTriggerItem', () => {
     expect(
       composerContextReferenceToTriggerItem(reference as ComposerContextReference)
     ).toMatchObject(expected)
+  })
+
+  it('carries canonical mentionName in app/plugin trigger metadata', () => {
+    expect(
+      composerContextReferenceToTriggerItem({
+        version: 1,
+        kind: 'app',
+        canonicalId: 'app:slack',
+        label: 'Slack Workspace',
+        presentation: 'mention',
+        appId: 'slack',
+        uri: 'app://slack',
+        mentionName: 'slack'
+      })
+    ).toMatchObject({
+      id: 'app://slack',
+      label: 'Slack Workspace',
+      metadata: { mentionName: 'slack' }
+    })
   })
 })
 
@@ -181,6 +203,92 @@ describe('composerContextChangeMatchesRequest', () => {
 })
 
 describe('useComposerContextCatalog', () => {
+  it('keeps discovered app/plugin identities when a later query narrows the visible catalog', async () => {
+    const sections = (items: {
+      apps?: ComposerContextReference[]
+      plugins?: ComposerContextReference[]
+    }): ComposerContextCatalogResult['sections'] =>
+      (['files', 'chats', 'agents', 'skills', 'plugins', 'apps'] as const).map((id) => {
+        let sectionItems: ComposerContextReference[] = []
+        if (id === 'apps') {
+          sectionItems = items.apps ?? []
+        } else if (id === 'plugins') {
+          sectionItems = items.plugins ?? []
+        }
+        return {
+          id,
+          status: 'ready' as const,
+          items: sectionItems
+        }
+      })
+    const first = {
+      version: 1 as const,
+      generatedAt: '2026-07-15T00:00:00.000Z',
+      sections: sections({
+        apps: [
+          {
+            version: 1,
+            kind: 'app',
+            canonicalId: 'app:slack',
+            label: 'Slack Workspace',
+            presentation: 'mention',
+            appId: 'slack',
+            uri: 'app://slack',
+            mentionName: 'slack'
+          }
+        ]
+      })
+    }
+    const narrowed = {
+      ...first,
+      generatedAt: '2026-07-15T00:00:01.000Z',
+      sections: sections({
+        plugins: [
+          {
+            version: 1,
+            kind: 'plugin',
+            canonicalId: 'plugin:github',
+            label: 'GitHub',
+            presentation: 'mention',
+            pluginId: 'github',
+            uri: 'plugin://github',
+            mentionName: 'github'
+          }
+        ]
+      })
+    }
+    const list = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(narrowed)
+    vi.stubGlobal('desktopApp', {
+      composerContext: {
+        list,
+        refresh: vi.fn(),
+        onDidChange: vi.fn(() => () => undefined)
+      }
+    })
+    let catalog: ReturnType<typeof useComposerContextCatalog> | undefined
+    const projectSelection = { projectKind: 'path' as const, path: '/repo' }
+    function Harness(): null {
+      catalog = useComposerContextCatalog({
+        cwd: '/repo',
+        enabled: true,
+        projectSelection,
+        threadId: 'thread-1'
+      })
+      return null
+    }
+
+    const container = document.createElement('div')
+    root = createRoot(container)
+    await act(async () => root?.render(createElement(Harness)))
+    expect(catalog?.identityIndex.get('app://slack')?.displayLabel).toBe('Slack Workspace')
+
+    await act(async () => catalog?.setQuery('github'))
+
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(catalog?.identityIndex.get('app://slack')?.mentionName).toBe('slack')
+    expect(catalog?.identityIndex.get('plugin://github')?.displayLabel).toBe('GitHub')
+  })
+
   it('reloads matching change events and uses targeted refresh for a section retry', async () => {
     const result = {
       version: 1 as const,

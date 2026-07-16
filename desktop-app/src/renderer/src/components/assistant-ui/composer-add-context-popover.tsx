@@ -13,7 +13,7 @@ import {
   SparklesIcon,
   WrenchIcon
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { LocalContextPickerKind } from '../../../../shared/codexIpcApi'
 import {
@@ -62,6 +62,8 @@ export function ComposerAddContextPopover({
   sections
 }: ComposerAddContextPopoverProps): React.JSX.Element {
   const { controller, state } = useComposerContextSuggestion()
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [panelMaxHeight, setPanelMaxHeight] = useState(320)
   const [pickerError, setPickerError] = useState<string | null>(null)
   const [isPicking, setIsPicking] = useState(false)
   const normalizedQuery = state.query.trim().toLocaleLowerCase()
@@ -97,6 +99,20 @@ export function ComposerAddContextPopover({
     const timeout = window.setTimeout(() => onQueryChange(state.query), 150)
     return () => window.clearTimeout(timeout)
   }, [onQueryChange, state.open, state.query])
+
+  useLayoutEffect(() => {
+    if (!state.open || !panelRef.current) return undefined
+    const panel = panelRef.current
+    const updatePanelLayout = (): void => {
+      const headerBottom = document.querySelector('header')?.getBoundingClientRect().bottom ?? 0
+      const availableHeight = Math.floor(panel.getBoundingClientRect().bottom - headerBottom - 8)
+      setPanelMaxHeight(Math.min(320, Math.max(96, availableHeight)))
+      panel.scrollTop = 0
+    }
+    updatePanelLayout()
+    window.addEventListener('resize', updatePanelLayout)
+    return () => window.removeEventListener('resize', updatePanelLayout)
+  }, [state.open, state.query, state.source])
 
   const pick = useCallback(
     async (kind: LocalContextPickerKind): Promise<void> => {
@@ -166,9 +182,11 @@ export function ComposerAddContextPopover({
 
       {state.open ? (
         <div
+          ref={panelRef}
           role="listbox"
           aria-label="添加上下文"
-          className="aui-composer-context-panel absolute right-0 bottom-full left-0 z-50 mb-3 max-h-80 overflow-y-auto rounded-2xl border border-border bg-popover/90 p-1 text-popover-foreground shadow-lg backdrop-blur-md"
+          className="aui-composer-context-panel absolute right-0 bottom-full left-0 z-50 mb-3 overflow-y-auto rounded-2xl border border-border bg-popover/90 p-1 text-popover-foreground shadow-lg backdrop-blur-md"
+          style={{ maxHeight: panelMaxHeight }}
           onMouseDown={(event) => event.preventDefault()}
         >
           {!normalizedQuery ? (

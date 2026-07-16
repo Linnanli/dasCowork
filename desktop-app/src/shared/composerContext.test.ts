@@ -35,6 +35,26 @@ describe('composer context schemas', () => {
     expect(composerContextCatalogRequestSchema.safeParse({ version: 2 }).success).toBe(false)
   })
 
+  it('accepts canonical mention names while keeping older v1 app/plugin references readable', () => {
+    const app = {
+      version: 1,
+      kind: 'app',
+      canonicalId: 'app:slack',
+      label: 'Slack',
+      presentation: 'mention',
+      appId: 'slack',
+      uri: 'app://slack'
+    }
+
+    expect(composerContextReferenceSchema.safeParse(app).success).toBe(true)
+    expect(composerContextReferenceSchema.safeParse({ ...app, mentionName: 'slack' }).success).toBe(
+      true
+    )
+    expect(composerContextReferenceSchema.safeParse({ ...app, mentionName: '' }).success).toBe(
+      false
+    )
+  })
+
   it('accepts fail-soft sections with items and a scoped error', () => {
     expect(
       composerContextCatalogResultSchema.safeParse({

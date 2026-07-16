@@ -153,6 +153,7 @@ describe("CodexContextCatalogClient", () =>
         await expect(client.listInstalledPlugins({ cwd: "/repo" })).resolves.toEqual([{
             id: "sample",
             name: "sample",
+            mentionName: "sample",
             displayName: "Sample Plugin",
             description: "A sample",
             marketplaceName: "local-market",
@@ -204,12 +205,56 @@ describe("CodexContextCatalogClient", () =>
         await expect(client.listApps({ threadId: null, pageSize: 1 })).resolves.toEqual([{
             id: "github",
             name: "GitHub",
+            mentionName: "github",
             description: "Repositories",
             logoUrl: "https://example.com/github.png",
             mentionPath: "app://github",
             enabled: true,
             accessible: true,
         }]);
+    });
+
+    it("normalizes app mention names and falls back to the app id", async () =>
+    {
+        const mock = new CatalogMockClient(() => ({
+            data: [
+                {
+                    id: "enterprise",
+                    name: "  GitHub ++ Enterprise!  ",
+                    description: null,
+                    logoUrl: null,
+                    logoUrlDark: null,
+                    isEnabled: true,
+                    isAccessible: true,
+                },
+                {
+                    id: "fallback-app",
+                    name: "!!!",
+                    description: null,
+                    logoUrl: null,
+                    logoUrlDark: null,
+                    isEnabled: true,
+                    isAccessible: true,
+                },
+            ],
+            nextCursor: null,
+        }));
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+
+        await expect(client.listApps()).resolves.toMatchObject([
+            {
+                id: "enterprise",
+                name: "  GitHub ++ Enterprise!  ",
+                mentionName: "github-enterprise",
+                mentionPath: "app://enterprise",
+            },
+            {
+                id: "fallback-app",
+                name: "!!!",
+                mentionName: "fallback-app",
+                mentionPath: "app://fallback-app",
+            },
+        ]);
     });
 
     it("recreates the catalog connection after a transport request fails", async () =>

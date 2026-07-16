@@ -725,7 +725,7 @@ export class CodexEventMapper
             toolCallId,
             toolName,
             result: asToolResult({ item }),
-            ...(tracked ? { preliminary: true } : {}),
+            preliminary: true,
         }));
         this.turnDiffByTurnId.set(p.turnId, {
             toolCallId,

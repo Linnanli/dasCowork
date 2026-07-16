@@ -29,6 +29,7 @@ import {
   type Unstable_DirectiveFormatter
 } from '@assistant-ui/react'
 import { ComposerLexicalSyncPlugin } from './composerLexicalSyncPlugin'
+import { ComposerContextIdentityHydrationPlugin } from './composerContextIdentityHydrationPlugin'
 import {
   DirectiveChipProvider,
   DirectiveNode,
@@ -298,6 +299,7 @@ export const ContextLexicalInput = forwardRef<HTMLDivElement, ContextLexicalInpu
             />
             <HistoryPlugin />
             <ComposerLexicalSyncPlugin formatter={resolvedFormatter} />
+            <ComposerContextIdentityHydrationPlugin formatter={resolvedFormatter} />
             <DirectivePlugin {...directivePluginProps} />
             <ComposerContextSuggestionPlugin formatter={resolvedFormatter} />
             <KeyboardPlugin submitMode={submitMode} cancelOnEscape={cancelOnEscape} />

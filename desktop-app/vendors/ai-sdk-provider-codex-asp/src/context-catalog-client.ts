@@ -52,6 +52,7 @@ export interface CodexCatalogPlugin
 {
     id: string;
     name: string;
+    mentionName: string;
     displayName: string;
     description?: string;
     marketplaceName: string;
@@ -64,6 +65,7 @@ export interface CodexCatalogApp
 {
     id: string;
     name: string;
+    mentionName: string;
     description?: string;
     logoUrl?: string;
     logoUrlDark?: string;
@@ -148,6 +150,7 @@ export class CodexContextCatalogClient
                     return [stripUndefined({
                         id: plugin.id,
                         name: plugin.name,
+                        mentionName: plugin.name,
                         displayName: plugin.interface?.displayName ?? plugin.name,
                         description: plugin.interface?.shortDescription ?? undefined,
                         marketplaceName: marketplace.name,
@@ -333,6 +336,7 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
     return stripUndefined({
         id: app.id,
         name: app.name,
+        mentionName: appMentionName(app),
         description: app.description ?? undefined,
         logoUrl: app.logoUrl ?? undefined,
         logoUrlDark: app.logoUrlDark ?? undefined,
@@ -340,6 +344,15 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
         enabled: true as const,
         accessible: true as const,
     });
+}
+
+function appMentionName(app: AppInfo): string
+{
+    const mentionName = app.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, "-")
+        .replace(/^-+|-+$/gu, "");
+    return mentionName || app.id;
 }
 
 const AGENT_SETTINGS = new Set([

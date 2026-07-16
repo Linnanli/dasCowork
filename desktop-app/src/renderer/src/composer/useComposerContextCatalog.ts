@@ -10,6 +10,11 @@ import {
   type ComposerContextSectionId
 } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
+import {
+  buildComposerContextIdentityIndex,
+  emptyComposerContextIdentityIndex,
+  type ComposerContextIdentityIndex
+} from './composerContextIdentity'
 
 export type ComposerContextCatalogSectionState = {
   id: ComposerContextSectionId
@@ -24,7 +29,8 @@ type UseComposerContextCatalogOptions = {
   threadId?: string
 }
 
-type ComposerContextCatalogState = {
+export type ComposerContextCatalogState = {
+  identityIndex: ComposerContextIdentityIndex
   sections: readonly ComposerContextCatalogSectionState[]
   loading: boolean
   query: string
@@ -35,6 +41,11 @@ type ComposerContextCatalogState = {
 type CatalogLoadState = {
   requestKey: string
   sections: readonly ComposerContextCatalogSectionState[]
+}
+
+type CatalogIdentityState = {
+  scopeKey: string
+  index: ComposerContextIdentityIndex
 }
 
 const catalogSectionOrder: readonly ComposerContextSectionId[] = [
@@ -56,6 +67,7 @@ export function useComposerContextCatalog({
 }: UseComposerContextCatalogOptions): ComposerContextCatalogState {
   const [query, setQuery] = useState('')
   const [loadState, setLoadState] = useState<CatalogLoadState | null>(null)
+  const [identityState, setIdentityState] = useState<CatalogIdentityState | null>(null)
   const [refreshRequest, setRefreshRequest] = useState<{
     revision: number
     sectionId?: ComposerContextSectionId
@@ -75,6 +87,12 @@ export function useComposerContextCatalog({
     [cwd, projectSelection, query, threadId]
   )
   const requestKey = JSON.stringify(request)
+  const identityScopeKey = JSON.stringify({
+    version: request.version,
+    cwd: request.cwd,
+    threadId: request.threadId,
+    projectSelection: request.projectSelection
+  })
 
   useEffect(() => {
     if (!enabled) return
@@ -102,14 +120,23 @@ export function useComposerContextCatalog({
     void load
       .then((result) => {
         if (requestSequence.current !== sequence) return
+        const sections = catalogSectionOrder.map((id) =>
+          mapCatalogSection(
+            result.sections.find((section) => section.id === id) ?? missingSection(id)
+          )
+        )
         setLoadState({
           requestKey,
-          sections: catalogSectionOrder.map((id) =>
-            mapCatalogSection(
-              result.sections.find((section) => section.id === id) ?? missingSection(id)
-            )
-          )
+          sections
         })
+        const discoveredIdentities = buildComposerContextIdentityIndex(sections)
+        setIdentityState((current) => ({
+          scopeKey: identityScopeKey,
+          index:
+            current?.scopeKey === identityScopeKey
+              ? mergeIdentityIndexes(current.index, discoveredIdentities)
+              : discoveredIdentities
+        }))
       })
       .catch((error) => {
         if (requestSequence.current !== sequence) return
@@ -119,7 +146,7 @@ export function useComposerContextCatalog({
           sections: catalogSectionOrder.map((id) => ({ id, items: [], error: message }))
         })
       })
-  }, [changeRevision, enabled, refreshRequest, request, requestKey])
+  }, [changeRevision, enabled, identityScopeKey, refreshRequest, request, requestKey])
 
   const refresh = useCallback((sectionId?: ComposerContextSectionId) => {
     setRefreshRequest((current) => ({ revision: current.revision + 1, sectionId }))
@@ -127,12 +154,26 @@ export function useComposerContextCatalog({
   const hasCurrentResult = enabled && loadState?.requestKey === requestKey
 
   return {
+    identityIndex:
+      enabled && identityState?.scopeKey === identityScopeKey
+        ? identityState.index
+        : emptyComposerContextIdentityIndex,
     sections: hasCurrentResult ? loadState.sections : emptyCatalogSections,
     loading: enabled && !hasCurrentResult,
     query,
     refresh,
     setQuery
   }
+}
+
+function mergeIdentityIndexes(
+  current: ComposerContextIdentityIndex,
+  discovered: ComposerContextIdentityIndex
+): ComposerContextIdentityIndex {
+  if (discovered.size === 0) return current
+  const merged = new Map(current)
+  for (const [uri, identity] of discovered) merged.set(uri, identity)
+  return merged
 }
 
 export function composerContextChangeMatchesRequest(
@@ -199,7 +240,11 @@ function triggerItem(
     type,
     label: reference.label,
     ...(description ? { description } : {}),
-    metadata: { canonicalId: reference.canonicalId, kind: reference.kind }
+    metadata: {
+      canonicalId: reference.canonicalId,
+      kind: reference.kind,
+      ...('mentionName' in reference ? { mentionName: reference.mentionName } : {})
+    }
   }
 }
 

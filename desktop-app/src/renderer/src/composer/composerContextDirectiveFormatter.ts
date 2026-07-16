@@ -19,6 +19,7 @@ export type ComposerContextReference = {
   type: ComposerContextReferenceType
   path: string
   label: string
+  mentionName?: string
 }
 
 const directivePattern = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu
@@ -34,7 +35,8 @@ export const composerContextDirectiveFormatter: Unstable_DirectiveFormatter = {
       return unstable_defaultDirectiveFormatter.serialize(item)
     }
 
-    return `:${item.type}[${encodeURIComponent(item.label)}]{name=${encodeURIComponent(item.id)}}`
+    const label = canonicalMentionName(item) ?? item.label
+    return `:${item.type}[${encodeURIComponent(label)}]{name=${encodeURIComponent(item.id)}}`
   },
 
   parse(text: string): readonly Unstable_DirectiveSegment[] {
@@ -81,7 +83,8 @@ export function serializeComposerContextReference(reference: ComposerContextRefe
   return composerContextDirectiveFormatter.serialize({
     id: reference.path,
     type: reference.type,
-    label: reference.label
+    label: reference.label,
+    ...(reference.mentionName ? { metadata: { mentionName: reference.mentionName } } : {})
   })
 }
 
@@ -205,6 +208,14 @@ function decodeUriComponentSafely(value: string): string {
   } catch {
     return value
   }
+}
+
+function canonicalMentionName(item: Unstable_TriggerItem): string | undefined {
+  if (item.type !== 'app' && item.type !== 'plugin') return undefined
+  const metadata = item.metadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined
+  const mentionName = (metadata as Record<string, unknown>).mentionName
+  return typeof mentionName === 'string' && mentionName.length > 0 ? mentionName : undefined
 }
 
 function appendDefaultSegments(segments: Unstable_DirectiveSegment[], text: string): void {

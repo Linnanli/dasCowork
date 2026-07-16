@@ -80,6 +80,31 @@ describe('composerContextDirectiveFormatter', () => {
     expect(parseComposerContextReferences(serialized)).toEqual(references)
   })
 
+  it('persists canonical app/plugin mention names while keeping the URI as identity', () => {
+    expect(
+      serializeComposerContextReference({
+        type: 'app',
+        label: 'Slack Workspace',
+        mentionName: 'slack',
+        path: 'app://app_123'
+      })
+    ).toBe(':app[slack]{name=app%3A%2F%2Fapp_123}')
+    expect(
+      composerContextDirectiveFormatter.serialize({
+        id: 'plugin://github@official',
+        type: 'plugin',
+        label: 'GitHub Official',
+        metadata: { mentionName: 'github' }
+      })
+    ).toBe(':plugin[github]{name=plugin%3A%2F%2Fgithub%40official}')
+  })
+
+  it('keeps older v1 app/plugin directives readable when mentionName is absent', () => {
+    expect(parseComposerContextReferences(':app[Slack]{name=app%3A%2F%2Fapp_123}')).toEqual([
+      { type: 'app', label: 'Slack', path: 'app://app_123' }
+    ])
+  })
+
   it('rejects a context URI whose scheme does not match its directive type', () => {
     const input = ':chat[wrong]{name=agent%3A%2F%2Fchild}'
     expect(composerContextDirectiveFormatter.parse(input)).toEqual([{ kind: 'text', text: input }])

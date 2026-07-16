@@ -31,6 +31,7 @@ export type CodexSkillCatalogEntry = {
 export type CodexPluginCatalogEntry = {
   id: string
   name: string
+  mentionName: string
   displayName?: string
   description?: string
   mentionPath: string
@@ -40,6 +41,7 @@ export type CodexPluginCatalogEntry = {
 export type CodexAppCatalogEntry = {
   id: string
   name: string
+  mentionName: string
   description?: string
   mentionPath: string
   enabled?: boolean
@@ -417,7 +419,8 @@ function pluginReference(plugin: CodexPluginCatalogEntry): ComposerContextRefere
     description: plugin.description,
     presentation: 'mention',
     pluginId: plugin.id,
-    uri: plugin.mentionPath
+    uri: plugin.mentionPath,
+    mentionName: plugin.mentionName
   }
 }
 
@@ -430,7 +433,8 @@ function appReference(app: CodexAppCatalogEntry): ComposerContextReference {
     description: app.description,
     presentation: 'mention',
     appId: app.id,
-    uri: app.mentionPath
+    uri: app.mentionPath,
+    mentionName: app.mentionName
   }
 }
 

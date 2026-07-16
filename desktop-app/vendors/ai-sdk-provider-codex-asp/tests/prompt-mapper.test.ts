@@ -35,19 +35,36 @@ describe("PromptFileResolver", () =>
         ]);
     });
 
-    it("extracts only the last user message when resuming a thread", async () =>
+    it.each([false, true])("extracts only the last user message for fresh and resumed threads", async (isResume) =>
     {
         const resolver = new PromptFileResolver();
         const items = await resolver.resolve(
             [
                 { role: "system", content: "Be concise." },
-                { role: "user", content: [{ type: "text", text: "first message" }] },
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: [
+                                "first message",
+                                ":file[old]{name=%2Ftmp%2Fold.txt}",
+                                ":app[old-app]{name=app%3A%2F%2Fold-app-id}",
+                            ].join(" "),
+                        },
+                        {
+                            type: "file",
+                            mediaType: "image/png",
+                            data: new URL("https://example.com/old.png"),
+                        },
+                    ],
+                },
                 { role: "assistant", content: [{ type: "text", text: "first reply" }] },
                 { role: "user", content: [{ type: "text", text: "second message" }] },
                 { role: "assistant", content: [{ type: "text", text: "second reply" }] },
                 { role: "user", content: [{ type: "text", text: "third message" }] },
             ],
-            true,
+            isResume,
         );
 
         expect(items).toEqual([

@@ -16,8 +16,8 @@ describe("composer context codec", () =>
             ":agent[Worker]{name=agent%3A%2F%2Fagent-1}",
             ":agentRole[reviewer]{name=subagent%3A%2F%2Freviewer}",
             ":skill[slides]{name=%2Fskills%2Fslides%2FSKILL.md}",
-            ":app[GitHub]{name=app%3A%2F%2Fgithub}",
-            ":plugin[Sample]{name=plugin%3A%2F%2Fsample%40local}",
+            ":app[google-drive]{name=app%3A%2F%2Fapp-123}",
+            ":plugin[sample]{name=plugin%3A%2F%2Fsample%40local}",
         ].join(" "));
 
         expect(extracted.text).toBe([
@@ -27,13 +27,13 @@ describe("composer context codec", () =>
             "[@Worker](agent://agent-1)",
             "[@reviewer](subagent://reviewer)",
             "",
-            "$github",
-            "@sample@local",
+            "$google-drive",
+            "@sample",
         ].join(" "));
         expect(extracted.inputs).toEqual([
             { type: "skill", name: "slides", path: "/skills/slides/SKILL.md" },
-            { type: "mention", name: "github", path: "app://github" },
-            { type: "mention", name: "sample@local", path: "plugin://sample@local" },
+            { type: "mention", name: "google-drive", path: "app://app-123" },
+            { type: "mention", name: "sample", path: "plugin://sample@local" },
         ]);
     });
 

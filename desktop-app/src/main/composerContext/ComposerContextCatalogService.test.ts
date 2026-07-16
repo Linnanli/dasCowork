@@ -41,6 +41,7 @@ function setup() {
       {
         id: 'github',
         name: 'github',
+        mentionName: 'github',
         displayName: 'GitHub',
         mentionPath: 'plugin://github',
         enabled: true
@@ -50,6 +51,7 @@ function setup() {
       {
         id: 'slack',
         name: 'Slack',
+        mentionName: 'slack',
         mentionPath: 'app://slack',
         enabled: true,
         accessible: true
@@ -57,6 +59,7 @@ function setup() {
       {
         id: 'locked',
         name: 'Locked',
+        mentionName: 'locked',
         mentionPath: 'app://locked',
         enabled: true,
         accessible: false
@@ -164,7 +167,15 @@ describe('ComposerContextCatalogService', () => {
     ])
     expect(result.sections.find(({ id }) => id === 'skills')?.items).toHaveLength(1)
     expect(result.sections.find(({ id }) => id === 'apps')?.items).toEqual([
-      expect.objectContaining({ kind: 'app', appId: 'slack' })
+      expect.objectContaining({ kind: 'app', appId: 'slack', label: 'Slack', mentionName: 'slack' })
+    ])
+    expect(result.sections.find(({ id }) => id === 'plugins')?.items).toEqual([
+      expect.objectContaining({
+        kind: 'plugin',
+        pluginId: 'github',
+        label: 'GitHub',
+        mentionName: 'github'
+      })
     ])
     expect(dependencies.provider.listApps).toHaveBeenCalledWith({
       threadId: null,

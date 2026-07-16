@@ -75,13 +75,15 @@ export const composerContextReferenceSchema = z.discriminatedUnion('kind', [
     kind: z.literal('plugin'),
     presentation: z.literal('mention'),
     pluginId: z.string().min(1),
-    uri: z.string().regex(/^plugin:\/\//u)
+    uri: z.string().regex(/^plugin:\/\//u),
+    mentionName: z.string().min(1).optional()
   }),
   composerContextReferenceBaseSchema.extend({
     kind: z.literal('app'),
     presentation: z.literal('mention'),
     appId: z.string().min(1),
-    uri: z.string().regex(/^app:\/\//u)
+    uri: z.string().regex(/^app:\/\//u),
+    mentionName: z.string().min(1).optional()
   })
 ])
 

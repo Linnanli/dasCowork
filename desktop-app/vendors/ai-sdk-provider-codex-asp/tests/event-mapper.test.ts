@@ -1689,6 +1689,7 @@ describe("CodexEventMapper", () =>
                         originalLength: diff.length,
                     },
                 },
+                preliminary: true,
             },
             {
                 type: "tool-result",
@@ -1764,6 +1765,7 @@ describe("CodexEventMapper", () =>
                         truncated: false,
                     },
                 },
+                preliminary: true,
             },
             {
                 type: "tool-result",

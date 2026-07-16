@@ -23,7 +23,7 @@ import {
 } from '@assistant-ui/react'
 import { useChat } from '@ai-sdk/react'
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
-import { LexicalComposerInput, type DirectiveChipProps } from '@assistant-ui/react-lexical'
+import { type DirectiveChipProps } from '@assistant-ui/react-lexical'
 import { Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
@@ -127,7 +127,15 @@ import { captureConversationScroll, restoreConversationScroll } from './runtime/
 import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
 import type { ModelOption } from './components/assistant-ui'
 import { composerContextDirectiveFormatter } from './composer/composerContextDirectiveFormatter'
-import { useComposerContextCatalog } from './composer/useComposerContextCatalog'
+import {
+  type ComposerContextCatalogState,
+  useComposerContextCatalog
+} from './composer/useComposerContextCatalog'
+import {
+  type ComposerContextIdentityIndex,
+  ComposerContextIdentityProvider,
+  useComposerContextIdentityIndex
+} from './composer/composerContextIdentity'
 import {
   createLocalImageAttachment,
   createLocalPathAttachment,
@@ -167,6 +175,10 @@ type ChatThreadProps = ComposerProps & {
   onOpenConversation: OpenSubagentConversation
   scrollSnapshot?: ConversationScrollSnapshot
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
+}
+
+type ComposerComponentProps = ComposerProps & {
+  composerContextCatalog: ComposerContextCatalogState
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -615,82 +627,96 @@ function ChatThread({
     showNewConversationView && !hasConversationProjectContext(activeConversation, projectState)
   const viewportRef = useRef<HTMLDivElement>(null)
   useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
+  const effectiveProjectSelection = activeConversation
+    ? activeConversation.projectSelection
+    : projectState.state?.activeProjectSelection
+  const composerContextCatalog = useComposerContextCatalog({
+    cwd: resolveComposerCwd(activeConversation, projectState),
+    enabled: hasConversationProjectContext(activeConversation, projectState),
+    projectSelection: effectiveProjectSelection,
+    threadId: activeConversation?.threadId
+  })
 
   return (
-    <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container flex h-full min-h-0 flex-1 flex-col bg-background"
-      style={{
-        ['--thread-max-width' as string]: '44rem',
-        ['--composer-padding' as string]: '8px'
-      }}
-    >
-      <ThreadPrimitive.Viewport
-        ref={viewportRef}
-        turnAnchor="top"
-        scrollToBottomOnInitialize={!scrollSnapshot}
-        scrollToBottomOnThreadSwitch={false}
-        data-slot="aui_thread-viewport"
-        className={cn(
-          'relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4',
-          showNewConversationView && 'justify-center'
-        )}
+    <ComposerContextIdentityProvider index={composerContextCatalog.identityIndex}>
+      <ThreadPrimitive.Root
+        className="aui-root aui-thread-root @container flex h-full min-h-0 flex-1 flex-col bg-background"
+        style={{
+          ['--thread-max-width' as string]: '44rem',
+          ['--composer-padding' as string]: '8px'
+        }}
       >
-        {loadError ? (
-          <div
-            data-slot="conversation-load-error"
-            role="alert"
-            className="mx-auto mb-6 flex w-full max-w-(--thread-max-width) items-center justify-between gap-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
-          >
-            <span>无法加载此对话：{loadError.message}</span>
-            <Button type="button" size="sm" variant="secondary" onClick={onRetryLoad}>
-              重试
-            </Button>
-          </div>
-        ) : null}
-        {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
-        {showNewConversationView && !showProjectGate ? <ThreadWelcome /> : null}
-        <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
-          <ThreadPrimitive.Messages>
-            {({ message }) => {
-              if (message.composer.isEditing) return <EditComposer />
-              if (message.role === 'user') return <UserMessage />
-              return (
-                <AssistantMessage
-                  hasBlockingRequest={hasBlockingRequest}
-                  workspaceCwd={activeConversation?.cwd ?? undefined}
-                  canOpenLocalPaths={activeConversation?.projectSelection?.projectKind !== 'remote'}
-                  onOpenConversation={onOpenConversation}
-                />
-              )
-            }}
-          </ThreadPrimitive.Messages>
-        </div>
-        <ThreadPrimitive.ViewportFooter
+        <ThreadPrimitive.Viewport
+          ref={viewportRef}
+          turnAnchor="top"
+          scrollToBottomOnInitialize={!scrollSnapshot}
+          scrollToBottomOnThreadSwitch={false}
+          data-slot="aui_thread-viewport"
           className={cn(
-            'aui-thread-viewport-footer mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible bg-background pb-4 md:pb-6',
-            !showNewConversationView && 'sticky bottom-0 mt-auto rounded-t-xl'
+            'relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4',
+            showNewConversationView && 'justify-center'
           )}
         >
-          <ThreadScrollToBottom />
-          <Composer
-            activeConversation={activeConversation}
-            disabled={disabled}
-            models={models}
-            selectedModelId={selectedModelId}
-            modelSelectionError={modelSelectionError}
-            onSelectedModelChange={onSelectedModelChange}
-            projectState={projectState}
-          />
-          {showNewConversationView ? (
-            <div className="aui-thread-welcome-suggestions-shell min-h-19">
-              <AuiIf condition={(state) => state.composer.isEmpty}>
-                <ThreadSuggestions />
-              </AuiIf>
+          {loadError ? (
+            <div
+              data-slot="conversation-load-error"
+              role="alert"
+              className="mx-auto mb-6 flex w-full max-w-(--thread-max-width) items-center justify-between gap-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+            >
+              <span>无法加载此对话：{loadError.message}</span>
+              <Button type="button" size="sm" variant="secondary" onClick={onRetryLoad}>
+                重试
+              </Button>
             </div>
           ) : null}
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
-    </ThreadPrimitive.Root>
+          {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
+          {showNewConversationView && !showProjectGate ? <ThreadWelcome /> : null}
+          <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
+            <ThreadPrimitive.Messages>
+              {({ message }) => {
+                if (message.composer.isEditing) return <EditComposer />
+                if (message.role === 'user') return <UserMessage />
+                return (
+                  <AssistantMessage
+                    hasBlockingRequest={hasBlockingRequest}
+                    workspaceCwd={activeConversation?.cwd ?? undefined}
+                    canOpenLocalPaths={
+                      activeConversation?.projectSelection?.projectKind !== 'remote'
+                    }
+                    onOpenConversation={onOpenConversation}
+                  />
+                )
+              }}
+            </ThreadPrimitive.Messages>
+          </div>
+          <ThreadPrimitive.ViewportFooter
+            className={cn(
+              'aui-thread-viewport-footer mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible bg-background pb-4 md:pb-6',
+              !showNewConversationView && 'sticky bottom-0 mt-auto rounded-t-xl'
+            )}
+          >
+            <ThreadScrollToBottom />
+            <Composer
+              activeConversation={activeConversation}
+              composerContextCatalog={composerContextCatalog}
+              disabled={disabled}
+              models={models}
+              selectedModelId={selectedModelId}
+              modelSelectionError={modelSelectionError}
+              onSelectedModelChange={onSelectedModelChange}
+              projectState={projectState}
+            />
+            {showNewConversationView ? (
+              <div className="aui-thread-welcome-suggestions-shell min-h-19">
+                <AuiIf condition={(state) => state.composer.isEmpty}>
+                  <ThreadSuggestions />
+                </AuiIf>
+              </div>
+            ) : null}
+          </ThreadPrimitive.ViewportFooter>
+        </ThreadPrimitive.Viewport>
+      </ThreadPrimitive.Root>
+    </ComposerContextIdentityProvider>
   )
 }
 
@@ -1189,6 +1215,7 @@ function QuoteBlock({ text }: QuoteMessagePartProps): React.JSX.Element {
 
 function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
   const segments = composerContextDirectiveFormatter.parse(text)
+  const identityIndex = useComposerContextIdentityIndex()
 
   if (segments.length === 1 && segments[0]?.kind === 'text') return <>{text}</>
 
@@ -1210,12 +1237,23 @@ function DirectiveText({ text }: TextMessagePartProps): React.JSX.Element {
             data-directive-id={segment.id}
             data-directive-type={segment.type}
           >
-            {segment.label}
+            {displayDirectiveLabel(segment.type, segment.id, segment.label, identityIndex)}
           </span>
         )
       })}
     </>
   )
+}
+
+function displayDirectiveLabel(
+  directiveType: string,
+  directiveId: string,
+  fallbackLabel: string,
+  identityIndex: ComposerContextIdentityIndex
+): string {
+  if (directiveType !== 'app' && directiveType !== 'plugin') return fallbackLabel
+  const identity = identityIndex.get(directiveId)
+  return identity?.type === directiveType ? identity.displayLabel : fallbackLabel
 }
 
 function AssistantRenderUnitView({
@@ -1636,39 +1674,41 @@ function UserActionBar(): React.JSX.Element {
 
 function EditComposer(): React.JSX.Element {
   return (
-    <MessagePrimitive.Root
-      data-slot="aui_edit-composer-wrapper"
-      className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
-    >
-      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl border border-border/60 bg-background shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:border-muted-foreground/15 dark:bg-muted/30 dark:shadow-none">
-          <LexicalComposerInput
-            autoFocus
-            directiveChip={DirectiveChip}
-            formatter={composerContextDirectiveFormatter}
-            className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base text-foreground outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
-          />
-          <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
-            <ComposerPrimitive.Cancel asChild>
-              <button
-                className="h-8 rounded-full px-3.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                type="button"
-              >
-                取消
-              </button>
-            </ComposerPrimitive.Cancel>
-            <ComposerPrimitive.Send asChild>
-              <button
-                className="h-8 rounded-full bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                type="button"
-              >
-                更新
-              </button>
-            </ComposerPrimitive.Send>
-          </div>
-        </ComposerPrimitive.Root>
-      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-    </MessagePrimitive.Root>
+    <ComposerContextSuggestionProvider>
+      <MessagePrimitive.Root
+        data-slot="aui_edit-composer-wrapper"
+        className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
+      >
+        <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+          <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl border border-border/60 bg-background shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:border-muted-foreground/15 dark:bg-muted/30 dark:shadow-none">
+            <ContextLexicalInput
+              autoFocus
+              directiveChip={DirectiveChip}
+              formatter={composerContextDirectiveFormatter}
+              className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base text-foreground outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
+            />
+            <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
+              <ComposerPrimitive.Cancel asChild>
+                <button
+                  className="h-8 rounded-full px-3.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  type="button"
+                >
+                  取消
+                </button>
+              </ComposerPrimitive.Cancel>
+              <ComposerPrimitive.Send asChild>
+                <button
+                  className="h-8 rounded-full bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                  type="button"
+                >
+                  更新
+                </button>
+              </ComposerPrimitive.Send>
+            </div>
+          </ComposerPrimitive.Root>
+        </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      </MessagePrimitive.Root>
+    </ComposerContextSuggestionProvider>
   )
 }
 
@@ -1699,6 +1739,7 @@ function DirectiveChip({
   directiveType,
   label
 }: DirectiveChipProps): React.JSX.Element {
+  const identityIndex = useComposerContextIdentityIndex()
   const Icon =
     directiveType === 'command' ? undefined : (directiveChipIcons[directiveType] ?? WrenchIcon)
 
@@ -1713,7 +1754,9 @@ function DirectiveChip({
           <Icon className="size-3" />
         </span>
       ) : null}
-      <span className="aui-directive-chip-label">{label}</span>
+      <span className="aui-directive-chip-label">
+        {displayDirectiveLabel(directiveType, directiveId, label, identityIndex)}
+      </span>
     </span>
   )
 }
@@ -1870,13 +1913,14 @@ function ComposerTriggerPopover({
 
 function Composer({
   activeConversation,
+  composerContextCatalog,
   disabled,
   models,
   selectedModelId,
   modelSelectionError,
   onSelectedModelChange,
   projectState
-}: ComposerProps): React.JSX.Element {
+}: ComposerComponentProps): React.JSX.Element {
   const aui = useAui()
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
@@ -1887,12 +1931,6 @@ function Composer({
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const projectContext = conversationProjectContext(activeConversation, projectState)
   const localContextPickerEnabled = !isRemoteExecution
-  const composerContextCatalog = useComposerContextCatalog({
-    cwd: resolveComposerCwd(activeConversation, projectState),
-    enabled: hasProjectContext,
-    projectSelection: effectiveProjectSelection,
-    threadId: activeConversation?.threadId
-  })
   const hasImageAttachments = useAuiState((state) =>
     state.composer.attachments.some((attachment) => attachment.type === 'image')
   )

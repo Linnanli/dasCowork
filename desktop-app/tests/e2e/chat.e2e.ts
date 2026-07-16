@@ -86,22 +86,32 @@ test('renders the add-context menu above and aligned with the composer', async (
 
     const popover = page.getByRole('listbox', { name: '添加上下文' })
     const composer = page.locator('[data-slot="aui_composer-shell"]')
+    const header = page.locator('header').first()
     await expect(popover).toBeVisible()
-    await expect(popover).toHaveCSS('max-height', '320px')
+    const popoverMaxHeight = await popover.evaluate((element) =>
+      Number.parseFloat(window.getComputedStyle(element).maxHeight)
+    )
+    expect(popoverMaxHeight).toBeGreaterThan(0)
+    expect(popoverMaxHeight).toBeLessThanOrEqual(320)
     await popover.evaluate(async (element) => {
       await Promise.all(element.getAnimations().map((animation) => animation.finished))
     })
 
-    const [popoverBox, composerBox] = await Promise.all([
+    const [popoverBox, composerBox, headerBox] = await Promise.all([
       popover.boundingBox(),
-      composer.boundingBox()
+      composer.boundingBox(),
+      header.boundingBox()
     ])
     expect(popoverBox).not.toBeNull()
     expect(composerBox).not.toBeNull()
-    if (!popoverBox || !composerBox) throw new Error('Could not measure composer add menu')
+    expect(headerBox).not.toBeNull()
+    if (!popoverBox || !composerBox || !headerBox) {
+      throw new Error('Could not measure composer add menu')
+    }
 
     expect(Math.abs(popoverBox.x - composerBox.x)).toBeLessThanOrEqual(1)
     expect(Math.abs(popoverBox.width - composerBox.width)).toBeLessThanOrEqual(1)
+    expect(popoverBox.y - (headerBox.y + headerBox.height)).toBeGreaterThanOrEqual(7)
     expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeGreaterThanOrEqual(11)
     expect(composerBox.y - (popoverBox.y + popoverBox.height)).toBeLessThanOrEqual(13)
 

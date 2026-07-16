@@ -163,21 +163,15 @@ export class PromptFileResolver
      *   uploading bytes.
      * - Unsupported media types are silently skipped.
      *
-     * @param isResume - When true only the last user message is extracted.
-     *   When false (fresh thread) all user text is accumulated. Text input is
-     *   always sent before images, whose source order is retained.
+     * Fresh and resumed turns both extract only the last user message. Text
+     * input is always sent before images, whose source order is retained.
      */
     async resolve(
         prompt: LanguageModelV3Prompt,
-        isResume: boolean = false,
+        _isResume: boolean = false,
     ): Promise<CodexTurnInputItem[]>
     {
-        if (isResume)
-        {
-            return this.resolveResumed(prompt);
-        }
-
-        return this.resolveFresh(prompt);
+        return this.resolveLastUserMessage(prompt);
     }
 
     /**
@@ -281,10 +275,7 @@ export class PromptFileResolver
         };
     }
 
-    /**
-     * Resume path: extract parts from the last user message.
-     */
-    private async resolveResumed(
+    private async resolveLastUserMessage(
         prompt: LanguageModelV3Prompt,
     ): Promise<CodexTurnInputItem[]>
     {
@@ -299,17 +290,6 @@ export class PromptFileResolver
         }
 
         return [textItem("")];
-    }
-
-    /**
-     * Fresh thread path: collect every user message into a single text item,
-     * followed by image inputs in their original order.
-     */
-    private async resolveFresh(
-        prompt: LanguageModelV3Prompt,
-    ): Promise<CodexTurnInputItem[]>
-    {
-        return this.resolveUserMessages(prompt);
     }
 
     private async resolveUserMessages(

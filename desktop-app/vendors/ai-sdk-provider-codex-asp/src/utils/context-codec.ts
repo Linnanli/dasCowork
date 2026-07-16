@@ -90,7 +90,7 @@ export function extractComposerContextDirectives(text: string): ExtractedCompose
             }
             case "app":
             case "plugin": {
-                const name = mentionNameFromPath(path);
+                const name = label;
                 const token = type === "app" ? `$${name}` : `@${name}`;
                 output += token;
                 const input = { type: "mention", name, path } satisfies CodexTurnInputMention;
@@ -368,11 +368,6 @@ function isValidDirectivePath(type: ComposerContextDirectiveType, path: string):
         default:
             return assertNever(type);
     }
-}
-
-function mentionNameFromPath(path: string): string
-{
-    return path.slice(path.indexOf("://") + 3);
 }
 
 function decodeDirectiveField(value: string): string
