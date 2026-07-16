@@ -69,7 +69,7 @@ function PlanStatusHoverCard({
         side="top"
         align="center"
         sideOffset={8}
-        className="max-h-[min(24rem,var(--radix-hover-card-content-available-height))] w-[min(24rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-2xl bg-popover/95 p-3 shadow-xl backdrop-blur-md"
+        className="max-h-[min(24rem,var(--radix-hover-card-content-available-height))] w-[min(24rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-2xl bg-popover/90 p-3 shadow-xl backdrop-blur-md"
       >
         <PlanStepList plan={status.plan} />
       </HoverCardContent>
