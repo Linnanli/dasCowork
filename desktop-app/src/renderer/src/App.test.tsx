@@ -2946,8 +2946,10 @@ describe('App composer', () => {
     ])
     expect(planSteps[0]?.querySelector('span')?.className).toContain('[overflow-wrap:anywhere]')
     expect(planSteps[0]?.querySelector('span')?.className).toContain('text-foreground/60')
-    expect(planSteps[1]?.querySelector('span')?.className).toContain('text-foreground/90')
+    expect(planSteps[1]?.querySelector('span')?.className).toContain('text-foreground/80')
     expect(planSteps[1]?.querySelector('svg')?.className.baseVal).toContain('size-[1em]')
+    expect(planSteps[2]?.querySelector('span')?.className).toContain('text-foreground/80')
+    expect(planSteps[2]?.querySelector('svg')?.className.baseVal).toContain('size-[1em]')
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))

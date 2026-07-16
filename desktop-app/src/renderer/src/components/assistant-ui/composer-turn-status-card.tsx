@@ -195,7 +195,7 @@ function PlanStepRow({ step }: { step: ComposerPlanStep }): React.JSX.Element {
       <span
         className={cn(
           'min-w-0 break-words leading-snug [overflow-wrap:anywhere]',
-          completed ? 'text-foreground/60' : 'text-foreground/90'
+          completed ? 'text-foreground/60' : 'text-foreground/80'
         )}
       >
         {step.label}
@@ -213,10 +213,10 @@ function PlanStepStatusIcon({ status }: { status: ComposerPlanStep['status'] }):
     return (
       <Loader2Icon
         aria-hidden
-        className="mt-0.5 size-[1em] shrink-0 animate-spin text-foreground/90 motion-reduce:animate-none"
+        className="mt-0.5 size-[1em] shrink-0 animate-spin text-foreground/80 motion-reduce:animate-none"
       />
     )
   }
 
-  return <CircleIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-foreground/60" />
+  return <CircleIcon aria-hidden className="mt-0.5 size-[1em] shrink-0 text-foreground/80" />
 }
