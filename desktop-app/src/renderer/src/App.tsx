@@ -32,6 +32,7 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
+import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
 import { ContextLexicalInput } from '@/composer/contextLexicalInput'
 import { ComposerContextSuggestionProvider } from '@/composer/composerContextSuggestionController'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
@@ -110,6 +111,7 @@ import {
   type AssistantRenderUnit,
   type ToolItem
 } from './lib/assistantRenderUnits'
+import { buildComposerTurnStatus, withoutComposerStatusRenderUnits } from './lib/composerTurnStatus'
 import {
   buildToolActivityDisplayModel,
   buildToolItemDisplay,
@@ -605,6 +607,14 @@ function isNewChatView(state: AssistantState): boolean {
   return state.thread.messages.length === 0 && (!state.thread.isLoading || state.threads.isLoading)
 }
 
+function latestRunningAssistantMessage(
+  state: AssistantState
+): AssistantState['thread']['messages'][number] | undefined {
+  return state.thread.messages.findLast(
+    (message) => message.role === 'assistant' && message.status?.type === 'running'
+  )
+}
+
 function ChatThread({
   activeConversation,
   disabled,
@@ -636,6 +646,19 @@ function ChatThread({
     projectSelection: effectiveProjectSelection,
     threadId: activeConversation?.threadId
   })
+  const runningAssistantMessage = useAuiState(latestRunningAssistantMessage)
+  const composerTurnStatus = useMemo(() => {
+    if (!runningAssistantMessage) return null
+    const renderModel = buildAssistantRenderUnits({
+      content: runningAssistantMessage.content,
+      parts: runningAssistantMessage.parts,
+      status: runningAssistantMessage.status,
+      hasBlockingRequest,
+      workspaceCwd: activeConversation?.cwd ?? undefined,
+      canOpenLocalPaths: activeConversation?.projectSelection?.projectKind !== 'remote'
+    })
+    return buildComposerTurnStatus(renderModel.units)
+  }, [activeConversation, hasBlockingRequest, runningAssistantMessage])
 
   return (
     <ComposerContextIdentityProvider index={composerContextCatalog.identityIndex}>
@@ -696,6 +719,7 @@ function ChatThread({
             )}
           >
             <ThreadScrollToBottom />
+            <ComposerTurnStatusCard status={composerTurnStatus} />
             <Composer
               activeConversation={activeConversation}
               composerContextCatalog={composerContextCatalog}
@@ -1019,13 +1043,7 @@ function AssistantMessage({
     [canOpenLocalPaths, hasBlockingRequest, message, textPartMetadata, turnDurationMs, workspaceCwd]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
-  const isRunning = message.status?.type === 'running'
-  const liveFooterUnits =
-    isRunning && !hasBlockingRequest ? latestLiveFooterUnits(renderModel.units) : []
-  const visibleUnits =
-    liveFooterUnits.length > 0
-      ? renderModel.units.filter((unit) => !isLiveFooterUnit(unit))
-      : renderModel.units
+  const visibleUnits = withoutComposerStatusRenderUnits(renderModel.units)
 
   return (
     <MessagePrimitive.Root
@@ -1051,7 +1069,6 @@ function AssistantMessage({
                 onOpenConversation={onOpenConversation}
               />
             ))}
-            <LiveRenderUnitFooter units={liveFooterUnits} onOpenConversation={onOpenConversation} />
           </>
         )}
         <MessagePrimitive.Error>
@@ -1124,54 +1141,6 @@ function messageMetadataFromProviderMetadata(providerMetadata: unknown): CodexTe
       ? { turnDurationMs }
       : {})
   }
-}
-
-function LiveRenderUnitFooter({
-  units,
-  onOpenConversation
-}: {
-  units: readonly AssistantRenderUnit[]
-  onOpenConversation: OpenSubagentConversation
-}): React.JSX.Element | null {
-  if (units.length === 0) return null
-
-  return (
-    <div
-      data-slot="live-render-unit-footer"
-      className="mt-3 space-y-1 rounded-md border border-border/50 bg-background/80 p-1.5 shadow-sm"
-    >
-      {units.map((unit) => (
-        <AssistantRenderUnitView
-          key={unit.key}
-          unit={unit}
-          onOpenConversation={onOpenConversation}
-        />
-      ))}
-    </div>
-  )
-}
-
-function latestLiveFooterUnits(
-  units: readonly AssistantRenderUnit[]
-): readonly AssistantRenderUnit[] {
-  const latestByType = new Map<string, AssistantRenderUnit>()
-
-  for (const unit of units) {
-    if (!isLiveFooterUnit(unit)) continue
-    latestByType.set(unit.itemType, unit)
-  }
-
-  return [...latestByType.values()]
-}
-
-function isLiveFooterUnit(
-  unit: AssistantRenderUnit
-): unit is Extract<AssistantRenderUnit, { type: 'entry' }> & { itemType: 'todoList' | 'turnDiff' } {
-  return (
-    unit.type === 'entry' &&
-    unit.active === true &&
-    (unit.itemType === 'todoList' || unit.itemType === 'turnDiff')
-  )
 }
 
 function UserMessage(): React.JSX.Element {

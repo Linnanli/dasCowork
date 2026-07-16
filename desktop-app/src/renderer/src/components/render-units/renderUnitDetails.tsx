@@ -34,6 +34,12 @@ import { DiffViewer } from '@/components/assistant-ui/diff-viewer'
 import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { CodeComment } from '@/lib/codeCommentDirectives'
+import {
+  normalizeTodoItems,
+  parseTurnDiffFiles,
+  turnDiffLineTotals,
+  type TurnDiffFile
+} from '@/lib/composerTurnStatus'
 import type { ToolActivityDetailRow } from '@/lib/toolActivityDisplay'
 import {
   extractToolInput,
@@ -407,9 +413,9 @@ function McpSourceBadge({ source }: { source?: McpSourceMetadata }): React.JSX.E
 
 function TodoListEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   const item = unit.item ?? {}
-  const todos = todoItems(item)
-  const completed = todos.filter((todo) => isCompleteTodoStatus(todo.status)).length
-  const current = todos.find((todo) => !isCompleteTodoStatus(todo.status))
+  const todos = normalizeTodoItems(item)
+  const completed = todos.filter((todo) => todo.status === 'completed').length
+  const current = todos.find((todo) => todo.status !== 'completed')
 
   return (
     <RenderUnitCard unit={unit} slot="todo-list-entry-unit">
@@ -429,7 +435,7 @@ function TodoListEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
                   <span
                     className={cn(
                       'size-2 shrink-0 rounded-full',
-                      isCompleteTodoStatus(todo.status) ? 'bg-emerald-500' : 'bg-muted-foreground'
+                      todo.status === 'completed' ? 'bg-emerald-500' : 'bg-muted-foreground'
                     )}
                   />
                   <span className="min-w-0 truncate">{todo.label}</span>
@@ -447,8 +453,8 @@ function TodoListEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
 
 function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   const item = unit.item ?? {}
-  const files = diffFiles(item)
-  const { added, removed } = diffLineTotals(files)
+  const files = parseTurnDiffFiles(item)
+  const { additions: added, deletions: removed } = turnDiffLineTotals(files)
   const diffTextLength = files.reduce((total, file) => total + (file.diff?.length ?? 0), 0)
   const largeDiff = isDiffTruncated(item) || diffTextLength > LARGE_DIFF_TEXT_LENGTH
   const cwd = turnDiffCwd(item)
@@ -531,7 +537,7 @@ function TurnDiffFileRow({
   file,
   cwd
 }: {
-  file: DiffFile
+  file: TurnDiffFile
   cwd: string | undefined
 }): React.JSX.Element {
   const openPath = resolveTurnDiffFilePath(file.path, cwd)
@@ -1192,18 +1198,6 @@ function JsonFallback({ label, value }: { label: string; value: unknown }): Reac
   )
 }
 
-type TodoItem = {
-  label: string
-  status?: string
-}
-
-type DiffFile = {
-  path: string
-  diff?: string
-  added: number
-  removed: number
-}
-
 type ImageEntry = {
   src?: string
   alt?: string
@@ -1218,107 +1212,6 @@ type ResourceCardData = {
   openPath?: string
   line?: number
   icon: LucideIcon
-}
-
-function todoItems(item: AnyRecord): TodoItem[] {
-  return arrayValue(item.items ?? item.tasks ?? item.todos).map((todo, index) => {
-    const record = recordValue(todo)
-    return {
-      label:
-        stringValue(record?.label) ??
-        stringValue(record?.text) ??
-        stringValue(record?.title) ??
-        stringValue(record?.content) ??
-        `任务 ${index + 1}`,
-      status: stringValue(record?.status)
-    }
-  })
-}
-
-function isCompleteTodoStatus(status: string | undefined): boolean {
-  return status === 'completed' || status === 'complete' || status === 'done'
-}
-
-function diffFiles(item: AnyRecord): DiffFile[] {
-  const explicitFiles = arrayValue(item.files ?? item.changes)
-  if (explicitFiles.length === 0) {
-    const unifiedDiff = stringValue(item.diff) ?? stringValue(item.unifiedDiff)
-    return unifiedDiff ? parseUnifiedDiffFiles(unifiedDiff, stringValue(item.path)) : []
-  }
-
-  return explicitFiles.map((file, index) => {
-    const record = recordValue(file)
-    const diff = stringValue(record?.diff) ?? stringValue(record?.patch)
-    const lineCounts = countDiffLines(diff)
-    return {
-      path:
-        stringValue(record?.path) ??
-        stringValue(record?.file) ??
-        stringValue(record?.filename) ??
-        `文件 ${index + 1}`,
-      diff,
-      added: numberValue(record?.added) ?? numberValue(record?.additions) ?? lineCounts.added,
-      removed: numberValue(record?.removed) ?? numberValue(record?.deletions) ?? lineCounts.removed
-    }
-  })
-}
-
-function parseUnifiedDiffFiles(diff: string, fallbackPath: string | undefined): DiffFile[] {
-  const files: DiffFile[] = []
-  let current:
-    | {
-        path?: string
-        lines: string[]
-      }
-    | undefined
-
-  const flush = (): void => {
-    if (!current) return
-    const fileDiff = current.lines.join('\n')
-    const lineCounts = countDiffLines(fileDiff)
-    files.push({
-      path: current.path ?? fallbackPath ?? `diff-${files.length + 1}`,
-      diff: fileDiff,
-      added: lineCounts.added,
-      removed: lineCounts.removed
-    })
-  }
-
-  for (const line of diff.split('\n')) {
-    const gitMatch = /^diff --git a\/(.+) b\/(.+)$/.exec(line)
-    if (gitMatch) {
-      flush()
-      current = { path: gitMatch[2], lines: [line] }
-      continue
-    }
-
-    if (!current) current = { path: fallbackPath, lines: [] }
-    const newPathMatch = /^\+\+\+ (?:b\/)?(.+)$/.exec(line)
-    if (newPathMatch && newPathMatch[1] !== '/dev/null') current.path = newPathMatch[1]
-    current.lines.push(line)
-  }
-
-  flush()
-  return files
-}
-
-function diffLineTotals(files: readonly DiffFile[]): { added: number; removed: number } {
-  return {
-    added: files.reduce((total, file) => total + file.added, 0),
-    removed: files.reduce((total, file) => total + file.removed, 0)
-  }
-}
-
-function countDiffLines(diff: string | undefined): { added: number; removed: number } {
-  if (!diff) return { added: 0, removed: 0 }
-  let added = 0
-  let removed = 0
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
-    if (line.startsWith('+')) added += 1
-    if (line.startsWith('-')) removed += 1
-  }
-  return { added, removed }
 }
 
 function isDiffTruncated(item: AnyRecord): boolean {

@@ -101,6 +101,10 @@ const threadMessageState = vi.hoisted<MockThreadMessageState>(() => ({
   externalMessages: []
 }))
 
+const threadMessagesState = vi.hoisted<{
+  messages: MockThreadMessageState['message'][]
+}>(() => ({ messages: [] }))
+
 const streamdownPropsState = vi.hoisted<{
   lastProps: Record<string, unknown> | null
 }>(() => ({
@@ -240,6 +244,7 @@ function resetThreadMessageState(): void {
   threadMessageState.message.role = 'user'
   threadMessageState.message.status = { type: 'complete' }
   threadMessageState.externalMessages = []
+  threadMessagesState.messages = []
   streamdownPropsState.lastProps = null
   runtimeState.rejectServerRequest.mockReset()
   runtimeState.rejectServerRequest.mockResolvedValue(undefined)
@@ -605,7 +610,7 @@ vi.mock('@assistant-ui/react', () => {
       },
       isLoading: false,
       isRunning: false,
-      messages: []
+      messages: [] as MockThreadMessageState['message'][]
     },
     threads: {
       isLoading: false,
@@ -620,6 +625,10 @@ vi.mock('@assistant-ui/react', () => {
       ...threadMessageState.message,
       parts: currentMessageParts(),
       isCopied: false
+    },
+    thread: {
+      ...assistantState.thread,
+      messages: threadMessagesState.messages
     }
   })
 
@@ -2637,18 +2646,10 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
-    expect(container.textContent).toContain('待办进度 1/2')
-    const turnDiffCard = container.querySelector('[data-slot="turn-diff-entry-unit"]')
-    expect(turnDiffCard).not.toBeNull()
-    expect(turnDiffCard?.querySelector('[data-slot="card-header"]')).not.toBeNull()
-    expect(turnDiffCard?.querySelector('[data-slot="table"]')).not.toBeNull()
-    expect(container.textContent).toContain('已编辑 1 个文件')
-    expect(turnDiffCard?.textContent).toContain('src/App.tsx')
-    expect(turnDiffCard?.textContent).not.toContain('/repo/src/App.tsx')
-    expect(container.textContent).toContain('+1')
-    expect(container.textContent).toContain('-1')
-    expect(container.querySelector('[data-slot="turn-diff-static-actions"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
+    expect(container.textContent).not.toContain('待办进度')
+    expect(container.textContent).not.toContain('已编辑 1 个文件')
     expect(container.querySelector('[data-slot="generated-image-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('已生成 1 张图片')
     expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
@@ -2799,141 +2800,6 @@ describe('App composer', () => {
     expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
   })
 
-  it('opens absolute turn diff file paths from the diff card', async () => {
-    threadMessageState.message.role = 'assistant'
-    threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [
-      genericToolPart('diff-open', 'codex_turn_diff', 'turnDiff', {
-        files: [
-          {
-            path: '/repo/src/App.tsx',
-            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
-          }
-        ]
-      })
-    ]
-
-    act(() => {
-      root.render(<App />)
-    })
-
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('button[aria-label="打开 /repo/src/App.tsx"]')
-        ?.click()
-    })
-
-    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
-      path: '/repo/src/App.tsx'
-    })
-  })
-
-  it('opens relative turn diff file paths when cwd metadata is available', async () => {
-    threadMessageState.message.role = 'assistant'
-    threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [
-      genericToolPart('diff-relative-open', 'codex_turn_diff', 'turnDiff', {
-        cwd: '/repo',
-        files: [
-          {
-            path: 'src/App.tsx',
-            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
-          }
-        ]
-      })
-    ]
-
-    act(() => {
-      root.render(<App />)
-    })
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button[aria-label="打开 src/App.tsx"]')?.click()
-    })
-
-    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
-      path: '/repo/src/App.tsx'
-    })
-  })
-
-  it('disables relative turn diff file opening when cwd metadata is missing', async () => {
-    threadMessageState.message.role = 'assistant'
-    threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [
-      genericToolPart('diff-relative-disabled', 'codex_turn_diff', 'turnDiff', {
-        files: [
-          {
-            path: 'src/App.tsx',
-            diff: '--- a/src/App.tsx\n+++ b/src/App.tsx\n-old\n+new\n'
-          }
-        ]
-      })
-    ]
-
-    act(() => {
-      root.render(<App />)
-    })
-
-    const button = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="无法打开 src/App.tsx"]'
-    )
-    expect(button?.disabled).toBe(true)
-
-    await act(async () => {
-      button?.click()
-    })
-
-    expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
-  })
-
-  it('expands turn diff file lists beyond the three-file preview', async () => {
-    threadMessageState.message.role = 'assistant'
-    threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [
-      genericToolPart('diff-many-files', 'codex_turn_diff', 'turnDiff', {
-        cwd: '/repo',
-        files: Array.from({ length: 6 }, (_, index) => ({
-          path: `src/file-${index + 1}.ts`,
-          added: index + 1,
-          removed: 0,
-          diff: `--- a/src/file-${index + 1}.ts\n+++ b/src/file-${index + 1}.ts\n+new\n`
-        }))
-      })
-    ]
-
-    act(() => {
-      root.render(<App />)
-    })
-
-    expect(container.textContent).toContain('file-3.ts')
-    expect(container.textContent).not.toContain('file-4.ts')
-
-    await act(async () => {
-      buttonWithText('再显示 3 个文件')?.click()
-    })
-
-    expect(container.textContent).toContain('file-6.ts')
-    expect(container.textContent).toContain('收起文件')
-  })
-
-  it('keeps large turn diffs collapsed to file summaries', () => {
-    threadMessageState.message.role = 'assistant'
-    threadMessageState.message.status = { type: 'complete' }
-    threadMessageState.message.content = [
-      genericToolPart('diff-large', 'codex_turn_diff', 'turnDiff', {
-        originalLength: 75_000,
-        diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
-      })
-    ]
-
-    act(() => {
-      root.render(<App />)
-    })
-
-    expect(container.textContent).toContain('大 diff 已折叠，只显示文件摘要')
-    expect(container.textContent).toContain('a.ts')
-  })
-
   it('renders command read search and list activity as a collapsed exploration card', async () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'complete' }
@@ -2965,7 +2831,7 @@ describe('App composer', () => {
     expect(container.textContent).toContain('list-exploration')
   })
 
-  it('moves active todo and diff entries into a running-turn live footer only while running', () => {
+  it('renders active plan and diff as a composer status card only while running', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -2981,14 +2847,30 @@ describe('App composer', () => {
         diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
       })
     ]
+    threadMessagesState.messages = [threadMessageState.message]
 
     act(() => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).not.toBeNull()
-    expect(container.textContent).toContain('待办进度 1/2')
-    expect(container.textContent).toContain('已编辑 1 个文件')
+    const statusCard = container.querySelector('[data-slot="composer-turn-status-card"]')
+    const viewportFooter = container.querySelector('[data-primitive="Thread.ViewportFooter"]')
+    const composer = container.querySelector('[data-primitive="Composer.Root"]')
+    expect(statusCard).not.toBeNull()
+    expect(viewportFooter?.contains(statusCard)).toBe(true)
+    expect(
+      statusCard && composer
+        ? Boolean(statusCard.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false
+    ).toBe(true)
+    expect(statusCard?.textContent).toContain('第 2 / 2 步')
+    expect(statusCard?.textContent).toContain('1 个文件已更改')
+    expect(statusCard?.textContent).toContain('+1')
+    expect(statusCard?.textContent).toContain('-1')
+    expect(statusCard?.querySelector('[data-slot="composer-turn-status-separator"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
     expect(container.textContent).not.toContain('正在思考')
     expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
 
@@ -2997,14 +2879,173 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
-    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="composer-turn-status-card"]')).toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
     expect(container.textContent).not.toContain('正在思考')
     expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
   })
 
-  it('keeps active todo and diff entries in the message body while a server request is blocking', () => {
+  it('renders a plan-only card and opens the complete plan above the composer on hover', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      genericToolPart('todo-only', 'codex_todo_list', 'todoList', {
+        status: 'inProgress',
+        items: [
+          { label: 'Inspect reference', status: 'completed' },
+          { label: 'Build status card', status: 'inProgress' },
+          ...Array.from({ length: 8 }, (_, index) => ({
+            label: `Pending step ${index + 1}`,
+            status: 'pending'
+          }))
+        ]
+      })
+    ]
+    threadMessagesState.messages = [threadMessageState.message]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const statusCard = container.querySelector<HTMLElement>(
+      '[data-slot="composer-turn-status-card"]'
+    )
+    expect(statusCard?.textContent).toContain('第 2 / 10 步')
+    expect(statusCard?.className).toContain('overflow-hidden')
+    expect(statusCard?.getAttribute('aria-expanded')).toBe('false')
+    expect(statusCard?.getAttribute('aria-controls')).toBeTruthy()
+    expect(statusCard?.querySelector('[data-slot="composer-turn-diff-summary"]')).toBeNull()
+    expect(statusCard?.querySelector('[data-slot="composer-turn-status-separator"]')).toBeNull()
+
+    await act(async () => {
+      statusCard?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    const planCard = document.body.querySelector('[data-slot="composer-turn-plan-card"]')
+    const planSteps = Array.from(
+      document.body.querySelectorAll('[data-slot="composer-turn-plan-step"]')
+    )
+    expect(planCard).not.toBeNull()
+    expect(statusCard?.getAttribute('aria-expanded')).toBe('true')
+    expect(planCard?.id).toBe(statusCard?.getAttribute('aria-controls'))
+    expect(planCard?.className).toContain('overflow-y-auto')
+    expect(planSteps).toHaveLength(10)
+    expect(planSteps.map((step) => step.getAttribute('data-status'))).toEqual([
+      'completed',
+      'in-progress',
+      ...Array.from({ length: 8 }, () => 'pending')
+    ])
+    expect(planSteps.map((step) => step.textContent)).toEqual([
+      'Inspect reference',
+      'Build status card',
+      ...Array.from({ length: 8 }, (_, index) => `Pending step ${index + 1}`)
+    ])
+    expect(planSteps[0]?.querySelector('span')?.className).toContain('[overflow-wrap:anywhere]')
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('[data-slot="composer-turn-plan-card"]')).toBeNull()
+    expect(statusCard?.getAttribute('aria-expanded')).toBe('false')
+
+    await act(async () => {
+      statusCard?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(statusCard?.getAttribute('aria-expanded')).toBe('true')
+    expect(document.body.querySelector('[data-slot="composer-turn-plan-card"]')).not.toBeNull()
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await Promise.resolve()
+    })
+  })
+
+  it('renders a compact diff-only card without a plan separator', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      genericToolPart('diff-only', 'codex_turn_diff', 'turnDiff', {
+        status: 'inProgress',
+        diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n+again\n'
+      })
+    ]
+    threadMessagesState.messages = [threadMessageState.message]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const statusCard = container.querySelector('[data-slot="composer-turn-status-card"]')
+    expect(statusCard?.getAttribute('role')).toBe('status')
+    expect(statusCard?.textContent).toContain('1 个文件已更改')
+    expect(statusCard?.textContent).toContain('+2')
+    expect(statusCard?.textContent).toContain('-1')
+    expect(statusCard?.querySelector('[data-slot="composer-turn-plan-summary"]')).toBeNull()
+    expect(statusCard?.querySelector('[data-slot="composer-turn-status-separator"]')).toBeNull()
+  })
+
+  it('uses only the latest plan and diff updates in the running turn', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [
+      genericToolPart('todo-old', 'codex_todo_list', 'todoList', {
+        status: 'inProgress',
+        items: [{ label: 'Old plan', status: 'inProgress' }]
+      }),
+      genericToolPart('diff-old', 'codex_turn_diff', 'turnDiff', {
+        status: 'inProgress',
+        diff: 'diff --git a/old.ts b/old.ts\n--- a/old.ts\n+++ b/old.ts\n+old\n'
+      }),
+      genericToolPart('todo-new', 'codex_todo_list', 'todoList', {
+        status: 'inProgress',
+        items: [
+          { label: 'New complete', status: 'completed' },
+          { label: 'New active', status: 'inProgress' },
+          { label: 'New pending', status: 'pending' }
+        ]
+      }),
+      genericToolPart('diff-new', 'codex_turn_diff', 'turnDiff', {
+        status: 'inProgress',
+        diff: [
+          'diff --git a/a.ts b/a.ts',
+          '--- a/a.ts',
+          '+++ b/a.ts',
+          '+a',
+          'diff --git a/b.ts b/b.ts',
+          '--- a/b.ts',
+          '+++ b/b.ts',
+          '-b',
+          '+B'
+        ].join('\n')
+      })
+    ]
+    threadMessagesState.messages = [threadMessageState.message]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const statusCard = container.querySelector<HTMLElement>(
+      '[data-slot="composer-turn-status-card"]'
+    )
+    expect(statusCard?.textContent).toContain('第 2 / 3 步')
+    expect(statusCard?.textContent).toContain('2 个文件已更改')
+    expect(statusCard?.textContent).toContain('+2')
+    expect(statusCard?.textContent).toContain('-1')
+
+    await act(async () => {
+      statusCard?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(document.body.textContent).not.toContain('Old plan')
+    expect(document.body.textContent).toContain('New active')
+  })
+
+  it('keeps the composer status card visible while a server request is blocking', () => {
     runtimeState.serverRequests = [fileChangeApprovalRequest('blocking-request')]
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
@@ -3021,15 +3062,16 @@ describe('App composer', () => {
         diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n'
       })
     ]
+    threadMessagesState.messages = [threadMessageState.message]
 
     act(() => {
       root.render(<App />)
     })
 
     expect(container.querySelector('[data-slot="server-request-panel"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="live-render-unit-footer"]')).toBeNull()
-    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).not.toBeNull()
-    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="composer-turn-status-card"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
   })
 
   it('renders generated image file parts as an image gallery card', () => {

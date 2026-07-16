@@ -14,6 +14,7 @@ import { createLocalProject, sendComposerMessage, sendMessage } from './support/
 import {
   applyPatchResponse,
   assistantMessageResponse,
+  deferred,
   isResponsesUrl,
   shellCommandResponse,
   startMockBackend,
@@ -150,7 +151,7 @@ test('renders web search and exploration render units through the real desktop c
   }
 })
 
-test('renders turn diff render unit after a real file change through the desktop chat flow', async ({
+test('renders a turn diff status card during a real file change through the desktop chat flow', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -165,14 +166,18 @@ test('renders turn diff render unit after a real file change through the desktop
 +after from e2e
 *** End Patch
 `
+  const releaseFinalResponse = deferred()
   const backend = await startMockBackend({
     responses: [
       applyPatchResponse('resp-turn-diff-patch', 'call-turn-diff-patch', patch),
-      assistantMessageResponse(
-        'resp-turn-diff-final',
-        'msg-turn-diff-final',
-        'Turn diff render unit complete'
-      )
+      {
+        ...assistantMessageResponse(
+          'resp-turn-diff-final',
+          'msg-turn-diff-final',
+          'Turn diff render unit complete'
+        ),
+        beforeResponse: () => releaseFinalResponse.promise
+      }
     ]
   })
   const logs: string[] = []
@@ -202,40 +207,32 @@ test('renders turn diff render unit after a real file change through the desktop
       await expect(panel).toBeHidden()
     }
 
+    const statusCard = page.locator('[data-slot="composer-turn-status-card"]')
+    await expect(statusCard).toBeVisible()
+    await expect(statusCard).toContainText('1 个文件已更改')
+    await expect(statusCard).toContainText('+1')
+    await expect(statusCard).toContainText('-1')
+    await expect(page.locator('[data-slot="turn-diff-entry-unit"]')).toHaveCount(0)
+
+    const composer = page.locator('[data-slot="aui_composer-shell"]')
+    const [statusBox, composerBox] = await Promise.all([
+      statusCard.boundingBox(),
+      composer.boundingBox()
+    ])
+    expect(statusBox).not.toBeNull()
+    expect(composerBox).not.toBeNull()
+    if (!statusBox || !composerBox) throw new Error('Expected status card and composer bounds')
+    expect(statusBox.y + statusBox.height).toBeLessThanOrEqual(composerBox.y)
+    expect(
+      Math.abs(statusBox.x + statusBox.width / 2 - (composerBox.x + composerBox.width / 2))
+    ).toBeLessThan(2)
+
+    releaseFinalResponse.resolve()
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Turn diff render unit complete'
     )
-    const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]').last()
-    await expect(completedReasoningTrigger).toContainText('已处理')
-    await completedReasoningTrigger.click()
-    const completedReasoningContent = page.locator('[data-slot="reasoning-group-content"]').last()
-    await expect(completedReasoningContent).toHaveAttribute('data-state', 'open')
-    await completedReasoningContent.evaluate(async (content) => {
-      await Promise.all(
-        content
-          .getAnimations({ subtree: true })
-          .map((animation) => animation.finished.catch(() => undefined))
-      )
-    })
-
-    const turnDiffCard = page.locator('[data-slot="turn-diff-entry-unit"]').first()
-    await expect(turnDiffCard).toBeVisible()
-    await expect(turnDiffCard).toContainText('已编辑 1 个文件')
-    await expect(turnDiffCard).toContainText('notes.txt')
-    await expect(turnDiffCard).toContainText('+1')
-    await expect(turnDiffCard).toContainText('-1')
-    await expect(turnDiffCard.locator('[data-slot="turn-diff-line-summary"]')).toBeVisible()
-    const hoverCardTrigger = turnDiffCard.locator('[data-slot="hover-card-trigger"]')
-    await hoverCardTrigger.hover()
-    await expect(hoverCardTrigger).toHaveAttribute('data-state', 'open')
-    const diffPopover = page.locator('[data-radix-popper-content-wrapper]').filter({
-      has: page.locator('[data-slot="diff-viewer"]')
-    })
-    await expect(diffPopover.locator('[data-slot="diff-viewer"]')).toBeVisible()
-    await expect(diffPopover.locator('[data-slot="hover-card-content"]')).toHaveAttribute(
-      'data-side',
-      'top'
-    )
+    await expect(statusCard).toHaveCount(0)
+    await expect(page.locator('[data-slot="turn-diff-entry-unit"]')).toHaveCount(0)
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: 'Turn diff render unit complete' })
     ).toBeVisible()
@@ -246,6 +243,7 @@ test('renders turn diff render unit after a real file change through the desktop
       backend.requests.filter((request) => request.method === 'POST' && isResponsesUrl(request.url))
     ).toHaveLength(2)
   } finally {
+    releaseFinalResponse.resolve()
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
     await backend.close()
