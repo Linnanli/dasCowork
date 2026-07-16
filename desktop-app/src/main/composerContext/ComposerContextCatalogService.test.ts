@@ -19,10 +19,12 @@ function request(
 // The concrete Vitest mocks are intentionally preserved for per-call assertions below.
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function setup() {
-  const provider = {
+  const agentRoles = {
     listAgentRoles: vi.fn(async () => [
       { roleName: 'reviewer', description: 'Reviews code', nicknameCandidates: ['Ada'] }
-    ]),
+    ])
+  }
+  const provider = {
     listSkills: vi.fn(async () => [
       {
         name: 'testing',
@@ -132,7 +134,7 @@ function setup() {
     status: 'completed'
   })
 
-  return { provider, conversations, workspaceSearch, liveAgents }
+  return { agentRoles, provider, conversations, workspaceSearch, liveAgents }
 }
 
 describe('ComposerContextCatalogService', () => {
@@ -200,7 +202,7 @@ describe('ComposerContextCatalogService', () => {
 
     await service.list(request({ query: 'comp' }))
     await service.list(request({ query: 'src' }))
-    expect(dependencies.provider.listAgentRoles).toHaveBeenCalledTimes(1)
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listInstalledPlugins).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listApps).toHaveBeenCalledTimes(1)
@@ -209,6 +211,7 @@ describe('ComposerContextCatalogService', () => {
     expect(dependencies.workspaceSearch.createFuzzyFileSearchSession).toHaveBeenCalledTimes(2)
 
     await service.refresh(request())
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenLastCalledWith({
       cwd: '/repo',
@@ -230,7 +233,7 @@ describe('ComposerContextCatalogService', () => {
     await service.list(request())
     await service.refresh(request(), { sectionIds: ['skills'] })
 
-    expect(dependencies.provider.listAgentRoles).toHaveBeenCalledTimes(1)
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenLastCalledWith({
       cwd: '/repo',
@@ -280,6 +283,47 @@ describe('ComposerContextCatalogService', () => {
 
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(3)
     expect(dependencies.provider.listApps).toHaveBeenCalledTimes(3)
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(3)
+  })
+
+  it('isolates configured-agent caches by cwd and project selection', async () => {
+    const dependencies = setup()
+    const service = new ComposerContextCatalogService({
+      ...dependencies,
+      defaultCwd: '/default'
+    })
+
+    await service.list(request())
+    await service.list(
+      request({
+        projectSelection: { projectKind: 'local', projectId: 'project-1' }
+      })
+    )
+    await service.list(
+      request({
+        cwd: '/repo/packages/api',
+        projectSelection: { projectKind: 'local', projectId: 'project-1' }
+      })
+    )
+
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(3)
+    expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
+  })
+
+  it('rescans configured agents when the Agents section is refreshed', async () => {
+    const dependencies = setup()
+    const service = new ComposerContextCatalogService({
+      ...dependencies,
+      defaultCwd: '/default'
+    })
+
+    await service.list(request())
+    await service.refresh(request(), { sectionIds: ['agents'] })
+
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(2)
+    expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(1)
+    expect(dependencies.provider.listInstalledPlugins).toHaveBeenCalledTimes(1)
+    expect(dependencies.provider.listApps).toHaveBeenCalledTimes(1)
   })
 
   it('does not let an invalidated in-flight load repopulate the cache', async () => {

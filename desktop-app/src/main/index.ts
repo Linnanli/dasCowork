@@ -41,6 +41,7 @@ import {
   createRefreshComposerContextHandler
 } from './composerContext/composerContextIpc'
 import { LiveAgentRegistry } from './composerContext/LiveAgentRegistry'
+import { LocalAgentRoleCatalog, resolveCodexHome } from './composerContext/LocalAgentRoleCatalog'
 import { createValidateLocalAttachmentsHandler } from './composerContext/localAttachmentValidation'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
@@ -96,6 +97,11 @@ function createCodexRuntime(): CodexChatRuntimeService {
     projectStore: projectRuntimeServices.projectStore
   })
   const liveAgents = new LiveAgentRegistry(threadClient)
+  const agentRoles = new LocalAgentRoleCatalog({
+    codexHome: resolveCodexHome(launch.env),
+    projectService: projectRuntimeServices.projectService,
+    warn: (message) => console.warn(`[agent-role-catalog] ${message}`)
+  })
   composerContextClient = createCodexContextCatalogClient({
     clientInfo: {
       name: 'dascowork_desktop_composer_context',
@@ -115,6 +121,7 @@ function createCodexRuntime(): CodexChatRuntimeService {
   })
   composerContextCatalog = new ComposerContextCatalogService({
     provider: composerContextClient,
+    agentRoles,
     conversations: conversationApi,
     workspaceSearch: projectRuntimeServices.workspaceFileSearch,
     liveAgents,

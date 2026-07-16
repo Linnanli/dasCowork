@@ -3,7 +3,6 @@ import { StdioTransport } from "./client/transport-stdio";
 import { WebSocketTransport } from "./client/transport-websocket";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
 import type { AppInfo } from "./protocol/app-server-protocol/v2/AppInfo";
-import type { ConfigReadResponse } from "./protocol/app-server-protocol/v2/ConfigReadResponse";
 import type { PluginInstalledResponse } from "./protocol/app-server-protocol/v2/PluginInstalledResponse";
 import type { SkillMetadata } from "./protocol/app-server-protocol/v2/SkillMetadata";
 import type { SkillsListResponse } from "./protocol/app-server-protocol/v2/SkillsListResponse";
@@ -22,20 +21,6 @@ export interface CodexContextCatalogJsonRpcClientLike
 export interface CodexContextCatalogClientSettings extends CodexProviderSettings
 {
     createClient?: () => CodexContextCatalogJsonRpcClientLike;
-}
-
-export interface CodexAgentRoleListParams
-{
-    cwd: string;
-    threadId?: string;
-    pageSize?: number;
-}
-
-export interface CodexAgentRole
-{
-    roleName: string;
-    description: string;
-    nicknameCandidates: string[];
 }
 
 export interface CodexCatalogSkill
@@ -98,18 +83,6 @@ export class CodexContextCatalogClient
     private clientPromise: Promise<CodexContextCatalogJsonRpcClientLike> | undefined;
 
     constructor(private readonly settings: CodexContextCatalogClientSettings = {}) {}
-
-    async listAgentRoles(params: CodexAgentRoleListParams): Promise<CodexAgentRole[]>
-    {
-        return this.withClient(async (client) =>
-        {
-            const response = await client.request<ConfigReadResponse>("config/read", {
-                cwd: params.cwd,
-                includeLayers: false,
-            });
-            return agentRolesFromConfig(response.config);
-        });
-    }
 
     async listSkills(params: { cwd: string; forceReload?: boolean }): Promise<CodexCatalogSkill[]>
     {
@@ -353,78 +326,6 @@ function appMentionName(app: AppInfo): string
         .replace(/[^a-z0-9]+/gu, "-")
         .replace(/^-+|-+$/gu, "");
     return mentionName || app.id;
-}
-
-const AGENT_SETTINGS = new Set([
-    "max_threads",
-    "max_depth",
-    "job_max_runtime_seconds",
-    "interrupt_message",
-]);
-
-function agentRolesFromConfig(config: Record<string, unknown>): CodexAgentRole[]
-{
-    const agents = recordValue(config["agents"]);
-    if (!agents)
-    {
-        return [];
-    }
-
-    return Object.entries(agents)
-        .flatMap(([roleName, value]) =>
-        {
-            if (AGENT_SETTINGS.has(roleName))
-            {
-                return [];
-            }
-
-            const role = recordValue(value);
-            if (!role)
-            {
-                return [];
-            }
-
-            const description = stringValue(role["description"]);
-            const nicknameCandidates = stringArrayValue(
-                role["nickname_candidates"] ?? role["nicknameCandidates"],
-            );
-            return [{
-                roleName,
-                description: description ?? "",
-                nicknameCandidates,
-            }];
-        })
-        .sort((left, right) => left.roleName.localeCompare(right.roleName));
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null
-{
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : null;
-}
-
-function stringValue(value: unknown): string | null
-{
-    if (typeof value !== "string")
-    {
-        return null;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
-function stringArrayValue(value: unknown): string[]
-{
-    if (!Array.isArray(value))
-    {
-        return [];
-    }
-    return value.flatMap((entry) =>
-    {
-        const text = stringValue(entry);
-        return text ? [text] : [];
-    });
 }
 
 function nextCursor(

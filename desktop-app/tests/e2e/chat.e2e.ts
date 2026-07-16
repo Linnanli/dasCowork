@@ -1,11 +1,16 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { test, expect } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
-import { ensureLocalProjectSelected, sendComposerMessage, sendMessage } from './support/chatActions'
+import {
+  createLocalProject,
+  ensureLocalProjectSelected,
+  sendComposerMessage,
+  sendMessage
+} from './support/chatActions'
 import {
   assistantMessageResponse,
   deferred,
@@ -125,6 +130,79 @@ test('renders the add-context menu above and aligned with the composer', async (
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
     await backend.close()
+  }
+})
+
+test('discovers, overrides, and inserts custom agent roles from local TOML files', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({ responses: [] })
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-agent-project-'))
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await mkdir(join(projectRoot, '.codex', 'agents'), { recursive: true })
+    await writeFile(
+      join(projectRoot, '.codex', 'agents', 'reviewer.toml'),
+      [
+        'name = "reviewer"',
+        'description = "Project review role"',
+        'developer_instructions = "Review this project."'
+      ].join('\n')
+    )
+
+    app = await launchApp(backend, logs, {
+      configureCodexHome: async (codexHomeDir) => {
+        await mkdir(join(codexHomeDir, 'agents'), { recursive: true })
+        await writeFile(
+          join(codexHomeDir, 'agents', 'reviewer.toml'),
+          [
+            'name = "reviewer"',
+            'description = "Global review role"',
+            'developer_instructions = "Review globally."'
+          ].join('\n')
+        )
+        await writeFile(
+          join(codexHomeDir, 'agents', 'tester.toml'),
+          [
+            'name = "tester"',
+            'description = "Valid beside a broken file"',
+            'developer_instructions = "Test changes."'
+          ].join('\n')
+        )
+        await writeFile(join(codexHomeDir, 'agents', 'broken.toml'), 'name = "broken')
+      }
+    })
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await expect(page.locator('body')).toContainText('qwen3.7-plus')
+    await createLocalProject(page, `E2E Agents ${Date.now().toString(36)}`, projectRoot)
+
+    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+    const popover = page.getByRole('listbox', { name: '添加上下文' })
+    const reviewer = popover.getByRole('option').filter({ hasText: 'reviewer' })
+    await expect(popover.getByRole('region', { name: 'Agents' })).toBeVisible()
+    await expect(reviewer).toContainText('Project review role')
+    await expect(reviewer).not.toContainText('Global review role')
+    await expect(popover.getByRole('option').filter({ hasText: 'tester' })).toContainText(
+      'Valid beside a broken file'
+    )
+
+    await reviewer.click()
+    await expect(
+      page.locator(
+        '.aui-directive-chip[data-directive-type="agentRole"][data-directive-id="subagent://reviewer"]'
+      )
+    ).toContainText('reviewer')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await rm(projectRoot, { recursive: true, force: true })
   }
 })
 

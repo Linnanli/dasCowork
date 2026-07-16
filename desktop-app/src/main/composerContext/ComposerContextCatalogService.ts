@@ -51,7 +51,6 @@ export type CodexAppCatalogEntry = {
 }
 
 export type ComposerContextCatalogProviderLike = {
-  listAgentRoles(input: { cwd: string; threadId?: string }): Promise<CodexAgentRoleCatalogEntry[]>
   listSkills(input: { cwd: string; forceReload?: boolean }): Promise<CodexSkillCatalogEntry[]>
   listInstalledPlugins(input: { cwd: string }): Promise<CodexPluginCatalogEntry[]>
   listApps(input: {
@@ -59,6 +58,13 @@ export type ComposerContextCatalogProviderLike = {
     forceRefetch?: boolean
     pageSize?: number
   }): Promise<CodexAppCatalogEntry[]>
+}
+
+export type AgentRoleCatalogSourceLike = {
+  listAgentRoles(input: {
+    cwd: string
+    projectSelection?: ProjectSelection
+  }): Promise<CodexAgentRoleCatalogEntry[]>
 }
 
 export type ComposerContextConversationSourceLike = {
@@ -77,6 +83,7 @@ export type ComposerContextWorkspaceSearchLike = {
 
 export type ComposerContextCatalogServiceOptions = {
   provider: ComposerContextCatalogProviderLike
+  agentRoles: AgentRoleCatalogSourceLike
   conversations: ComposerContextConversationSourceLike
   workspaceSearch: ComposerContextWorkspaceSearchLike
   liveAgents: Pick<LiveAgentRegistry, 'list'>
@@ -210,7 +217,10 @@ export class ComposerContextCatalogService {
     switch (part) {
       case 'configuredAgents':
         return settle(() =>
-          this.options.provider.listAgentRoles({ cwd: input.cwd, threadId: input.threadId })
+          this.options.agentRoles.listAgentRoles({
+            cwd: input.cwd,
+            ...(input.projectSelection ? { projectSelection: input.projectSelection } : {})
+          })
         ).then((section) => mapSection('agents', section, configuredAgentReference))
       case 'skills':
         return settle(() => this.options.provider.listSkills({ cwd: input.cwd, forceReload })).then(
@@ -539,7 +549,25 @@ function staticCacheKey(
 ): string {
   const hostId =
     input.projectSelection?.projectKind === 'remote' ? input.projectSelection.hostId : 'local'
-  return part === 'apps' ? `${part}\0${hostId}` : `${part}\0${hostId}\0${input.cwd}`
+  if (part === 'apps') return `${part}\0${hostId}`
+  if (part === 'configuredAgents') {
+    return `${part}\0${hostId}\0${input.cwd}\0${projectSelectionCacheKey(input.projectSelection)}`
+  }
+  return `${part}\0${hostId}\0${input.cwd}`
+}
+
+function projectSelectionCacheKey(selection: ProjectSelection | undefined): string {
+  if (!selection) return 'none'
+  switch (selection.projectKind) {
+    case 'local':
+      return `local:${selection.projectId}`
+    case 'remote':
+      return `remote:${selection.hostId}:${selection.projectId}`
+    case 'path':
+      return `path:${selection.path}`
+    case 'projectless':
+      return 'projectless'
+  }
 }
 
 function errorMessage(error: unknown): string {

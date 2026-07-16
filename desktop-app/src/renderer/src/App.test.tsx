@@ -190,8 +190,9 @@ const composerState = vi.hoisted<{
 
 const composerRuntimeState = vi.hoisted<{
   eventHandlers: Record<string, (() => void) | undefined>
+  insertedContextItems: unknown[]
   setTextCalls: string[]
-}>(() => ({ eventHandlers: {}, setTextCalls: [] }))
+}>(() => ({ eventHandlers: {}, insertedContextItems: [], setTextCalls: [] }))
 
 const projectHookState = vi.hoisted(() => ({
   controller: {
@@ -520,7 +521,10 @@ vi.mock('@/composer/contextLexicalInput', async () => {
         () =>
           controller.registerEditorController({
             dismiss: () => controller.closeFromEditor(),
-            insert: () => controller.closeFromEditor(),
+            insert: (item: unknown) => {
+              composerRuntimeState.insertedContextItems.push(item)
+              controller.closeFromEditor()
+            },
             togglePlus: () => {
               if (controller.getSnapshot().open) controller.closeFromEditor()
               else controller.openFromEditor('plus', '')
@@ -910,6 +914,7 @@ describe('App composer', () => {
     composerState.isEmpty = true
     composerState.text = ''
     composerRuntimeState.eventHandlers = {}
+    composerRuntimeState.insertedContextItems = []
     composerRuntimeState.setTextCalls = []
     runtimeState.setActiveDraft.mockReset()
     runtimeState.setActiveDraftAttachments.mockReset()
@@ -1059,6 +1064,7 @@ describe('App composer', () => {
               kind: 'configuredAgent',
               canonicalId: 'configured-agent:reviewer',
               label: 'reviewer',
+              description: 'Reviews code',
               presentation: 'mention',
               roleName: 'reviewer',
               uri: 'subagent://reviewer'
@@ -1135,6 +1141,18 @@ describe('App composer', () => {
     const panel = document.querySelector('.aui-composer-context-panel')
     expect(panel?.className).toContain('left-0')
     expect(panel?.className).toContain('right-0')
+    const reviewer = Array.from(
+      panel?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []
+    ).find((option) => option.textContent?.includes('reviewer'))
+    expect(reviewer?.textContent).toContain('Reviews code')
+
+    await act(async () => {
+      reviewer?.click()
+      await Promise.resolve()
+    })
+    expect(composerRuntimeState.insertedContextItems).toEqual([
+      expect.objectContaining({ type: 'agentRole', id: 'subagent://reviewer', label: 'reviewer' })
+    ])
   })
 
   it('hides local attachment and workspace file entries for remote conversations', async () => {
@@ -1187,6 +1205,11 @@ describe('App composer', () => {
         section.getAttribute('aria-label')
       )
     ).not.toContain('Files')
+    expect(
+      Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
+        section.getAttribute('aria-label')
+      )
+    ).not.toContain('Agents')
     expect(document.body.textContent).not.toContain('remote.ts')
     expect(document.body.textContent).not.toContain('remote files must stay hidden')
     expect(document.body.textContent).not.toContain('Appshot')

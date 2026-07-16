@@ -45,45 +45,6 @@ class CatalogMockClient implements CodexContextCatalogJsonRpcClientLike
 
 describe("CodexContextCatalogClient", () =>
 {
-    it("lists configured agent roles through the existing config/read endpoint", async () =>
-    {
-        const mock = new CatalogMockClient((method) =>
-        {
-            expect(method).toBe("config/read");
-            return {
-                config: {
-                    agents: {
-                        max_threads: 4,
-                        reviewer: { description: "Reviews code" },
-                        explore: {
-                            description: "Explores code",
-                            nickname_candidates: ["Scout"],
-                        },
-                    },
-                },
-                origins: {},
-                layers: null,
-            };
-        });
-        const client = new CodexContextCatalogClient({ createClient: () => mock });
-
-        await expect(client.listAgentRoles({ cwd: "/repo", threadId: "thread-1" }))
-            .resolves.toEqual([
-                { roleName: "explore", description: "Explores code", nicknameCandidates: ["Scout"] },
-                { roleName: "reviewer", description: "Reviews code", nicknameCandidates: [] },
-            ]);
-        expect(mock.requests.slice(1)).toEqual([
-            {
-                method: "config/read",
-                params: { cwd: "/repo", includeLayers: false },
-            },
-        ]);
-        expect(mock.connectCount).toBe(1);
-        expect(mock.disconnectCount).toBe(0);
-        await client.shutdown();
-        expect(mock.disconnectCount).toBe(1);
-    });
-
     it("normalizes enabled skills and installed local plugins", async () =>
     {
         const mock = new CatalogMockClient((method) =>
