@@ -2931,7 +2931,7 @@ describe('App composer', () => {
     expect(statusCard?.getAttribute('aria-expanded')).toBe('true')
     expect(planCard?.id).toBe(statusCard?.getAttribute('aria-controls'))
     expect(planCard?.className).toContain('overflow-y-auto')
-    expect(planCard?.className).toContain('bg-popover/90')
+    expect(planCard?.className).toContain('!bg-popover/90')
     expect(planCard?.className).toContain('backdrop-blur-md')
     expect(planSteps).toHaveLength(10)
     expect(planSteps.map((step) => step.getAttribute('data-status'))).toEqual([
