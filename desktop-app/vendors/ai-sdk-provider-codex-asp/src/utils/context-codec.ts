@@ -171,6 +171,25 @@ export function serializeComposerContextDirective(reference: ComposerContextDire
     return `:${reference.type}[${encodeURIComponent(reference.label)}]{name=${encodeURIComponent(reference.path)}}`;
 }
 
+export function threadIdFromTaskReference(path: string): string | null
+{
+    let encodedId = "";
+    if (path.startsWith("thread://"))
+    {
+        encodedId = path.slice("thread://".length);
+    }
+    else if (path.startsWith("codex:thread:"))
+    {
+        encodedId = path.slice("codex:thread:".length);
+    }
+    if (!encodedId)
+    {
+        return null;
+    }
+    const threadId = decodeDirectiveField(encodedId).trim();
+    return threadId.length > 0 ? threadId : null;
+}
+
 function restoreMarkdownContextLinks(text: string): string
 {
     return text.replace(
@@ -356,7 +375,7 @@ function isValidDirectivePath(type: ComposerContextDirectiveType, path: string):
         case "skill":
             return isAbsolute(path);
         case "chat":
-            return path.startsWith("thread://") && path.length > "thread://".length;
+            return threadIdFromTaskReference(path) !== null;
         case "agent":
             return path.startsWith("agent://") && path.length > "agent://".length;
         case "agentRole":

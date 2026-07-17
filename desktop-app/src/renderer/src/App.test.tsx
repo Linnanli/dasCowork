@@ -297,6 +297,16 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       list: vi.fn(async () => emptyComposerContextResult),
       refresh: vi.fn(async () => emptyComposerContextResult),
       onDidChange: vi.fn(() => () => undefined),
+      startSearch: vi.fn(async () => ({
+        version: 1 as const,
+        sessionId: 'search-1',
+        hostId: 'local',
+        filesAvailable: true,
+        tasksAvailable: true
+      })),
+      updateSearch: vi.fn(async () => undefined),
+      stopSearch: vi.fn(async () => undefined),
+      onSearchUpdate: vi.fn(() => () => undefined),
       validateLocalAttachments: vi.fn(async ({ references }) => ({
         version: 1 as const,
         valid: true,
@@ -311,7 +321,6 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       selectProject: vi.fn(),
       removeProject: vi.fn(),
       renameProject: vi.fn(),
-      createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
       onStateChange: vi.fn(() => vi.fn()),
       ...projects
     } satisfies DesktopProjectsApi,
@@ -1012,8 +1021,8 @@ describe('App composer', () => {
     expect(listContext).toHaveBeenCalledWith({
       version: 1,
       cwd: '/repo',
-      query: '',
-      limit: 40,
+      limit: 200,
+      sectionIds: ['agents', 'plugins', 'apps'],
       projectSelection: { projectKind: 'path', path: '/repo' }
     })
   })
@@ -1136,7 +1145,8 @@ describe('App composer', () => {
       Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
         section.getAttribute('aria-label')
       )
-    ).toEqual(['Add', 'Files', 'Chats', 'Agents', 'Skills', 'Plugins', 'Apps', 'Tools'])
+    ).toEqual(['添加', '智能体', '插件', 'Apps', 'Files and tasks', 'Tools'])
+    expect(document.body.textContent).toContain('输入以搜索文件或任务')
     expect(document.body.textContent).not.toContain('Appshot')
     const panel = document.querySelector('.aui-composer-context-panel')
     expect(panel?.className).toContain('left-0')
@@ -1145,6 +1155,12 @@ describe('App composer', () => {
       panel?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []
     ).find((option) => option.textContent?.includes('reviewer'))
     expect(reviewer?.textContent).toContain('Reviews code')
+    const reviewerText = reviewer?.querySelector<HTMLElement>('[data-context-item-text]')
+    expect(reviewerText?.className).toContain('items-center')
+    expect(reviewerText?.className).toContain('gap-2')
+    expect(reviewerText?.className).not.toContain('flex-col')
+    expect(reviewerText?.textContent).toContain('reviewer')
+    expect(reviewerText?.textContent).toContain('Reviews code')
 
     await act(async () => {
       reviewer?.click()

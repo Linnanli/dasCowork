@@ -808,5 +808,12 @@ function isThreadBoundAcknowledgement(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('thread_reference_limit_exceeded')) {
+    return '每条消息最多引用 3 个任务'
+  }
+  if (message.includes('thread_reference_read_failed')) {
+    return '无法加载引用的任务'
+  }
+  return message
 }

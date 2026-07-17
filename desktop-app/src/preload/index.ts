@@ -14,9 +14,7 @@ import type {
   LocalContextReference,
   SidebarConversationListState,
   SidebarConversationOpenResult,
-  SidebarPreferences,
-  WorkspaceFileSearchPayload,
-  WorkspaceFileSearchResponse
+  SidebarPreferences
 } from '../shared/codexIpcApi'
 import type {
   LocalProject,
@@ -92,11 +90,6 @@ const desktopProjects: DesktopProjectsApi = {
     ipcRenderer.invoke('codex:projects:remove', input) as Promise<ProjectState>,
   renameProject: (input) =>
     ipcRenderer.invoke('codex:projects:rename', input) as Promise<ProjectState>,
-  createFuzzyFileSearchSession: (input: WorkspaceFileSearchPayload) =>
-    ipcRenderer.invoke(
-      'codex:projects:create-fuzzy-file-search-session',
-      input
-    ) as Promise<WorkspaceFileSearchResponse>,
   onStateChange: (callback: (state: ProjectState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: ProjectState): void =>
       callback(state)

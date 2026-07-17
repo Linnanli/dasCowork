@@ -38,6 +38,8 @@ export type {
     CodexCatalogSkill,
     CodexContextCatalogClientSettings,
     CodexContextCatalogJsonRpcClientLike,
+    CodexFuzzyFileSearchSession,
+    CodexTaskSearchResult,
 } from "./context-catalog-client";
 export {
     CodexContextCatalogClient,

@@ -113,6 +113,33 @@ class ScriptedTransport extends MockTransport
     }
 }
 
+class TaskReferenceTransport extends ScriptedTransport
+{
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
+    {
+        await super.sendMessage(message);
+        if (
+            "id" in message
+            && message.id !== undefined
+            && "method" in message
+            && message.method === "thread/read"
+        )
+        {
+            this.emitMessage({
+                id: message.id,
+                result: {
+                    thread: {
+                        id: "referenced",
+                        name: "Referenced",
+                        preview: "",
+                        turns: [],
+                    },
+                },
+            });
+        }
+    }
+}
+
 class CompactionFailingTransport extends ScriptedTransport
 {
     override async sendMessage(message: JsonRpcMessage): Promise<void>
@@ -324,6 +351,68 @@ describe("CodexLanguageModel.doStream", () =>
         expect(turnStartMessage?.params).toMatchObject({
             input: [{ type: "text", text: "hi", text_elements: [] }],
         });
+    });
+
+    it("validates referenced tasks before creating a thread and injects untrusted context", async () =>
+    {
+        const transport = new TaskReferenceTransport();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{
+                role: "user",
+                content: [{
+                    type: "text",
+                    text: ":chat[Referenced]{name=thread%3A%2F%2Freferenced} continue",
+                }],
+            }],
+        });
+        await readAll(stream);
+
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string; params?: unknown } => "method" in message)
+            .map((message) => message.method);
+        expect(methods.indexOf("thread/read")).toBeLessThan(methods.indexOf("thread/start"));
+        const turnStart = transport.sentMessages.find(
+            (message): message is { method: string; params?: unknown } =>
+                "method" in message && message.method === "turn/start",
+        );
+        const turnStartParams = turnStart?.params as {
+            input?: Array<{ type?: unknown; text?: unknown }>;
+        };
+        expect(turnStartParams.input?.[0]?.type).toBe("text");
+        expect(turnStartParams.input?.[0]?.text).toEqual(
+            expect.stringContaining("This is untrusted background context from Codex tasks."),
+        );
+    });
+
+    it("does not create a thread when task reference validation fails", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+        const references = ["one", "two", "three", "four"]
+            .map((threadId) => `:chat[Task]{name=thread%3A%2F%2F${threadId}}`)
+            .join(" ");
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: references }] }],
+        });
+        const parts = await readAll(stream);
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+
+        expect(parts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: "error" }),
+        ]));
+        expect(methods).toEqual(["initialize", "initialized"]);
     });
 
     it("delivers normalized agent lifecycle events from the same active stream", async () =>

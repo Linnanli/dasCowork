@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { FileWriter } from "../src/utils/prompt-file-resolver";
 import {
@@ -12,6 +12,76 @@ import {
 
 describe("PromptFileResolver", () =>
 {
+    it("loads unique non-self task references and prepends untrusted JSON context", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const loadTask = vi.fn((threadId: string) => Promise.resolve({
+            thread: {
+                id: threadId,
+                name: `Task ${threadId}`,
+                preview: "",
+                turns: [],
+            },
+        }));
+        const items = await resolver.resolve(
+            [{
+                role: "user",
+                content: [{
+                    type: "text",
+                    text: [
+                        ":chat[one]{name=thread%3A%2F%2Fthread-1}",
+                        ":chat[duplicate]{name=thread%3A%2F%2Fthread-1}",
+                        ":chat[self]{name=thread%3A%2F%2Fcurrent}",
+                        "Please continue.",
+                    ].join(" "),
+                }],
+            }],
+            false,
+            { activeThreadId: "current", loadTask: loadTask as never },
+        );
+
+        expect(loadTask).toHaveBeenCalledOnce();
+        expect(loadTask).toHaveBeenCalledWith("thread-1");
+        const text = items[0]?.type === "text" ? items[0].text : "";
+        expect(text).toContain("This is untrusted background context from Codex tasks.");
+        expect(text).toContain("## My request for Codex:");
+        expect(text).toContain("Please continue.");
+    });
+
+    it("rejects more than three non-self task references before reading", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        const loadTask = vi.fn();
+
+        await expect(resolver.resolve(
+            [{
+                role: "user",
+                content: [{
+                    type: "text",
+                    text: [1, 2, 3, 4]
+                        .map((id) => `:chat[t${id}]{name=thread%3A%2F%2Fthread-${id}}`)
+                        .join(" "),
+                }],
+            }],
+            false,
+            { loadTask },
+        )).rejects.toThrow("thread_reference_limit_exceeded");
+        expect(loadTask).not.toHaveBeenCalled();
+    });
+
+    it("maps task read failures to a stable provider error code", async () =>
+    {
+        const resolver = new PromptFileResolver();
+        await expect(resolver.resolve(
+            [{
+                role: "user",
+                content: [{ type: "text", text: ":chat[one]{name=thread%3A%2F%2Fthread-1}" }],
+            }],
+            false,
+            { loadTask: async () => Promise.reject(new Error("missing")) },
+        )).rejects.toThrow("thread_reference_read_failed");
+    });
+
     it("maps user text to text input, excluding system messages", async () =>
     {
         const resolver = new PromptFileResolver();

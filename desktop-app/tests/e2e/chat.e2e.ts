@@ -93,6 +93,10 @@ test('renders the add-context menu above and aligned with the composer', async (
     const composer = page.locator('[data-slot="aui_composer-shell"]')
     const header = page.locator('header').first()
     await expect(popover).toBeVisible()
+    await expect(popover.getByRole('region', { name: 'Files and tasks' })).toContainText(
+      '输入以搜索文件或任务'
+    )
+    await expect(popover.getByRole('region', { name: '技能' })).toHaveCount(0)
     const popoverMaxHeight = await popover.evaluate((element) =>
       Number.parseFloat(window.getComputedStyle(element).maxHeight)
     )
@@ -185,7 +189,7 @@ test('discovers, overrides, and inserts custom agent roles from local TOML files
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
     const popover = page.getByRole('listbox', { name: '添加上下文' })
     const reviewer = popover.getByRole('option').filter({ hasText: 'reviewer' })
-    await expect(popover.getByRole('region', { name: 'Agents' })).toBeVisible()
+    await expect(popover.getByRole('region', { name: '智能体' })).toBeVisible()
     await expect(reviewer).toContainText('Project review role')
     await expect(reviewer).not.toContainText('Global review role')
     await expect(popover.getByRole('option').filter({ hasText: 'tester' })).toContainText(
@@ -214,6 +218,7 @@ test('sends a workspace reference, local file attachment and image through the p
   const prompt = '请结合这个文件和图片说明下一步'
   const responseText = '已收到文件上下文和图片。'
   const workspaceFileLabel = 'src/renderer/src/App.tsx'
+  const workspaceFileDisplayLabel = 'App.tsx'
   const workspaceFilePath = `${appRoot}/${workspaceFileLabel}`
   const backend = await startMockBackend({
     capabilities: ['text', 'image'],
@@ -269,7 +274,7 @@ test('sends a workspace reference, local file attachment and image through the p
       type: 'input_text',
       text:
         '# Files mentioned by the user:\n\n' +
-        `## ${JSON.stringify(workspaceFileLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
+        `## ${JSON.stringify(workspaceFileDisplayLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
         `## ${JSON.stringify('e2e-notes.txt')}: ${JSON.stringify(attachmentPath)}` +
         `\n\n## My request for Codex:\n${prompt}`
     })

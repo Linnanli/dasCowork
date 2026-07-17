@@ -49,8 +49,6 @@ type CatalogIdentityState = {
 }
 
 const catalogSectionOrder: readonly ComposerContextSectionId[] = [
-  'files',
-  'chats',
   'agents',
   'skills',
   'plugins',
@@ -66,6 +64,7 @@ export function useComposerContextCatalog({
   threadId
 }: UseComposerContextCatalogOptions): ComposerContextCatalogState {
   const [query, setQuery] = useState('')
+  const [skillsRequestedScope, setSkillsRequestedScope] = useState<string | null>(null)
   const [loadState, setLoadState] = useState<CatalogLoadState | null>(null)
   const [identityState, setIdentityState] = useState<CatalogIdentityState | null>(null)
   const [refreshRequest, setRefreshRequest] = useState<{
@@ -75,16 +74,25 @@ export function useComposerContextCatalog({
   const [changeRevision, setChangeRevision] = useState(0)
   const consumedRefreshRevision = useRef(0)
   const requestSequence = useRef(0)
+  const scopeKey = JSON.stringify({ cwd, projectSelection, threadId })
+  const skillsRequested = skillsRequestedScope === scopeKey || query.trim().length > 0
+  const requestedSectionIds = useMemo(
+    () =>
+      skillsRequested
+        ? (['agents', 'skills', 'plugins', 'apps'] as const)
+        : (['agents', 'plugins', 'apps'] as const),
+    [skillsRequested]
+  )
   const request = useMemo<ComposerContextCatalogRequest>(
     () => ({
       version: COMPOSER_CONTEXT_CATALOG_VERSION,
-      query,
-      limit: 40,
+      limit: 200,
+      sectionIds: [...requestedSectionIds],
       ...(cwd ? { cwd } : {}),
       ...(threadId ? { threadId } : {}),
       ...(projectSelection ? { projectSelection } : {})
     }),
-    [cwd, projectSelection, query, threadId]
+    [cwd, projectSelection, requestedSectionIds, threadId]
   )
   const requestKey = JSON.stringify(request)
   const identityScopeKey = JSON.stringify({
@@ -113,18 +121,17 @@ export function useComposerContextCatalog({
       ? window.desktopApp.composerContext.refresh(request, {
           sectionIds: refreshRequest.sectionId
             ? [refreshRequest.sectionId]
-            : [...catalogSectionOrder]
+            : [...requestedSectionIds]
         })
       : window.desktopApp.composerContext.list(request)
 
     void load
       .then((result) => {
         if (requestSequence.current !== sequence) return
-        const sections = catalogSectionOrder.map((id) =>
-          mapCatalogSection(
-            result.sections.find((section) => section.id === id) ?? missingSection(id)
-          )
-        )
+        const sections = catalogSectionOrder.map((id) => {
+          const section = result.sections.find((candidate) => candidate.id === id)
+          return section ? mapCatalogSection(section) : { id, items: [] }
+        })
         setLoadState({
           requestKey,
           sections
@@ -146,11 +153,28 @@ export function useComposerContextCatalog({
           sections: catalogSectionOrder.map((id) => ({ id, items: [], error: message }))
         })
       })
-  }, [changeRevision, enabled, identityScopeKey, refreshRequest, request, requestKey])
+  }, [
+    changeRevision,
+    enabled,
+    identityScopeKey,
+    refreshRequest,
+    request,
+    requestedSectionIds,
+    requestKey
+  ])
 
   const refresh = useCallback((sectionId?: ComposerContextSectionId) => {
     setRefreshRequest((current) => ({ revision: current.revision + 1, sectionId }))
   }, [])
+  const updateQuery = useCallback(
+    (nextQuery: string) => {
+      setQuery(nextQuery)
+      if (nextQuery.trim().length > 0 && skillsRequestedScope !== scopeKey) {
+        setSkillsRequestedScope(scopeKey)
+      }
+    },
+    [scopeKey, skillsRequestedScope]
+  )
   const hasCurrentResult = enabled && loadState?.requestKey === requestKey
 
   return {
@@ -162,7 +186,7 @@ export function useComposerContextCatalog({
     loading: enabled && !hasCurrentResult,
     query,
     refresh,
-    setQuery
+    setQuery: updateQuery
   }
 }
 
@@ -225,10 +249,6 @@ function mapCatalogSection(section: ComposerContextSection): ComposerContextCata
   }
 }
 
-function missingSection(id: ComposerContextSectionId): ComposerContextSection {
-  return { id, status: 'error', items: [], error: `${id} catalog is unavailable` }
-}
-
 function triggerItem(
   reference: ComposerContextReference,
   type: string,
@@ -243,6 +263,7 @@ function triggerItem(
     metadata: {
       canonicalId: reference.canonicalId,
       kind: reference.kind,
+      reference,
       ...('mentionName' in reference ? { mentionName: reference.mentionName } : {})
     }
   }

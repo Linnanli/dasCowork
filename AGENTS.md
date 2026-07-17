@@ -10,6 +10,8 @@
 
 本仓库是在 Electron 桌面端里嵌入 Codex app server 的协作应用。大模型工作时先按层定位问题：UI 和本地桌面能力在 `desktop-app/`，LLM 执行基座在 `codex/codex-rs/app-server`，AI SDK 到 app-server 的协议适配在 `desktop-app/vendors/ai-sdk-provider-codex-asp/`。
 
+当前是以codex app server作为基础开发, 禁止修改codex app server的代码
+
 ### 相关接口文档
 
 - [AI SDK Provider Codex ASP API 说明](docs/ai-sdk-provider-codex-asp-api.md)

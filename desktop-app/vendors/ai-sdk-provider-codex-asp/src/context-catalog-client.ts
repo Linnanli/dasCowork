@@ -2,10 +2,13 @@ import { AppServerClient, JsonRpcError } from "./client/app-server-client";
 import { StdioTransport } from "./client/transport-stdio";
 import { WebSocketTransport } from "./client/transport-websocket";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
+import type { FuzzyFileSearchResponse } from "./protocol/app-server-protocol/FuzzyFileSearchResponse";
+import type { FuzzyFileSearchResult } from "./protocol/app-server-protocol/FuzzyFileSearchResult";
 import type { AppInfo } from "./protocol/app-server-protocol/v2/AppInfo";
 import type { PluginInstalledResponse } from "./protocol/app-server-protocol/v2/PluginInstalledResponse";
 import type { SkillMetadata } from "./protocol/app-server-protocol/v2/SkillMetadata";
 import type { SkillsListResponse } from "./protocol/app-server-protocol/v2/SkillsListResponse";
+import type { ThreadSearchResponse } from "./protocol/app-server-protocol/v2/ThreadSearchResponse";
 import type { CodexInitializeParams, CodexInitializeResult } from "./protocol/types";
 import type { CodexProviderSettings, TransportContext } from "./provider-settings";
 import { stripUndefined } from "./utils/object";
@@ -26,6 +29,7 @@ export interface CodexContextCatalogClientSettings extends CodexProviderSettings
 export interface CodexCatalogSkill
 {
     name: string;
+    displayName: string;
     description: string;
     shortDescription?: string;
     path: string;
@@ -51,6 +55,7 @@ export interface CodexCatalogApp
     id: string;
     name: string;
     mentionName: string;
+    pluginDisplayNames: string[];
     description?: string;
     logoUrl?: string;
     logoUrlDark?: string;
@@ -72,6 +77,27 @@ export interface CodexAppsPage
     nextCursor?: string;
 }
 
+export interface CodexFuzzyFileSearchSession
+{
+    update(query: string): Promise<void>;
+    stop(): Promise<void>;
+}
+
+export interface CodexTaskSearchResult
+{
+    threadId: string;
+    name?: string;
+    preview?: string;
+    snippet?: string;
+    cwd?: string;
+    updatedAt: string;
+    branch?: string;
+    source: unknown;
+    threadSource?: string;
+    parentThreadId?: string;
+    archived: boolean;
+}
+
 interface AppsListResponse
 {
     data: AppInfo[];
@@ -81,6 +107,7 @@ interface AppsListResponse
 export class CodexContextCatalogClient
 {
     private clientPromise: Promise<CodexContextCatalogJsonRpcClientLike> | undefined;
+    private readonly fuzzyFileSearchSessionStops = new Set<() => Promise<void>>();
 
     constructor(private readonly settings: CodexContextCatalogClientSettings = {}) {}
 
@@ -160,6 +187,85 @@ export class CodexContextCatalogClient
         return this.withClient((client) => this.requestAppsPage(client, params, params.cursor));
     }
 
+    createFuzzyFileSearchSession(params: {
+        roots: string[];
+        onUpdated: (files: FuzzyFileSearchResult[], query: string) => void;
+        onCompleted: (query: string) => void;
+    }): Promise<CodexFuzzyFileSearchSession>
+    {
+        let stopped = false;
+        // sessionCompleted has no query, so request-scoped searches keep completion attribution exact.
+        const update = async (query: string, canReconnect = true): Promise<void> =>
+        {
+            if (stopped)
+            {
+                return;
+            }
+
+            const client = await this.connectedClient();
+            try
+            {
+                await this.fuzzyFileSearch(
+                    client,
+                    params.roots,
+                    query,
+                    () => stopped,
+                    params.onUpdated,
+                    params.onCompleted,
+                );
+            }
+            catch (error)
+            {
+                if (error instanceof JsonRpcError || !canReconnect)
+                {
+                    throw error;
+                }
+                await this.invalidateClient(client);
+                await update(query, false);
+            }
+        };
+
+        const stop = (): Promise<void> =>
+        {
+            stopped = true;
+            this.fuzzyFileSearchSessionStops.delete(stop);
+            return Promise.resolve();
+        };
+        this.fuzzyFileSearchSessionStops.add(stop);
+
+        return Promise.resolve({
+            update,
+            stop,
+        });
+    }
+
+    async searchThreads(params: { query: string; limit?: number }): Promise<CodexTaskSearchResult[]>
+    {
+        return this.withClient(async (client) =>
+        {
+            const response = await client.request<ThreadSearchResponse>("thread/search", {
+                searchTerm: params.query,
+                limit: params.limit ?? 50,
+                sortKey: "updated_at",
+                sortDirection: "desc",
+                archived: false,
+            });
+            return response.data.map(({ thread, snippet }) => stripUndefined({
+                threadId: thread.id,
+                name: thread.name ?? undefined,
+                preview: thread.preview || undefined,
+                snippet: snippet || undefined,
+                cwd: thread.cwd || undefined,
+                updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+                branch: thread.gitInfo?.branch ?? undefined,
+                source: thread.source,
+                threadSource: thread.threadSource ?? undefined,
+                parentThreadId: thread.parentThreadId ?? undefined,
+                archived: false,
+            }));
+        });
+    }
+
     private async requestAppsPage(
         client: CodexContextCatalogJsonRpcClientLike,
         params: CodexAppsListParams,
@@ -197,6 +303,27 @@ export class CodexContextCatalogClient
                 await this.invalidateClient(client);
             }
             throw error;
+        }
+    }
+
+    private async fuzzyFileSearch(
+        client: CodexContextCatalogJsonRpcClientLike,
+        roots: string[],
+        query: string,
+        isStopped: () => boolean,
+        onUpdated: (files: FuzzyFileSearchResult[], query: string) => void,
+        onCompleted: (query: string) => void,
+    ): Promise<void>
+    {
+        const response = await client.request<FuzzyFileSearchResponse>("fuzzyFileSearch", {
+            query,
+            roots,
+            cancellationToken: null,
+        });
+        if (!isStopped())
+        {
+            onUpdated(response.files, query);
+            onCompleted(query);
         }
     }
 
@@ -248,6 +375,9 @@ export class CodexContextCatalogClient
 
     async shutdown(): Promise<void>
     {
+        await Promise.allSettled(
+            [...this.fuzzyFileSearchSessionStops].map((stop) => stop()),
+        );
         const connected = this.clientPromise;
         this.clientPromise = undefined;
         if (!connected)
@@ -296,6 +426,7 @@ function normalizeSkill(skill: SkillMetadata): CodexCatalogSkill
 {
     return stripUndefined({
         name: skill.name,
+        displayName: skillDisplayName(skill),
         description: skill.description,
         shortDescription: skill.shortDescription,
         path: skill.path,
@@ -310,6 +441,7 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
         id: app.id,
         name: app.name,
         mentionName: appMentionName(app),
+        pluginDisplayNames: app.pluginDisplayNames ?? [],
         description: app.description ?? undefined,
         logoUrl: app.logoUrl ?? undefined,
         logoUrlDark: app.logoUrlDark ?? undefined,
@@ -317,6 +449,25 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
         enabled: true as const,
         accessible: true as const,
     });
+}
+
+function skillDisplayName(skill: SkillMetadata): string
+{
+    const interfaceDisplayName = skill.interface?.displayName?.trim();
+    if (interfaceDisplayName)
+    {
+        return interfaceDisplayName;
+    }
+
+    const separatorIndex = skill.name.indexOf(":");
+    if (separatorIndex > 0 && separatorIndex < skill.name.length - 1)
+    {
+        const pluginName = skill.name.slice(0, separatorIndex);
+        const skillName = skill.name.slice(separatorIndex + 1);
+        return `${skillName} (${pluginName})`;
+    }
+
+    return skill.name;
 }
 
 function appMentionName(app: AppInfo): string

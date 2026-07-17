@@ -2,6 +2,7 @@ import type { UIMessage, UIMessageChunk } from 'ai'
 import { z } from 'zod'
 
 export * from './composerContext'
+export * from './composerContextSearch'
 
 import { projectSelectionSchema } from './projects/projectSchemas'
 import type {
@@ -10,7 +11,6 @@ import type {
   ProjectState,
   RemoteProject,
   ThreadProjectAssignment,
-  WorkspaceFileSearchResult,
   WorkspaceRootOption
 } from './projects/projectTypes'
 import {
@@ -291,12 +291,6 @@ export const localContextReferenceSchema = z.discriminatedUnion('kind', [
 
 export const localContextReferenceListSchema = z.array(localContextReferenceSchema)
 
-export const workspaceFileSearchPayloadSchema = z.object({
-  query: z.string().optional(),
-  limit: z.number().int().min(1).max(200).optional(),
-  projectSelection: projectSelectionSchema.optional()
-})
-
 export const sidebarConversationActionPayloadSchema = z.object({
   conversationId: z.string().min(1)
 })
@@ -324,12 +318,6 @@ export const sidebarPreferencesSchema = z.object({
 }) satisfies z.ZodType<SidebarPreferences>
 
 export const sidebarPreferencesPatchSchema = sidebarPreferencesSchema.partial()
-
-export type WorkspaceFileSearchPayload = z.infer<typeof workspaceFileSearchPayloadSchema>
-
-export type WorkspaceFileSearchResponse = {
-  results: WorkspaceFileSearchResult[]
-}
 
 export type DesktopCodexApi = {
   getStatus(): Promise<CodexStatus>
@@ -377,9 +365,6 @@ export type DesktopProjectsApi = {
   selectProject(input: ProjectSelection): Promise<ProjectState>
   removeProject(input: ProjectSelection): Promise<ProjectState>
   renameProject(input: ProjectRenamePayload): Promise<ProjectState>
-  createFuzzyFileSearchSession(
-    input: WorkspaceFileSearchPayload
-  ): Promise<WorkspaceFileSearchResponse>
   onStateChange(callback: (state: ProjectState) => void): () => void
 }
 

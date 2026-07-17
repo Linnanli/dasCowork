@@ -126,11 +126,16 @@ import type { ConversationDraftAttachment } from './runtime/ConversationDraftSto
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
 import type { ModelOption } from './components/assistant-ui'
-import { composerContextDirectiveFormatter } from './composer/composerContextDirectiveFormatter'
+import {
+  composerContextDirectiveFormatter,
+  parseComposerContextReferences
+} from './composer/composerContextDirectiveFormatter'
+import { buildComposerGlobalSearchResult } from './composer/composerGlobalSearch'
 import {
   type ComposerContextCatalogState,
   useComposerContextCatalog
 } from './composer/useComposerContextCatalog'
+import { useComposerContextSearch } from './composer/useComposerContextSearch'
 import {
   type ComposerContextIdentityIndex,
   ComposerContextIdentityProvider,
@@ -1931,6 +1936,26 @@ function Composer({
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const projectContext = conversationProjectContext(activeConversation, projectState)
   const localContextPickerEnabled = !isRemoteExecution
+  const [contextSearchOpen, setContextSearchOpen] = useState(false)
+  const composerText = useAuiState((state) => state.composer.text)
+  const selectedTaskIds = useMemo(
+    () => [
+      ...new Set(
+        parseComposerContextReferences(composerText).flatMap((reference) =>
+          reference.type === 'chat' ? [threadIdFromComposerReference(reference.path)] : []
+        )
+      )
+    ],
+    [composerText]
+  )
+  const composerContextSearch = useComposerContextSearch({
+    cwd: resolveComposerCwd(activeConversation, projectState),
+    enabled: contextSearchOpen && hasProjectContext,
+    excludedThreadIds: selectedTaskIds,
+    projectSelection: effectiveProjectSelection,
+    query: composerContextCatalog.query,
+    threadId: activeConversation?.threadId
+  })
   const hasImageAttachments = useAuiState((state) =>
     state.composer.attachments.some((attachment) => attachment.type === 'image')
   )
@@ -2005,19 +2030,60 @@ function Composer({
     (isRemoteExecution && hasLocalPathAttachments)
 
   const contextSections = useMemo(() => {
-    const catalogSections = composerContextCatalog.sections
-      .filter((section) => !isRemoteExecution || section.id !== 'files')
-      .map((section) => ({
+    const catalogSections = composerContextCatalog.sections.map((section) => {
+      let items = section.items
+      if (composerContextCatalog.loading) {
+        items = []
+      } else if (section.id === 'apps') {
+        items = section.items.slice(0, 3)
+      }
+      return {
         id: section.id,
         label: composerContextSectionLabel(section.id),
-        items: composerContextCatalog.loading ? [] : section.items,
+        items,
         loading: composerContextCatalog.loading,
         error: section.error,
         onRetry: () => composerContextCatalog.refresh(section.id),
         preFiltered: true
-      }))
-    return [...catalogSections, { id: 'tools', label: 'Tools', items: modelContextTools }]
-  }, [composerContextCatalog, isRemoteExecution, modelContextTools])
+      }
+    })
+    if (!composerContextCatalog.query.trim()) {
+      return [
+        ...catalogSections.filter((section) => section.id !== 'skills'),
+        {
+          id: 'files-and-tasks',
+          label: 'Files and tasks',
+          items: [],
+          placeholder: '输入以搜索文件或任务',
+          preFiltered: true
+        },
+        { id: 'tools', label: 'Tools', items: modelContextTools, preFiltered: true }
+      ]
+    }
+
+    const dynamicSections = composerContextSearch.sections.map((section) => ({
+      id: section.id,
+      items: selectedTaskIds.length >= 3 && section.id === 'tasks' ? [] : section.items
+    }))
+    return buildComposerGlobalSearchResult({
+      query: composerContextCatalog.query,
+      sections: [...catalogSections, ...dynamicSections],
+      loading: composerContextCatalog.loading || composerContextSearch.loading,
+      sourceErrors: [
+        ...catalogSections.flatMap((section) => (section.error ? [section.error] : [])),
+        ...composerContextSearch.sections.flatMap((section) =>
+          section.error ? [section.error] : []
+        )
+      ],
+      warnings: selectedTaskIds.length >= 3 ? ['每条消息最多引用 3 个任务'] : []
+    })
+  }, [
+    composerContextCatalog,
+    composerContextSearch.loading,
+    composerContextSearch.sections,
+    modelContextTools,
+    selectedTaskIds
+  ])
 
   return (
     <ComposerContextSuggestionProvider>
@@ -2038,6 +2104,7 @@ function Composer({
               <div className="flex min-w-0 items-center gap-1">
                 <ComposerAddContextPopover
                   localPickerEnabled={localContextPickerEnabled}
+                  onOpenChange={setContextSearchOpen}
                   onQueryChange={composerContextCatalog.setQuery}
                   pickLocalContext={pickLocalContext}
                   sections={contextSections}
@@ -2148,17 +2215,28 @@ function composerContextSectionLabel(sectionId: string): string {
     case 'files':
       return 'Files'
     case 'chats':
-      return 'Chats'
+      return 'Tasks'
+    case 'tasks':
+      return 'Tasks'
     case 'agents':
-      return 'Agents'
+      return '智能体'
     case 'skills':
-      return 'Skills'
+      return '技能'
     case 'plugins':
-      return 'Plugins'
+      return '插件'
     case 'apps':
       return 'Apps'
     default:
       return sectionId
+  }
+}
+
+function threadIdFromComposerReference(uri: string): string {
+  const encodedThreadId = uri.slice('thread://'.length)
+  try {
+    return decodeURIComponent(encodedThreadId)
+  } catch {
+    return encodedThreadId
   }
 }
 
