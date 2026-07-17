@@ -5,13 +5,11 @@ import { join } from 'node:path'
 import { ProjectApiService } from './ProjectApiService'
 import { ProjectService, type ThreadReader } from './ProjectService'
 import { ProjectStore } from './ProjectStore'
-import { WorkspaceFileSearchService } from './WorkspaceFileSearchService'
 
 export type ProjectRuntimeServices = {
   projectStore: ProjectStore
   projectService: ProjectService
   projectApi: ProjectApiService
-  workspaceFileSearch: WorkspaceFileSearchService
 }
 
 export function createProjectRuntimeServices({
@@ -38,12 +36,7 @@ export function createProjectRuntimeServices({
     validateRemoteRoot: async () => undefined,
     pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null)
   })
-  const workspaceFileSearch = new WorkspaceFileSearchService({
-    projectStore,
-    projectService
-  })
-
-  return { projectStore, projectService, projectApi, workspaceFileSearch }
+  return { projectStore, projectService, projectApi }
 }
 
 async function validateLocalRoot(path: string): Promise<{ realPath: string }> {

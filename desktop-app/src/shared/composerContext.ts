@@ -46,7 +46,10 @@ export const composerContextReferenceSchema = z.discriminatedUnion('kind', [
     threadId: z.string().min(1),
     uri: z.string().regex(/^thread:\/\//u),
     updatedAt: z.string().optional(),
-    cwd: z.string().nullable().optional()
+    cwd: z.string().nullable().optional(),
+    searchTitle: z.string().optional(),
+    snippet: z.string().optional(),
+    gitBranch: z.string().optional()
   }),
   composerContextReferenceBaseSchema.extend({
     kind: z.literal('liveAgent'),
@@ -83,7 +86,8 @@ export const composerContextReferenceSchema = z.discriminatedUnion('kind', [
     presentation: z.literal('mention'),
     appId: z.string().min(1),
     uri: z.string().regex(/^app:\/\//u),
-    mentionName: z.string().min(1).optional()
+    mentionName: z.string().min(1).optional(),
+    pluginDisplayNames: z.array(z.string()).optional()
   })
 ])
 
@@ -104,7 +108,11 @@ export const composerContextCatalogRequestSchema = z.object({
   threadId: z.string().min(1).optional(),
   query: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(200).optional(),
-  projectSelection: projectSelectionSchema.optional()
+  projectSelection: projectSelectionSchema.optional(),
+  sectionIds: z
+    .array(z.enum(['agents', 'skills', 'plugins', 'apps']))
+    .min(1)
+    .optional()
 })
 
 export type ComposerContextCatalogRequest = z.infer<typeof composerContextCatalogRequestSchema>
@@ -199,4 +207,16 @@ export type DesktopComposerContextApi = {
   validateLocalAttachments(
     input: LocalAttachmentValidationRequest
   ): Promise<LocalAttachmentValidationResult>
+  startSearch(
+    input: import('./composerContextSearch').ComposerContextSearchStartRequest
+  ): Promise<import('./composerContextSearch').ComposerContextSearchStartResult>
+  updateSearch(
+    input: import('./composerContextSearch').ComposerContextSearchUpdateRequest
+  ): Promise<void>
+  stopSearch(
+    input: import('./composerContextSearch').ComposerContextSearchStopRequest
+  ): Promise<void>
+  onSearchUpdate(
+    callback: (event: import('./composerContextSearch').ComposerContextSearchSectionEvent) => void
+  ): () => void
 }

@@ -33,6 +33,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@janole/ai-sdk-provider-codex-asp": "file:vendors/ai-sdk-provider-codex-asp",
     "ai": "^6.0.213",
+    "smol-toml": "^1.5.2",
     "zod": "^4.1.8",
     "zustand": "^5.0.14"
   },

@@ -31,8 +31,6 @@ export { CodexWorker } from "./client/worker";
 export type { CodexWorkerPoolSettings } from "./client/worker-pool";
 export { CodexWorkerPool } from "./client/worker-pool";
 export type {
-    CodexAgentRole,
-    CodexAgentRoleListParams,
     CodexAppsListParams,
     CodexAppsPage,
     CodexCatalogApp,
@@ -40,6 +38,8 @@ export type {
     CodexCatalogSkill,
     CodexContextCatalogClientSettings,
     CodexContextCatalogJsonRpcClientLike,
+    CodexFuzzyFileSearchSession,
+    CodexTaskSearchResult,
 } from "./context-catalog-client";
 export {
     CodexContextCatalogClient,

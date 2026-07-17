@@ -30,12 +30,15 @@ export type ComposerContextMenuSection = {
   loading?: boolean
   onRetry?: () => void
   preFiltered?: boolean
+  showTitle?: boolean
+  placeholder?: string
 }
 
 export type ComposerAddContextPopoverProps = {
   disabled?: boolean
   localPickerEnabled: boolean
   onQueryChange?: (query: string) => void
+  onOpenChange?: (open: boolean) => void
   pickLocalContext: (kind: LocalContextPickerKind) => Promise<boolean>
   sections: readonly ComposerContextMenuSection[]
 }
@@ -57,6 +60,7 @@ const contextItemIcons: Record<string, typeof FileIcon> = {
 export function ComposerAddContextPopover({
   disabled = false,
   localPickerEnabled,
+  onOpenChange,
   onQueryChange,
   pickLocalContext,
   sections
@@ -96,9 +100,13 @@ export function ComposerAddContextPopover({
       onQueryChange('')
       return undefined
     }
-    const timeout = window.setTimeout(() => onQueryChange(state.query), 150)
-    return () => window.clearTimeout(timeout)
+    onQueryChange(state.query)
+    return undefined
   }, [onQueryChange, state.open, state.query])
+
+  useEffect(() => {
+    onOpenChange?.(state.open)
+  }, [onOpenChange, state.open])
 
   useLayoutEffect(() => {
     if (!state.open || !panelRef.current) return undefined
@@ -190,7 +198,7 @@ export function ComposerAddContextPopover({
           onMouseDown={(event) => event.preventDefault()}
         >
           {!normalizedQuery ? (
-            <ContextSection label="Add">
+            <ContextSection label="添加">
               {localPickerEnabled ? (
                 <ContextActionItem
                   highlighted={state.highlightedIndex === localPickerIndex}
@@ -208,14 +216,25 @@ export function ComposerAddContextPopover({
           {pickerError ? <ContextAlert message={pickerError} /> : null}
 
           {indexedSections.map(({ section, startIndex }) => {
-            if (!section.loading && !section.error && section.items.length === 0) return null
+            if (
+              !section.loading &&
+              !section.error &&
+              !section.placeholder &&
+              section.items.length === 0
+            ) {
+              return null
+            }
 
             return (
-              <ContextSection key={section.id} label={section.label}>
+              <ContextSection
+                key={section.id}
+                label={section.label}
+                showTitle={section.showTitle !== false}
+              >
                 {section.loading ? (
                   <div className="flex items-center gap-2 px-2.5 py-2 text-sm text-muted-foreground">
                     <Loader2Icon className="size-4 animate-spin" />
-                    正在加载…
+                    {normalizedQuery ? '正在搜索…' : '正在加载…'}
                   </div>
                 ) : null}
                 {section.error ? (
@@ -231,6 +250,11 @@ export function ComposerAddContextPopover({
                         <RefreshCwIcon className="size-3.5" />
                       </button>
                     ) : null}
+                  </div>
+                ) : null}
+                {section.placeholder ? (
+                  <div className="px-2.5 py-2 text-sm text-muted-foreground">
+                    {section.placeholder}
                   </div>
                 ) : null}
                 {section.items.map((item, itemIndex) => {
@@ -252,11 +276,15 @@ export function ComposerAddContextPopover({
           {!isPicking &&
           !pickerError &&
           visibleSections.every(
-            (section) => !section.loading && !section.error && section.items.length === 0
+            (section) =>
+              !section.loading &&
+              !section.error &&
+              !section.placeholder &&
+              section.items.length === 0
           ) &&
           (normalizedQuery || !localPickerEnabled) ? (
             <div className="px-3 py-4 text-center text-sm text-muted-foreground">
-              {normalizedQuery ? '没有匹配的上下文' : '没有可引用的上下文'}
+              {normalizedQuery ? '没有结果' : '没有可引用的上下文'}
             </div>
           ) : null}
         </div>
@@ -267,16 +295,20 @@ export function ComposerAddContextPopover({
 
 function ContextSection({
   children,
-  label
+  label,
+  showTitle = true
 }: {
   children: React.ReactNode
   label: string
+  showTitle?: boolean
 }): React.JSX.Element {
   return (
     <section className="py-1" aria-label={label}>
-      <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
-        {label}
-      </div>
+      {showTitle ? (
+        <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+          {label}
+        </div>
+      ) : null}
       {children}
     </section>
   )
@@ -339,10 +371,14 @@ function ContextItem({
       onClick={onSelect}
     >
       <Icon className="size-4 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{item.label}</span>
-      {item.description ? (
-        <span className="max-w-52 truncate text-xs text-muted-foreground">{item.description}</span>
-      ) : null}
+      <span data-context-item-text className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="max-w-[55%] shrink truncate">{item.label}</span>
+        {item.description ? (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {item.description}
+          </span>
+        ) : null}
+      </span>
     </button>
   )
 }

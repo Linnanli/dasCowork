@@ -1,11 +1,16 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { test, expect } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
-import { ensureLocalProjectSelected, sendComposerMessage, sendMessage } from './support/chatActions'
+import {
+  createLocalProject,
+  ensureLocalProjectSelected,
+  sendComposerMessage,
+  sendMessage
+} from './support/chatActions'
 import {
   assistantMessageResponse,
   deferred,
@@ -88,6 +93,10 @@ test('renders the add-context menu above and aligned with the composer', async (
     const composer = page.locator('[data-slot="aui_composer-shell"]')
     const header = page.locator('header').first()
     await expect(popover).toBeVisible()
+    await expect(popover.getByRole('region', { name: 'Files and tasks' })).toContainText(
+      '输入以搜索文件或任务'
+    )
+    await expect(popover.getByRole('region', { name: '技能' })).toHaveCount(0)
     const popoverMaxHeight = await popover.evaluate((element) =>
       Number.parseFloat(window.getComputedStyle(element).maxHeight)
     )
@@ -128,6 +137,79 @@ test('renders the add-context menu above and aligned with the composer', async (
   }
 })
 
+test('discovers, overrides, and inserts custom agent roles from local TOML files', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({ responses: [] })
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-agent-project-'))
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await mkdir(join(projectRoot, '.codex', 'agents'), { recursive: true })
+    await writeFile(
+      join(projectRoot, '.codex', 'agents', 'reviewer.toml'),
+      [
+        'name = "reviewer"',
+        'description = "Project review role"',
+        'developer_instructions = "Review this project."'
+      ].join('\n')
+    )
+
+    app = await launchApp(backend, logs, {
+      configureCodexHome: async (codexHomeDir) => {
+        await mkdir(join(codexHomeDir, 'agents'), { recursive: true })
+        await writeFile(
+          join(codexHomeDir, 'agents', 'reviewer.toml'),
+          [
+            'name = "reviewer"',
+            'description = "Global review role"',
+            'developer_instructions = "Review globally."'
+          ].join('\n')
+        )
+        await writeFile(
+          join(codexHomeDir, 'agents', 'tester.toml'),
+          [
+            'name = "tester"',
+            'description = "Valid beside a broken file"',
+            'developer_instructions = "Test changes."'
+          ].join('\n')
+        )
+        await writeFile(join(codexHomeDir, 'agents', 'broken.toml'), 'name = "broken')
+      }
+    })
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await expect(page.locator('body')).toContainText('qwen3.7-plus')
+    await createLocalProject(page, `E2E Agents ${Date.now().toString(36)}`, projectRoot)
+
+    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+    const popover = page.getByRole('listbox', { name: '添加上下文' })
+    const reviewer = popover.getByRole('option').filter({ hasText: 'reviewer' })
+    await expect(popover.getByRole('region', { name: '智能体' })).toBeVisible()
+    await expect(reviewer).toContainText('Project review role')
+    await expect(reviewer).not.toContainText('Global review role')
+    await expect(popover.getByRole('option').filter({ hasText: 'tester' })).toContainText(
+      'Valid beside a broken file'
+    )
+
+    await reviewer.click()
+    await expect(
+      page.locator(
+        '.aui-directive-chip[data-directive-type="agentRole"][data-directive-id="subagent://reviewer"]'
+      )
+    ).toContainText('reviewer')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await rm(projectRoot, { recursive: true, force: true })
+  }
+})
+
 test('sends a workspace reference, local file attachment and image through the provider', async ({
   browserName
 }, testInfo) => {
@@ -136,6 +218,7 @@ test('sends a workspace reference, local file attachment and image through the p
   const prompt = '请结合这个文件和图片说明下一步'
   const responseText = '已收到文件上下文和图片。'
   const workspaceFileLabel = 'src/renderer/src/App.tsx'
+  const workspaceFileDisplayLabel = 'App.tsx'
   const workspaceFilePath = `${appRoot}/${workspaceFileLabel}`
   const backend = await startMockBackend({
     capabilities: ['text', 'image'],
@@ -191,7 +274,7 @@ test('sends a workspace reference, local file attachment and image through the p
       type: 'input_text',
       text:
         '# Files mentioned by the user:\n\n' +
-        `## ${JSON.stringify(workspaceFileLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
+        `## ${JSON.stringify(workspaceFileDisplayLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
         `## ${JSON.stringify('e2e-notes.txt')}: ${JSON.stringify(attachmentPath)}` +
         `\n\n## My request for Codex:\n${prompt}`
     })

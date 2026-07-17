@@ -64,7 +64,7 @@ test('restores per-thread drafts after restart but keeps scroll restoration sess
     await sendComposerMessage(page, secondPrompt)
     await expect(page.locator('[data-role="assistant"]')).toContainText(secondResponse)
 
-    let contextPanel = await openComposerContextPanel(page)
+    let contextPanel = await searchComposerContext(page, firstPrompt)
     await expect(contextPanel.getByRole('option').filter({ hasText: firstPrompt })).toHaveCount(1)
     await expect(contextPanel.getByRole('option').filter({ hasText: secondPrompt })).toHaveCount(0)
     await page.keyboard.press('Escape')
@@ -74,7 +74,7 @@ test('restores per-thread drafts after restart but keeps scroll restoration sess
     await expectDraftStorageToContain(page, secondDraft)
 
     await sidebar.getByRole('button', { name: new RegExp(`^${firstPrompt}`) }).click()
-    contextPanel = await openComposerContextPanel(page)
+    contextPanel = await searchComposerContext(page, secondPrompt)
     await expect(contextPanel.getByRole('option').filter({ hasText: secondPrompt })).toHaveCount(1)
     await expect(contextPanel.getByRole('option').filter({ hasText: firstPrompt })).toHaveCount(0)
     await page.keyboard.press('Escape')
@@ -137,10 +137,11 @@ test('restores per-thread drafts after restart but keeps scroll restoration sess
   }
 })
 
-async function openComposerContextPanel(page: Page): Promise<Locator> {
+async function searchComposerContext(page: Page, query: string): Promise<Locator> {
   await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
   const panel = page.getByRole('listbox', { name: '添加上下文' })
   await expect(panel).toBeVisible()
+  await page.locator('.aui-lexical-input[contenteditable="true"]').last().fill(query)
   return panel
 }
 

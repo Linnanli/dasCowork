@@ -50,7 +50,7 @@
 - Files：扩展现有工作区搜索，返回文件和文件夹；保留模糊匹配结果，移除 renderer 中多余的二次 `includes` 过滤。
 - Chats：复用现有会话服务；排除当前会话，按当前项目、无项目、其他项目和最近使用排序。
 - Live Agents：由当前聊天流使用的同一个 app-server 实例上报生命周期事件，main 维护投影；不得另启进程猜测运行状态。
-- Configured Agents：复用现有 `config/read`，从当前 cwd 的有效 `agents` 配置中提取 `roleName`、`description`和 `nicknameCandidates`；不返回 developer instructions 等敏感配置，不新增 app-server 接口。
+- Configured Agents：Electron Main 使用 `smol-toml` 扫描全局 `CODEX_HOME` 与当前本地项目的 `config.toml`、`agents/**/*.toml`，提取 `roleName`、`description` 和 `nicknameCandidates`；不返回 developer instructions、模型配置或文件路径，也不新增 app-server 接口。
 - Skills：调用 `skills/list`，按当前 cwd/thread 配置加载。
 - Plugins：调用适合 mention 场景的 `plugin/installed`，只显示已安装且启用的本地插件。
 - Apps：调用 `app/list`，只保留 `isEnabled && isAccessible`。
@@ -127,7 +127,7 @@ Main 新增目录聚合服务，并通过 shared schema、preload 白名单暴�
 ## 当前实施记录（2026-07-15）
 
 - `codex/codex-rs` 保持零改动；实现只使用现有 app-server 接口和输入类型。
-- Provider lint、typecheck、build 和 168 个测试通过；Desktop typecheck、build 和 548 个测试通过。
+- Provider lint、typecheck、build 和 170 个测试通过；Desktop typecheck、build 和 574 个测试通过。
 - `+ / @` 菜单、本地附件、工作区引用和草稿恢复的目标 E2E 通过。
-- 全量 E2E 为 23 通过、1 跳过、0 失败；此前推理文案、工具分组和 turn diff 的 5 个失败场景均已通过。
-- Configured Agents 继续复用现有 app-server 配置能力和 `config/read` 接口；桌面端不独立扫描 `agents/*.toml`，也不修改 app-server。
+- 全量 E2E 为 24 通过、1 跳过、0 失败；此前推理文案、工具分组和 turn diff 的 5 个失败场景均已通过。
+- Configured Agents 不再依赖 `config/read`：桌面端 Main 进程独立扫描本地角色配置，远程项目不读取本机角色目录；Codex App Server 和协议保持不变。

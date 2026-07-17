@@ -18,6 +18,7 @@ import {
   type CodexContextCatalogClient
 } from '@janole/ai-sdk-provider-codex-asp'
 import icon from '../../resources/icon.png?asset'
+import { createBeforeQuitHandler } from './appShutdown'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
 import { AppServerThreadClient } from './conversations/AppServerThreadClient'
@@ -36,14 +37,20 @@ import {
 import { createModelCatalogService } from './modelCatalogService'
 import { ComposerContextCatalogService } from './composerContext/ComposerContextCatalogService'
 import { ComposerContextChangeBroker } from './composerContext/ComposerContextChangeBroker'
+import { ComposerContextSearchService } from './composerContext/ComposerContextSearchService'
 import {
   createListComposerContextHandler,
   createRefreshComposerContextHandler
 } from './composerContext/composerContextIpc'
+import {
+  createStartComposerContextSearchHandler,
+  createStopComposerContextSearchHandler,
+  createUpdateComposerContextSearchHandler
+} from './composerContext/composerContextSearchIpc'
 import { LiveAgentRegistry } from './composerContext/LiveAgentRegistry'
+import { LocalAgentRoleCatalog, resolveCodexHome } from './composerContext/LocalAgentRoleCatalog'
 import { createValidateLocalAttachmentsHandler } from './composerContext/localAttachmentValidation'
 import type { ProjectApiService } from './projects/ProjectApiService'
-import type { WorkspaceFileSearchService } from './projects/WorkspaceFileSearchService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
@@ -60,15 +67,14 @@ import {
   type ComposerContextCatalogChangeEvent,
   sidebarConversationActionPayloadSchema,
   sidebarConversationRenamePayloadSchema,
-  sidebarPreferencesPatchSchema,
-  workspaceFileSearchPayloadSchema
+  sidebarPreferencesPatchSchema
 } from '../shared/codexIpcApi'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
-let workspaceFileSearch: WorkspaceFileSearchService | undefined
 let conversationApi: ConversationApiService | undefined
 let composerContextCatalog: ComposerContextCatalogService | undefined
+let composerContextSearch: ComposerContextSearchService | undefined
 let composerContextChanges: ComposerContextChangeBroker | undefined
 let composerContextClient: CodexContextCatalogClient | undefined
 const convergingConversationThreadIds = new Set<string>()
@@ -83,7 +89,6 @@ function createCodexRuntime(): CodexChatRuntimeService {
     pickWorkspaceRoot: pickWorkspaceRootPath
   })
   projectApi = projectRuntimeServices.projectApi
-  workspaceFileSearch = projectRuntimeServices.workspaceFileSearch
   const launch = resolveCodexAppServerLaunchOptions({
     env: process.env,
     isPackaged: app.isPackaged,
@@ -96,6 +101,11 @@ function createCodexRuntime(): CodexChatRuntimeService {
     projectStore: projectRuntimeServices.projectStore
   })
   const liveAgents = new LiveAgentRegistry(threadClient)
+  const agentRoles = new LocalAgentRoleCatalog({
+    codexHome: resolveCodexHome(launch.env),
+    projectService: projectRuntimeServices.projectService,
+    warn: (message) => console.warn(`[agent-role-catalog] ${message}`)
+  })
   composerContextClient = createCodexContextCatalogClient({
     clientInfo: {
       name: 'dascowork_desktop_composer_context',
@@ -115,10 +125,23 @@ function createCodexRuntime(): CodexChatRuntimeService {
   })
   composerContextCatalog = new ComposerContextCatalogService({
     provider: composerContextClient,
-    conversations: conversationApi,
-    workspaceSearch: projectRuntimeServices.workspaceFileSearch,
+    agentRoles,
     liveAgents,
     defaultCwd: app.getAppPath()
+  })
+  composerContextSearch = new ComposerContextSearchService({
+    provider: composerContextClient,
+    projectService: projectRuntimeServices.projectService,
+    projectStore: projectRuntimeServices.projectStore,
+    conversations: conversationApi,
+    publish: (ownerWebContentsId, event) => {
+      const ownerWindow = BrowserWindow.getAllWindows().find(
+        (window) => window.webContents.id === ownerWebContentsId
+      )
+      if (ownerWindow && !ownerWindow.isDestroyed()) {
+        ownerWindow.webContents.send('codex:composer-context-search-update', event)
+      }
+    }
   })
   composerContextChanges?.dispose()
   composerContextChanges = new ComposerContextChangeBroker({
@@ -174,11 +197,6 @@ function requireProjectApi(): ProjectApiService {
   return projectApi
 }
 
-function requireWorkspaceFileSearch(): WorkspaceFileSearchService {
-  if (!workspaceFileSearch) throw new Error('Workspace file search is not initialized')
-  return workspaceFileSearch
-}
-
 function requireConversationApi(): ConversationApiService {
   if (!conversationApi) throw new Error('Conversation API is not initialized')
   return conversationApi
@@ -187,6 +205,11 @@ function requireConversationApi(): ConversationApiService {
 function requireComposerContextCatalog(): ComposerContextCatalogService {
   if (!composerContextCatalog) throw new Error('Composer context catalog is not initialized')
   return composerContextCatalog
+}
+
+function requireComposerContextSearch(): ComposerContextSearchService {
+  if (!composerContextSearch) throw new Error('Composer context search is not initialized')
+  return composerContextSearch
 }
 
 function broadcastStatus(): void {
@@ -308,6 +331,7 @@ function createWindow(runtime: CodexChatRuntimeService): void {
       icon
     })
   )
+  const ownerWebContentsId = mainWindow.webContents.id
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -324,6 +348,9 @@ function createWindow(runtime: CodexChatRuntimeService): void {
     }
   })
   mainWindow.on('closed', () => unsubscribeApprovals())
+  mainWindow.webContents.once('destroyed', () => {
+    void composerContextSearch?.stopOwnedBy(ownerWebContentsId)
+  })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -387,6 +414,18 @@ app.whenReady().then(() => {
     'codex:composer-context:validate-local-attachments',
     createValidateLocalAttachmentsHandler({ stat })
   )
+  ipcMain.handle(
+    'codex:composer-context-search:start',
+    createStartComposerContextSearchHandler(requireComposerContextSearch())
+  )
+  ipcMain.handle(
+    'codex:composer-context-search:update',
+    createUpdateComposerContextSearchHandler(requireComposerContextSearch())
+  )
+  ipcMain.handle(
+    'codex:composer-context-search:stop',
+    createStopComposerContextSearchHandler(requireComposerContextSearch())
+  )
   ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
   ipcMain.handle('codex:projects:pick-workspace-root', async () => {
     const option = await requireProjectApi().pickWorkspaceRoot()
@@ -422,10 +461,6 @@ app.whenReady().then(() => {
     const state = await requireProjectApi().renameProject(request)
     await broadcastProjectState()
     return state
-  })
-  ipcMain.handle('codex:projects:create-fuzzy-file-search-session', (_, payload: unknown) => {
-    const request = workspaceFileSearchPayloadSchema.parse(payload)
-    return requireWorkspaceFileSearch().createFuzzyFileSearchSession(request)
   })
   ipcMain.handle('codex:conversations:get-list', () =>
     requireConversationApi().getConversationList()
@@ -509,8 +544,18 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  composerContextChanges?.dispose()
-  void codexRuntime?.stop()
-  void composerContextClient?.shutdown()
-})
+app.on(
+  'before-quit',
+  createBeforeQuitHandler({
+    shutdown: async () => {
+      try {
+        await composerContextSearch?.shutdown()
+      } finally {
+        composerContextChanges?.dispose()
+        await Promise.allSettled([codexRuntime?.stop(), composerContextClient?.shutdown()])
+      }
+    },
+    quit: () => app.quit(),
+    onError: (error) => console.error('[app-shutdown] cleanup failed', error)
+  })
+)

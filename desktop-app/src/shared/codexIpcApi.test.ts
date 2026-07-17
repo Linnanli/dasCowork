@@ -12,8 +12,7 @@ import {
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
   sidebarConversationRenamePayloadSchema,
-  sidebarPreferencesPatchSchema,
-  workspaceFileSearchPayloadSchema
+  sidebarPreferencesPatchSchema
 } from './codexIpcApi'
 
 describe('codex IPC schemas', () => {
@@ -39,21 +38,6 @@ describe('codex IPC schemas', () => {
     ).toBe(true)
     expect(
       codexChatControlMessageSchema.safeParse({ type: 'thread-bound-ack', threadId: '' }).success
-    ).toBe(false)
-  })
-
-  it('accepts an entry-scoped project selection for file search', () => {
-    expect(
-      workspaceFileSearchPayloadSchema.safeParse({
-        query: 'app',
-        projectSelection: { projectKind: 'path', path: '/repo/a' }
-      }).success
-    ).toBe(true)
-    expect(
-      workspaceFileSearchPayloadSchema.safeParse({
-        query: 'app',
-        projectSelection: { projectKind: 'path', path: '' }
-      }).success
     ).toBe(false)
   })
 

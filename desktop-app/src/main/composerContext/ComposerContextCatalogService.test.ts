@@ -19,13 +19,16 @@ function request(
 // The concrete Vitest mocks are intentionally preserved for per-call assertions below.
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function setup() {
-  const provider = {
+  const agentRoles = {
     listAgentRoles: vi.fn(async () => [
       { roleName: 'reviewer', description: 'Reviews code', nicknameCandidates: ['Ada'] }
-    ]),
+    ])
+  }
+  const provider = {
     listSkills: vi.fn(async () => [
       {
         name: 'testing',
+        displayName: 'Testing tools',
         description: 'Runs tests',
         path: '/skills/testing/SKILL.md',
         enabled: true,
@@ -52,6 +55,7 @@ function setup() {
         id: 'slack',
         name: 'Slack',
         mentionName: 'slack',
+        pluginDisplayNames: ['Work messaging'],
         mentionPath: 'app://slack',
         enabled: true,
         accessible: true
@@ -66,63 +70,6 @@ function setup() {
       }
     ])
   }
-  const conversationState = {
-    conversations: [
-      {
-        id: 'current',
-        threadId: 'current',
-        title: 'Current',
-        updatedAt: '2026-07-14T12:00:00.000Z'
-      },
-      {
-        id: 'recent',
-        threadId: 'recent',
-        title: 'Recent chat',
-        cwd: '/repo',
-        updatedAt: '2026-07-14T11:00:00.000Z'
-      },
-      {
-        id: 'projectless',
-        threadId: 'projectless',
-        title: 'Projectless chat',
-        projectAssignment: {
-          projectKind: 'projectless' as const,
-          cwd: null,
-          workspaceRoot: null,
-          outputDirectory: null
-        },
-        updatedAt: '2026-07-14T10:00:00.000Z'
-      }
-    ],
-    archivedConversationIds: [],
-    loaded: true
-  }
-  const conversations = {
-    getConversationSnapshot: vi.fn(() => conversationState),
-    ensureConversationListLoaded: vi.fn(async () => conversationState),
-    refreshConversationList: vi.fn(async () => conversationState)
-  }
-  const workspaceResults = [
-    {
-      kind: 'folder' as const,
-      path: '/repo/src',
-      label: 'src',
-      root: '/repo',
-      score: 0
-    },
-    {
-      kind: 'file' as const,
-      path: '/repo/src/Composer.tsx',
-      label: 'src/Composer.tsx',
-      root: '/repo',
-      score: 1
-    }
-  ]
-  const workspaceSearch = {
-    createFuzzyFileSearchSession: vi.fn(async ({ query }: { query?: string }) => ({
-      results: query === 'cmpsr' ? workspaceResults.slice(1) : workspaceResults
-    }))
-  }
   const liveAgents = new LiveAgentRegistry()
   liveAgents.observe({
     kind: 'completed',
@@ -132,7 +79,7 @@ function setup() {
     status: 'completed'
   })
 
-  return { provider, conversations, workspaceSearch, liveAgents }
+  return { agentRoles, provider, liveAgents }
 }
 
 describe('ComposerContextCatalogService', () => {
@@ -146,28 +93,26 @@ describe('ComposerContextCatalogService', () => {
     const result = await service.list(request())
 
     expect(result.sections.map((section) => section.id)).toEqual([
-      'files',
-      'chats',
       'agents',
       'skills',
       'plugins',
       'apps'
     ])
-    expect(result.sections.find(({ id }) => id === 'files')?.items).toEqual([
-      expect.objectContaining({ kind: 'folder', path: '/repo/src' }),
-      expect.objectContaining({ kind: 'file', path: '/repo/src/Composer.tsx' })
-    ])
-    expect(result.sections.find(({ id }) => id === 'chats')?.items).toEqual([
-      expect.objectContaining({ kind: 'chat', threadId: 'recent' }),
-      expect.objectContaining({ kind: 'chat', threadId: 'projectless' })
-    ])
     expect(result.sections.find(({ id }) => id === 'agents')?.items).toEqual([
       expect.objectContaining({ kind: 'liveAgent', threadId: 'child', status: 'completed' }),
       expect.objectContaining({ kind: 'configuredAgent', roleName: 'reviewer' })
     ])
-    expect(result.sections.find(({ id }) => id === 'skills')?.items).toHaveLength(1)
+    expect(result.sections.find(({ id }) => id === 'skills')?.items).toEqual([
+      expect.objectContaining({ kind: 'skill', name: 'testing', label: 'Testing tools' })
+    ])
     expect(result.sections.find(({ id }) => id === 'apps')?.items).toEqual([
-      expect.objectContaining({ kind: 'app', appId: 'slack', label: 'Slack', mentionName: 'slack' })
+      expect.objectContaining({
+        kind: 'app',
+        appId: 'slack',
+        label: 'Slack',
+        mentionName: 'slack',
+        pluginDisplayNames: ['Work messaging']
+      })
     ])
     expect(result.sections.find(({ id }) => id === 'plugins')?.items).toEqual([
       expect.objectContaining({
@@ -182,11 +127,6 @@ describe('ComposerContextCatalogService', () => {
       forceRefetch: false,
       pageSize: 100
     })
-
-    const fuzzy = await service.list(request({ query: 'cmpsr' }))
-    expect(fuzzy.sections.find(({ id }) => id === 'files')?.items).toEqual([
-      expect.objectContaining({ kind: 'file', path: '/repo/src/Composer.tsx' })
-    ])
   })
 
   it('uses a 30 second cwd/thread cache and refresh bypasses it', async () => {
@@ -198,17 +138,15 @@ describe('ComposerContextCatalogService', () => {
       now: () => now
     })
 
-    await service.list(request({ query: 'comp' }))
-    await service.list(request({ query: 'src' }))
-    expect(dependencies.provider.listAgentRoles).toHaveBeenCalledTimes(1)
+    await service.list(request())
+    await service.list(request())
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listInstalledPlugins).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listApps).toHaveBeenCalledTimes(1)
-    expect(dependencies.conversations.ensureConversationListLoaded).not.toHaveBeenCalled()
-    expect(dependencies.conversations.refreshConversationList).not.toHaveBeenCalled()
-    expect(dependencies.workspaceSearch.createFuzzyFileSearchSession).toHaveBeenCalledTimes(2)
 
     await service.refresh(request())
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenLastCalledWith({
       cwd: '/repo',
@@ -230,7 +168,7 @@ describe('ComposerContextCatalogService', () => {
     await service.list(request())
     await service.refresh(request(), { sectionIds: ['skills'] })
 
-    expect(dependencies.provider.listAgentRoles).toHaveBeenCalledTimes(1)
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
     expect(dependencies.provider.listSkills).toHaveBeenLastCalledWith({
       cwd: '/repo',
@@ -238,7 +176,6 @@ describe('ComposerContextCatalogService', () => {
     })
     expect(dependencies.provider.listInstalledPlugins).toHaveBeenCalledTimes(1)
     expect(dependencies.provider.listApps).toHaveBeenCalledTimes(1)
-    expect(dependencies.conversations.refreshConversationList).not.toHaveBeenCalled()
   })
 
   it('reuses static catalogs across threads but isolates remote hosts', async () => {
@@ -259,12 +196,6 @@ describe('ComposerContextCatalogService', () => {
       expect.objectContaining({ kind: 'liveAgent', threadId: 'other-child' }),
       expect.objectContaining({ kind: 'configuredAgent', roleName: 'reviewer' })
     ])
-    expect(otherThread.sections.find(({ id }) => id === 'chats')?.items).toEqual([
-      expect.objectContaining({ kind: 'chat', threadId: 'recent' }),
-      expect.objectContaining({ kind: 'chat', threadId: 'current' }),
-      expect.objectContaining({ kind: 'chat', threadId: 'projectless' })
-    ])
-
     await service.list(
       request({
         cwd: '/srv/repo',
@@ -280,6 +211,47 @@ describe('ComposerContextCatalogService', () => {
 
     expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(3)
     expect(dependencies.provider.listApps).toHaveBeenCalledTimes(3)
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(3)
+  })
+
+  it('isolates configured-agent caches by cwd and project selection', async () => {
+    const dependencies = setup()
+    const service = new ComposerContextCatalogService({
+      ...dependencies,
+      defaultCwd: '/default'
+    })
+
+    await service.list(request())
+    await service.list(
+      request({
+        projectSelection: { projectKind: 'local', projectId: 'project-1' }
+      })
+    )
+    await service.list(
+      request({
+        cwd: '/repo/packages/api',
+        projectSelection: { projectKind: 'local', projectId: 'project-1' }
+      })
+    )
+
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(3)
+    expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(2)
+  })
+
+  it('rescans configured agents when the Agents section is refreshed', async () => {
+    const dependencies = setup()
+    const service = new ComposerContextCatalogService({
+      ...dependencies,
+      defaultCwd: '/default'
+    })
+
+    await service.list(request())
+    await service.refresh(request(), { sectionIds: ['agents'] })
+
+    expect(dependencies.agentRoles.listAgentRoles).toHaveBeenCalledTimes(2)
+    expect(dependencies.provider.listSkills).toHaveBeenCalledTimes(1)
+    expect(dependencies.provider.listInstalledPlugins).toHaveBeenCalledTimes(1)
+    expect(dependencies.provider.listApps).toHaveBeenCalledTimes(1)
   })
 
   it('does not let an invalidated in-flight load repopulate the cache', async () => {

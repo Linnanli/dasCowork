@@ -194,8 +194,9 @@ const composerState = vi.hoisted<{
 
 const composerRuntimeState = vi.hoisted<{
   eventHandlers: Record<string, (() => void) | undefined>
+  insertedContextItems: unknown[]
   setTextCalls: string[]
-}>(() => ({ eventHandlers: {}, setTextCalls: [] }))
+}>(() => ({ eventHandlers: {}, insertedContextItems: [], setTextCalls: [] }))
 
 const projectHookState = vi.hoisted(() => ({
   controller: {
@@ -301,6 +302,16 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       list: vi.fn(async () => emptyComposerContextResult),
       refresh: vi.fn(async () => emptyComposerContextResult),
       onDidChange: vi.fn(() => () => undefined),
+      startSearch: vi.fn(async () => ({
+        version: 1 as const,
+        sessionId: 'search-1',
+        hostId: 'local',
+        filesAvailable: true,
+        tasksAvailable: true
+      })),
+      updateSearch: vi.fn(async () => undefined),
+      stopSearch: vi.fn(async () => undefined),
+      onSearchUpdate: vi.fn(() => () => undefined),
       validateLocalAttachments: vi.fn(async ({ references }) => ({
         version: 1 as const,
         valid: true,
@@ -315,7 +326,6 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       selectProject: vi.fn(),
       removeProject: vi.fn(),
       renameProject: vi.fn(),
-      createFuzzyFileSearchSession: vi.fn(async () => ({ results: [] })),
       onStateChange: vi.fn(() => vi.fn()),
       ...projects
     } satisfies DesktopProjectsApi,
@@ -525,7 +535,10 @@ vi.mock('@/composer/contextLexicalInput', async () => {
         () =>
           controller.registerEditorController({
             dismiss: () => controller.closeFromEditor(),
-            insert: () => controller.closeFromEditor(),
+            insert: (item: unknown) => {
+              composerRuntimeState.insertedContextItems.push(item)
+              controller.closeFromEditor()
+            },
             togglePlus: () => {
               if (controller.getSnapshot().open) controller.closeFromEditor()
               else controller.openFromEditor('plus', '')
@@ -919,6 +932,7 @@ describe('App composer', () => {
     composerState.isEmpty = true
     composerState.text = ''
     composerRuntimeState.eventHandlers = {}
+    composerRuntimeState.insertedContextItems = []
     composerRuntimeState.setTextCalls = []
     runtimeState.setActiveDraft.mockReset()
     runtimeState.setActiveDraftAttachments.mockReset()
@@ -1016,8 +1030,8 @@ describe('App composer', () => {
     expect(listContext).toHaveBeenCalledWith({
       version: 1,
       cwd: '/repo',
-      query: '',
-      limit: 40,
+      limit: 200,
+      sectionIds: ['agents', 'plugins', 'apps'],
       projectSelection: { projectKind: 'path', path: '/repo' }
     })
   })
@@ -1068,6 +1082,7 @@ describe('App composer', () => {
               kind: 'configuredAgent',
               canonicalId: 'configured-agent:reviewer',
               label: 'reviewer',
+              description: 'Reviews code',
               presentation: 'mention',
               roleName: 'reviewer',
               uri: 'subagent://reviewer'
@@ -1139,11 +1154,30 @@ describe('App composer', () => {
       Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
         section.getAttribute('aria-label')
       )
-    ).toEqual(['Add', 'Files', 'Chats', 'Agents', 'Skills', 'Plugins', 'Apps', 'Tools'])
+    ).toEqual(['添加', '智能体', '插件', 'Apps', 'Files and tasks', 'Tools'])
+    expect(document.body.textContent).toContain('输入以搜索文件或任务')
     expect(document.body.textContent).not.toContain('Appshot')
     const panel = document.querySelector('.aui-composer-context-panel')
     expect(panel?.className).toContain('left-0')
     expect(panel?.className).toContain('right-0')
+    const reviewer = Array.from(
+      panel?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []
+    ).find((option) => option.textContent?.includes('reviewer'))
+    expect(reviewer?.textContent).toContain('Reviews code')
+    const reviewerText = reviewer?.querySelector<HTMLElement>('[data-context-item-text]')
+    expect(reviewerText?.className).toContain('items-center')
+    expect(reviewerText?.className).toContain('gap-2')
+    expect(reviewerText?.className).not.toContain('flex-col')
+    expect(reviewerText?.textContent).toContain('reviewer')
+    expect(reviewerText?.textContent).toContain('Reviews code')
+
+    await act(async () => {
+      reviewer?.click()
+      await Promise.resolve()
+    })
+    expect(composerRuntimeState.insertedContextItems).toEqual([
+      expect.objectContaining({ type: 'agentRole', id: 'subagent://reviewer', label: 'reviewer' })
+    ])
   })
 
   it('hides local attachment and workspace file entries for remote conversations', async () => {
@@ -1196,6 +1230,11 @@ describe('App composer', () => {
         section.getAttribute('aria-label')
       )
     ).not.toContain('Files')
+    expect(
+      Array.from(document.querySelectorAll('.aui-composer-context-panel section')).map((section) =>
+        section.getAttribute('aria-label')
+      )
+    ).not.toContain('Agents')
     expect(document.body.textContent).not.toContain('remote.ts')
     expect(document.body.textContent).not.toContain('remote files must stay hidden')
     expect(document.body.textContent).not.toContain('Appshot')

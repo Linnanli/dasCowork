@@ -19,6 +19,7 @@ import { CodexProviderError } from "./errors";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
 import type { JsonValue } from "./protocol/app-server-protocol/serde_json/JsonValue";
 import type { Thread } from "./protocol/app-server-protocol/v2/Thread";
+import type { ThreadReadResponse } from "./protocol/app-server-protocol/v2/ThreadReadResponse";
 import type { ThreadResumeResponse } from "./protocol/app-server-protocol/v2/ThreadResumeResponse";
 import { CodexEventMapper } from "./protocol/event-mapper";
 import { CODEX_PROVIDER_ID, withProviderMetadata } from "./protocol/provider-metadata";
@@ -974,6 +975,19 @@ export class CodexLanguageModel implements LanguageModelV3
                             this.settings,
                         );
 
+                        const turnInput = await fileResolver.resolve(
+                            options.prompt,
+                            !!resumeThreadId,
+                            {
+                                ...(resumeThreadId ? { activeThreadId: resumeThreadId } : {}),
+                                loadTask: (referencedThreadId) =>
+                                    client.request<ThreadReadResponse>("thread/read", {
+                                        threadId: referencedThreadId,
+                                        includeTurns: true,
+                                    }),
+                            },
+                        );
+
                         let threadId: string;
 
                         if (resumeThreadId)
@@ -1129,7 +1143,6 @@ export class CodexLanguageModel implements LanguageModelV3
                             );
                         }
 
-                        const turnInput = await fileResolver.resolve(options.prompt, !!resumeThreadId);
                         const turnStartParams: CodexTurnStartParams = stripUndefined({
                             threadId,
                             input: turnInput,

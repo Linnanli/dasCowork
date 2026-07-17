@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { JsonRpcError } from "../src/client/app-server-client";
 import {
     CodexContextCatalogClient,
     type CodexContextCatalogJsonRpcClientLike,
@@ -43,47 +44,20 @@ class CatalogMockClient implements CodexContextCatalogJsonRpcClientLike
     }
 }
 
+function fuzzyFile(path: string)
+{
+    return {
+        root: "/repo",
+        path,
+        match_type: "file" as const,
+        file_name: path,
+        score: 1,
+        indices: null,
+    };
+}
+
 describe("CodexContextCatalogClient", () =>
 {
-    it("lists configured agent roles through the existing config/read endpoint", async () =>
-    {
-        const mock = new CatalogMockClient((method) =>
-        {
-            expect(method).toBe("config/read");
-            return {
-                config: {
-                    agents: {
-                        max_threads: 4,
-                        reviewer: { description: "Reviews code" },
-                        explore: {
-                            description: "Explores code",
-                            nickname_candidates: ["Scout"],
-                        },
-                    },
-                },
-                origins: {},
-                layers: null,
-            };
-        });
-        const client = new CodexContextCatalogClient({ createClient: () => mock });
-
-        await expect(client.listAgentRoles({ cwd: "/repo", threadId: "thread-1" }))
-            .resolves.toEqual([
-                { roleName: "explore", description: "Explores code", nicknameCandidates: ["Scout"] },
-                { roleName: "reviewer", description: "Reviews code", nicknameCandidates: [] },
-            ]);
-        expect(mock.requests.slice(1)).toEqual([
-            {
-                method: "config/read",
-                params: { cwd: "/repo", includeLayers: false },
-            },
-        ]);
-        expect(mock.connectCount).toBe(1);
-        expect(mock.disconnectCount).toBe(0);
-        await client.shutdown();
-        expect(mock.disconnectCount).toBe(1);
-    });
-
     it("normalizes enabled skills and installed local plugins", async () =>
     {
         const mock = new CatalogMockClient((method) =>
@@ -99,6 +73,7 @@ describe("CodexContextCatalogClient", () =>
                                 name: "slides",
                                 description: "Create slides",
                                 shortDescription: "Slides",
+                                interface: { displayName: "Slides UI" },
                                 path: "/skills/slides/SKILL.md",
                                 scope: "user",
                                 enabled: true,
@@ -144,6 +119,7 @@ describe("CodexContextCatalogClient", () =>
 
         await expect(client.listSkills({ cwd: "/repo" })).resolves.toEqual([{
             name: "slides",
+            displayName: "Slides UI",
             description: "Create slides",
             shortDescription: "Slides",
             path: "/skills/slides/SKILL.md",
@@ -184,6 +160,7 @@ describe("CodexContextCatalogClient", () =>
                         logoUrlDark: null,
                         isEnabled: false,
                         isAccessible: true,
+                        pluginDisplayNames: [],
                     }],
                     nextCursor: null,
                 }
@@ -196,6 +173,7 @@ describe("CodexContextCatalogClient", () =>
                         logoUrlDark: null,
                         isEnabled: true,
                         isAccessible: true,
+                        pluginDisplayNames: ["GitHub Plugin"],
                     }],
                     nextCursor: "page-2",
                 };
@@ -206,6 +184,7 @@ describe("CodexContextCatalogClient", () =>
             id: "github",
             name: "GitHub",
             mentionName: "github",
+            pluginDisplayNames: ["GitHub Plugin"],
             description: "Repositories",
             logoUrl: "https://example.com/github.png",
             mentionPath: "app://github",
@@ -283,5 +262,200 @@ describe("CodexContextCatalogClient", () =>
         expect(clients).toHaveLength(2);
         expect(clients[0]?.disconnectCount).toBe(1);
         expect(clients[1]?.connectCount).toBe(1);
+    });
+
+    it("binds out-of-order fuzzy responses to the query that issued each request", async () =>
+    {
+        type SearchResponse = {
+            files: Array<{
+                root: string;
+                path: string;
+                match_type: "file";
+                file_name: string;
+                score: number;
+                indices: null;
+            }>;
+        };
+        const pending = new Map<string, (response: SearchResponse) => void>();
+        const mock = new CatalogMockClient((method, value) =>
+        {
+            expect(method).toBe("fuzzyFileSearch");
+            const query = (value as { query: string }).query;
+            return new Promise<SearchResponse>((resolve) => pending.set(query, resolve));
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+        const updated: Array<{ query: string; path: string }> = [];
+        const completed: string[] = [];
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: (files, query) => updated.push({ query, path: files[0]?.path ?? "" }),
+            onCompleted: (query) => completed.push(query),
+        });
+
+        const first = session.update("one");
+        const second = session.update("two");
+        await vi.waitFor(() => expect(pending.size).toBe(2));
+        pending.get("two")?.({ files: [fuzzyFile("two.ts")] });
+        await second;
+        pending.get("one")?.({ files: [fuzzyFile("one.ts")] });
+        await first;
+        await session.stop();
+        await session.update("ignored");
+
+        expect(updated).toEqual([
+            { query: "two", path: "two.ts" },
+            { query: "one", path: "one.ts" },
+        ]);
+        expect(completed).toEqual(["two", "one"]);
+        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch")).toHaveLength(2);
+        expect(mock.requests.at(-1)?.params).toMatchObject({
+            query: "two",
+            roots: ["/repo"],
+            cancellationToken: null,
+        });
+    });
+
+    it("reconnects and replays a fuzzy request after transport loss", async () =>
+    {
+        const clients: CatalogMockClient[] = [];
+        const client = new CodexContextCatalogClient({
+            createClient: () =>
+            {
+                const attempt = clients.length;
+                const mock = new CatalogMockClient((method) =>
+                {
+                    expect(method).toBe("fuzzyFileSearch");
+                    if (attempt === 0)
+                    {
+                        throw new Error("transport closed");
+                    }
+                    return { files: [fuzzyFile("needle.ts")] };
+                });
+                clients.push(mock);
+                return mock;
+            },
+        });
+        const updated = vi.fn();
+        const completed = vi.fn();
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: updated,
+            onCompleted: completed,
+        });
+
+        await session.update("needle");
+
+        expect(clients).toHaveLength(2);
+        expect(clients[0]?.disconnectCount).toBe(1);
+        expect(clients[1]?.requests.map(({ method }) => method)).toEqual([
+            "initialize",
+            "fuzzyFileSearch",
+        ]);
+        expect(updated).toHaveBeenCalledWith([
+            expect.objectContaining({ path: "needle.ts" }),
+        ], "needle");
+        expect(completed).toHaveBeenCalledWith("needle");
+    });
+
+    it("propagates fuzzy search protocol errors without reconnecting around them", async () =>
+    {
+        const mock = new CatalogMockClient(() =>
+        {
+            throw new JsonRpcError({ code: -32602, message: "invalid roots" });
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: () => undefined,
+            onCompleted: () => undefined,
+        });
+
+        await expect(session.update("needle")).rejects.toMatchObject({
+            code: -32602,
+            message: "invalid roots",
+        });
+        expect(mock.disconnectCount).toBe(0);
+        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch")).toHaveLength(1);
+    });
+
+    it("suppresses a pending fuzzy response after catalog shutdown", async () =>
+    {
+        let resolveSearch: ((response: { files: ReturnType<typeof fuzzyFile>[] }) => void) | undefined;
+        const mock = new CatalogMockClient((method) =>
+        {
+            expect(method).toBe("fuzzyFileSearch");
+            return new Promise<{ files: ReturnType<typeof fuzzyFile>[] }>((resolve) =>
+            {
+                resolveSearch = resolve;
+            });
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+        const updated = vi.fn();
+        const completed = vi.fn();
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: updated,
+            onCompleted: completed,
+        });
+
+        const update = session.update("needle");
+        await vi.waitFor(() => expect(resolveSearch).toBeTypeOf("function"));
+        await client.shutdown();
+        resolveSearch?.({ files: [fuzzyFile("needle.ts")] });
+        await update;
+
+        expect(updated).not.toHaveBeenCalled();
+        expect(completed).not.toHaveBeenCalled();
+        expect(mock.disconnectCount).toBe(1);
+    });
+
+    it("searches threads with the reference parameters and normalizes results", async () =>
+    {
+        const mock = new CatalogMockClient((method) =>
+        {
+            expect(method).toBe("thread/search");
+            return {
+                data: [{
+                    snippet: "matching history",
+                    thread: {
+                        id: "thread-1",
+                        name: "Task title",
+                        preview: "preview",
+                        cwd: "/repo",
+                        updatedAt: 1_700_000_000,
+                        gitInfo: { branch: "feature/search" },
+                        source: "appServer",
+                        threadSource: "desktop",
+                        parentThreadId: null,
+                    },
+                }],
+                nextCursor: null,
+                backwardsCursor: null,
+            };
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+
+        await expect(client.searchThreads({ query: "needle" })).resolves.toEqual([{
+            threadId: "thread-1",
+            name: "Task title",
+            preview: "preview",
+            snippet: "matching history",
+            cwd: "/repo",
+            updatedAt: "2023-11-14T22:13:20.000Z",
+            branch: "feature/search",
+            source: "appServer",
+            threadSource: "desktop",
+            archived: false,
+        }]);
+        expect(mock.requests.at(-1)).toEqual({
+            method: "thread/search",
+            params: {
+                searchTerm: "needle",
+                limit: 50,
+                sortKey: "updated_at",
+                sortDirection: "desc",
+                archived: false,
+            },
+        });
     });
 });

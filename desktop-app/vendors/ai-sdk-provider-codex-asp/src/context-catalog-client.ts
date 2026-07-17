@@ -2,11 +2,13 @@ import { AppServerClient, JsonRpcError } from "./client/app-server-client";
 import { StdioTransport } from "./client/transport-stdio";
 import { WebSocketTransport } from "./client/transport-websocket";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
+import type { FuzzyFileSearchResponse } from "./protocol/app-server-protocol/FuzzyFileSearchResponse";
+import type { FuzzyFileSearchResult } from "./protocol/app-server-protocol/FuzzyFileSearchResult";
 import type { AppInfo } from "./protocol/app-server-protocol/v2/AppInfo";
-import type { ConfigReadResponse } from "./protocol/app-server-protocol/v2/ConfigReadResponse";
 import type { PluginInstalledResponse } from "./protocol/app-server-protocol/v2/PluginInstalledResponse";
 import type { SkillMetadata } from "./protocol/app-server-protocol/v2/SkillMetadata";
 import type { SkillsListResponse } from "./protocol/app-server-protocol/v2/SkillsListResponse";
+import type { ThreadSearchResponse } from "./protocol/app-server-protocol/v2/ThreadSearchResponse";
 import type { CodexInitializeParams, CodexInitializeResult } from "./protocol/types";
 import type { CodexProviderSettings, TransportContext } from "./provider-settings";
 import { stripUndefined } from "./utils/object";
@@ -24,23 +26,10 @@ export interface CodexContextCatalogClientSettings extends CodexProviderSettings
     createClient?: () => CodexContextCatalogJsonRpcClientLike;
 }
 
-export interface CodexAgentRoleListParams
-{
-    cwd: string;
-    threadId?: string;
-    pageSize?: number;
-}
-
-export interface CodexAgentRole
-{
-    roleName: string;
-    description: string;
-    nicknameCandidates: string[];
-}
-
 export interface CodexCatalogSkill
 {
     name: string;
+    displayName: string;
     description: string;
     shortDescription?: string;
     path: string;
@@ -66,6 +55,7 @@ export interface CodexCatalogApp
     id: string;
     name: string;
     mentionName: string;
+    pluginDisplayNames: string[];
     description?: string;
     logoUrl?: string;
     logoUrlDark?: string;
@@ -87,6 +77,27 @@ export interface CodexAppsPage
     nextCursor?: string;
 }
 
+export interface CodexFuzzyFileSearchSession
+{
+    update(query: string): Promise<void>;
+    stop(): Promise<void>;
+}
+
+export interface CodexTaskSearchResult
+{
+    threadId: string;
+    name?: string;
+    preview?: string;
+    snippet?: string;
+    cwd?: string;
+    updatedAt: string;
+    branch?: string;
+    source: unknown;
+    threadSource?: string;
+    parentThreadId?: string;
+    archived: boolean;
+}
+
 interface AppsListResponse
 {
     data: AppInfo[];
@@ -96,20 +107,9 @@ interface AppsListResponse
 export class CodexContextCatalogClient
 {
     private clientPromise: Promise<CodexContextCatalogJsonRpcClientLike> | undefined;
+    private readonly fuzzyFileSearchSessionStops = new Set<() => Promise<void>>();
 
     constructor(private readonly settings: CodexContextCatalogClientSettings = {}) {}
-
-    async listAgentRoles(params: CodexAgentRoleListParams): Promise<CodexAgentRole[]>
-    {
-        return this.withClient(async (client) =>
-        {
-            const response = await client.request<ConfigReadResponse>("config/read", {
-                cwd: params.cwd,
-                includeLayers: false,
-            });
-            return agentRolesFromConfig(response.config);
-        });
-    }
 
     async listSkills(params: { cwd: string; forceReload?: boolean }): Promise<CodexCatalogSkill[]>
     {
@@ -187,6 +187,85 @@ export class CodexContextCatalogClient
         return this.withClient((client) => this.requestAppsPage(client, params, params.cursor));
     }
 
+    createFuzzyFileSearchSession(params: {
+        roots: string[];
+        onUpdated: (files: FuzzyFileSearchResult[], query: string) => void;
+        onCompleted: (query: string) => void;
+    }): Promise<CodexFuzzyFileSearchSession>
+    {
+        let stopped = false;
+        // sessionCompleted has no query, so request-scoped searches keep completion attribution exact.
+        const update = async (query: string, canReconnect = true): Promise<void> =>
+        {
+            if (stopped)
+            {
+                return;
+            }
+
+            const client = await this.connectedClient();
+            try
+            {
+                await this.fuzzyFileSearch(
+                    client,
+                    params.roots,
+                    query,
+                    () => stopped,
+                    params.onUpdated,
+                    params.onCompleted,
+                );
+            }
+            catch (error)
+            {
+                if (error instanceof JsonRpcError || !canReconnect)
+                {
+                    throw error;
+                }
+                await this.invalidateClient(client);
+                await update(query, false);
+            }
+        };
+
+        const stop = (): Promise<void> =>
+        {
+            stopped = true;
+            this.fuzzyFileSearchSessionStops.delete(stop);
+            return Promise.resolve();
+        };
+        this.fuzzyFileSearchSessionStops.add(stop);
+
+        return Promise.resolve({
+            update,
+            stop,
+        });
+    }
+
+    async searchThreads(params: { query: string; limit?: number }): Promise<CodexTaskSearchResult[]>
+    {
+        return this.withClient(async (client) =>
+        {
+            const response = await client.request<ThreadSearchResponse>("thread/search", {
+                searchTerm: params.query,
+                limit: params.limit ?? 50,
+                sortKey: "updated_at",
+                sortDirection: "desc",
+                archived: false,
+            });
+            return response.data.map(({ thread, snippet }) => stripUndefined({
+                threadId: thread.id,
+                name: thread.name ?? undefined,
+                preview: thread.preview || undefined,
+                snippet: snippet || undefined,
+                cwd: thread.cwd || undefined,
+                updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+                branch: thread.gitInfo?.branch ?? undefined,
+                source: thread.source,
+                threadSource: thread.threadSource ?? undefined,
+                parentThreadId: thread.parentThreadId ?? undefined,
+                archived: false,
+            }));
+        });
+    }
+
     private async requestAppsPage(
         client: CodexContextCatalogJsonRpcClientLike,
         params: CodexAppsListParams,
@@ -224,6 +303,27 @@ export class CodexContextCatalogClient
                 await this.invalidateClient(client);
             }
             throw error;
+        }
+    }
+
+    private async fuzzyFileSearch(
+        client: CodexContextCatalogJsonRpcClientLike,
+        roots: string[],
+        query: string,
+        isStopped: () => boolean,
+        onUpdated: (files: FuzzyFileSearchResult[], query: string) => void,
+        onCompleted: (query: string) => void,
+    ): Promise<void>
+    {
+        const response = await client.request<FuzzyFileSearchResponse>("fuzzyFileSearch", {
+            query,
+            roots,
+            cancellationToken: null,
+        });
+        if (!isStopped())
+        {
+            onUpdated(response.files, query);
+            onCompleted(query);
         }
     }
 
@@ -275,6 +375,9 @@ export class CodexContextCatalogClient
 
     async shutdown(): Promise<void>
     {
+        await Promise.allSettled(
+            [...this.fuzzyFileSearchSessionStops].map((stop) => stop()),
+        );
         const connected = this.clientPromise;
         this.clientPromise = undefined;
         if (!connected)
@@ -323,6 +426,7 @@ function normalizeSkill(skill: SkillMetadata): CodexCatalogSkill
 {
     return stripUndefined({
         name: skill.name,
+        displayName: skillDisplayName(skill),
         description: skill.description,
         shortDescription: skill.shortDescription,
         path: skill.path,
@@ -337,6 +441,7 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
         id: app.id,
         name: app.name,
         mentionName: appMentionName(app),
+        pluginDisplayNames: app.pluginDisplayNames ?? [],
         description: app.description ?? undefined,
         logoUrl: app.logoUrl ?? undefined,
         logoUrlDark: app.logoUrlDark ?? undefined,
@@ -346,6 +451,25 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
     });
 }
 
+function skillDisplayName(skill: SkillMetadata): string
+{
+    const interfaceDisplayName = skill.interface?.displayName?.trim();
+    if (interfaceDisplayName)
+    {
+        return interfaceDisplayName;
+    }
+
+    const separatorIndex = skill.name.indexOf(":");
+    if (separatorIndex > 0 && separatorIndex < skill.name.length - 1)
+    {
+        const pluginName = skill.name.slice(0, separatorIndex);
+        const skillName = skill.name.slice(separatorIndex + 1);
+        return `${skillName} (${pluginName})`;
+    }
+
+    return skill.name;
+}
+
 function appMentionName(app: AppInfo): string
 {
     const mentionName = app.name
@@ -353,78 +477,6 @@ function appMentionName(app: AppInfo): string
         .replace(/[^a-z0-9]+/gu, "-")
         .replace(/^-+|-+$/gu, "");
     return mentionName || app.id;
-}
-
-const AGENT_SETTINGS = new Set([
-    "max_threads",
-    "max_depth",
-    "job_max_runtime_seconds",
-    "interrupt_message",
-]);
-
-function agentRolesFromConfig(config: Record<string, unknown>): CodexAgentRole[]
-{
-    const agents = recordValue(config["agents"]);
-    if (!agents)
-    {
-        return [];
-    }
-
-    return Object.entries(agents)
-        .flatMap(([roleName, value]) =>
-        {
-            if (AGENT_SETTINGS.has(roleName))
-            {
-                return [];
-            }
-
-            const role = recordValue(value);
-            if (!role)
-            {
-                return [];
-            }
-
-            const description = stringValue(role["description"]);
-            const nicknameCandidates = stringArrayValue(
-                role["nickname_candidates"] ?? role["nicknameCandidates"],
-            );
-            return [{
-                roleName,
-                description: description ?? "",
-                nicknameCandidates,
-            }];
-        })
-        .sort((left, right) => left.roleName.localeCompare(right.roleName));
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null
-{
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : null;
-}
-
-function stringValue(value: unknown): string | null
-{
-    if (typeof value !== "string")
-    {
-        return null;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
-function stringArrayValue(value: unknown): string[]
-{
-    if (!Array.isArray(value))
-    {
-        return [];
-    }
-    return value.flatMap((entry) =>
-    {
-        const text = stringValue(entry);
-        return text ? [text] : [];
-    });
 }
 
 function nextCursor(

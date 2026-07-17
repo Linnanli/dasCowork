@@ -6,15 +6,25 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { LanguageModelV3FilePart, LanguageModelV3Prompt } from "@ai-sdk/provider";
 
+import { CodexProviderError } from "../errors";
+import type { ThreadReadResponse } from "../protocol/app-server-protocol/v2/ThreadReadResponse";
 import type {
     CodexTurnInputItem,
     CodexTurnInputText,
 } from "../protocol/types";
-import { extractComposerContextDirectives } from "./context-codec";
+import {
+    extractComposerContextDirectives,
+    threadIdFromTaskReference,
+} from "./context-codec";
 import {
     buildFilesMentionedContext,
     type LocalContextReference,
 } from "./local-context-directives";
+import {
+    buildReferencedTasksContext,
+    normalizeReferencedTask,
+    type ReferencedTaskContext,
+} from "./task-reference-context";
 
 export const LOCAL_FILE_ATTACHMENT_MEDIA_TYPE = "application/vnd.dascowork.local-file";
 export const LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE = "application/vnd.dascowork.local-folder";
@@ -169,9 +179,13 @@ export class PromptFileResolver
     async resolve(
         prompt: LanguageModelV3Prompt,
         _isResume: boolean = false,
+        taskOptions?: {
+            activeThreadId?: string;
+            loadTask(threadId: string): Promise<ThreadReadResponse>;
+        },
     ): Promise<CodexTurnInputItem[]>
     {
-        return this.resolveLastUserMessage(prompt);
+        return this.resolveLastUserMessage(prompt, taskOptions);
     }
 
     /**
@@ -277,6 +291,10 @@ export class PromptFileResolver
 
     private async resolveLastUserMessage(
         prompt: LanguageModelV3Prompt,
+        taskOptions?: {
+            activeThreadId?: string;
+            loadTask(threadId: string): Promise<ThreadReadResponse>;
+        },
     ): Promise<CodexTurnInputItem[]>
     {
         for (let i = prompt.length - 1; i >= 0; i--)
@@ -285,7 +303,7 @@ export class PromptFileResolver
 
             if (message?.role === "user")
             {
-                return this.resolveUserMessages([message]);
+                return this.resolveUserMessages([message], taskOptions);
             }
         }
 
@@ -294,6 +312,10 @@ export class PromptFileResolver
 
     private async resolveUserMessages(
         messages: readonly LanguageModelV3Prompt[number][],
+        taskOptions?: {
+            activeThreadId?: string;
+            loadTask(threadId: string): Promise<ThreadReadResponse>;
+        },
     ): Promise<CodexTurnInputItem[]>
     {
         const textChunks: string[] = [];
@@ -301,6 +323,7 @@ export class PromptFileResolver
         const contextInputKeys = new Set<string>();
         const localReferences: LocalContextReference[] = [];
         const localReferencePaths = new Set<string>();
+        const taskThreadIds = new Set<string>();
         const attachments: CodexTurnInputItem[] = [];
 
         for (const message of messages)
@@ -337,6 +360,14 @@ export class PromptFileResolver
                                 path: reference.path,
                             });
                         }
+                        if (reference.type === "chat")
+                        {
+                            const threadId = threadIdFromTaskReference(reference.path);
+                            if (threadId && threadId !== taskOptions?.activeThreadId)
+                            {
+                                taskThreadIds.add(threadId);
+                            }
+                        }
                     }
 
                     const text = extracted.text.trim();
@@ -371,7 +402,44 @@ export class PromptFileResolver
             }
         }
 
-        const text = buildFilesMentionedContext(localReferences, textChunks.join("\n\n"));
+        if (taskThreadIds.size > 3)
+        {
+            throw new CodexProviderError(
+                "thread_reference_limit_exceeded: each message can reference at most 3 tasks",
+            );
+        }
+        let referencedTasks: ReferencedTaskContext[] = [];
+        if (taskThreadIds.size > 0)
+        {
+            if (!taskOptions)
+            {
+                throw new CodexProviderError(
+                    "thread_reference_read_failed: task loader is unavailable",
+                );
+            }
+            try
+            {
+                referencedTasks = await Promise.all(
+                    [...taskThreadIds].map(async (threadId) =>
+                        normalizeReferencedTask((await taskOptions.loadTask(threadId)).thread),
+                    ),
+                );
+            }
+            catch (error)
+            {
+                throw new CodexProviderError(
+                    "thread_reference_read_failed: unable to load referenced task",
+                    { cause: error },
+                );
+            }
+        }
+        const requestText = textChunks.join("\n\n");
+        const filesText = buildFilesMentionedContext(localReferences, requestText);
+        const text = buildReferencedTasksContext(
+            referencedTasks,
+            filesText,
+            localReferences.length > 0,
+        );
         return [textItem(text), ...contextInputs, ...attachments];
     }
 }
