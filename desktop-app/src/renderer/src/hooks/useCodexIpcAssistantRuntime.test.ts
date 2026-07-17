@@ -55,6 +55,15 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
     expect(state?.activeServerRequests).toHaveLength(0)
   })
 
+  it('updates the unbound conversation project snapshot synchronously', async () => {
+    await renderProbe()
+    const entry = state!.activeEntry
+
+    state!.setActiveProjectSelection({ projectKind: 'projectless' })
+
+    expect(entry.context.projectSelection).toEqual({ projectKind: 'projectless' })
+  })
+
   async function renderProbe(): Promise<void> {
     await act(async () => {
       root.render(createElement(Probe, { onState: (nextState) => (state = nextState) }))

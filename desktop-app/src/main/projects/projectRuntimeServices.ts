@@ -14,13 +14,16 @@ export type ProjectRuntimeServices = {
 
 export function createProjectRuntimeServices({
   userDataPath,
+  documentsPath = join(userDataPath, 'Documents'),
   readThread,
   pickWorkspaceRoot
 }: {
   userDataPath: string
+  documentsPath?: string
   readThread?: ThreadReader
   pickWorkspaceRoot?: () => Promise<string | null>
 }): ProjectRuntimeServices {
+  const blankProjectRootOperations = new Map<string, { name: string; root: Promise<string> }>()
   const projectStore = ProjectStore.onDisk(join(userDataPath, 'projects', 'state.json'))
   const projectService = new ProjectService({
     store: projectStore,
@@ -34,9 +37,47 @@ export function createProjectRuntimeServices({
     store: projectStore,
     validateLocalRoot,
     validateRemoteRoot: async () => undefined,
-    pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null)
+    pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null),
+    createBlankProjectRoot: (name, operationId) => {
+      const existingOperation = blankProjectRootOperations.get(operationId)
+      if (existingOperation) {
+        if (existingOperation.name !== name) {
+          throw new Error('Blank project retry must use the original project name')
+        }
+        return existingOperation.root
+      }
+
+      const root = createBlankProjectRoot({ documentsPath, name })
+      blankProjectRootOperations.set(operationId, { name, root })
+      void root.catch(() => {
+        if (blankProjectRootOperations.get(operationId)?.root === root) {
+          blankProjectRootOperations.delete(operationId)
+        }
+      })
+      return root
+    }
   })
   return { projectStore, projectService, projectApi }
+}
+
+export async function createBlankProjectRoot({
+  documentsPath,
+  name
+}: {
+  documentsPath: string
+  name: string
+}): Promise<string> {
+  for (let suffix = 1; ; suffix += 1) {
+    const directoryName = suffix === 1 ? name : `${name} ${suffix}`
+    const candidate = join(documentsPath, directoryName)
+    try {
+      await mkdir(candidate)
+      return candidate
+    } catch (error) {
+      if (isFileSystemError(error) && error.code === 'EEXIST') continue
+      throw error
+    }
+  }
 }
 
 async function validateLocalRoot(path: string): Promise<{ realPath: string }> {
@@ -48,6 +89,10 @@ async function validateLocalRoot(path: string): Promise<{ realPath: string }> {
   }
 
   return { realPath }
+}
+
+function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error
 }
 
 async function createProjectlessWorkspace({

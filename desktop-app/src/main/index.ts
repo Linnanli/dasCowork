@@ -58,6 +58,7 @@ import {
   codexChatRequestSchema,
   isExternalHttpUrl,
   codexOpenExternalHttpUrlPayloadSchema,
+  projectCreateBlankPayloadSchema,
   projectCreateLocalPayloadSchema,
   projectCreateRemotePayloadSchema,
   projectRenamePayloadSchema,
@@ -69,6 +70,7 @@ import {
   sidebarConversationRenamePayloadSchema,
   sidebarPreferencesPatchSchema
 } from '../shared/codexIpcApi'
+import type { ProjectState } from '../shared/projects/projectTypes'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
@@ -81,11 +83,14 @@ const convergingConversationThreadIds = new Set<string>()
 
 const e2eUserDataPath = process.env.DASCOWORK_E2E_USER_DATA_DIR?.trim()
 if (e2eUserDataPath) app.setPath('userData', e2eUserDataPath)
+const e2eDocumentsPath = process.env.DASCOWORK_E2E_DOCUMENTS_DIR?.trim()
+if (e2eDocumentsPath) app.setPath('documents', e2eDocumentsPath)
 registerAppSchemePrivileges(protocol)
 
 function createCodexRuntime(): CodexChatRuntimeService {
   const projectRuntimeServices = createProjectRuntimeServices({
     userDataPath: app.getPath('userData'),
+    documentsPath: app.getPath('documents'),
     pickWorkspaceRoot: pickWorkspaceRootPath
   })
   projectApi = projectRuntimeServices.projectApi
@@ -220,9 +225,9 @@ function broadcastStatus(): void {
   }
 }
 
-async function broadcastProjectState(): Promise<void> {
+async function broadcastProjectState(stateOverride?: ProjectState): Promise<void> {
   if (!projectApi) return
-  const state = await projectApi.getState()
+  const state = stateOverride ?? (await projectApi.getState())
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:projects-state-change', state)
   }
@@ -431,6 +436,14 @@ app.whenReady().then(() => {
     const option = await requireProjectApi().pickWorkspaceRoot()
     await broadcastProjectState()
     return option ?? null
+  })
+  ipcMain.handle('codex:projects:create-blank', async (_, payload: unknown) => {
+    const request = projectCreateBlankPayloadSchema.parse(payload)
+    const result = await requireProjectApi().createBlankProject(request.name, request.operationId)
+    void broadcastProjectState(result.state).catch((error) => {
+      console.warn('Blank project was created, but broadcasting project state failed', error)
+    })
+    return result
   })
   ipcMain.handle('codex:projects:create-local', async (_, payload: unknown) => {
     const request = projectCreateLocalPayloadSchema.parse(payload)

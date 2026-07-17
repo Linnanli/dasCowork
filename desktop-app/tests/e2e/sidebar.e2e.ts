@@ -39,14 +39,18 @@ test('switches projects from the left sidebar project list', async ({ browserNam
     const secondProjectName = `E2E Sidebar Beta ${runId}`
     await createLocalProject(page, firstProjectName, appRoot)
     await createLocalProject(page, secondProjectName, repoRoot)
-    await expect(page.locator('body')).toContainText(`Working in: ${secondProjectName}`)
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(
+      secondProjectName
+    )
 
     await page
       .locator('[data-slot="codex-sidebar"]')
       .getByText(firstProjectName, { exact: true })
       .click()
 
-    await expect(page.locator('body')).toContainText(`Working in: ${firstProjectName}`)
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(
+      firstProjectName
+    )
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -90,6 +94,7 @@ test('opens a sidebar conversation and continues the same desktop thread', async
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
     ).toBeVisible()
+    await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
     const sidebar = page.locator('[data-slot="codex-sidebar"]')
     await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
@@ -105,6 +110,7 @@ test('opens a sidebar conversation and continues the same desktop thread', async
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
     ).toBeVisible()
+    await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
     await sendComposerMessage(page, secondPrompt)
     await expect(
@@ -147,12 +153,13 @@ test('keeps sidebar projects and conversations after a renderer reload', async (
     collectRendererLogs(page, logs)
 
     await createLocalProject(page, projectName, appRoot)
-    await expect(page.locator('body')).toContainText(`Working in: ${projectName}`)
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(projectName)
 
     await sendComposerMessage(page, firstPrompt)
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
     ).toBeVisible()
+    await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
     const sidebar = page.locator('[data-slot="codex-sidebar"]')
     await expect(sidebar.getByText(projectName, { exact: true })).toBeVisible()
@@ -160,9 +167,11 @@ test('keeps sidebar projects and conversations after a renderer reload', async (
 
     await page.reload()
 
-    await expect(page.locator('body')).toContainText(`Working in: ${projectName}`)
     await expect(sidebar.getByText(projectName, { exact: true })).toBeVisible()
     await expect(sidebar.getByText(firstPrompt, { exact: true })).toBeVisible()
+    await sidebar.getByText(firstPrompt, { exact: true }).click()
+    await expect(page.locator('[data-role="user"]')).toContainText(firstPrompt)
+    await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)

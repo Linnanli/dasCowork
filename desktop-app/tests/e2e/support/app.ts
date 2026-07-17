@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { Page, TestInfo } from '@playwright/test'
@@ -31,9 +31,11 @@ export async function launchApp(
   const codexHomeDir =
     options.codexHomeDir ?? (await mkdtemp(join(tmpdir(), 'dascowork-e2e-codex-home-')))
   const dataDirectories = [userDataDir, codexHomeDir]
+  const documentsDir = join(userDataDir, 'Documents')
   let app: ElectronApplication | undefined
 
   try {
+    await mkdir(documentsDir, { recursive: true })
     await options.configureCodexHome?.(codexHomeDir)
     app = await electron.launch({
       executablePath: options.executablePath ?? electronExecutable,
@@ -47,6 +49,7 @@ export async function launchApp(
         CODEX_ASP_DEBUG_PACKETS: '1',
         CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
         CODEX_HOME: codexHomeDir,
+        DASCOWORK_E2E_DOCUMENTS_DIR: documentsDir,
         DASCOWORK_E2E_USER_DATA_DIR: userDataDir,
         ELECTRON_ENABLE_LOGGING: '1'
       }

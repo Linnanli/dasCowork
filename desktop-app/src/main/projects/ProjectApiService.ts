@@ -8,6 +8,7 @@ import type {
   RemoteProject,
   WorkspaceRootOption
 } from '../../shared/projects/projectTypes'
+import type { ProjectCreateBlankResult } from '../../shared/codexIpcApi'
 import type { ProjectStore } from './ProjectStore'
 
 type LocalRootValidation = {
@@ -19,6 +20,7 @@ export type ProjectApiServiceDependencies = {
   validateLocalRoot: (path: string) => Promise<LocalRootValidation>
   validateRemoteRoot?: (hostId: string, path: string) => Promise<void>
   pickWorkspaceRoot: () => Promise<string | null>
+  createBlankProjectRoot?: (name: string, operationId: string) => Promise<string>
 }
 
 export type ProjectRenameInput =
@@ -27,6 +29,8 @@ export type ProjectRenameInput =
   | { projectKind: 'path'; path: string; label: string }
 
 export class ProjectApiService {
+  private readonly blankProjectOperations = new Map<string, Promise<ProjectCreateBlankResult>>()
+
   constructor(private readonly dependencies: ProjectApiServiceDependencies) {}
 
   getState(): Promise<ProjectState> {
@@ -37,27 +41,77 @@ export class ProjectApiService {
     const selectedPath = await this.dependencies.pickWorkspaceRoot()
     if (!selectedPath) return null
 
-    const { realPath } = await this.dependencies.validateLocalRoot(selectedPath)
+    return (await this.registerWorkspaceRoot(selectedPath)).option
+  }
+
+  async createBlankProject(name: string, operationId: string): Promise<ProjectCreateBlankResult> {
+    const existingOperation = this.blankProjectOperations.get(operationId)
+    if (existingOperation) return existingOperation
+
+    const operation = this.createAndRegisterBlankProject(name, operationId)
+    this.blankProjectOperations.set(operationId, operation)
+
+    try {
+      return await operation
+    } catch (error) {
+      if (this.blankProjectOperations.get(operationId) === operation) {
+        this.blankProjectOperations.delete(operationId)
+      }
+      throw error
+    }
+  }
+
+  private async createAndRegisterBlankProject(
+    name: string,
+    operationId: string
+  ): Promise<ProjectCreateBlankResult> {
+    const createBlankProjectRoot = this.dependencies.createBlankProjectRoot
+    if (!createBlankProjectRoot) {
+      throw new Error('Blank project creation is not configured')
+    }
+
+    const createdPath = await createBlankProjectRoot(name, operationId)
+    try {
+      return await this.registerWorkspaceRoot(createdPath, name)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `Blank project directory was created at ${createdPath}, but registering it failed: ${message}`
+      )
+    }
+  }
+
+  private async registerWorkspaceRoot(
+    path: string,
+    requestedProjectName?: string
+  ): Promise<ProjectCreateBlankResult> {
+    const { realPath } = await this.dependencies.validateLocalRoot(path)
     const now = new Date().toISOString()
     const state = await this.dependencies.store.getState()
+    const label = resolveWorkspaceRootLabel(
+      state.workspaceRootOptions,
+      realPath,
+      requestedProjectName
+    )
     const option = upsertWorkspaceRootOption(state.workspaceRootOptions, {
       root: realPath,
-      label: basename(realPath),
+      label,
       hostId: 'local',
       addedAt: now,
       lastOpenedAt: now
     })
 
-    await this.dependencies.store.setState({
+    const nextState: ProjectState = {
       ...state,
       workspaceRootOptions: option.options,
       activeLocalProjectId: undefined,
       activeRemoteProjectId: undefined,
       activeProjectSelection: { projectKind: 'path', path: realPath },
       activeWorkspaceRoots: [realPath]
-    })
+    }
+    await this.dependencies.store.setState(nextState)
 
-    return option.current
+    return { option: option.current, state: nextState }
   }
 
   async createLocalProject(input: { name?: string; sourceRoots: string[] }): Promise<LocalProject> {
@@ -387,6 +441,21 @@ function isActiveSelection(
   }
 
   return activeSelection.projectKind === 'projectless'
+}
+
+function resolveWorkspaceRootLabel(
+  options: WorkspaceRootOption[],
+  root: string,
+  requestedProjectName?: string
+): string {
+  const directoryName = basename(root).trim()
+  const requestedName = requestedProjectName?.trim()
+  if (!requestedName || requestedName === directoryName) return directoryName
+
+  const requestedNameAlreadyExists = options.some(
+    (option) => (option.label?.trim() || basename(option.root).trim()) === requestedName
+  )
+  return requestedNameAlreadyExists ? directoryName : requestedName
 }
 
 function upsertWorkspaceRootOption(

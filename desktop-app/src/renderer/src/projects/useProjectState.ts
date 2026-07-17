@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ProjectRenamePayload } from '../../../shared/codexIpcApi'
 import type {
   LocalProject,
   ProjectSelection,
-  ProjectState
+  ProjectState,
+  WorkspaceRootOption
 } from '../../../shared/projects/projectTypes'
 
 export type ProjectStateController = {
@@ -12,7 +13,8 @@ export type ProjectStateController = {
   hasSelection: boolean
   currentLabel: string
   currentDetail: string | null
-  pickWorkspaceRoot: () => Promise<void>
+  pickWorkspaceRoot: () => Promise<WorkspaceRootOption | null>
+  createBlankProject: (name: string, operationId: string) => Promise<WorkspaceRootOption>
   createLocalProject: (input: { name?: string; sourceRoots: string[] }) => Promise<LocalProject>
   selectProject: (selection: ProjectSelection) => Promise<void>
   renameProject: (input: ProjectRenamePayload) => Promise<void>
@@ -21,53 +23,92 @@ export type ProjectStateController = {
 
 export function useProjectState(): ProjectStateController {
   const [state, setState] = useState<ProjectState | null>(null)
+  const stateRef = useRef<ProjectState | null>(null)
+  const applyState = useCallback((nextState: ProjectState) => {
+    stateRef.current = nextState
+    setState(nextState)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     void window.desktopApp.projects.getState().then((nextState) => {
-      if (!cancelled) setState(nextState)
+      if (!cancelled) applyState(nextState)
     })
     const removeStateListener = window.desktopApp.projects.onStateChange((nextState) => {
-      setState(nextState)
+      applyState(nextState)
     })
 
     return () => {
       cancelled = true
       removeStateListener()
     }
-  }, [])
+  }, [applyState])
 
   const pickWorkspaceRoot = useCallback(async () => {
     const option = await window.desktopApp.projects.pickWorkspaceRoot()
-    if (!option) return
+    if (!option) return null
     const nextState = await window.desktopApp.projects.getState()
-    setState(nextState)
-  }, [])
+    applyState(nextState)
+    return option
+  }, [applyState])
+
+  const createBlankProject = useCallback(
+    async (name: string, operationId: string) => {
+      const result = await window.desktopApp.projects.createBlankProject({ name, operationId })
+      applyState(result.state)
+      return result.option
+    },
+    [applyState]
+  )
 
   const createLocalProject = useCallback(
     async (input: { name?: string; sourceRoots: string[] }) => {
       const project = await window.desktopApp.projects.createLocalProject(input)
       const nextState = await window.desktopApp.projects.getState()
-      setState(nextState)
+      applyState(nextState)
       return project
     },
-    []
+    [applyState]
   )
 
-  const selectProject = useCallback(async (selection: ProjectSelection) => {
-    const nextState = await window.desktopApp.projects.selectProject(selection)
-    setState(nextState)
-  }, [])
+  const selectProject = useCallback(
+    async (selection: ProjectSelection) => {
+      const previousState = stateRef.current
+      if (previousState) applyState(applyProjectSelection(previousState, selection))
 
-  const renameProject = useCallback(async (input: ProjectRenamePayload) => {
-    const nextState = await window.desktopApp.projects.renameProject(input)
-    setState(nextState)
-  }, [])
+      try {
+        const nextState = await window.desktopApp.projects.selectProject(selection)
+        applyState(nextState)
+      } catch (error) {
+        const currentState = stateRef.current
+        if (
+          previousState &&
+          currentState &&
+          sameProjectSelection(currentState.activeProjectSelection, selection)
+        ) {
+          applyState(restoreActiveProjectSelection(currentState, previousState))
+        }
+        throw error
+      }
+    },
+    [applyState]
+  )
 
-  const removeProject = useCallback(async (selection: ProjectSelection) => {
-    const nextState = await window.desktopApp.projects.removeProject(selection)
-    setState(nextState)
-  }, [])
+  const renameProject = useCallback(
+    async (input: ProjectRenamePayload) => {
+      const nextState = await window.desktopApp.projects.renameProject(input)
+      applyState(nextState)
+    },
+    [applyState]
+  )
+
+  const removeProject = useCallback(
+    async (selection: ProjectSelection) => {
+      const nextState = await window.desktopApp.projects.removeProject(selection)
+      applyState(nextState)
+    },
+    [applyState]
+  )
 
   const summary = useMemo(() => describeProjectState(state), [state])
 
@@ -77,11 +118,85 @@ export function useProjectState(): ProjectStateController {
     currentLabel: summary.label,
     currentDetail: summary.detail,
     pickWorkspaceRoot,
+    createBlankProject,
     createLocalProject,
     selectProject,
     renameProject,
     removeProject
   }
+}
+
+function applyProjectSelection(state: ProjectState, selection: ProjectSelection): ProjectState {
+  if (selection.projectKind === 'local') {
+    return {
+      ...state,
+      activeLocalProjectId: selection.projectId,
+      activeRemoteProjectId: undefined,
+      activeProjectSelection: selection,
+      activeWorkspaceRoots: state.localProjects[selection.projectId]?.writableRoots ?? []
+    }
+  }
+
+  if (selection.projectKind === 'remote') {
+    const project = state.remoteProjects.find((candidate) => candidate.id === selection.projectId)
+    return {
+      ...state,
+      activeLocalProjectId: undefined,
+      activeRemoteProjectId: selection.projectId,
+      activeProjectSelection: selection,
+      activeWorkspaceRoots: project ? [project.remotePath] : []
+    }
+  }
+
+  if (selection.projectKind === 'path') {
+    return {
+      ...state,
+      activeLocalProjectId: undefined,
+      activeRemoteProjectId: undefined,
+      activeProjectSelection: selection,
+      activeWorkspaceRoots: [selection.path]
+    }
+  }
+
+  return {
+    ...state,
+    activeLocalProjectId: undefined,
+    activeRemoteProjectId: undefined,
+    activeProjectSelection: selection,
+    activeWorkspaceRoots: []
+  }
+}
+
+function restoreActiveProjectSelection(
+  currentState: ProjectState,
+  previousState: ProjectState
+): ProjectState {
+  return {
+    ...currentState,
+    activeLocalProjectId: previousState.activeLocalProjectId,
+    activeRemoteProjectId: previousState.activeRemoteProjectId,
+    activeProjectSelection: previousState.activeProjectSelection,
+    activeWorkspaceRoots: previousState.activeWorkspaceRoots
+  }
+}
+
+function sameProjectSelection(
+  left: ProjectSelection | undefined,
+  right: ProjectSelection | undefined
+): boolean {
+  if (!left || !right) return left === right
+  if (left.projectKind !== right.projectKind) return false
+
+  if (left.projectKind === 'local' && right.projectKind === 'local') {
+    return left.projectId === right.projectId
+  }
+  if (left.projectKind === 'remote' && right.projectKind === 'remote') {
+    return left.projectId === right.projectId && left.hostId === right.hostId
+  }
+  if (left.projectKind === 'path' && right.projectKind === 'path') {
+    return left.path === right.path
+  }
+  return left.projectKind === 'projectless' && right.projectKind === 'projectless'
 }
 
 function describeProjectState(state: ProjectState | null): {

@@ -96,6 +96,7 @@ import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { Button } from './components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './components/ui/collapsible'
+import { ComposerProjectCard } from './projects/ComposerProjectCard'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
 import {
@@ -126,6 +127,7 @@ import type {
 import type { ConversationDraftAttachment } from './runtime/ConversationDraftStore'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
+import type { ProjectSelection } from '../../shared/projects/projectTypes'
 import type { ModelOption } from './components/assistant-ui'
 import {
   composerContextDirectiveFormatter,
@@ -292,7 +294,9 @@ function useNativeBackdrop(): boolean {
 }
 
 function App(): React.JSX.Element {
-  const projectState = useProjectState()
+  const storedProjectState = useProjectState()
+  const storedProjectSelection = storedProjectState.state?.activeProjectSelection
+  const persistProjectSelection = storedProjectState.selectProject
   const {
     activeEntry,
     serverRequests,
@@ -306,6 +310,7 @@ function App(): React.JSX.Element {
     activeConversation,
     startNewConversation,
     openConversation,
+    setActiveProjectSelection,
     setActiveDraft,
     setActiveDraftAttachments,
     setActiveScroll,
@@ -313,8 +318,29 @@ function App(): React.JSX.Element {
     getConversationIndicator,
     getConversationTitle
   } = useCodexIpcAssistantRuntime({
-    projectSelection: projectState.state?.activeProjectSelection
+    projectSelection: storedProjectSelection
   })
+  const projectSelectionRevision = useRef(0)
+  const selectProject = useCallback(
+    async (selection: ProjectSelection) => {
+      const revision = ++projectSelectionRevision.current
+      const previousSelection = storedProjectSelection
+      setActiveProjectSelection(selection)
+      try {
+        await persistProjectSelection(selection)
+      } catch (error) {
+        if (projectSelectionRevision.current === revision) {
+          setActiveProjectSelection(previousSelection)
+        }
+        throw error
+      }
+    },
+    [persistProjectSelection, setActiveProjectSelection, storedProjectSelection]
+  )
+  const projectState: ProjectStateController = {
+    ...storedProjectState,
+    selectProject
+  }
   const conversationState = useConversationState({
     openConversation,
     getConversationIndicator,
@@ -637,6 +663,7 @@ function ChatThread({
 }: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
   const showNewConversationView = isEmpty && !loading && !loadError
+  const canChangeProject = showNewConversationView && !activeConversation?.threadId
   const viewportRef = useRef<HTMLDivElement>(null)
   useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
   const effectiveProjectSelection = activeConversation
@@ -721,16 +748,24 @@ function ChatThread({
           >
             <ThreadScrollToBottom />
             <ComposerTurnStatusCard status={composerTurnStatus} />
-            <Composer
-              activeConversation={activeConversation}
-              composerContextCatalog={composerContextCatalog}
-              disabled={disabled}
-              models={models}
-              selectedModelId={selectedModelId}
-              modelSelectionError={modelSelectionError}
-              onSelectedModelChange={onSelectedModelChange}
-              projectState={projectState}
-            />
+            <div data-slot="composer-project-stack" className="flex w-full flex-col">
+              {canChangeProject && (
+                <ComposerProjectCard
+                  activeSelection={effectiveProjectSelection}
+                  projectState={projectState}
+                />
+              )}
+              <Composer
+                activeConversation={activeConversation}
+                composerContextCatalog={composerContextCatalog}
+                disabled={disabled}
+                models={models}
+                selectedModelId={selectedModelId}
+                modelSelectionError={modelSelectionError}
+                onSelectedModelChange={onSelectedModelChange}
+                projectState={projectState}
+              />
+            </div>
             {showNewConversationView ? (
               <div className="aui-thread-welcome-suggestions-shell min-h-19">
                 <AuiIf condition={(state) => state.composer.isEmpty}>
@@ -1899,7 +1934,6 @@ function Composer({
     : globalProjectSelection
   const isRemoteExecution = effectiveProjectSelection?.projectKind === 'remote'
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
-  const projectContext = conversationProjectContext(activeConversation, projectState)
   const localContextPickerEnabled = !isRemoteExecution
   const [contextSearchOpen, setContextSearchOpen] = useState(false)
   const composerText = useAuiState((state) => state.composer.text)
@@ -2109,12 +2143,6 @@ function Composer({
                     移除本地文件附件后才能发送到远程项目
                   </span>
                 ) : null}
-                <span
-                  className="hidden max-w-64 truncate text-xs text-muted-foreground sm:inline"
-                  title={projectContext.detail ?? projectContext.label}
-                >
-                  Working in: {projectContext.label}
-                </span>
               </div>
               <div className="flex items-center gap-1.5">
                 <AuiIf condition={(state) => !state.thread.isRunning}>
@@ -2154,7 +2182,7 @@ function hasConversationProjectContext(
   activeConversation: ActiveConversationContext | undefined,
   projectState: ProjectStateController
 ): boolean {
-  if (!activeConversation) return projectState.hasSelection
+  if (!activeConversation?.threadId) return projectState.state !== null
   return Boolean(
     activeConversation.threadId || activeConversation.projectSelection || activeConversation.cwd
   )
@@ -2203,51 +2231,6 @@ function threadIdFromComposerReference(uri: string): string {
   } catch {
     return encodedThreadId
   }
-}
-
-function conversationProjectContext(
-  activeConversation: ActiveConversationContext | undefined,
-  projectState: ProjectStateController
-): { label: string; detail: string | null } {
-  const selection = activeConversation?.projectSelection
-  if (!selection) {
-    if (activeConversation) {
-      return {
-        label: activeConversation.cwd ? basename(activeConversation.cwd) : 'Unknown workspace',
-        detail: activeConversation.cwd ?? 'Conversation workspace is unavailable'
-      }
-    }
-    return { label: projectState.currentLabel, detail: projectState.currentDetail }
-  }
-
-  if (selection.projectKind === 'projectless') {
-    return { label: 'Projectless', detail: activeConversation.cwd ?? 'Working without a project' }
-  }
-
-  if (selection.projectKind === 'path') {
-    return { label: basename(selection.path), detail: selection.path }
-  }
-
-  if (selection.projectKind === 'local') {
-    const project = projectState.state?.localProjects[selection.projectId]
-    return {
-      label: project?.name ?? basename(activeConversation.cwd ?? selection.projectId),
-      detail: activeConversation.cwd ?? project?.writableRoots[0] ?? null
-    }
-  }
-
-  const project = projectState.state?.remoteProjects.find(
-    (candidate) => candidate.id === selection.projectId && candidate.hostId === selection.hostId
-  )
-  return {
-    label: project?.label ?? selection.projectId,
-    detail:
-      activeConversation.cwd ?? `${selection.hostId}:${project?.remotePath ?? selection.projectId}`
-  }
-}
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
 }
 
 const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(

@@ -191,7 +191,7 @@ test('renders a turn diff status card during a real file change through the desk
     await expect(page.locator('body')).toContainText('qwen3.7-plus')
     const projectName = `E2E Turn Diff ${Date.now().toString(36)}`
     await createLocalProject(page, projectName, projectRoot)
-    await expect(page.locator('body')).toContainText(`Working in: ${projectName}`)
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(projectName)
 
     await sendComposerMessage(page, '更新 notes.txt，并展示这次文件变更。')
 

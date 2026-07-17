@@ -11,7 +11,9 @@ import type {
   ComposerContextCatalogResult,
   DesktopProjectsApi
 } from '../../shared/codexIpcApi'
+import type { ProjectState } from '../../shared/projects/projectTypes'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
+import type { ProjectStateController } from './projects/useProjectState'
 
 type MockPartStatus =
   | { type: 'complete' }
@@ -133,6 +135,7 @@ const runtimeState = vi.hoisted<{
   selectedModelId: string | undefined
   modelSelectionError: string | undefined
   setSelectedModelId: ReturnType<typeof vi.fn>
+  setActiveProjectSelection: ReturnType<typeof vi.fn>
   startNewConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
   setActiveDraft: ReturnType<typeof vi.fn>
@@ -158,6 +161,7 @@ const runtimeState = vi.hoisted<{
   selectedModelId: 'gpt-5-codex',
   modelSelectionError: undefined,
   setSelectedModelId: vi.fn(),
+  setActiveProjectSelection: vi.fn(),
   startNewConversation: vi.fn(),
   openConversation: vi.fn(),
   setActiveDraft: vi.fn(),
@@ -198,7 +202,7 @@ const composerRuntimeState = vi.hoisted<{
   setTextCalls: string[]
 }>(() => ({ eventHandlers: {}, insertedContextItems: [], setTextCalls: [] }))
 
-const projectHookState = vi.hoisted(() => ({
+const projectHookState = vi.hoisted<{ controller: ProjectStateController }>(() => ({
   controller: {
     state: {
       activeProjectSelection: { projectKind: 'path', path: '/repo' },
@@ -230,6 +234,7 @@ const projectHookState = vi.hoisted(() => ({
     currentLabel: 'repo',
     currentDetail: '/repo',
     pickWorkspaceRoot: vi.fn(),
+    createBlankProject: vi.fn(),
     createLocalProject: vi.fn(),
     selectProject: vi.fn(),
     renameProject: vi.fn(),
@@ -255,6 +260,7 @@ function resetThreadMessageState(): void {
   runtimeState.modelSelectionError = undefined
   runtimeState.setSelectedModelId.mockReset()
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
+  runtimeState.setActiveProjectSelection.mockReset()
   runtimeState.startNewConversation.mockReset()
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
@@ -321,6 +327,7 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
     projects: {
       getState: vi.fn(),
       pickWorkspaceRoot: vi.fn(),
+      createBlankProject: vi.fn(),
       createLocalProject: vi.fn(),
       createRemoteProject: vi.fn(),
       selectProject: vi.fn(),
@@ -482,6 +489,7 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       startNewConversation: runtimeState.startNewConversation,
       openConversation: runtimeState.openConversation,
       setSelectedModelId: runtimeState.setSelectedModelId,
+      setActiveProjectSelection: runtimeState.setActiveProjectSelection,
       setActiveDraft: runtimeState.setActiveDraft,
       setActiveDraftAttachments: runtimeState.setActiveDraftAttachments,
       setActiveScroll: runtimeState.setActiveScroll,
@@ -936,6 +944,18 @@ describe('App composer', () => {
     composerRuntimeState.setTextCalls = []
     runtimeState.setActiveDraft.mockReset()
     runtimeState.setActiveDraftAttachments.mockReset()
+    projectHookState.controller.state = {
+      ...requireProjectHookState(),
+      activeProjectSelection: { projectKind: 'path', path: '/repo' },
+      activeWorkspaceRoots: ['/repo']
+    }
+    projectHookState.controller.hasSelection = true
+    projectHookState.controller.currentLabel = 'repo'
+    projectHookState.controller.currentDetail = '/repo'
+    vi.mocked(projectHookState.controller.pickWorkspaceRoot).mockReset()
+    vi.mocked(projectHookState.controller.createBlankProject).mockReset()
+    vi.mocked(projectHookState.controller.selectProject).mockReset()
+    vi.mocked(projectHookState.controller.selectProject).mockResolvedValue(undefined)
     installDesktopApp()
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -973,8 +993,16 @@ describe('App composer', () => {
       'bg-background'
     )
     expect(container.querySelector('[data-slot="aui_composer-shell"]')?.className).toContain(
-      'dark:bg-muted/30'
+      'dark:bg-muted/70'
     )
+    const card = container.querySelector('[data-slot="composer-project-card"]')
+    const shell = container.querySelector('[data-slot="aui_composer-shell"]')
+    expect(card).not.toBeNull()
+    expect(
+      card && shell
+        ? Boolean(card.compareDocumentPosition(shell) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false
+    ).toBe(true)
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
     expect(triggerChars).toEqual(['/'])
   })
@@ -1341,7 +1369,7 @@ describe('App composer', () => {
     expect(header?.innerHTML).not.toContain('/Users/test/repo')
   })
 
-  it('uses the active conversation project for the composer context', async () => {
+  it('uses the active conversation project for context and hides its project picker', async () => {
     const listContext = vi.mocked(window.desktopApp.composerContext.list)
     runtimeState.activeConversation = {
       conversationId: 'conversation-remote',
@@ -1358,7 +1386,9 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(container.textContent).toContain('Working in: Remote App')
+    expect(container.querySelector('[data-slot="composer-project-card-shell"]')).toBeNull()
+    expect(container.querySelector('[data-slot="composer-project-card"]')).toBeNull()
+    expect(container.textContent).not.toContain('Working in:')
     expect(listContext).toHaveBeenCalledWith(
       expect.objectContaining({
         version: 1,
@@ -1456,7 +1486,9 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    expect(container.textContent).toContain('Working in: unassigned')
+    expect(container.querySelector('[data-slot="composer-project-card-shell"]')).toBeNull()
+    expect(container.querySelector('[data-slot="composer-project-card"]')).toBeNull()
+    expect(container.textContent).not.toContain('Working in:')
     expect(listContext).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: '/srv/unassigned',
@@ -1525,6 +1557,79 @@ describe('App composer', () => {
     expect(container.textContent).not.toContain('Open Project Folder')
     expect(container.textContent).not.toContain('Create Local Project')
     expect(container.textContent).not.toContain('Start Projectless Thread')
+  })
+
+  it('treats empty and explicit projectless selections as the same sendable mode', () => {
+    projectHookState.controller.state = {
+      ...requireProjectHookState(),
+      activeProjectSelection: undefined,
+      activeWorkspaceRoots: []
+    }
+    projectHookState.controller.hasSelection = false
+    projectHookState.controller.currentLabel = 'Choose project'
+    projectHookState.controller.currentDetail = null
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const card = container.querySelector<HTMLButtonElement>('[data-slot="composer-project-card"]')
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')
+    expect(card?.textContent).toBe('选择项目')
+    expect(send?.disabled).toBe(false)
+    expect(container.textContent).not.toContain('Projectless')
+
+    projectHookState.controller.state = {
+      ...requireProjectHookState(),
+      activeProjectSelection: { projectKind: 'projectless' }
+    }
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-slot="composer-project-card"]')?.textContent
+    ).toBe('选择项目')
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')?.disabled
+    ).toBe(false)
+  })
+
+  it('snapshots a project change before desktop persistence resolves', async () => {
+    let resolveSelection: (() => void) | undefined
+    vi.mocked(projectHookState.controller.selectProject).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSelection = resolve
+        })
+    )
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-slot="composer-project-card"]')?.click()
+      await Promise.resolve()
+    })
+    const projectlessAction = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-slot="command-item"]')
+    ).find((item) => item.textContent?.includes('不在项目中工作'))
+
+    act(() => {
+      projectlessAction?.click()
+    })
+
+    expect(runtimeState.setActiveProjectSelection).toHaveBeenCalledWith({
+      projectKind: 'projectless'
+    })
+    expect(projectHookState.controller.selectProject).toHaveBeenCalledWith({
+      projectKind: 'projectless'
+    })
+
+    await act(async () => {
+      resolveSelection?.()
+      await Promise.resolve()
+    })
   })
 
   it('shows a retry action when existing conversation history fails to load', async () => {
@@ -4053,6 +4158,15 @@ describe('App composer', () => {
     })
   })
 })
+
+function requireProjectHookState(): ProjectState {
+  const state = projectHookState.controller.state
+  if (!state) {
+    throw new Error('Expected the project state fixture to be loaded')
+  }
+
+  return state
+}
 
 function buttonWithText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(

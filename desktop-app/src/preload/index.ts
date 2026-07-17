@@ -12,6 +12,7 @@ import type {
   DesktopProjectsApi,
   LocalContextPickerKind,
   LocalContextReference,
+  ProjectCreateBlankResult,
   SidebarConversationListState,
   SidebarConversationOpenResult,
   SidebarPreferences
@@ -80,6 +81,8 @@ const desktopProjects: DesktopProjectsApi = {
   getState: () => ipcRenderer.invoke('codex:projects:get-state') as Promise<ProjectState>,
   pickWorkspaceRoot: () =>
     ipcRenderer.invoke('codex:projects:pick-workspace-root') as Promise<WorkspaceRootOption | null>,
+  createBlankProject: (input) =>
+    ipcRenderer.invoke('codex:projects:create-blank', input) as Promise<ProjectCreateBlankResult>,
   createLocalProject: (input) =>
     ipcRenderer.invoke('codex:projects:create-local', input) as Promise<LocalProject>,
   createRemoteProject: (input) =>

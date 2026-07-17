@@ -4,6 +4,149 @@ import { ProjectApiService } from './ProjectApiService'
 import { ProjectStore, createDefaultProjectState } from './ProjectStore'
 
 describe('ProjectApiService', () => {
+  it('creates, registers, and activates a blank project root', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const createBlankProjectRoot = vi.fn(async () => '/documents/New App')
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn(),
+      createBlankProjectRoot
+    })
+
+    const result = await service.createBlankProject(
+      'New App',
+      '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+    )
+
+    expect(createBlankProjectRoot).toHaveBeenCalledWith(
+      'New App',
+      '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+    )
+    expect(result.option).toMatchObject({
+      root: '/documents/New App',
+      label: 'New App',
+      hostId: 'local'
+    })
+    expect(result.state).toMatchObject({
+      activeProjectSelection: {
+        projectKind: 'path',
+        path: '/documents/New App'
+      }
+    })
+    await expect(store.getState()).resolves.toMatchObject({
+      activeProjectSelection: {
+        projectKind: 'path',
+        path: '/documents/New App'
+      },
+      activeWorkspaceRoots: ['/documents/New App'],
+      workspaceRootOptions: [
+        {
+          root: '/documents/New App',
+          label: 'New App',
+          hostId: 'local'
+        }
+      ]
+    })
+  })
+
+  it('keeps the requested project name when only the directory name conflicts', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn(),
+      createBlankProjectRoot: async () => '/documents/New App 2'
+    })
+
+    const result = await service.createBlankProject(
+      'New App',
+      '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+    )
+
+    expect(result.option).toMatchObject({
+      root: '/documents/New App 2',
+      label: 'New App'
+    })
+  })
+
+  it('uses the suffixed directory name when both path and project name conflict', async () => {
+    const store = ProjectStore.inMemory({
+      ...createDefaultProjectState(),
+      workspaceRootOptions: [
+        {
+          root: '/documents/New App',
+          label: 'New App',
+          hostId: 'local',
+          addedAt: '2026-07-17T00:00:00.000Z',
+          lastOpenedAt: '2026-07-17T00:00:00.000Z'
+        }
+      ]
+    })
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn(),
+      createBlankProjectRoot: async () => '/documents/New App 2'
+    })
+
+    const result = await service.createBlankProject(
+      'New App',
+      '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+    )
+
+    expect(result.option).toMatchObject({
+      root: '/documents/New App 2',
+      label: 'New App 2'
+    })
+  })
+
+  it('reports the created path when registration fails', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    vi.spyOn(store, 'setState').mockRejectedValue(new Error('write failed'))
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn(),
+      createBlankProjectRoot: async () => '/documents/Recover Me'
+    })
+
+    await expect(
+      service.createBlankProject('Recover Me', '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b')
+    ).rejects.toThrow('/documents/Recover Me')
+  })
+
+  it('reuses a completed blank-project operation instead of creating another root', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const createBlankProjectRoot = vi.fn(async () => '/documents/New App')
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn(),
+      createBlankProjectRoot
+    })
+    const operationId = '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+
+    const first = await service.createBlankProject('New App', operationId)
+    const retry = await service.createBlankProject('New App', operationId)
+
+    expect(retry).toEqual(first)
+    expect(createBlankProjectRoot).toHaveBeenCalledOnce()
+  })
+
+  it('leaves state unchanged when the folder picker is cancelled', async () => {
+    const initialState = createDefaultProjectState()
+    const store = ProjectStore.inMemory(initialState)
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: vi.fn(),
+      pickWorkspaceRoot: async () => null
+    })
+
+    await expect(service.pickWorkspaceRoot()).resolves.toBeNull()
+    await expect(store.getState()).resolves.toEqual(initialState)
+  })
+
   it('creates and activates a local project from validated roots', async () => {
     const store = ProjectStore.inMemory(createDefaultProjectState())
     const service = new ProjectApiService({
@@ -29,6 +172,34 @@ describe('ProjectApiService', () => {
       activeWorkspaceRoots: ['/real/repo', '/real/repo/packages/api'],
       projectWritableRoots: {
         [project.id]: ['/real/repo', '/real/repo/packages/api']
+      }
+    })
+  })
+
+  it('allows UUID-backed local projects to share both name and source root', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      pickWorkspaceRoot: vi.fn()
+    })
+
+    const first = await service.createLocalProject({
+      name: 'Desktop App',
+      sourceRoots: ['/repo']
+    })
+    const second = await service.createLocalProject({
+      name: 'Desktop App',
+      sourceRoots: ['/repo']
+    })
+
+    expect(second.id).not.toBe(first.id)
+    expect(first).toMatchObject({ name: 'Desktop App', writableRoots: ['/repo'] })
+    expect(second).toMatchObject({ name: 'Desktop App', writableRoots: ['/repo'] })
+    await expect(store.getState()).resolves.toMatchObject({
+      localProjects: {
+        [first.id]: { name: 'Desktop App', writableRoots: ['/repo'] },
+        [second.id]: { name: 'Desktop App', writableRoots: ['/repo'] }
       }
     })
   })

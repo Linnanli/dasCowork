@@ -4,7 +4,6 @@ import { z } from 'zod'
 export * from './composerContext'
 export * from './composerContextSearch'
 
-import { projectSelectionSchema } from './projects/projectSchemas'
 import type {
   LocalProject,
   ProjectSelection,
@@ -14,10 +13,12 @@ import type {
   WorkspaceRootOption
 } from './projects/projectTypes'
 import {
-  projectCreateRemotePayloadSchema,
+  projectCreateBlankPayloadSchema,
   projectCreateLocalPayloadSchema,
+  projectCreateRemotePayloadSchema,
   projectRenamePayloadSchema,
-  projectSelectPayloadSchema
+  projectSelectPayloadSchema,
+  projectSelectionSchema
 } from './projects/projectSchemas'
 
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
@@ -354,12 +355,19 @@ export type DesktopConversationsApi = {
 }
 
 export type ProjectCreateLocalPayload = z.infer<typeof projectCreateLocalPayloadSchema>
+export type ProjectCreateBlankPayload = z.infer<typeof projectCreateBlankPayloadSchema>
 export type ProjectCreateRemotePayload = z.infer<typeof projectCreateRemotePayloadSchema>
 export type ProjectRenamePayload = z.infer<typeof projectRenamePayloadSchema>
+
+export type ProjectCreateBlankResult = {
+  option: WorkspaceRootOption
+  state: ProjectState
+}
 
 export type DesktopProjectsApi = {
   getState(): Promise<ProjectState>
   pickWorkspaceRoot(): Promise<WorkspaceRootOption | null>
+  createBlankProject(input: ProjectCreateBlankPayload): Promise<ProjectCreateBlankResult>
   createLocalProject(input: ProjectCreateLocalPayload): Promise<LocalProject>
   createRemoteProject(input: ProjectCreateRemotePayload): Promise<RemoteProject>
   selectProject(input: ProjectSelection): Promise<ProjectState>
@@ -369,6 +377,7 @@ export type DesktopProjectsApi = {
 }
 
 export {
+  projectCreateBlankPayloadSchema,
   projectCreateLocalPayloadSchema,
   projectCreateRemotePayloadSchema,
   projectRenamePayloadSchema,

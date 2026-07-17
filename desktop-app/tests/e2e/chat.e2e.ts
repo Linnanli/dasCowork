@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -84,7 +84,7 @@ test('renders the add-context menu above and aligned with the composer', async (
     await page.evaluate(async () => {
       await window.desktopApp.projects.selectProject({ projectKind: 'projectless' })
     })
-    await expect(page.locator('body')).toContainText('Working in: Projectless')
+    await expect(page.locator('[data-slot="composer-project-card"]')).toHaveText('选择项目')
     const addContextButton = page.getByRole('button', { name: '添加文件和更多', exact: true })
     await expect(addContextButton).toBeEnabled()
     await addContextButton.click()
@@ -130,6 +130,100 @@ test('renders the add-context menu above and aligned with the composer', async (
       contentType: 'image/png',
       path: screenshotPath
     })
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('opens the Composer project card picker above the input and filters projects', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({ responses: [] })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+
+    await expect(page.locator('body')).toContainText('qwen3.7-plus')
+    const runId = Date.now().toString(36)
+    const alphaName = `E2E Picker Alpha ${runId}`
+    const betaName = `E2E Picker Beta ${runId}`
+    await createLocalProject(page, alphaName, appRoot)
+    await createLocalProject(page, betaName, join(appRoot, '..'))
+    await page.evaluate(async () => {
+      await window.desktopApp.projects.selectProject({ projectKind: 'projectless' })
+    })
+
+    const shell = page.locator('[data-slot="composer-project-card-shell"]')
+    const card = page.locator('[data-slot="composer-project-card"]')
+    await expect(shell).toHaveCSS('height', '40px')
+    await expect(shell).not.toHaveCSS('background-color', 'rgb(21, 21, 21)')
+    await expect(card).toHaveText('选择项目')
+    const [shellBox, closedCardBox] = await Promise.all([shell.boundingBox(), card.boundingBox()])
+    expect(shellBox).not.toBeNull()
+    expect(closedCardBox).not.toBeNull()
+    if (!shellBox || !closedCardBox) throw new Error('Could not measure project card')
+    expect(closedCardBox.width).toBeLessThan(shellBox.width)
+    await card.click()
+
+    const searchInput = page.getByPlaceholder('搜索项目')
+    const popover = page.locator('[data-slot="popover-content"]').filter({ has: searchInput })
+    await expect(popover).toBeVisible()
+    await expect(popover).toHaveCSS('padding', '4px')
+    await expect(popover).toHaveCSS('border-radius', '16px')
+    await searchInput.fill('alpha')
+    await expect(popover.getByText(alphaName, { exact: true })).toBeVisible()
+    await expect(popover.getByText(betaName, { exact: true })).toHaveCount(0)
+    await expect(popover).not.toContainText(appRoot)
+
+    await popover.evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map((animation) => animation.finished))
+    })
+    const [cardBox, popoverBox] = await Promise.all([card.boundingBox(), popover.boundingBox()])
+    expect(cardBox).not.toBeNull()
+    expect(popoverBox).not.toBeNull()
+    if (!cardBox || !popoverBox) throw new Error('Could not measure project picker')
+    expect(popoverBox.y + popoverBox.height).toBeLessThanOrEqual(cardBox.y)
+
+    const screenshotPath = testInfo.outputPath('composer-project-picker.png')
+    await page.screenshot({ path: screenshotPath })
+    await testInfo.attach('composer-project-picker.png', {
+      contentType: 'image/png',
+      path: screenshotPath
+    })
+
+    await popover.getByText(alphaName, { exact: true }).click()
+    await expect(card).toContainText(alphaName)
+
+    await card.click()
+    const reopenedPopover = page
+      .locator('[data-slot="popover-content"]')
+      .filter({ has: page.getByPlaceholder('搜索项目') })
+    await reopenedPopover.getByText('新建项目', { exact: true }).click()
+    await page.getByText('新建空白项目', { exact: true }).click()
+
+    const blankProjectName = `E2E Blank ${runId}`
+    const dialog = page.locator('[data-slot="create-blank-project-dialog"]')
+    await dialog.locator('[data-slot="blank-project-name-input"]').fill(blankProjectName)
+    await dialog.getByRole('button', { name: '创建', exact: true }).click()
+    await expect(card).toContainText(blankProjectName)
+
+    const blankProjectPath = await page.evaluate(() => {
+      return window.desktopApp.projects.getState().then((state) => {
+        const selection = state.activeProjectSelection
+        return selection?.projectKind === 'path' ? selection.path : null
+      })
+    })
+    expect(blankProjectPath).not.toBeNull()
+    if (!blankProjectPath) throw new Error('Expected a path selection for the blank project')
+    expect((await stat(blankProjectPath)).isDirectory()).toBe(true)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)

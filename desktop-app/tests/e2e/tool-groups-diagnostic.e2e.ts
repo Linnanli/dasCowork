@@ -83,7 +83,9 @@ test('shows the correct thinking state across repeated unphased tool rounds', as
 
     await expect(page.locator('body')).toContainText('qwen3.7-plus')
     await createLocalProject(page, 'FDE Skills Diagnostic', projectRoot)
-    await expect(page.locator('body')).toContainText('Working in: FDE Skills Diagnostic')
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(
+      'FDE Skills Diagnostic'
+    )
 
     await sendComposerMessage(page, '分析一下当前项目')
 
@@ -223,7 +225,9 @@ test('keeps adjacent tool activity in one group without intervening text', async
 
     await expect(page.locator('body')).toContainText('qwen3.7-plus')
     await createLocalProject(page, 'Adjacent Tool Groups', projectRoot)
-    await expect(page.locator('body')).toContainText('Working in: Adjacent Tool Groups')
+    await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(
+      'Adjacent Tool Groups'
+    )
 
     await sendComposerMessage(page, '分析一下当前项目')
     await waitForResponsesRequestCount(backend, 3)

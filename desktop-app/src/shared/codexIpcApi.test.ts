@@ -9,6 +9,7 @@ import {
   codexSetSelectedModelPayloadSchema,
   localContextPickerPayloadSchema,
   localContextReferenceSchema,
+  projectCreateBlankPayloadSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
   sidebarConversationRenamePayloadSchema,
@@ -194,6 +195,24 @@ describe('codex IPC schemas', () => {
     expect(sidebarConversationActionPayloadSchema.safeParse({ conversationId: '' }).success).toBe(
       false
     )
+  })
+
+  it('validates blank project names before main performs filesystem work', () => {
+    expect(
+      projectCreateBlankPayloadSchema.parse({
+        operationId: '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b',
+        name: '  New App  '
+      })
+    ).toEqual({
+      operationId: '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b',
+      name: 'New App'
+    })
+    expect(
+      projectCreateBlankPayloadSchema.safeParse({
+        operationId: '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b',
+        name: '../escape'
+      }).success
+    ).toBe(false)
   })
 
   it('validates conversation rename payloads', () => {

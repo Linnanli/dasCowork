@@ -35,6 +35,7 @@ export type CodexIpcAssistantRuntimeState = {
   startNewConversation: () => void
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
   setSelectedModelId: (modelId: string) => Promise<void>
+  setActiveProjectSelection: (selection: ProjectSelection | undefined) => void
   setActiveDraft: (draft: string) => void
   setActiveDraftAttachments: (attachments: readonly ConversationDraftAttachment[]) => void
   setActiveScroll: (scroll: ConversationScrollSnapshot) => void
@@ -75,9 +76,14 @@ export function useCodexIpcAssistantRuntime(
   const activeConversation =
     activeEntry.newConversation && !activeEntry.context.threadId ? undefined : activeEntry.context
 
+  const setActiveProjectSelection = useCallback(
+    (selection: ProjectSelection | undefined) => registry.updateActiveProjectSelection(selection),
+    [registry]
+  )
+
   useLayoutEffect(() => {
-    registry.updateActiveProjectSelection(options.projectSelection)
-  }, [options.projectSelection, registry])
+    setActiveProjectSelection(options.projectSelection)
+  }, [options.projectSelection, setActiveProjectSelection])
 
   useEffect(() => {
     let cancelled = false
@@ -223,6 +229,7 @@ export function useCodexIpcAssistantRuntime(
     startNewConversation,
     openConversation,
     setSelectedModelId,
+    setActiveProjectSelection,
     setActiveDraft,
     setActiveDraftAttachments,
     setActiveScroll,

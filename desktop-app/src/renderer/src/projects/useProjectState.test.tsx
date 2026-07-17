@@ -99,6 +99,78 @@ describe('useProjectState', () => {
     expect(controller?.currentLabel).toBe('Projectless')
   })
 
+  it('creates a blank project and refreshes the selected workspace root', async () => {
+    const option = {
+      root: '/Documents/Demo',
+      label: 'Demo',
+      hostId: 'local',
+      addedAt: '2026-07-17T00:00:00.000Z',
+      lastOpenedAt: '2026-07-17T00:00:00.000Z'
+    }
+    const selectedState: ProjectState = {
+      ...emptyState,
+      workspaceRootOptions: [option],
+      activeProjectSelection: { projectKind: 'path', path: option.root },
+      activeWorkspaceRoots: [option.root]
+    }
+    const getState = vi.fn().mockResolvedValue(emptyState)
+    const createBlankProject = vi.fn().mockResolvedValue({ option, state: selectedState })
+    installDesktopProjects({
+      getState,
+      createBlankProject,
+      onStateChange: vi.fn(() => vi.fn())
+    })
+
+    await act(async () => {
+      root.render(<Probe onController={(nextController) => (controller = nextController)} />)
+    })
+    let result: unknown
+    await act(async () => {
+      result = await controller?.createBlankProject('Demo', '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b')
+    })
+
+    expect(createBlankProject).toHaveBeenCalledWith({
+      name: 'Demo',
+      operationId: '4c1dbf20-e0b4-4e50-b70b-78090e19ef6b'
+    })
+    expect(getState).toHaveBeenCalledOnce()
+    expect(result).toEqual(option)
+    expect(controller?.currentLabel).toBe('Demo')
+    expect(controller?.currentDetail).toBe(option.root)
+  })
+
+  it('updates the selected project before persistence resolves and rolls back failures', async () => {
+    let rejectSelection: ((error: Error) => void) | undefined
+    const selectProject = vi.fn(
+      () =>
+        new Promise<ProjectState>((_resolve, reject) => {
+          rejectSelection = reject
+        })
+    )
+    installDesktopProjects({
+      getState: vi.fn().mockResolvedValue(emptyState),
+      onStateChange: vi.fn(() => vi.fn()),
+      selectProject
+    })
+
+    await act(async () => {
+      root.render(<Probe onController={(nextController) => (controller = nextController)} />)
+    })
+
+    let selectionPromise: Promise<void> | undefined
+    act(() => {
+      selectionPromise = controller?.selectProject({ projectKind: 'projectless' })
+    })
+    expect(controller?.currentLabel).toBe('Projectless')
+
+    await act(async () => {
+      rejectSelection?.(new Error('write failed'))
+      await expect(selectionPromise).rejects.toThrow('write failed')
+    })
+    expect(controller?.hasSelection).toBe(false)
+    expect(controller?.currentLabel).toBe('Choose project')
+  })
+
   it('renames and removes projects through the desktop project bridge', async () => {
     const renamedState: ProjectState = {
       ...emptyState,
@@ -166,6 +238,7 @@ function installDesktopProjects(overrides: Partial<DesktopProjectsApi>): void {
     projects: {
       getState: vi.fn().mockResolvedValue(emptyState),
       pickWorkspaceRoot: vi.fn().mockResolvedValue(null),
+      createBlankProject: vi.fn(),
       createLocalProject: vi.fn(),
       createRemoteProject: vi.fn(),
       selectProject: vi.fn(),

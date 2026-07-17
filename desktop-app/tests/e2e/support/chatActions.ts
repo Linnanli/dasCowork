@@ -17,7 +17,9 @@ export async function sendComposerMessage(page: Page, message: string): Promise<
 
 export async function ensureLocalProjectSelected(page: Page): Promise<void> {
   await createLocalProject(page, 'E2E Local Project', appRoot)
-  await expect(page.locator('body')).toContainText('Working in: E2E Local Project')
+  await expect(page.locator('[data-slot="composer-project-card"]')).toContainText(
+    'E2E Local Project'
+  )
 }
 
 export async function createLocalProject(page: Page, name: string, root: string): Promise<void> {
