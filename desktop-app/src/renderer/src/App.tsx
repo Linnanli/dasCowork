@@ -96,7 +96,6 @@ import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
 import { Button } from './components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './components/ui/collapsible'
-import { ProjectGate } from './projects/ProjectGate'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
 import {
@@ -638,8 +637,6 @@ function ChatThread({
 }: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
   const showNewConversationView = isEmpty && !loading && !loadError
-  const showProjectGate =
-    showNewConversationView && !hasConversationProjectContext(activeConversation, projectState)
   const viewportRef = useRef<HTMLDivElement>(null)
   useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
   const effectiveProjectSelection = activeConversation
@@ -697,8 +694,7 @@ function ChatThread({
               </Button>
             </div>
           ) : null}
-          {showProjectGate ? <ProjectGate className="mb-6" projectState={projectState} /> : null}
-          {showNewConversationView && !showProjectGate ? <ThreadWelcome /> : null}
+          {showNewConversationView ? <ThreadWelcome /> : null}
           <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
             <ThreadPrimitive.Messages>
               {({ message }) => {

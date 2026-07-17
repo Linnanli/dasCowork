@@ -1500,7 +1500,7 @@ describe('App composer', () => {
     expect(aiSdkRuntimeState.options?.isDisabled).toBe(true)
   })
 
-  it('does not render new-conversation entry points while existing history loads', () => {
+  it('does not render the new-conversation welcome message while existing history loads', () => {
     runtimeState.activeEntry.loaded = false
     runtimeState.activeEntry.newConversation = false
     runtimeState.activeEntry.phase = 'loading'
@@ -1513,8 +1513,18 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="project-gate"]')).toBeNull()
     expect(container.textContent).not.toContain('How can I help you today?')
+  })
+
+  it('shows only the welcome message in a blank new conversation', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.textContent).toContain('How can I help you today?')
+    expect(container.textContent).not.toContain('Open Project Folder')
+    expect(container.textContent).not.toContain('Create Local Project')
+    expect(container.textContent).not.toContain('Start Projectless Thread')
   })
 
   it('shows a retry action when existing conversation history fails to load', async () => {
@@ -3843,7 +3853,7 @@ describe('App composer', () => {
     threadMessageState.message.content = [
       {
         type: 'reasoning',
-        text: '**Inspecting ProjectGate card conditions**\n\n<!-- -->',
+        text: '**Inspecting project selection conditions**\n\n<!-- -->',
         status: { type: 'complete' }
       },
       { type: 'text', text: '我会先读取仓库记录，再收集实际证据。' },
@@ -3876,7 +3886,7 @@ describe('App composer', () => {
     expect(reasoning?.textContent).toContain('已处理 · 耗时 1 秒')
     expect(reasoning?.textContent).not.toContain('根因已经确认')
     expect(container.textContent).toContain('根因已经确认')
-    expect(container.textContent).not.toContain('Inspecting ProjectGate card conditions')
+    expect(container.textContent).not.toContain('Inspecting project selection conditions')
   })
 
   it('formats completed reasoning duration as seconds, minutes, or hours', () => {
