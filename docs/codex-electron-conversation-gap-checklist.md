@@ -1,0 +1,510 @@
+# Codex Electron 对话能力差距清单
+
+> 对照对象：`reference-projects/codex-electron-26.707.72221-beautified`
+>
+> 目标：把参考项目中已经出现、但 dasCowork 尚未完成的对话能力整理为可长期维护、可逐项验收的开发清单。
+
+## 使用规则
+
+- `P0`：直接影响任务能否连续、可靠地完成，应优先处理。
+- `P1`：显著提高任务管理和协作效率，在 P0 稳定后处理。
+- `P2`：平台型增强，不阻塞核心工作流。
+- 状态分为：
+  - **缺失**：当前没有用户入口，也没有完整桌面接口。
+  - **部分实现**：已经能展示部分信息，但无法继续操作或存在关键缺口。
+  - **入口缺失**：底层接口已经存在，主要缺少界面接入。
+- 完成一个条目前，至少满足该条目的全部验收条件，并补充对应的单元测试或端到端测试。
+
+## 实施边界
+
+- 禁止修改 `codex/codex-rs/app-server/`。
+- 不得绕过 Codex app server 直接调用模型接口。
+- Renderer 只能通过 preload 暴露的白名单 API 使用桌面能力。
+- 涉及 thread、turn、approval、sandbox、worktree、MCP 或 tools 时，先判断改动应该位于：
+  - `desktop-app/src/renderer/`
+  - `desktop-app/src/preload/`
+  - `desktop-app/src/main/`
+  - `desktop-app/vendors/ai-sdk-provider-codex-asp/`
+- 参考目录是发布包排版后的代码，只能用于行为分析，不能直接复制为项目源码。
+
+## 已有能力基线
+
+以下能力已经存在，不应作为“全新缺失能力”重复建设：
+
+- [x] 多会话切换，以及运行中、未读、需处理状态。
+- [x] 草稿和会话滚动位置恢复。
+- [x] 图片、文件、文件夹附件。
+- [x] `@` 搜索文件、任务、Agent、Skill、Plugin、App 和工具。
+- [x] Markdown、代码、数学公式、Mermaid 和推理过程展示。
+- [x] 工具调用、MCP、Web 搜索、计划和子 Agent 活动的内联展示。
+- [x] 命令、文件改动、MCP 审批以及自由文本问答。
+- [x] 用户消息编辑、助手消息复制和耗时展示。
+- [x] 文件改动摘要、补丁预览和打开本地文件。
+- [x] 生成图片与任务结束资源卡片。
+
+主要证据：
+
+- [当前对话输入与消息界面](../desktop-app/src/renderer/src/App.tsx)
+- [当前渲染能力矩阵](../desktop-app/src/renderer/src/lib/renderUnitCapabilityMatrix.ts)
+- [当前审批面板](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx)
+- [当前子 Agent 展示](../desktop-app/src/renderer/src/components/render-units/subagentActivity.tsx)
+
+---
+
+## P0：核心连续性和可靠性
+
+### P0-01 运行中追问队列与 Steer
+
+- [ ] 支持在 Agent 运行时继续输入和发送消息。
+- [ ] 允许用户选择“排队等待”或“立即改变当前任务方向”。
+- [ ] 队列消息可以编辑、删除、拖拽排序和立即发送。
+- [ ] 用户中断当前任务后，未发送队列进入暂停状态，并可恢复。
+- [ ] 队列消息保留文本、图片、文件和 `@` 上下文。
+- [ ] 同一会话的并发规则由 main/provider 正确串行化，不绕过 app-server。
+- [ ] 覆盖排队、Steer、中断、恢复、发送失败和切换会话场景的测试。
+
+状态：**缺失**
+
+当前证据：
+
+- [运行时输入框只保留停止按钮](../desktop-app/src/renderer/src/App.tsx#L2148)
+- [main 拒绝同一会话的第二个活跃 turn](../desktop-app/src/main/codexChatRuntimeService.ts#L479)
+
+参考证据：
+
+- [队列编辑、删除、排序、立即发送和恢复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/queued-message-list-D_Xh6IzQ.js#L115)
+
+### P0-02 活跃任务重连与局部恢复
+
+- [ ] Renderer 刷新或短暂断线后可以重新连接仍在运行的任务。
+- [ ] 无法恢复时明确显示原因，不把任务误报为已完成。
+- [ ] 单条回复渲染失败时可局部重试，不需要重新加载整个会话。
+- [ ] thread resume 失败时展示可操作的诊断信息。
+- [ ] worktree 丢失、被清理或初始化失败时提供恢复、重试或本地继续选项。
+- [ ] 页面销毁不会无条件终止仍应后台运行的任务。
+- [ ] 覆盖刷新、重连、app-server 重启、恢复失败和重复事件场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [仅有整个会话加载失败后的重试](../desktop-app/src/renderer/src/App.tsx#L712)
+- [`reconnectToStream()` 固定返回 `null`](../desktop-app/src/renderer/src/lib/ElectronIpcChatTransport.ts#L164)
+- [Registry 销毁时停止活跃任务](../desktop-app/src/renderer/src/runtime/ConversationChatRegistry.ts#L328)
+
+参考证据：
+
+- [单轮渲染失败重试](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L13296)
+- [任务重连状态](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L14390)
+- [worktree 恢复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L12470)
+
+### P0-03 从任意消息继续与任务分叉
+
+- [ ] 用户可以从任意旧消息创建新的任务分支。
+- [ ] 可选择在当前工作区、新本地任务或新 worktree 中继续。
+- [ ] 分叉后的任务继承所选消息之前的必要上下文，不继承后续消息。
+- [ ] 支持临时 Side task，不打断主任务。
+- [ ] 主任务与 Side task 的运行、审批、未读状态彼此独立。
+- [ ] worktree 不可用时给出明确的降级路径。
+- [ ] 覆盖旧消息分叉、Side task、同工作区和新 worktree 场景的测试。
+
+状态：**缺失**
+
+当前证据：
+
+- [用户消息只有编辑操作](../desktop-app/src/renderer/src/App.tsx#L1664)
+- [桌面公共 API 没有 fork/worktree/side-task 接口](../desktop-app/src/shared/codexIpcApi.ts#L323)
+
+参考证据：
+
+- [从旧消息继续](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L12740)
+- [Side task 与 Continue in](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-overflow-menu-Co-VIJCM.js#L612)
+
+### P0-04 Git 改动审核与 PR 闭环
+
+- [ ] “撤销”和“审核”从静态文字改为真实操作。
+- [ ] 提供完整改动列表、文件级 diff 和上一个 turn 的改动视图。
+- [ ] 支持比较分支、创建分支和创建 PR。
+- [ ] 展示 PR 状态、CI 检查、评论、reviewer 和合并冲突。
+- [ ] 可针对失败检查、评论和冲突启动修复任务。
+- [ ] 支持请求 review/approval，以及打开 GitHub 页面。
+- [ ] GitHub CLI 未安装、未登录或仓库无远端时提供明确降级提示。
+- [ ] 所有 Git 写操作都必须有可见状态和失败恢复路径。
+- [ ] 覆盖非 Git 目录、无远端、未登录、CI 失败和冲突场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [已有改动摘要和文件 diff](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L454)
+- [撤销与审核目前是静态占位](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L492)
+
+参考证据：
+
+- [Changes 与 PR 创建](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L6936)
+- [reviewer、CI 与 PR 自动修复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-page-DRtMyF4d.js#L2320)
+
+### P0-05 会话管理入口
+
+- [ ] 会话行或页头提供更多操作菜单。
+- [ ] 接通现有的重命名、归档和恢复归档接口。
+- [ ] 支持会话置顶。
+- [ ] 支持复制工作目录、session id、任务链接和会话 Markdown。
+- [ ] 归档当前会话后自动切换到合理的下一个页面。
+- [ ] 所有操作提供成功、失败和进行中状态。
+- [ ] 覆盖当前会话、后台运行会话和归档会话的测试。
+
+状态：**入口缺失**
+
+当前证据：
+
+- [会话状态控制器已经提供重命名、归档和恢复](../desktop-app/src/renderer/src/sidebar/useConversationState.ts#L99)
+- [会话行目前只有打开操作](../desktop-app/src/renderer/src/sidebar/ConversationRow.tsx#L17)
+- [归档会话被直接过滤](../desktop-app/src/renderer/src/sidebar/sidebarModel.ts#L16)
+
+参考证据：
+
+- [完整会话菜单](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-overflow-menu-Co-VIJCM.js#L589)
+
+### P0-06 审批与结构化提问补全
+
+- [ ] 命令审批展示可读命令，而不是只展示原始 JSON。
+- [ ] 文件修改审批展示文件列表和 diff。
+- [ ] 网络审批展示域名、原因和目标范围。
+- [ ] 支持仅本次、当前会话、相似操作和持久允许规则。
+- [ ] 支持单选、多选、自由文本、秘密输入和多问题表单。
+- [ ] 回答时保留选项值和多选数组，不降级为单一字符串。
+- [ ] 不把敏感参数、凭据或 provider 配置暴露给 Renderer。
+- [ ] 覆盖主 Agent、子 Agent、MCP、网络和秘密输入场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [已有单次、会话和 MCP 持久审批](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx#L104)
+- [问题解析未保留选项与多选信息](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx#L321)
+
+参考证据：
+
+- [参考项目的审批与交互式问题](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/app-initial~app-main~page-DRgkI91I.js#L53680)
+
+---
+
+## P1：任务管理和协作效率
+
+### P1-01 Goal、Plan、Review 模式与运行参数
+
+- [ ] Composer 支持 Goal、Plan 和 Code Review 模式。
+- [ ] Plan 完成后可明确选择进入实施。
+- [ ] Review 可选择未提交改动或与基准分支比较。
+- [ ] 模型选择器能够设置并实际传递 reasoning effort。
+- [ ] 支持用户配置审批策略、sandbox 范围和人格。
+- [ ] `/model`、`/reasoning`、`/plan` 和 Skill 命令具有真实行为。
+- [ ] 删除或实现当前三个空的 Slash Command，禁止保留无行为入口。
+- [ ] 覆盖模式切换、参数传递和 thread resume 后参数一致性的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [当前三个 Slash Command 都执行空函数](../desktop-app/src/renderer/src/App.tsx#L249)
+- [Composer 当前只接入模型选择](../desktop-app/src/renderer/src/App.tsx#L2111)
+- [provider 当前固定 approval 与 sandbox 设置](../desktop-app/src/main/codexAspProvider.ts#L45)
+
+参考证据：
+
+- [Code Review 模式](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/review-mode-content-CRO4r5jd.js#L412)
+
+### P1-02 对话右侧任务工作台
+
+- [ ] 建立统一的可收起右侧面板。
+- [ ] 面板支持多个标签页，并保留每个会话的打开状态。
+- [ ] 至少支持 Review、Browser、MCP App、Timeline、Sandbox 和任务摘要标签。
+- [ ] 切换会话后恢复正确标签，不串用其他会话状态。
+- [ ] 小窗口下提供抽屉或全屏降级方案。
+- [ ] 覆盖标签恢复、会话切换和窄窗口场景的测试。
+
+状态：**缺失**
+
+当前证据：
+
+- [当前页面只有左侧栏、中央对话和审批面板](../desktop-app/src/renderer/src/App.tsx#L390)
+- [当前页头右侧没有操作入口](../desktop-app/src/renderer/src/App.tsx#L585)
+
+参考证据：
+
+- [参考项目侧面板标签](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-side-panel-tabs-MgBvi70P.js#L23)
+
+### P1-03 子 Agent 与后台进程管理
+
+- [ ] 在任务摘要中聚合所有子 Agent 和后台进程。
+- [ ] 展示子 Agent 的角色、状态、模型和代码增删统计。
+- [ ] 支持打开子 Agent 对话。
+- [ ] 后台终端支持打开输出、停止、启动和重启。
+- [ ] 提供“查看所有进程”和批量停止入口。
+- [ ] 后台任务状态在切换会话后仍保持准确。
+- [ ] 覆盖进程退出、停止失败和子 Agent 无 thread id 场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [已有子 Agent 内联状态与打开子会话能力](../desktop-app/src/renderer/src/components/render-units/subagentActivity.tsx#L17)
+
+参考证据：
+
+- [子 Agent 与后台进程摘要](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L2541)
+- [后台终端操作](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L3804)
+
+### P1-04 Outputs 产物中心
+
+- [ ] 聚合任务生成的文件、图片、网站和外部资源。
+- [ ] 支持应用内文件、图片和网站预览。
+- [ ] 支持从应用拖出本地文件。
+- [ ] 提供“创建文档、演示文稿、电子表格、网站”的快捷入口。
+- [ ] 本地路径和远程资源使用不同的安全打开策略。
+- [ ] 产物列表可从完整会话历史恢复，不只依赖最后一条消息。
+- [ ] 覆盖文件不存在、预览失败、远程资源和生成图片场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [已有生成图片和结束资源卡片](../desktop-app/src/renderer/src/lib/renderUnitCapabilityMatrix.ts#L336)
+
+参考证据：
+
+- [参考项目 Outputs](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L2454)
+- [创建文档、演示、表格和网站](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L2293)
+
+### P1-05 Sources、引用和资源使用记录
+
+- [ ] 正确渲染 AI SDK 标准 source parts。
+- [ ] 助手正文中的引用可以打开对应来源。
+- [ ] 聚合用户提供、任务中读取、创建和更新的文件。
+- [ ] 聚合 MCP/App 工具来源、Web 搜索词和访问过的网页。
+- [ ] 提供完整 Sources 清单和来源使用次数。
+- [ ] 来源缺失或 URL 不安全时使用安全降级展示。
+- [ ] 覆盖 source-url、source-document、Web 搜索和 MCP 来源的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [main 已请求发送 Sources](../desktop-app/src/main/codexChatRuntimeService.ts#L395)
+- [标准来源可能被归入 unknown](../desktop-app/src/renderer/src/lib/assistantRenderUnits.ts#L428)
+- [不可识别部件默认隐藏](../desktop-app/src/renderer/src/App.tsx#L1551)
+
+参考证据：
+
+- [参考项目 Sources 汇总](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L10150)
+- [资源活动类型](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L11205)
+
+### P1-06 环境、分支与可复用运行操作
+
+- [ ] 对话页可以查看和切换当前环境。
+- [ ] 支持选择分支、worktree、本地/云端执行目标和远程主机。
+- [ ] 支持为项目配置可复用 Actions。
+- [ ] Actions 可以一键运行测试、启动开发服务器或执行项目命令。
+- [ ] Action 的运行状态与后台终端面板联动。
+- [ ] 非 Git 项目提供明确的能力降级。
+- [ ] 覆盖环境切换、Action 失败和远程主机场景的测试。
+
+状态：**部分实现**
+
+当前证据：
+
+- [Composer 已有项目上下文和本地/远程限制](../desktop-app/src/renderer/src/App.tsx#L1930)
+
+参考证据：
+
+- [环境 Actions 和环境切换](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L6129)
+
+### P1-07 任务搜索、会话内查找与快捷键
+
+- [ ] 支持跨项目搜索任务。
+- [ ] 支持在当前会话内查找文本。
+- [ ] 支持跳转到上一任务和下一任务。
+- [ ] 提供统一命令面板。
+- [ ] 提供原生 File、View、Help 菜单。
+- [ ] 快捷键可搜索、修改、恢复默认并检测冲突。
+- [ ] 不与输入法、编辑器和系统快捷键发生明显冲突。
+- [ ] 覆盖 macOS、Windows 和 Linux 的核心快捷键测试。
+
+状态：**缺失**
+
+参考证据：
+
+- [参考项目快捷键搜索与编辑](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/keyboard-shortcuts-settings-CLU9-DGr.js#L118)
+
+### P1-08 归档任务中心
+
+- [ ] 提供归档任务页面或抽屉。
+- [ ] 支持搜索、项目筛选、类型筛选、分组和排序。
+- [ ] 支持恢复单个归档任务。
+- [ ] 支持永久删除单个任务和按项目批量删除。
+- [ ] 自动化任务与普通任务可以区分。
+- [ ] 删除操作必须有二次确认和清晰的不可恢复提示。
+- [ ] 覆盖恢复、删除失败和大量归档任务场景的测试。
+
+状态：**入口缺失**
+
+当前证据：
+
+- [已有 unarchive API](../desktop-app/src/shared/codexIpcApi.ts#L340)
+- [归档会话不进入当前侧栏模型](../desktop-app/src/renderer/src/sidebar/sidebarModel.ts#L16)
+
+参考证据：
+
+- [参考项目归档任务搜索、筛选和排序](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/data-controls-DlUaxiOy.js#L2519)
+
+---
+
+## P2：平台型增强
+
+### P2-01 从对话创建和管理定时任务
+
+- [ ] 可从当前对话创建定时任务。
+- [ ] 可查看任务计划、下次运行时间和最近运行状态。
+- [ ] 可暂停、恢复、编辑和删除定时任务。
+- [ ] 自动化运行与原始对话建立可追踪关系。
+- [ ] 当前 `automationUpdate` 状态卡可以跳转到对应任务。
+
+状态：**部分实现**
+
+当前证据：
+
+- [当前只渲染 automation update 状态](../desktop-app/src/renderer/src/lib/renderUnitCapabilityMatrix.ts#L264)
+
+参考证据：
+
+- [参考项目从对话创建定时任务](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-overflow-menu-Co-VIJCM.js#L703)
+
+### P2-02 多窗口与深链接
+
+- [ ] 支持在新窗口打开任务。
+- [ ] 支持复制可回到当前任务的应用链接。
+- [ ] 应用启动时可以通过深链接定位本地或远程任务。
+- [ ] 多窗口之间正确隔离审批、活动任务和导航状态。
+- [ ] 外部 HTTP 链接仍然通过安全策略交给系统浏览器。
+
+状态：**缺失**
+
+当前证据：
+
+- [当前窗口策略拒绝全部内部 window.open](../desktop-app/src/main/index.ts#L342)
+
+参考证据：
+
+- [参考项目的新窗口和任务链接菜单](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-overflow-menu-Co-VIJCM.js#L624)
+
+### P2-03 长会话用户消息导航轨
+
+- [ ] 用户消息达到一定数量后显示轻量导航轨。
+- [ ] 点击标记可跳转到对应用户消息。
+- [ ] 滚动时自动高亮当前消息。
+- [ ] 未加载到 DOM 的历史消息可以先补加载再跳转。
+- [ ] 导航轨不遮挡正文、审批和输入框。
+
+状态：**缺失**
+
+参考证据：
+
+- [参考项目用户消息导航轨](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-user-message-navigation-rail-Ak-cnJuJ.js#L428)
+
+### P2-04 语音输入与全局听写
+
+- [ ] Composer 支持录音、转写、失败重试和取消。
+- [ ] 转写结果可以插入输入框或直接发送。
+- [ ] 可选提供全局听写悬浮窗和快捷键。
+- [ ] 明确显示麦克风权限、录音中和上传状态。
+- [ ] 覆盖拒绝权限、无输入设备和转写失败场景的测试。
+
+状态：**缺失**
+
+参考证据：
+
+- `reference-projects/codex-electron-26.707.72221-beautified/webview/assets/global-dictation-page-CBbV32ig.js`
+
+### P2-05 Browser / Computer Use 画中画
+
+- [ ] 对话工作台可打开 Browser 标签。
+- [ ] Computer Use 运行时可显示或隐藏画中画。
+- [ ] 画中画状态与当前任务严格绑定。
+- [ ] 浏览器授权、历史记录和外链访问遵循独立审批策略。
+
+状态：**缺失**
+
+参考证据：
+
+- [参考项目 Computer Use 画中画](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L9700)
+
+### P2-06 消息级补充操作
+
+- [ ] 用户消息支持复制。
+- [ ] 助手消息支持重新生成。
+- [ ] 助手消息支持好评和差评。
+- [ ] 失败消息提供明确的重试按钮。
+- [ ] 消息操作在任务运行中和历史会话中行为一致。
+
+状态：**部分实现**
+
+当前证据：
+
+- [用户消息当前只有编辑](../desktop-app/src/renderer/src/App.tsx#L1664)
+- [助手消息当前只有复制](../desktop-app/src/renderer/src/App.tsx#L1720)
+- [共享协议已经允许 regenerate-message](../desktop-app/src/shared/codexIpcApi.ts#L92)
+
+---
+
+## 推荐交付批次
+
+### 批次一：对话不中断
+
+- [ ] P0-01 运行中追问队列与 Steer
+- [ ] P0-02 活跃任务重连与局部恢复
+- [ ] P0-05 会话管理入口
+- [ ] P0-06 审批与结构化提问补全
+
+### 批次二：任务可管理
+
+- [ ] P0-03 从任意消息继续与任务分叉
+- [ ] P1-02 对话右侧任务工作台
+- [ ] P1-03 子 Agent 与后台进程管理
+- [ ] P1-04 Outputs 产物中心
+- [ ] P1-05 Sources、引用和资源使用记录
+
+### 批次三：开发协作闭环
+
+- [ ] P0-04 Git 改动审核与 PR 闭环
+- [ ] P1-01 Goal、Plan、Review 模式与运行参数
+- [ ] P1-06 环境、分支与可复用运行操作
+- [ ] P1-07 任务搜索、会话内查找与快捷键
+- [ ] P1-08 归档任务中心
+
+### 批次四：平台增强
+
+- [ ] 完成所有 P2 条目。
+
+## 完成定义
+
+每个能力只有同时满足以下条件，才可以勾选完成：
+
+- 用户可以从对话界面发现并完成完整操作。
+- Renderer、preload、main 和 provider 的职责边界清晰。
+- 不修改或绕过 Codex app server。
+- 错误、取消、重试和恢复路径可见。
+- 不向 Renderer 暴露 API key、provider headers 或完整模型配置。
+- 有针对新增行为的单元测试。
+- 涉及真实聊天链路时，有 renderer → IPC → main → provider → app-server 的端到端验证。
+- `npm --prefix desktop-app run lint` 通过。
+- `npm --prefix desktop-app test` 通过。
+- 涉及 provider 时，其 lint、typecheck 和相关测试通过。
+
+## 证据可靠性说明
+
+- 参考目录来自发布包解包与排版结果，没有 source map，无法可靠恢复原始组件名和类型。
+- 本清单中的“参考项目具备”均来自可见菜单、状态文案和操作处理逻辑。
+- Voice、Computer Use、Cloud、PR 等能力可能受平台、账号或实验开关限制，因此放在相应的较低优先级或要求提供降级行为。
+- 参考目录边界说明见：
+  [reference-projects/codex-electron-26.707.72221-beautified/_analysis/README.md](../reference-projects/codex-electron-26.707.72221-beautified/_analysis/README.md)
