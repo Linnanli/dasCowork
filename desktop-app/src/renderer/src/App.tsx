@@ -94,8 +94,17 @@ import {
 
 import { ModelSelector } from './components/assistant-ui'
 import { ServerRequestPanel } from './components/assistant-ui/server-request-panel'
+import { QueuedFollowUpList, QueuedFollowUpPausedBanner } from './components/queued-follow-ups'
 import { Button } from './components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './components/ui/collapsible'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from './components/ui/dialog'
 import { ComposerProjectCard } from './projects/ComposerProjectCard'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
@@ -119,6 +128,11 @@ import {
 } from './lib/toolActivityDisplay'
 import { scrollToRenderTarget } from './lib/renderUnitNavigation'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
+import { steerFollowUpItemWithOptimisticMessage } from './hooks/useConversationFollowUpCoordinator'
+import {
+  useConversationFollowUps,
+  type ConversationFollowUpsController
+} from './hooks/useConversationFollowUps'
 import type { ActiveConversationContext } from './lib/ElectronIpcChatTransport'
 import type {
   ConversationChatEntry,
@@ -126,7 +140,16 @@ import type {
 } from './runtime/ConversationChatRegistry'
 import type { ConversationDraftAttachment } from './runtime/ConversationDraftStore'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
+import { createQueuedFollowUpSnapshot } from './runtime/queuedFollowUpSnapshot'
+import { restoreQueuedFollowUpToComposerDraft } from './runtime/restoreQueuedFollowUpToComposer'
 import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
+import type {
+  FollowUpMode,
+  MaterializedQueuedUserMessage,
+  QueuedUserMessageSnapshot,
+  QueuedFollowUpTrustedContext,
+  QueuedUserMessageSnapshotInput
+} from '../../shared/codexFollowUpApi'
 import type { ProjectSelection } from '../../shared/projects/projectTypes'
 import type { ModelOption } from './components/assistant-ui'
 import {
@@ -173,6 +196,14 @@ type ComposerProps = {
   onSelectedModelChange: (modelId: string) => void
   projectState: ProjectStateController
   disabled?: boolean
+  followUps: ConversationFollowUpsController
+  onSteerFollowUp: (
+    itemId: string,
+    message:
+      | MaterializedQueuedUserMessage
+      | QueuedUserMessageSnapshot
+      | QueuedUserMessageSnapshotInput
+  ) => Promise<void>
 }
 
 type ChatThreadProps = ComposerProps & {
@@ -187,6 +218,16 @@ type ChatThreadProps = ComposerProps & {
 
 type ComposerComponentProps = ComposerProps & {
   composerContextCatalog: ComposerContextCatalogState
+  editingFollowUp: EditingFollowUpSession | null
+  onEditingFollowUpChange: (editingFollowUp: EditingFollowUpSession | null) => void
+  queueAttached: boolean
+  reservedEditingItemId?: string
+}
+
+type EditingFollowUpSession = {
+  itemId: string
+  contextReferences: QueuedUserMessageSnapshotInput['contextReferences']
+  trustedContext: QueuedFollowUpTrustedContext
 }
 
 type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -482,6 +523,25 @@ function ActiveConversationPane({
     isDisabled: !entry.loaded,
     adapters: { attachments: imageAttachmentAdapter }
   })
+  const conversationKey = entry.context.threadId ?? entry.context.conversationId
+  const followUps = useConversationFollowUps({
+    api: window.desktopApp.followUps,
+    conversationKey
+  })
+  const steerFollowUp = useCallback(
+    async (
+      itemId: string,
+      message:
+        | MaterializedQueuedUserMessage
+        | QueuedUserMessageSnapshot
+        | QueuedUserMessageSnapshotInput
+    ): Promise<void> => {
+      await steerFollowUpItemWithOptimisticMessage(entry.chat, message, () =>
+        followUps.steerItem(itemId)
+      )
+    },
+    [entry.chat, followUps]
+  )
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -502,12 +562,14 @@ function ActiveConversationPane({
         <ChatThread
           activeConversation={activeConversation}
           disabled={!entry.loaded}
+          followUps={followUps}
           hasBlockingRequest={hasBlockingRequest}
           loading={entry.phase === 'loading'}
           loadError={!entry.loaded ? entry.error : undefined}
           models={models}
           selectedModelId={selectedModelId}
           modelSelectionError={modelSelectionError}
+          onSteerFollowUp={steerFollowUp}
           onRetryLoad={onRetryLoad}
           onOpenConversation={onOpenConversation}
           onScrollSnapshotChange={onScrollSnapshotChange}
@@ -648,6 +710,7 @@ function latestRunningAssistantMessage(
 function ChatThread({
   activeConversation,
   disabled,
+  followUps,
   hasBlockingRequest,
   loading,
   loadError,
@@ -657,6 +720,7 @@ function ChatThread({
   onRetryLoad,
   onOpenConversation,
   onSelectedModelChange,
+  onSteerFollowUp,
   projectState,
   scrollSnapshot,
   onScrollSnapshotChange
@@ -665,6 +729,10 @@ function ChatThread({
   const showNewConversationView = isEmpty && !loading && !loadError
   const canChangeProject = showNewConversationView && !activeConversation?.threadId
   const viewportRef = useRef<HTMLDivElement>(null)
+  const aui = useAui()
+  const composerText = useAuiState((state) => state.composer.text)
+  const composerAttachments = useAuiState((state) => state.composer.attachments)
+  const [editingFollowUp, setEditingFollowUp] = useState<EditingFollowUpSession | null>(null)
   useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
   const effectiveProjectSelection = activeConversation
     ? activeConversation.projectSelection
@@ -688,6 +756,42 @@ function ChatThread({
     })
     return buildComposerTurnStatus(renderModel.units)
   }, [activeConversation, hasBlockingRequest, runningAssistantMessage])
+  const visibleFollowUpItems = followUps.items.filter((item) => item.status !== 'editing')
+  const reservedEditingItem = followUps.items.find((item) => item.status === 'editing')
+  const beginEditingFollowUp = useCallback(
+    async (itemId: string): Promise<void> => {
+      const hasComposerDraft = composerText.trim().length > 0 || composerAttachments.length > 0
+      if (hasComposerDraft && !window.confirm('输入框中已有内容。要用排队消息替换当前草稿吗？')) {
+        return
+      }
+
+      if (editingFollowUp && editingFollowUp.itemId !== itemId) {
+        await followUps.cancelEdit(editingFollowUp.itemId)
+        setEditingFollowUp(null)
+      }
+      const prepared = await followUps.beginEdit(itemId)
+      try {
+        const restored = restoreQueuedFollowUpToComposerDraft(prepared.message)
+        await aui.composer().reset()
+        aui.composer().setText(restored.text)
+        for (const attachment of restored.attachments) {
+          await aui.composer().addAttachment(attachment)
+        }
+        setEditingFollowUp({
+          itemId,
+          contextReferences: prepared.message.contextReferences,
+          trustedContext: prepared.message.trustedContext
+        })
+        window.requestAnimationFrame(() =>
+          document.querySelector<HTMLElement>('.aui-lexical-input')?.focus()
+        )
+      } catch (error) {
+        await followUps.cancelEdit(itemId)
+        throw error
+      }
+    },
+    [aui, composerAttachments.length, composerText, editingFollowUp, followUps]
+  )
 
   return (
     <ComposerContextIdentityProvider index={composerContextCatalog.identityIndex}>
@@ -749,6 +853,65 @@ function ChatThread({
             <ThreadScrollToBottom />
             <ComposerTurnStatusCard status={composerTurnStatus} />
             <div data-slot="composer-project-stack" className="flex w-full flex-col">
+              {reservedEditingItem && !editingFollowUp ? (
+                <div
+                  data-slot="queued-follow-up-edit-recovery"
+                  className="mb-2 flex items-center justify-between rounded-xl border border-border/60 bg-muted/60 px-3 py-2 text-xs"
+                >
+                  <span>有一条排队消息处于编辑保留状态。</span>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => void beginEditingFollowUp(reservedEditingItem.id)}
+                    >
+                      继续编辑
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => void followUps.cancelEdit(reservedEditingItem.id)}
+                    >
+                      恢复到队列
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+              <QueuedFollowUpPausedBanner
+                item={visibleFollowUpItems[0]}
+                busy={followUps.pendingItemIds.has(visibleFollowUpItems[0]?.id ?? '')}
+                onResume={followUps.resume}
+              />
+              <QueuedFollowUpList
+                items={visibleFollowUpItems}
+                conversationKey={followUps.state?.conversationKey}
+                defaultMode={followUps.defaultMode}
+                pendingItemIds={followUps.pendingItemIds}
+                announcement={followUps.announcement}
+                onEdit={(item) => beginEditingFollowUp(item.id)}
+                onDelete={followUps.deleteItem}
+                onMoveUp={followUps.moveUp}
+                onMoveDown={followUps.moveDown}
+                onReorder={followUps.reorder}
+                onSteer={async (itemId) => {
+                  const message = await followUps.materializeItem(itemId)
+                  return onSteerFollowUp(itemId, message)
+                }}
+                onRetry={followUps.retry}
+                onToggleQueueing={() =>
+                  followUps.setDefaultMode(followUps.defaultMode === 'queue' ? 'steer' : 'queue')
+                }
+                onRequestComposerFocus={() =>
+                  document.querySelector<HTMLElement>('.aui-lexical-input')?.focus()
+                }
+              />
+              {followUps.error ? (
+                <p role="alert" className="px-2 py-1 text-xs text-destructive">
+                  {followUps.error}
+                </p>
+              ) : null}
               {canChangeProject && (
                 <ComposerProjectCard
                   activeSelection={effectiveProjectSelection}
@@ -759,11 +922,17 @@ function ChatThread({
                 activeConversation={activeConversation}
                 composerContextCatalog={composerContextCatalog}
                 disabled={disabled}
+                followUps={followUps}
                 models={models}
                 selectedModelId={selectedModelId}
                 modelSelectionError={modelSelectionError}
                 onSelectedModelChange={onSelectedModelChange}
+                onSteerFollowUp={onSteerFollowUp}
                 projectState={projectState}
+                editingFollowUp={editingFollowUp}
+                onEditingFollowUpChange={setEditingFollowUp}
+                queueAttached={visibleFollowUpItems.length > 0}
+                reservedEditingItemId={reservedEditingItem?.id}
               />
             </div>
             {showNewConversationView ? (
@@ -821,6 +990,7 @@ function ConversationDraftBridge({
       initialDraftAttachments.current.map((attachment) =>
         aui.composer().addAttachment(
           createLocalPathAttachment({
+            capabilityToken: attachment.capabilityToken,
             fileUrl: attachment.fileUrl,
             kind: attachment.kind,
             label: attachment.label,
@@ -1920,11 +2090,17 @@ function Composer({
   activeConversation,
   composerContextCatalog,
   disabled,
+  followUps,
   models,
   selectedModelId,
   modelSelectionError,
   onSelectedModelChange,
-  projectState
+  onSteerFollowUp,
+  projectState,
+  editingFollowUp,
+  onEditingFollowUpChange,
+  queueAttached,
+  reservedEditingItemId
 }: ComposerComponentProps): React.JSX.Element {
   const aui = useAui()
   const globalProjectSelection = projectState.state?.activeProjectSelection
@@ -1937,6 +2113,12 @@ function Composer({
   const localContextPickerEnabled = !isRemoteExecution
   const [contextSearchOpen, setContextSearchOpen] = useState(false)
   const composerText = useAuiState((state) => state.composer.text)
+  const composerAttachments = useAuiState((state) => state.composer.attachments)
+  const isThreadRunning = useAuiState((state) => state.thread.isRunning)
+  const [pausedSubmission, setPausedSubmission] = useState<{
+    mode: FollowUpMode
+    snapshot: QueuedUserMessageSnapshotInput
+  } | null>(null)
   const selectedTaskIds = useMemo(
     () => [
       ...new Set(
@@ -2000,8 +2182,10 @@ function Composer({
         if (reference.kind === 'image') {
           await composer.addAttachment(
             createLocalImageAttachment({
+              capabilityToken: reference.capabilityToken,
               label: reference.label,
               mediaType: reference.mediaType,
+              path: reference.path,
               previewUrl: reference.previewUrl
             })
           )
@@ -2009,6 +2193,7 @@ function Composer({
         }
         await composer.addAttachment(
           createLocalPathAttachment({
+            capabilityToken: reference.capabilityToken,
             fileUrl: reference.fileUrl,
             kind: reference.kind,
             label: reference.label,
@@ -2026,7 +2211,63 @@ function Composer({
     !hasProjectContext ||
     cannotSendImages ||
     hasUnsendableAttachments ||
-    (isRemoteExecution && hasLocalPathAttachments)
+    (isRemoteExecution && hasLocalPathAttachments) ||
+    Boolean(reservedEditingItemId && !editingFollowUp)
+  const hasComposerContent = composerText.trim().length > 0 || composerAttachments.length > 0
+  const enqueueRunningFollowUp = useCallback(
+    async (mode: FollowUpMode) => {
+      const id = editingFollowUp?.itemId ?? crypto.randomUUID()
+      const cwd = resolveComposerCwd(activeConversation, projectState) ?? null
+      const selection = effectiveProjectSelection
+      const conversationKey =
+        activeConversation?.threadId ??
+        activeConversation?.conversationId ??
+        followUps.state?.conversationKey
+      if (!conversationKey) throw new Error('当前会话尚未准备好，无法保存追问')
+      const hostId = selection?.projectKind === 'remote' ? selection.hostId : 'local'
+      const snapshot = await createQueuedFollowUpSnapshot({
+        id,
+        text: composerText,
+        attachments: composerAttachments,
+        trustedContext:
+          editingFollowUp?.trustedContext ??
+          ({
+            conversationId: activeConversation?.conversationId ?? conversationKey,
+            ...(activeConversation?.threadId ? { threadId: activeConversation.threadId } : {}),
+            ...(selection ? { projectSelection: selection } : {}),
+            hostId,
+            cwd,
+            workspaceRoots: projectState.state?.activeWorkspaceRoots ?? (cwd ? [cwd] : [])
+          } satisfies QueuedFollowUpTrustedContext)
+      })
+      if (editingFollowUp) snapshot.contextReferences = editingFollowUp.contextReferences
+      if (!editingFollowUp && followUps.items[0]?.status === 'paused-interrupted') {
+        setPausedSubmission({ mode, snapshot })
+        return
+      }
+      if (editingFollowUp) {
+        await followUps.commitEdit(editingFollowUp.itemId, snapshot)
+        onEditingFollowUpChange(null)
+        await aui.composer().reset()
+      } else {
+        await followUps.enqueue(snapshot, mode)
+        await aui.composer().reset()
+        if (mode === 'steer') await onSteerFollowUp(id, snapshot)
+      }
+    },
+    [
+      activeConversation,
+      aui,
+      composerAttachments,
+      composerText,
+      editingFollowUp,
+      effectiveProjectSelection,
+      followUps,
+      onEditingFollowUpChange,
+      onSteerFollowUp,
+      projectState
+    ]
+  )
 
   const contextSections = useMemo(() => {
     const catalogSections = composerContextCatalog.sections.map((section) => {
@@ -2086,12 +2327,97 @@ function Composer({
 
   return (
     <ComposerContextSuggestionProvider>
+      <Dialog
+        open={pausedSubmission !== null}
+        onOpenChange={(open) => {
+          if (!open) setPausedSubmission(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>追问队列已暂停</DialogTitle>
+            <DialogDescription>
+              你刚刚停止了任务。请选择如何处理原来的追问，再继续提交这条新消息。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-between">
+            <Button type="button" variant="ghost" onClick={() => setPausedSubmission(null)}>
+              取消
+            </Button>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  const pending = pausedSubmission
+                  if (!pending) return
+                  void (async () => {
+                    await followUps.clear()
+                    await followUps.enqueue(pending.snapshot, pending.mode)
+                    setPausedSubmission(null)
+                    await aui.composer().reset()
+                  })()
+                }}
+              >
+                清空旧队列并发送
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  const pending = pausedSubmission
+                  if (!pending) return
+                  void (async () => {
+                    await followUps.enqueue(pending.snapshot, pending.mode)
+                    await followUps.resume()
+                    setPausedSubmission(null)
+                    await aui.composer().reset()
+                  })()
+                }}
+              >
+                保留旧队列并恢复
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+        <ComposerPrimitive.Root
+          className="aui-composer-root relative flex w-full flex-col"
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !isThreadRunning) return
+            event.preventDefault()
+            aui.composer().cancel()
+          }}
+        >
           <div
             data-slot="aui_composer-shell"
-            className="flex w-full flex-col gap-2 rounded-3xl border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/70"
+            className={cn(
+              'flex w-full flex-col gap-2 border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/70',
+              queueAttached ? 'rounded-b-3xl rounded-t-none' : 'rounded-3xl'
+            )}
           >
+            {editingFollowUp ? (
+              <div
+                data-slot="queued-follow-up-editing"
+                className="flex items-center justify-between gap-3 rounded-xl bg-muted/65 px-2.5 py-1.5 text-xs text-muted-foreground"
+              >
+                <span>正在编辑排队消息</span>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      await followUps.cancelEdit(editingFollowUp.itemId)
+                      await aui.composer().reset()
+                      onEditingFollowUpChange(null)
+                    })()
+                  }}
+                >
+                  取消编辑
+                </Button>
+              </div>
+            ) : null}
             <ComposerAttachments />
             <ContextLexicalInput
               className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
@@ -2145,19 +2471,21 @@ function Composer({
                 ) : null}
               </div>
               <div className="flex items-center gap-1.5">
-                <AuiIf condition={(state) => !state.thread.isRunning}>
-                  <ComposerPrimitive.Send asChild>
-                    <IconButton
-                      className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                      disabled={sendDisabled}
-                      label="发送消息"
-                      title="发送消息"
-                    >
-                      <ArrowUpIcon className="size-4.5" />
-                    </IconButton>
-                  </ComposerPrimitive.Send>
-                </AuiIf>
-                <AuiIf condition={(state) => state.thread.isRunning}>
+                {!editingFollowUp ? (
+                  <AuiIf condition={(state) => !state.thread.isRunning}>
+                    <ComposerPrimitive.Send asChild>
+                      <IconButton
+                        className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                        disabled={sendDisabled}
+                        label="发送消息"
+                        title="发送消息"
+                      >
+                        <ArrowUpIcon className="size-4.5" />
+                      </IconButton>
+                    </ComposerPrimitive.Send>
+                  </AuiIf>
+                ) : null}
+                {isThreadRunning && !hasComposerContent ? (
                   <ComposerPrimitive.Cancel asChild>
                     <IconButton
                       className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
@@ -2167,7 +2495,50 @@ function Composer({
                       <SquareIcon className="size-3.5 fill-current" />
                     </IconButton>
                   </ComposerPrimitive.Cancel>
-                </AuiIf>
+                ) : null}
+                {(editingFollowUp || isThreadRunning) && hasComposerContent ? (
+                  <>
+                    <IconButton
+                      className="size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      disabled={sendDisabled || followUps.loading}
+                      label={
+                        editingFollowUp
+                          ? '保存编辑后的排队消息'
+                          : followUps.defaultMode === 'queue'
+                            ? '将追问加入队列'
+                            : '立即调整当前任务'
+                      }
+                      title={
+                        editingFollowUp
+                          ? '保存到原来的队列位置'
+                          : followUps.defaultMode === 'queue'
+                            ? '排队（按住 Shift 单次引导）'
+                            : '引导（按住 Shift 单次排队）'
+                      }
+                      onClick={(event) => {
+                        const mode = editingFollowUp
+                          ? followUps.defaultMode
+                          : event.shiftKey
+                            ? followUps.defaultMode === 'queue'
+                              ? 'steer'
+                              : 'queue'
+                            : followUps.defaultMode
+                        void enqueueRunningFollowUp(mode).catch(() => undefined)
+                      }}
+                    >
+                      <ArrowUpIcon className="size-4.5" />
+                    </IconButton>
+                    <ComposerPrimitive.Cancel asChild>
+                      <IconButton
+                        className="size-7 rounded-full bg-transparent hover:bg-muted"
+                        label="停止生成"
+                        title="停止生成（Esc）"
+                      >
+                        <SquareIcon className="size-3 fill-current" />
+                      </IconButton>
+                    </ComposerPrimitive.Cancel>
+                  </>
+                ) : null}
               </div>
             </div>
           </div>

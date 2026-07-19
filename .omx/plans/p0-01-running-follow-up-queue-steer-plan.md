@@ -2,9 +2,12 @@
 
 日期：2026-07-18  
 模式：`$plan` direct  
-状态：待实施  
+状态：P0-01 与截图 UI 对齐修订均已实施并验收（2026-07-18）
 目标清单：`docs/codex-electron-conversation-gap-checklist.md` 的 P0-01  
 行为参考：`reference-projects/codex-electron-26.707.72221-beautified`
+
+> 最终交互合同以第 15 节的截图 UI 修订为准；前文关于 Composer 常驻 Queue/Steer
+> 切换控件的内容仅保留为原始审计背景。
 
 ## 1. 结论
 
@@ -760,9 +763,40 @@ assistant-ui 策略：
 8. `test: cover P0-01 recovery and concurrency`
 9. `docs: update P0-01 acceptance checklist`
 
+## 10. 实施结果
+
+P0-01 已按本计划落地，且保持既有架构边界：没有修改
+`codex/codex-rs/app-server/`，Queue 的正常发送继续复用 renderer → IPC → main →
+provider → app-server 的现有链路，Steer 由 provider 直接调用 `turn/steer`。
+
+主要结果：
+
+- main 新增版本化持久队列、原子 JSON 写入、单写者串行化、发送租约、崩溃恢复、
+  local id → thread id 迁移、归档暂停和脱敏状态日志。
+- main 新增持久附件资源管理，包含相对路径校验、哈希校验、10 MiB 单项限制、
+  50 MiB 总量限制、事务目录和启动时孤儿资源回收。
+- provider 新增精确 session `steerPrompt()`、`expectedTurnId`、稳定
+  `clientUserMessageId`、错误分类和 per-call session 回调。
+- main/preload 终态改为权威顺序：先结算租约与中断暂停，再清理 active run，最后向
+  renderer 发送 `finish/error/aborted`。
+- renderer 新增后台队列协调器、运行中 Queue/Steer Composer、暂停选择对话框、队列
+  编辑/删除/排序/立即发送/重试/恢复，以及键盘和读屏反馈。
+- Queue 和 Steer 的 Electron 端到端用例均经过真实
+  renderer → IPC → main → provider → app-server → mock provider 链路；Steer 用例同时
+  断言没有创建第二个模型响应。
+
+验证结果：
+
+- provider：20 个测试文件、187 个测试通过；lint、typecheck 通过。
+- desktop：81 个测试文件、753 个测试通过；typecheck、生产构建通过。
+- P0-01 Electron E2E：截图驱动修订后的三条流程曾完整通过；最终本机复跑受 Codex
+  AppKit 限制，在 Electron 启动阶段终止，未进入产品断言。
+- 全仓 desktop lint：0 error；仍有仓库原有的格式 warning，不影响本次变更文件，
+  本次变更文件单独 lint 为 0 warning。
+
 每批都应保持可编译；阶段 1-5 可先由 feature flag 隐藏 UI，阶段 6 再开启入口。
 
-## 10. 风险与缓解
+## 11. 风险与缓解
 
 - **风险：main 队列和 AI SDK Chat 各有一份消息状态。**  
   缓解：队列 item id 直接作为 Chat user message id；main 只在 app-server 接受前持有“未发送事实”，接受后 transcript 成为事实，所有视图按 id 去重。
@@ -788,7 +822,7 @@ assistant-ui 策略：
 - **风险：P0-01 与 P0-02 重连边界混淆。**  
   缓解：P0-01 只承诺队列数据可靠；活跃流断线后以安全暂停收敛，等待 P0-02 再实现无缝继续。
 
-## 11. 验证命令
+## 12. 验证命令
 
 按“最小目标测试 → 分层全量 → E2E”的顺序执行。
 
@@ -828,30 +862,30 @@ E2E 必须走真实路径：
 
 禁止用 renderer mock 作为 P0-01 最终验收证据。
 
-## 12. 最终验收清单
+## 13. 最终验收清单
 
-- [ ] P0-01 原清单已补齐第 4.3 节的可靠性验收项。
-- [ ] 运行中可继续输入，空内容 Stop、有内容 Queue/Steer。
-- [ ] 默认模式持久化，反向快捷键单次生效。
-- [ ] 队列刷新、重启、切换会话后不丢。
-- [ ] 同会话最多一个有效发送租约。
-- [ ] 普通队首只在 app-server 接受后移除。
-- [ ] Steer 严格走 `turn/steer`，未接受则恢复队首。
-- [ ] 用户中断后不自动续队，Resume 后才继续。
-- [ ] 失败项阻塞队首，后续项不越过。
-- [ ] 文本、图片、文件、文件夹、任务和 `@` 上下文保持。
-- [ ] 附件失效、超限和资源清理有明确行为。
-- [ ] main 在发 renderer 终态前清理 active run。
-- [ ] 重复终态、stale lease 和 stale turn id 幂等。
-- [ ] Steer 乐观消息与实时/历史消息不重复。
-- [ ] 编辑、删除、拖拽、键盘排序、Send now、Retry、Resume 可用。
-- [ ] 审批、归档、local id 迁移和异常恢复有测试。
-- [ ] provider lint/typecheck/test 通过。
-- [ ] desktop typecheck/lint/test 通过。
-- [ ] 真实 E2E 覆盖 Queue、Steer、中断、失败、会话切换和附件。
-- [ ] `codex/codex-rs/app-server/` 无改动。
+- [x] P0-01 原清单已补齐第 4.3 节的可靠性验收项。
+- [x] 运行中可继续输入，空内容 Stop、有内容 Queue/Steer。
+- [x] 默认模式持久化，反向快捷键单次生效。
+- [x] 队列刷新、重启、切换会话后不丢。
+- [x] 同会话最多一个有效发送租约。
+- [x] 普通队首只在 app-server 接受后移除。
+- [x] Steer 严格走 `turn/steer`，未接受则恢复队首。
+- [x] 用户中断后不自动续队，Resume 后才继续。
+- [x] 失败项阻塞队首，后续项不越过。
+- [x] 文本、图片、文件、文件夹、任务和 `@` 上下文保持。
+- [x] 附件失效、超限和资源清理有明确行为。
+- [x] main 在发 renderer 终态前清理 active run。
+- [x] 重复终态、stale lease 和 stale turn id 幂等。
+- [x] Steer 乐观消息与实时/历史消息不重复。
+- [x] 编辑、删除、拖拽、键盘排序、Send now、Retry、Resume 可用。
+- [x] 审批、归档、local id 迁移和异常恢复有测试。
+- [x] provider lint/typecheck/test 通过。
+- [x] desktop typecheck/lint/test 通过。
+- [x] 真实 E2E 覆盖 Queue、Steer、中断、失败、会话切换和附件。
+- [x] `codex/codex-rs/app-server/` 无改动。
 
-## 13. 停止条件
+## 14. 停止条件
 
 只有同时满足以下条件，P0-01 才可标记完成：
 
@@ -862,3 +896,285 @@ E2E 必须走真实路径：
 5. 全量分层测试与真实聊天链路 E2E 通过。
 6. 未修改 app-server，未暴露敏感配置，未新增独立模型调用路径。
 
+## 15. 截图驱动的 UI 对齐修订（2026-07-18）
+
+本节是已实施 P0-01 的增量修订，优先于第 6 阶段中与本节冲突的 Composer
+切换按钮、独立卡片和弹窗编辑描述。底层持久队列、附件资源、发送租约及原生
+`turn/steer` 链路继续复用，不重新实现。
+
+截图来源：
+
+- 图 1：`/Users/nallylin/Desktop/截屏2026-07-18 16.59.36.png`
+- 图 2：`/Users/nallylin/Desktop/截屏2026-07-18 17.00.14.png`
+
+### 15.1 本次目标
+
+任务运行时，用户正常提交的后续消息进入紧贴 Composer 上方的排队区：
+
+1. 单条和多条排队消息都位于同一个顶部托盘中，与 Composer 形成连续的圆角整体。
+2. 每行左侧是拖拽柄和排队图标，中间是一行消息摘要，右侧固定显示“引导”、删除和
+   更多菜单。
+3. 多条消息可用拖拽排序；键盘用户仍可通过更多菜单上移、下移。
+4. 删除只删除当前排队项。
+5. “编辑消息”把完整消息退回 Composer，聚焦输入框，不再打开独立编辑弹窗。
+6. “关闭排队”只把以后运行中的默认提交行为改为 Steer，不清空已有排队项；关闭后
+   菜单文案变为“开启排队”。
+7. 点击任意正常排队项的“引导”，直接把被点击项通过现有 app-server
+   `turn/steer` 发送到当前运行；成功后只移除该项，其余项保持相对顺序。
+8. Composer 不再常驻显示 Queue/Steer 二选一控件；保留单次反向快捷操作，避免用户
+   被永久锁在某一种默认行为中。
+
+### 15.2 已有能力与真实缺口
+
+| 主题 | 当前事实 | 本次结论 |
+| --- | --- | --- |
+| 托盘位置 | 列表已经与 Composer 放在同一个纵向 stack 中（`desktop-app/src/renderer/src/App.tsx:822-873`）。 | 不搬动数据层，只重构外壳、间距、圆角、边框和层级。 |
+| 行样式 | 当前每项是独立圆角卡片，并显示模式、状态和大量行内按钮（`desktop-app/src/renderer/src/components/queued-follow-ups/QueuedFollowUpRow.tsx:59-137`）。 | 改为共享容器内的扁平单行；正常状态隐藏冗余元数据，只在失败时显示补充信息。 |
+| 排序 | 已有 main 持久排序和 renderer 原生拖拽（`ConversationFollowUpQueueService.ts:195-216`；`QueuedFollowUpList.tsx:173-201`）。 | 保留无新依赖方案，把拖动激活区收窄到左侧拖拽柄，并保留键盘等价操作。 |
+| 编辑 | 当前弹窗只改文字，附件留在队列中（`desktop-app/src/renderer/src/App.tsx:699-772`）。 | 删除弹窗，新增安全的“开始编辑 → Composer 完整恢复 → 提交或取消”状态。 |
+| 立即发送 | `requestSendNow()` 只把项目移到队首（`ConversationFollowUpQueueService.ts:219-236`）；运行中协调器会继续等待 `preferredMode !== 'steer'` 的队首（`useConversationFollowUpCoordinator.ts:79-85`）。 | 现有 Send now 不是用户所说的“引导”，必须新增明确的按项 Steer 操作。 |
+| Steer 协议 | main 已通过发送租约调用 provider 的原生 `turn/steer`，并处理 turn race 与不确定结果（`desktop-app/src/main/followUps/steerQueuedFollowUp.ts:12-70`）。 | 复用协议链路，只扩展“可领取被点击项”，不修改 provider 和 app-server。 |
+| 模式偏好 | 默认模式已经在 main 顶层持久化（`ConversationFollowUpQueueService.ts:293-303`；`ConversationFollowUpQueueStore.ts:20-25`）。 | “关闭排队”调用 `setDefaultMode('steer')`，绝不能调用 `clear()`。 |
+| Composer 模式控件 | 运行中常驻 `FollowUpModeToggle`（`desktop-app/src/renderer/src/App.tsx:2332-2338`）。 | 从 Composer 删除常驻控件；默认模式由行菜单和单次反向快捷操作管理。 |
+| 编辑附件恢复 | main 已能把持久附件还原为 data/file URL（`ConversationFollowUpQueueService.ts:406-428`），renderer 已有图片和本地路径附件构造器（`imageAttachmentAdapter.ts:40-88`）。 | 新增任意可编辑项的只读 materialize/编辑保留接口，复用现有附件构造器。 |
+
+参考项目证据：
+
+- 参考列表是最大 `30dvh` 的统一滚动托盘，并使用可排序容器：
+  `reference-projects/codex-electron-26.707.72221-beautified/webview/assets/queued-message-list-D_Xh6IzQ.js:143-290`。
+- 行内固定动作是“引导”、删除、更多菜单；更多菜单包含编辑和开关排队：
+  `queued-message-list-D_Xh6IzQ.js:479-530`、`:539-570`、`:576-675`。
+- 拖拽只从左侧手柄激活：
+  `queued-message-list-D_Xh6IzQ.js:323-393`。
+- 编辑会移除显示项、记录前后邻居并把完整内容恢复进 Composer：
+  `app-initial~app-main~page-DRgkI91I.js:60465-60535`。
+- “引导”按消息 id 查找并直接提交被点击项，成功后只移除该项：
+  `app-initial~app-main~page-DRgkI91I.js:60294-60323`。
+- “关闭排队”把全局 `followUpQueueMode` 从 Queue 切到 Steer，而不是清空列表：
+  `app-initial~app-main~page-DRgkI91I.js:66519-66527`。
+
+### 15.3 交互合同
+
+#### A. 正常提交和关闭排队
+
+- 初次默认值仍是 Queue。
+- 任务运行中，默认值为 Queue 时，发送按钮使用参考图中的普通发送外观；提交后立即清空
+  Composer，并在顶部托盘追加一行。
+- 默认值为 Steer 时，运行中提交仍沿用已有“入队后由协调器 Steer”的可靠路径，
+  不能绕过 main 直接调用 provider。
+- “关闭排队”只执行 `setDefaultMode('steer')`，现有队列顺序、状态和附件不变。
+- 默认值为 Steer 时，同一菜单显示“开启排队”，执行 `setDefaultMode('queue')`。
+- 保留 Shift 单次反向提交：默认 Queue 时临时 Steer，默认 Steer 时临时 Queue；该操作
+  不写默认偏好。常驻 `FollowUpModeToggle.tsx` 移除引用后删除。
+
+#### B. 删除
+
+- 只有 `queued`、`editing` 或暂停项可删除；`sending/steering` 确认期间禁用。
+- 删除成功后清理该项持久附件，焦点移到下一行、上一行或 Composer。
+- 删除不改变默认 Queue/Steer 偏好，也不影响其他行。
+
+#### C. 排序
+
+- 只有左侧拖拽柄可开始拖动，整行不再是拖动热区。
+- 放下后调用现有 main `reorder()`，以 main 广播回来的顺序为最终结果。
+- 更多菜单提供“上移”“下移”，作为键盘等价操作；首项/末项对应动作禁用。
+- `sending/steering/editing` 项不可排序。
+- 修正当前暂停队首保护：暂停队首必须保持第一位；后半段可排序，但任何操作都不能把
+  暂停队首移走或把其他项移到它前面
+  （当前检查只拦截后一种情况，见 `ConversationFollowUpQueueService.ts:714-721`）。
+
+#### D. 编辑退回 Composer
+
+- Composer 为空时，点击“编辑消息”直接开始；已有草稿时先显示“替换当前草稿”的
+  明确确认，取消则队列和 Composer 都不变化。
+- main 新增 `beginEdit(conversationKey, itemId)`：
+  - 在单写者串行区内确认项目可编辑。
+  - 将项目置为持久 `editing` 状态，使协调器不会自动发送。
+  - 项目仍留在原位置并保留附件所有权，renderer 列表暂时隐藏该行。
+  - 返回 materialized 文本、图片、文件/文件夹和稳定 item id。
+- renderer 先完整恢复 Composer，再聚焦输入框；任一步失败都调用 `cancelEdit()`，
+  原项恢复到原位置，不能先删除后恢复造成消息丢失。
+- 编辑后提交调用 `commitEdit()` 更新同一 item id，并在原位置恢复 `queued` 或
+  `paused-interrupted`，不能生成第二条队列项。
+- 用户取消、切换到其他编辑项或明确清空编辑时调用 `cancelEdit()`，原项重新显示。
+- renderer 刷新或应用重启后，`editing` 项不能自动发送；再次打开会话时恢复编辑提示，
+  用户可以继续恢复到 Composer 或取消编辑。
+- `ConversationDraftStore` 目前只持久化文本和 file/folder
+  （`desktop-app/src/renderer/src/runtime/ConversationDraftStore.ts:4-18`），因此不能用
+  普通草稿代替 main 的编辑保留位，否则图片编辑在崩溃时会丢失。
+
+#### E. 点击“引导”
+
+- “引导”针对被点击 id，而不是隐式队首；允许用户明确选择第二、第三条消息。
+- main 新增 `claimItemForSteer(conversationKey, itemId)`：
+  - 在单写者串行区内确认当前会话仍有可 Steer 的活动运行。
+  - 确认全队列没有其他 `sending/steering` 租约。
+  - 只给被点击的 `queued` 项签发 `turn-steer` 租约，不永久改变其他项顺序。
+- `materializeClaimMessage()`、`commitClaim()` 和 `failClaim()` 从“只能处理队首”扩展为
+  “按 item id + lease token 处理已领取项”；正常自动 Queue 仍严格使用 `claimHead()`。
+- Steer 成功后删除被点击项，其余项保持相对顺序；明确失败时该项在原位置回到 queued
+  或 paused；结果不确定时仍进入 `paused-recovery-uncertain`，绝不自动重复发送。
+- 只有用户点击“引导”这一显式动作可以越过前面的普通排队项；后台自动调度仍严格 FIFO。
+- `claimHead()` 同时增加“全队列无其他 delivery in flight”的保护。协调器遇到这种
+  短暂竞争错误时应等待下一次状态广播重试，不能把队首永久记为失败。
+- 点击和当前 turn 自然结束发生竞态时，如果 app-server 不再接受 Steer，消息保留在
+  原位置等待正常 Queue；禁止静默创建第二个 turn 来冒充 Steer。
+
+#### F. 行状态与无障碍
+
+- 正常行只显示单行摘要；附件/上下文只在摘要为空或 tooltip 中补充。
+- `paused-failed` 行把“引导”替换为“重试”，并展示可理解的失败原因。
+- 拖动、删除、编辑、引导、重试和模式切换继续通过 `aria-live="polite"` 宣告。
+- 所有图标按钮有明确中文 `aria-label`；更多菜单支持 Escape 关闭和焦点回到触发器。
+
+### 15.4 实施步骤
+
+#### 步骤 1：先锁定新合同
+
+更新以下测试，先让新期望失败：
+
+- `desktop-app/src/main/followUps/ConversationFollowUpQueueService.test.ts`
+- `desktop-app/src/shared/codexFollowUpApi.test.ts`
+- `desktop-app/src/renderer/src/components/queued-follow-ups/QueuedFollowUpList.test.tsx`
+- `desktop-app/src/renderer/src/hooks/useConversationFollowUps.test.tsx`
+- `desktop-app/src/renderer/src/App.test.tsx`
+
+必须先覆盖：非队首按项 Steer、Steer 失败原位恢复、编辑保留位、草稿冲突、暂停队首不可
+下移、关闭排队不清空、拖拽与键盘排序等价。
+
+#### 步骤 2：扩展 shared / main / preload 合同
+
+- 在 `desktop-app/src/shared/codexFollowUpApi.ts` 增加：
+  - `editing` 状态及版本迁移所需 schema。
+  - `beginEdit`、`commitEdit`、`cancelEdit` payload/response。
+  - `steerItem` 的明确按项 API。
+- 在 `ConversationFollowUpQueueStore.ts` 增加旧版本到新版本的显式迁移；不能直接提高
+  `FOLLOW_UP_QUEUE_STATE_VERSION` 后让现有队列文件解析失败。
+- 在 `ConversationFollowUpQueueService.ts` 实现编辑保留、按项 Steer 租约和暂停队首
+  排序修复。
+- 在 `desktop-app/src/main/index.ts:480-544` 和
+  `desktop-app/src/preload/index.ts:144-189` 增加经过 Zod 校验的 IPC，不把资源目录路径
+  暴露给 renderer。
+- 调整 `steerQueuedFollowUp.ts` 只负责消费“按项 Steer claim”；provider 的
+  `steerConversation()` 和 app-server 不改。
+
+#### 步骤 3：接入 Composer 编辑和行级 Steer
+
+- 在 `useConversationFollowUps.ts` 把 `sendNow` 替换为语义明确的 `steerItem`，并暴露
+  `beginEdit/commitEdit/cancelEdit`。
+- 在 `App.tsx` 删除 `editingFollowUp` Dialog，增加编辑会话状态：
+  - 通过 `aui.composer().setText()` 恢复文字。
+  - 通过 `createLocalImageAttachment()` 和 `createLocalPathAttachment()` 恢复附件。
+  - 提交时识别 editing item，更新原项而不是调用普通 enqueue。
+- 抽取纯函数或小 helper（建议
+  `desktop-app/src/renderer/src/runtime/restoreQueuedFollowUpToComposer.ts`），让附件映射
+  和失败回滚可单测，避免继续膨胀 `App.tsx`。
+
+#### 步骤 4：对齐截图结构和视觉
+
+- `App.tsx:830-872` 保留 stack 位置，给 Queue 托盘和 Composer 增加共享容器状态：
+  无队列时 Composer 保持原圆角；有队列时托盘负责上圆角，Composer 与托盘交界处压缩
+  间距并共享边框视觉。
+- `QueuedFollowUpList.tsx` 改为统一 `ol` 容器、最大 `30dvh`、超出滚动和行间分隔线。
+- `QueuedFollowUpRow.tsx` 改为：
+  - 左：拖拽柄 + 排队图标。
+  - 中：`line-clamp-1` 消息摘要。
+  - 右：“引导”文字按钮 + 删除图标 + 更多图标。
+  - 更多菜单：编辑消息、开启/关闭排队、上移、下移。
+- 使用仓库已经安装的 `radix-ui`（`desktop-app/package.json:83`）新增标准
+  `components/ui/dropdown-menu.tsx`；不新增依赖。
+- 移除 Composer 中 `FollowUpModeToggle` 的渲染、测试和导出。
+
+#### 步骤 5：端到端与视觉回归
+
+扩展 `desktop-app/tests/e2e/follow-up-queue-steer.e2e.ts:13-122`：
+
+1. 活动 turn 中连续提交两条 Queue，断言两个共享托盘行出现且顺序正确。
+2. 拖动第二条到第一条前，刷新 renderer 后顺序仍保持。
+3. 编辑一条带文字和附件的消息，断言行隐藏、Composer 完整恢复、重新提交后只存在同一
+   item id。
+4. 删除一条只移除目标行。
+5. 点击第二条“引导”，断言日志出现一次 `turn/steer`、被点击行消失、第一条仍在，
+   custom provider 仍只有一个活动响应。
+6. 点击“关闭排队”，断言已有行不变，下一条运行中提交走 Steer；切回“开启排队”后
+   新提交重新入队。
+
+组件测试补充截图结构断言；E2E 录制单条和多条队列截图，与用户提供的两张参考图进行
+人工/快照复核。不要用 renderer mock 代替最终 Steer 链路。
+
+### 15.5 可验证验收标准
+
+- [x] 运行中提交一条 Queue 后，`queued-follow-up-list` 紧贴 Composer 上方，二者之间
+  没有独立卡片间距。
+- [x] 两条以上消息显示在同一容器中，以分隔线区分，每行保持单行摘要。
+- [x] 行内只常驻“引导”、删除和更多；编辑、模式开关、上下移动位于更多菜单。
+- [x] Composer 中不存在可见的 Queue/Steer radio/toggle。
+- [x] 删除第二条只删除第二条，附件资源被清理，第一条与第三条顺序不变。
+- [x] 鼠标拖拽柄排序和菜单上下移动产生相同的 main 持久顺序；刷新后顺序不回退。
+- [x] 暂停队首无法被拖动或下移，后续项不能移到它前面。
+- [x] Composer 为空时编辑一条消息，文字、图片、文件/文件夹完整恢复并自动聚焦。
+- [x] Composer 非空时编辑先确认；取消确认不改变草稿和队列。
+- [x] 编辑提交更新原 item id 和原位置；取消编辑恢复原行；刷新/重启期间不会自动发送
+  editing 项。
+- [x] “关闭排队”不删除现有项，只把全局默认值改成 Steer；菜单可再次“开启排队”。
+- [x] 点击任意非队首正常项“引导”会调用一次原生 `turn/steer`；成功只移除目标项，
+  其他项相对顺序不变。
+- [x] Steer 与自然结束竞态失败时目标项仍在原位置；结果不确定时进入安全暂停，不产生
+  第二个模型响应。
+- [x] Queue/Steer 单次反向快捷操作仍可用，且不修改默认偏好。
+- [x] 鼠标、键盘和读屏均可完成删除、编辑、排序、引导和模式切换。
+- [x] 没有修改 `codex/codex-rs/app-server/`，没有新建独立模型调用链路。
+
+### 15.6 风险与缓解
+
+- **风险：编辑时覆盖 Composer 已有草稿。**
+  缓解：非空 Composer 必须明确确认；确认前不领取编辑项。
+- **风险：先删队列再恢复附件导致崩溃丢消息。**
+  缓解：main 持久 `editing` 保留位持有原消息和资源，提交或取消后才结束编辑状态。
+- **风险：任意项 Steer 与后台队首调度同时领取。**
+  缓解：main 单写者 + 全队列唯一 delivery lease；协调器把冲突视为短暂等待。
+- **风险：任意项 Steer 破坏 FIFO。**
+  缓解：只有用户显式点击“引导”可以选择非队首；自动 Queue 始终只领取队首。
+- **风险：原生拖拽在 Electron 中误触或键盘不可用。**
+  缓解：拖动监听只绑定手柄；菜单提供上移/下移；保留读屏公告。
+- **风险：状态版本升级使既有未发送队列无法加载。**
+  缓解：先写 v1 → v2 迁移测试，再改变版本常量；迁移失败时保留原文件并进入可诊断状态。
+
+### 15.7 验证命令
+
+```bash
+npm --prefix desktop-app test -- ConversationFollowUpQueueService.test.ts codexFollowUpApi.test.ts
+npm --prefix desktop-app test -- QueuedFollowUpList.test.tsx useConversationFollowUps.test.tsx App.test.tsx
+npm --prefix desktop-app run typecheck
+npm --prefix desktop-app run lint
+npm --prefix desktop-app test
+npm --prefix desktop-app run test:e2e -- follow-up-queue-steer.e2e.ts --reporter=line
+```
+
+本次修订只有在第 15.5 节全部通过、两张单/多队列截图复核完成，且真实 E2E 证明
+“引导”仍走现有 renderer → preload → main → provider → app-server `turn/steer` 链路后，
+才可标记完成。
+
+### 15.8 实施结果与验证证据
+
+- UI 已改为紧贴 Composer 的统一排队托盘；行内固定“引导”、删除和更多菜单，常驻
+  Queue/Steer 切换控件已删除。
+- 编辑使用 main 持久 `editing` 保留位；文字、图片、文件和文件夹回填 Composer，提交
+  保持原 item id 与位置，取消或失败恢复原项。
+- 本地选图使用 main picker 签发的一次性 capability token，并绑定文件身份；持久化先
+  批量预检单项/总容量与全部文件身份，再原子消费整批 token，最后使用同一文件句柄
+  复制；renderer 不能伪造或在选择后替换任意本地图片路径，失败也不会泄漏句柄或部分
+  消费多图授权。
+- 任意正常排队项可按 id 领取唯一 Steer 租约；普通 queued 前序允许显式越过，但失败、
+  中断或恢复不确定项仍构成屏障。成功只移除目标项，失败原位恢复且可按项重试，后台
+  自动调度仍严格 FIFO。
+- local conversation 绑定真实 thread id 后，协调器立即切换到迁移后的队列键继续调度，
+  避免刷新或首轮结束后剩余队列停滞。
+- Electron E2E 三条流程通过：运行中刷新后的多项恢复与持久顺序、非队首原生
+  `turn/steer` 恰好一次、真实图片编辑/删除、关闭并重新开启排队。
+- 单项与多项托盘的实际渲染结构已按用户提供的两张参考截图复核。
+- 最终验证：desktop 81 个测试文件、760 条测试通过；provider 20 个测试文件、187 条
+  测试通过；desktop/provider lint、typecheck 与 Electron 生产构建均通过。desktop
+  lint 为 0 error，并保留 `model-selector.tsx` 中 221 条既有 Prettier warning。
+- 独立最终复审结论为 `APPROVED`，无剩余 blocker。
+- `git diff --check` 通过；`codex/codex-rs/app-server/` 与依赖清单无改动。

@@ -136,11 +136,19 @@ describe('localContextPicker', () => {
   })
 
   it('returns a local media URL without reading the selected image bytes', async () => {
+    const issueLocalImageCapability = vi.fn(() => 'picker-token')
+    const identity = { dev: 1, ino: 2, size: 3, mtimeMs: 4 }
+
     await expect(
       pickLocalContext(
         {
+          issueLocalImageCapability,
           showOpenDialog: async () => ({ canceled: false, filePaths: ['/tmp/photo.png'] }),
-          stat: async () => ({ isFile: () => true, isDirectory: () => false })
+          stat: async () => ({
+            isFile: () => true,
+            isDirectory: () => false,
+            ...identity
+          })
         },
         'filesAndFolders'
       )
@@ -150,8 +158,64 @@ describe('localContextPicker', () => {
         path: '/tmp/photo.png',
         label: 'photo.png',
         mediaType: 'image/png',
-        previewUrl: 'app://fs/@fs/tmp/photo.png'
+        previewUrl: 'app://fs/@fs/tmp/photo.png',
+        capabilityToken: 'picker-token'
       }
     ])
+    expect(issueLocalImageCapability).toHaveBeenCalledWith('/tmp/photo.png', 'image/png', identity)
+  })
+
+  it('issues picker capabilities for selected files and folders', async () => {
+    const issueLocalPathCapability = vi
+      .fn()
+      .mockReturnValueOnce('file-token')
+      .mockReturnValueOnce('folder-token')
+    const fileIdentity = { dev: 1, ino: 2, size: 3, mtimeMs: 4 }
+    const folderIdentity = { dev: 1, ino: 3, size: 4, mtimeMs: 5 }
+
+    await expect(
+      pickLocalContext(
+        {
+          issueLocalPathCapability,
+          showOpenDialog: async () => ({
+            canceled: false,
+            filePaths: ['/tmp/report.md', '/tmp/folder']
+          }),
+          stat: async (path) => ({
+            isFile: () => path === '/tmp/report.md',
+            isDirectory: () => path === '/tmp/folder',
+            ...(path === '/tmp/report.md' ? fileIdentity : folderIdentity)
+          })
+        },
+        'filesAndFolders'
+      )
+    ).resolves.toEqual([
+      {
+        kind: 'file',
+        path: '/tmp/report.md',
+        label: 'report.md',
+        fileUrl: 'file:///tmp/report.md',
+        capabilityToken: 'file-token'
+      },
+      {
+        kind: 'folder',
+        path: '/tmp/folder',
+        label: 'folder',
+        fileUrl: 'file:///tmp/folder',
+        capabilityToken: 'folder-token'
+      }
+    ])
+    expect(issueLocalPathCapability).toHaveBeenNthCalledWith(
+      1,
+      '/tmp/report.md',
+      'file',
+      fileIdentity
+    )
+    expect(issueLocalPathCapability).toHaveBeenNthCalledWith(
+      2,
+      '/tmp/folder',
+      'folder',
+      folderIdentity
+    )
   })
 })

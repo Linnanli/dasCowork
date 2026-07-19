@@ -166,7 +166,14 @@ export type {
     CodexCustomModelProviderSettings,
     TransportContext,
 } from "./provider-settings";
-export type { CodexSession } from "./session";
+export type {
+    CodexSession,
+    CodexSteerErrorCode,
+    CodexSteerResult,
+} from "./session";
+export {
+    CodexSteerError,
+} from "./session";
 export type { CodexStartedThread, CodexThreadStartOptions } from "./thread-client";
 export { CodexThreadClient, createCodexThreadClient } from "./thread-client";
 export type {

@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 export * from './composerContext'
 export * from './composerContextSearch'
+export * from './codexFollowUpApi'
 
 import type {
   LocalProject,
@@ -20,6 +21,7 @@ import {
   projectSelectPayloadSchema,
   projectSelectionSchema
 } from './projects/projectSchemas'
+import { followUpTurnStartRequestSchema, type FollowUpTurnStartRequest } from './codexFollowUpApi'
 
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
 
@@ -104,6 +106,7 @@ export type CodexChatRequestBody = {
   projectSelection?: ProjectSelection
   conversationId?: string
   threadId?: string
+  followUpRequest?: FollowUpTurnStartRequest
 } & Record<string, unknown>
 
 export const codexChatRequestBodySchema = z
@@ -111,7 +114,8 @@ export const codexChatRequestBodySchema = z
     system: z.string().optional(),
     projectSelection: projectSelectionSchema.optional(),
     conversationId: z.string().min(1).optional(),
-    threadId: z.string().min(1).optional()
+    threadId: z.string().min(1).optional(),
+    followUpRequest: followUpTurnStartRequestSchema.optional()
   })
   .catchall(z.unknown()) satisfies z.ZodType<CodexChatRequestBody>
 
@@ -184,6 +188,7 @@ export type LocalContextReference =
       path: string
       label: string
       fileUrl: string
+      capabilityToken?: string
     }
   | {
       kind: 'image'
@@ -191,6 +196,7 @@ export type LocalContextReference =
       label: string
       mediaType: string
       previewUrl: string
+      capabilityToken?: string
     }
 
 export type LocalContextPickerKind = 'filesAndFolders'
@@ -275,7 +281,8 @@ const localContextPathSchema = z.object({
 })
 
 const localContextFileSystemPathSchema = localContextPathSchema.extend({
-  fileUrl: z.string().refine(isLocalFileUrl, 'file URL must use the file: scheme')
+  fileUrl: z.string().refine(isLocalFileUrl, 'file URL must use the file: scheme'),
+  capabilityToken: z.string().min(1).optional()
 })
 
 export const localContextReferenceSchema = z.discriminatedUnion('kind', [
@@ -286,7 +293,8 @@ export const localContextReferenceSchema = z.discriminatedUnion('kind', [
     mediaType: z.string().regex(/^image\//u, 'media type must be an image'),
     previewUrl: z
       .string()
-      .regex(/^app:\/\/fs\/@fs\//u, 'preview URL must use the local media protocol')
+      .regex(/^app:\/\/fs\/@fs\//u, 'preview URL must use the local media protocol'),
+    capabilityToken: z.string().min(1).optional()
   })
 ]) satisfies z.ZodType<LocalContextReference>
 

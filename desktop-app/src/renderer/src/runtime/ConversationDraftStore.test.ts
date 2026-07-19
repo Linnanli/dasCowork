@@ -31,6 +31,7 @@ describe('ConversationDraftStore', () => {
     const store = new ConversationDraftStore(storage)
     store.setAttachments('thread-a', [
       {
+        capabilityToken: 'folder-picker-token',
         kind: 'folder',
         path: '/repo/docs',
         label: 'docs',
@@ -40,6 +41,7 @@ describe('ConversationDraftStore', () => {
 
     expect(new ConversationDraftStore(storage).getAttachments('thread-a')).toEqual([
       {
+        capabilityToken: 'folder-picker-token',
         kind: 'folder',
         path: '/repo/docs',
         label: 'docs',

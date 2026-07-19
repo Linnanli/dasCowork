@@ -1,4 +1,9 @@
 import { app } from 'electron'
+import type {
+  LanguageModelV3FilePart,
+  LanguageModelV3Prompt,
+  LanguageModelV3TextPart
+} from '@ai-sdk/provider'
 import {
   convertToModelMessages,
   streamText as aiStreamText,
@@ -7,12 +12,15 @@ import {
 } from 'ai'
 import {
   CODEX_PROVIDER_ID,
+  CodexSteerError,
   codexCallOptions,
   type CodexCallOptions,
   type CodexAgentLifecycleEvent,
   type CodexLanguageModelSettings,
   type CodexModelProviderInfo,
   type CodexProvider,
+  type CodexSession,
+  type CodexSteerResult,
   type CommandApprovalHandler,
   type FileChangeApprovalHandler
 } from '@janole/ai-sdk-provider-codex-asp'
@@ -43,6 +51,10 @@ import type {
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
 import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
+import {
+  ConversationFollowUpQueueService,
+  type FollowUpClaim
+} from './followUps/ConversationFollowUpQueueService'
 
 export type CodexPortLike = {
   postMessage(message: CodexChatStreamEvent): void
@@ -71,13 +83,20 @@ type StreamTextLike = (input: {
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
+  onSessionCreated?: CodexCallOptions['onSessionCreated']
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 type ActiveConversationRun = {
   conversationId: string
   threadId?: string
   turnId?: string
+  session?: CodexSession
   abortController: AbortController
+  terminalDelivered: boolean
+  interruptedByUser: boolean
+  followUpClaim?: FollowUpClaim
+  followUpAccepted: boolean
+  followUpSettlement?: Promise<void>
 }
 
 type PendingThreadBindingAcknowledgement = {
@@ -101,6 +120,7 @@ export type CodexChatRuntimeServiceOptions = {
   projectStore?: ProjectStoreLike
   streamText?: StreamTextLike
   onAgentLifecycle?: (event: CodexAgentLifecycleEvent) => void | Promise<void>
+  followUpQueue?: ConversationFollowUpQueueService
 }
 
 export type CodexChatRunResult = {
@@ -118,7 +138,10 @@ export type StartedConversationThread = {
 }
 
 export type StartChatStreamCallbacks = {
-  onThreadIdAvailable?: (threadId: string, thread?: StartedConversationThread) => void
+  onThreadIdAvailable?: (
+    threadId: string,
+    thread?: StartedConversationThread
+  ) => void | Promise<void>
 }
 
 export class CodexChatRuntimeService {
@@ -131,6 +154,7 @@ export class CodexChatRuntimeService {
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
+  private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private selectedModelId: string | undefined
   private status: CodexStatus
@@ -147,6 +171,7 @@ export class CodexChatRuntimeService {
       })
     this.streamText = options.streamText ?? defaultStreamText
     this.onAgentLifecycle = options.onAgentLifecycle
+    this.followUpQueue = options.followUpQueue
     this.modelCatalog = options.modelCatalog
     this.projectService = options.projectService
     this.projectStore = options.projectStore
@@ -233,10 +258,25 @@ export class CodexChatRuntimeService {
     port: CodexPortLike,
     callbacks?: StartChatStreamCallbacks
   ): Promise<CodexChatRunResult> {
-    let activeRun: ActiveConversationRun
+    let effectiveRequest = request
+    let claimedFollowUp: FollowUpClaim | undefined
     try {
-      activeRun = this.registerActiveConversationRun(request)
+      const prepared = await this.prepareClaimedFollowUp(request)
+      effectiveRequest = prepared.request
+      claimedFollowUp = prepared.claim
     } catch (error) {
+      port.start()
+      port.postMessage({ type: 'error', error: errorMessage(error) })
+      port.close()
+      return { threadId: request.body?.threadId }
+    }
+
+    let activeRun: ActiveConversationRun
+    let terminalEvent: CodexChatStreamEvent | undefined
+    try {
+      activeRun = this.registerActiveConversationRun(effectiveRequest, claimedFollowUp)
+    } catch (error) {
+      await this.failPreparedFollowUp(claimedFollowUp, error)
       port.start()
       port.postMessage({ type: 'error', error: errorMessage(error) })
       port.close()
@@ -262,6 +302,7 @@ export class CodexChatRuntimeService {
       })
     port.on('message', (event) => {
       if (isAbortMessage(event.data)) {
+        activeRun.interruptedByUser = true
         activeRun.abortController.abort()
         pendingThreadBindingAcknowledgement?.resolve()
         return
@@ -282,23 +323,23 @@ export class CodexChatRuntimeService {
           binary: this.launch.displayBinary
         }
       }
-      const modelId = request.modelId ?? this.selectedModelId
+      const modelId = effectiveRequest.modelId ?? this.selectedModelId
       if (!modelId) throw new Error('No Codex model selected')
       const clientModel = this.modelCatalog
         ? await this.modelCatalog.resolveClientModel(modelId)
         : undefined
       const streamModelId = clientModel?.model_id ?? modelId
       const localAttachmentCount = await validateLocalAttachmentsInLatestUserMessage(
-        request.messages
+        effectiveRequest.messages
       )
       const conversation = await startConversation({
-        request,
+        request: effectiveRequest,
         projectService: this.projectService
       })
       if (localAttachmentCount > 0 && conversation.projectAssignment?.projectKind === 'remote') {
         throw new Error('Local attachments are not available for remote execution')
       }
-      const projectAssignmentKey = request.body?.conversationId ?? request.chatId
+      const projectAssignmentKey = effectiveRequest.body?.conversationId ?? effectiveRequest.chatId
       let normalizedProjectAssignmentThreadId: string | undefined
       let projectAssignmentQueue = Promise.resolve()
       const enqueueProjectAssignmentOperation = (
@@ -344,35 +385,32 @@ export class CodexChatRuntimeService {
           }
         )
       }
-      const onThreadStarted = request.body?.threadId
+      const onThreadStarted = effectiveRequest.body?.threadId
         ? undefined
         : async (thread: { threadId: string; threadPath?: string }) => {
             const startedAt = new Date().toISOString()
             const startedThread: StartedConversationThread = {
               threadId: thread.threadId,
               originConversationId: activeRun.conversationId,
-              title: conversationTitleFromRequest(request),
+              title: conversationTitleFromRequest(effectiveRequest),
               cwd: conversation.executionTarget?.cwd ?? null,
               createdAt: startedAt,
               updatedAt: startedAt,
               projectAssignment: conversation.projectAssignment
             }
             const threadIdChanged = this.bindActiveConversationRunAlias(activeRun, thread.threadId)
+            await persistStartedProjectAssignment(thread.threadId)
+            await callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
+            this.migrateActiveFollowUpClaim(activeRun, thread.threadId)
             if (threadIdChanged) {
               const acknowledgement = waitForThreadBindingAcknowledgement(thread.threadId)
               port.postMessage({ type: 'thread-bound', threadId: thread.threadId })
               await acknowledgement
             }
-            await persistStartedProjectAssignment(thread.threadId)
-            try {
-              callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
-            } catch (error) {
-              console.error(`failed to publish started thread ${thread.threadId}`, error)
-            }
           }
       const modelInputRequest = {
-        ...request,
-        messages: restoreLocalMediaFileUrlsForModel(request.messages)
+        ...effectiveRequest,
+        messages: restoreLocalMediaFileUrlsForModel(effectiveRequest.messages)
       }
       const result = await this.streamText({
         request: modelInputRequest,
@@ -383,7 +421,14 @@ export class CodexChatRuntimeService {
         executionTarget: conversation.executionTarget,
         resumeThreadId: activeRun.threadId,
         onThreadStarted,
-        onAgentLifecycle: this.onAgentLifecycle
+        onAgentLifecycle: this.onAgentLifecycle,
+        onSessionCreated: (session) => {
+          if (activeRun.terminalDelivered) return
+          activeRun.session = session
+          activeRun.turnId = session.turnId ?? activeRun.turnId
+          this.bindActiveConversationRunAlias(activeRun, session.threadId)
+          this.acceptClaimedFollowUp(activeRun)
+        }
       })
       if (this.status.state !== 'stopping') {
         this.status = {
@@ -394,7 +439,7 @@ export class CodexChatRuntimeService {
       }
       let streamFailed = false
       for await (const chunk of result.toUIMessageStream({
-        originalMessages: request.messages,
+        originalMessages: effectiveRequest.messages,
         sendReasoning: true,
         sendSources: true,
         messageMetadata: ({ part }) =>
@@ -403,7 +448,7 @@ export class CodexChatRuntimeService {
       })) {
         if (chunk.type === 'error') {
           streamFailed = true
-          port.postMessage({ type: 'error', error: chunk.errorText })
+          terminalEvent = { type: 'error', error: chunk.errorText }
           break
         }
         const threadId = extractCodexThreadId(chunk)
@@ -419,33 +464,42 @@ export class CodexChatRuntimeService {
           persistOrNormalizeProjectAssignment(threadId)
         }
         if (threadIdChanged) {
+          await callbacks?.onThreadIdAvailable?.(threadId!)
           const acknowledgement = waitForThreadBindingAcknowledgement(threadId!)
           port.postMessage({ type: 'thread-bound', threadId: threadId! })
           await acknowledgement
-          try {
-            callbacks?.onThreadIdAvailable?.(threadId!)
-          } catch (error) {
-            console.error(`failed to publish thread metadata ${threadId}`, error)
-          }
         }
         port.postMessage({ type: 'chunk', chunk })
       }
       await projectAssignmentQueue
       if (activeRun.abortController.signal.aborted) {
-        port.postMessage({ type: 'aborted' })
+        terminalEvent = { type: 'aborted' }
       } else if (!streamFailed) {
-        port.postMessage({ type: 'finish', threadId: activeRun.threadId })
+        terminalEvent = { type: 'finish', threadId: activeRun.threadId }
       }
     } catch (error) {
       this.restoreStatusAfterTurnFailure(activeRun)
       if (activeRun.abortController.signal.aborted) {
-        port.postMessage({ type: 'aborted' })
+        terminalEvent = { type: 'aborted' }
       } else {
-        port.postMessage({ type: 'error', error: errorMessage(error) })
+        terminalEvent = { type: 'error', error: errorMessage(error) }
       }
     } finally {
+      await this.settleClaimedFollowUp(activeRun, terminalEvent).catch((error) => {
+        console.warn('failed to settle follow-up delivery before terminal event', error)
+      })
+      if (activeRun.interruptedByUser) {
+        await this.pauseFollowUpsAfterInterrupt(activeRun)
+      }
       this.clearActiveConversationRun(activeRun)
-      port.close()
+      try {
+        if (terminalEvent && !activeRun.terminalDelivered) {
+          activeRun.terminalDelivered = true
+          port.postMessage(terminalEvent)
+        }
+      } finally {
+        port.close()
+      }
     }
     return { threadId: activeRun.threadId }
   }
@@ -453,7 +507,27 @@ export class CodexChatRuntimeService {
   interruptConversation(conversationId: string): void {
     const run = this.activeConversationRuns.get(conversationId)
     if (!run) return
+    run.interruptedByUser = true
     run.abortController.abort()
+  }
+
+  async steerConversation(
+    conversationId: string,
+    message: CodexChatRequest['messages'][number],
+    clientUserMessageId: string
+  ): Promise<CodexSteerResult> {
+    const run = this.activeConversationRuns.get(conversationId)
+    if (!run?.session?.isActive()) {
+      throw new CodexSteerError(
+        'session_inactive',
+        'Conversation does not have a steerable active turn'
+      )
+    }
+
+    const prompt = userMessageToLanguageModelV3Prompt(
+      restoreLocalMediaFileUrlsForModel([message])[0] ?? message
+    )
+    return run.session.steerPrompt(prompt, { clientUserMessageId })
   }
 
   isConversationRunning(conversationId: string): boolean {
@@ -476,7 +550,10 @@ export class CodexChatRuntimeService {
     }
   }
 
-  private registerActiveConversationRun(request: CodexChatRequest): ActiveConversationRun {
+  private registerActiveConversationRun(
+    request: CodexChatRequest,
+    followUpClaim?: FollowUpClaim
+  ): ActiveConversationRun {
     const conversationId = request.body?.conversationId ?? request.body?.threadId ?? request.chatId
     const aliases = new Set(
       [request.chatId, request.body?.conversationId, request.body?.threadId].filter(
@@ -491,10 +568,139 @@ export class CodexChatRuntimeService {
     const run: ActiveConversationRun = {
       conversationId,
       threadId: request.body?.threadId,
-      abortController: new AbortController()
+      abortController: new AbortController(),
+      terminalDelivered: false,
+      interruptedByUser: false,
+      followUpClaim,
+      followUpAccepted: false
     }
     for (const alias of aliases) this.activeConversationRuns.set(alias, run)
     return run
+  }
+
+  private async prepareClaimedFollowUp(request: CodexChatRequest): Promise<{
+    request: CodexChatRequest
+    claim?: FollowUpClaim
+  }> {
+    const followUpRequest = request.body?.followUpRequest
+    if (!followUpRequest) return { request }
+    if (!this.followUpQueue) throw new Error('Follow-up queue is not available')
+
+    const activeConversationKey =
+      request.body?.threadId ?? request.body?.conversationId ?? request.chatId
+    if (followUpRequest.conversationKey !== activeConversationKey) {
+      throw new Error('Follow-up request does not belong to the active conversation')
+    }
+
+    const claim = await this.followUpQueue.claimHead(
+      followUpRequest.conversationKey,
+      'turn-start',
+      followUpRequest.itemId,
+      'runtime'
+    )
+    let message: Awaited<ReturnType<ConversationFollowUpQueueService['materializeClaimMessage']>>
+    try {
+      message = await this.followUpQueue.materializeClaimMessage(claim)
+    } catch (error) {
+      await this.followUpQueue
+        .failClaim(claim.conversationKey, claim.item.id, claim.leaseToken, {
+          kind: 'attachment-unavailable',
+          userMessage: errorMessage(error)
+        })
+        .catch((settlementError) =>
+          console.warn('failed to release invalid follow-up delivery lease', settlementError)
+        )
+      throw error
+    }
+    const userMessage: CodexChatRequest['messages'][number] = {
+      id: message.id,
+      role: 'user',
+      parts: message.parts
+    }
+    const previousMessages = request.messages.filter((candidate) => candidate.id !== message.id)
+
+    return {
+      claim,
+      request: {
+        ...request,
+        messageId: message.id,
+        messages: [...previousMessages, userMessage],
+        body: {
+          ...request.body,
+          followUpRequest
+        }
+      }
+    }
+  }
+
+  private acceptClaimedFollowUp(run: ActiveConversationRun): void {
+    const claim = run.followUpClaim
+    if (!claim || run.followUpAccepted || !this.followUpQueue) return
+    run.followUpAccepted = true
+    run.followUpSettlement = this.followUpQueue
+      .commitClaim(claim.conversationKey, claim.item.id, claim.leaseToken)
+      .then(() => undefined)
+      .catch(async (error) => {
+        console.warn('failed to commit accepted follow-up delivery', error)
+        await this.followUpQueue
+          ?.failClaim(claim.conversationKey, claim.item.id, claim.leaseToken, {
+            status: 'paused-recovery-uncertain',
+            kind: 'recovery-uncertain',
+            userMessage:
+              'The follow-up was accepted, but its local queue record could not be finalized.'
+          })
+          .catch((settlementError) =>
+            console.warn('failed to preserve uncertain follow-up delivery', settlementError)
+          )
+      })
+  }
+
+  private async settleClaimedFollowUp(
+    run: ActiveConversationRun,
+    terminalEvent: CodexChatStreamEvent | undefined
+  ): Promise<void> {
+    const claim = run.followUpClaim
+    if (!claim || !this.followUpQueue) return
+    if (run.followUpAccepted) {
+      await run.followUpSettlement
+      return
+    }
+
+    await this.followUpQueue
+      .failClaim(claim.conversationKey, claim.item.id, claim.leaseToken, {
+        status: terminalEvent?.type === 'aborted' ? 'paused-recovery-uncertain' : 'paused-failed',
+        kind: terminalEvent?.type === 'aborted' ? 'recovery-uncertain' : 'send-failed',
+        userMessage:
+          terminalEvent?.type === 'aborted'
+            ? 'The task stopped before queued delivery acceptance could be confirmed.'
+            : terminalEvent?.type === 'error'
+              ? terminalEvent.error
+              : 'The queued follow-up could not be confirmed.'
+      })
+      .catch((error) => console.warn('failed to settle follow-up delivery lease', error))
+  }
+
+  private async failPreparedFollowUp(
+    claim: FollowUpClaim | undefined,
+    error: unknown
+  ): Promise<void> {
+    if (!claim || !this.followUpQueue) return
+    await this.followUpQueue
+      .failClaim(claim.conversationKey, claim.item.id, claim.leaseToken, {
+        kind: 'send-failed',
+        userMessage: errorMessage(error)
+      })
+      .catch((settlementError) =>
+        console.warn('failed to release rejected follow-up delivery lease', settlementError)
+      )
+  }
+
+  private async pauseFollowUpsAfterInterrupt(run: ActiveConversationRun): Promise<void> {
+    if (!this.followUpQueue) return
+    const conversationKey = run.followUpClaim?.conversationKey ?? run.threadId ?? run.conversationId
+    await this.followUpQueue
+      .interrupt(conversationKey)
+      .catch((error) => console.warn('failed to pause follow-up queue after interrupt', error))
   }
 
   private bindActiveConversationRunAlias(run: ActiveConversationRun, alias: string): boolean {
@@ -514,6 +720,26 @@ export class CodexChatRuntimeService {
     run.threadId = alias
     this.activeConversationRuns.set(alias, run)
     return changed
+  }
+
+  private migrateActiveFollowUpClaim(run: ActiveConversationRun, conversationKey: string): void {
+    const claim = run.followUpClaim
+    if (!claim || claim.conversationKey === conversationKey) return
+    run.followUpClaim = {
+      ...claim,
+      conversationKey,
+      item: {
+        ...claim.item,
+        conversationKey,
+        message: {
+          ...claim.item.message,
+          trustedContext: {
+            ...claim.item.message.trustedContext,
+            threadId: conversationKey
+          }
+        }
+      }
+    }
   }
 
   private restoreStatusAfterTurnFailure(run: ActiveConversationRun): void {
@@ -601,7 +827,8 @@ async function defaultStreamText({
   executionTarget,
   resumeThreadId,
   onThreadStarted,
-  onAgentLifecycle
+  onAgentLifecycle,
+  onSessionCreated
 }: {
   request: CodexChatRequest
   modelId: string
@@ -612,6 +839,7 @@ async function defaultStreamText({
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
+  onSessionCreated?: CodexCallOptions['onSessionCreated']
 }): Promise<StreamTextLikeResult> {
   const modelMessages = await convertToModelMessages(request.messages)
   const system = typeof request.body?.system === 'string' ? request.body.system : undefined
@@ -619,10 +847,12 @@ async function defaultStreamText({
   const providerOptions = codexCallOptions(
     codexCallOptionsInput({
       modelId,
+      requestMessageId: request.messageId,
       executionTarget,
       resumeThreadId: resumeThreadId ?? request.body?.threadId,
       onThreadStarted,
-      onAgentLifecycle
+      onAgentLifecycle,
+      onSessionCreated
     })
   )
 
@@ -637,23 +867,29 @@ async function defaultStreamText({
 
 function codexCallOptionsInput({
   modelId,
+  requestMessageId,
   executionTarget,
   resumeThreadId,
   onThreadStarted,
-  onAgentLifecycle
+  onAgentLifecycle,
+  onSessionCreated
 }: {
   modelId: string
+  requestMessageId?: string
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
+  onSessionCreated?: CodexCallOptions['onSessionCreated']
 }): CodexCallOptions {
   return {
     model: modelId,
+    ...(requestMessageId ? { clientUserMessageId: requestMessageId } : {}),
     summary: 'auto' as const,
     ...(resumeThreadId ? { resumeThreadId } : {}),
     ...(onThreadStarted ? { onThreadStarted } : {}),
     ...(onAgentLifecycle ? { onAgentLifecycle } : {}),
+    ...(onSessionCreated ? { onSessionCreated } : {}),
     ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
     ...(executionTarget?.runtimeWorkspaceRoots
       ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
@@ -675,6 +911,35 @@ function conversationTitleFromRequest(request: CodexChatRequest): string | null 
     .trim()
 
   return title ? title : null
+}
+
+function userMessageToLanguageModelV3Prompt(
+  message: CodexChatRequest['messages'][number]
+): LanguageModelV3Prompt {
+  if (message.role !== 'user') throw new Error('Steer requires a user message')
+
+  const content: Array<LanguageModelV3TextPart | LanguageModelV3FilePart> = []
+  for (const part of message.parts) {
+    if (part.type === 'text') {
+      content.push({ type: 'text', text: part.text })
+      continue
+    }
+    if (part.type === 'file') {
+      content.push({
+        type: 'file',
+        data: part.url,
+        mediaType: part.mediaType,
+        ...(part.filename ? { filename: part.filename } : {})
+      })
+    }
+  }
+
+  return [
+    {
+      role: 'user',
+      content
+    }
+  ]
 }
 
 async function normalizeProjectAssignmentThreadId({

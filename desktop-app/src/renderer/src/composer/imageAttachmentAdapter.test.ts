@@ -57,6 +57,7 @@ describe('imageAttachmentAdapter', () => {
 
   it('creates a completed local folder attachment without reading the folder bytes', () => {
     const attachment = createLocalPathAttachment({
+      capabilityToken: 'folder-picker-token',
       kind: 'folder',
       path: '/repo/docs',
       fileUrl: 'file:///repo/docs',
@@ -64,6 +65,7 @@ describe('imageAttachmentAdapter', () => {
     })
 
     expect(localPathAttachmentIdentityFromId(attachment.id ?? '')).toEqual({
+      capabilityToken: 'folder-picker-token',
       kind: 'folder',
       path: '/repo/docs',
       fileUrl: 'file:///repo/docs'

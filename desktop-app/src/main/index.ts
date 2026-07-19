@@ -28,6 +28,8 @@ import {
 } from './conversations/ConversationApiService'
 import { installWindowContextMenu } from './contextMenu'
 import { createPickLocalContextHandler } from './localContextPicker'
+import { LocalImageCapabilityStore } from './localImageCapabilityStore'
+import { LocalPathCapabilityStore } from './localPathCapabilityStore'
 import { createOpenLocalPathHandler } from './localPathOpen'
 import {
   createAppRendererUrl,
@@ -50,6 +52,11 @@ import {
 import { LiveAgentRegistry } from './composerContext/LiveAgentRegistry'
 import { LocalAgentRoleCatalog, resolveCodexHome } from './composerContext/LocalAgentRoleCatalog'
 import { createValidateLocalAttachmentsHandler } from './composerContext/localAttachmentValidation'
+import { ConversationFollowUpQueueService } from './followUps/ConversationFollowUpQueueService'
+import { ConversationFollowUpQueueStore } from './followUps/ConversationFollowUpQueueStore'
+import { FollowUpAssetStore } from './followUps/FollowUpAssetStore'
+import { steerQueuedFollowUp } from './followUps/steerQueuedFollowUp'
+import { validateQueuedLocalAttachments } from './followUps/validateQueuedLocalAttachments'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
@@ -66,6 +73,17 @@ import {
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema,
   type ComposerContextCatalogChangeEvent,
+  type FollowUpQueueChangeEvent,
+  followUpClaimNextPayloadSchema,
+  followUpCommitEditPayloadSchema,
+  followUpConversationActionPayloadSchema,
+  followUpEditPayloadSchema,
+  followUpEnqueuePayloadSchema,
+  followUpGetStatePayloadSchema,
+  followUpItemActionPayloadSchema,
+  followUpReorderPayloadSchema,
+  followUpSetDefaultModePayloadSchema,
+  followUpSteerItemPayloadSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationRenamePayloadSchema,
   sidebarPreferencesPatchSchema
@@ -79,6 +97,9 @@ let composerContextCatalog: ComposerContextCatalogService | undefined
 let composerContextSearch: ComposerContextSearchService | undefined
 let composerContextChanges: ComposerContextChangeBroker | undefined
 let composerContextClient: CodexContextCatalogClient | undefined
+let followUpQueue: ConversationFollowUpQueueService | undefined
+const localImageCapabilities = new LocalImageCapabilityStore()
+const localPathCapabilities = new LocalPathCapabilityStore()
 const convergingConversationThreadIds = new Set<string>()
 
 const e2eUserDataPath = process.env.DASCOWORK_E2E_USER_DATA_DIR?.trim()
@@ -152,12 +173,27 @@ function createCodexRuntime(): CodexChatRuntimeService {
   composerContextChanges = new ComposerContextChangeBroker({
     publish: broadcastComposerContextChange
   })
+  const followUpRoot = join(app.getPath('userData'), 'follow-ups')
+  followUpQueue = new ConversationFollowUpQueueService({
+    store: ConversationFollowUpQueueStore.onDisk(join(followUpRoot, 'queue.json')),
+    assetStore: new FollowUpAssetStore(join(followUpRoot, 'assets'), {
+      authorizeLocalImages: (requests) => localImageCapabilities.consumeAll(requests)
+    }),
+    validateLocalAttachments: (attachments) =>
+      validateQueuedLocalAttachments(attachments, {
+        capabilities: localPathCapabilities,
+        stat
+      }),
+    logger: (event, details) => console.info(`[follow-up:${event}]`, details)
+  })
+  followUpQueue.subscribe(broadcastFollowUpChange)
 
   return new CodexChatRuntimeService({
     launch,
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore,
+    followUpQueue,
     onAgentLifecycle: (event) => {
       liveAgents.observe(event)
       composerContextChanges?.notify({
@@ -217,11 +253,22 @@ function requireComposerContextSearch(): ComposerContextSearchService {
   return composerContextSearch
 }
 
+function requireFollowUpQueue(): ConversationFollowUpQueueService {
+  if (!followUpQueue) throw new Error('Follow-up queue is not initialized')
+  return followUpQueue
+}
+
 function broadcastStatus(): void {
   if (!codexRuntime) return
   const status = codexRuntime.getStatus()
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('codex:status-change', status)
+  }
+}
+
+function broadcastFollowUpChange(event: FollowUpQueueChangeEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('codex:follow-ups:changed', event)
   }
 }
 
@@ -403,6 +450,10 @@ app.whenReady().then(() => {
     'codex:pick-local-context',
     createPickLocalContextHandler({
       choosePickerKind: process.platform === 'darwin' ? undefined : chooseLocalContextPickerKind,
+      issueLocalImageCapability: (path, mediaType, identity) =>
+        localImageCapabilities.issue(path, mediaType, identity),
+      issueLocalPathCapability: (path, kind, identity) =>
+        localPathCapabilities.issue(path, kind, identity),
       showOpenDialog: (options) => dialog.showOpenDialog(options),
       stat
     })
@@ -431,6 +482,97 @@ app.whenReady().then(() => {
     'codex:composer-context-search:stop',
     createStopComposerContextSearchHandler(requireComposerContextSearch())
   )
+  ipcMain.handle('codex:follow-ups:get-state', (_, payload: unknown) => {
+    const request = followUpGetStatePayloadSchema.parse(payload)
+    return requireFollowUpQueue().getState(request.conversationKey)
+  })
+  ipcMain.handle('codex:follow-ups:enqueue', (_, payload: unknown) => {
+    const request = followUpEnqueuePayloadSchema.parse(payload)
+    return requireFollowUpQueue().enqueue(
+      request.conversationKey,
+      request.snapshot,
+      request.preferredMode
+    )
+  })
+  ipcMain.handle('codex:follow-ups:edit', (_, payload: unknown) => {
+    const request = followUpEditPayloadSchema.parse(payload)
+    return requireFollowUpQueue().edit(
+      request.conversationKey,
+      request.itemId,
+      request.replacementSnapshot
+    )
+  })
+  ipcMain.handle('codex:follow-ups:begin-edit', (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().beginEdit(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:commit-edit', (_, payload: unknown) => {
+    const request = followUpCommitEditPayloadSchema.parse(payload)
+    return requireFollowUpQueue().commitEdit(
+      request.conversationKey,
+      request.itemId,
+      request.replacementSnapshot
+    )
+  })
+  ipcMain.handle('codex:follow-ups:cancel-edit', (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().cancelEdit(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:delete', (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().delete(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:reorder', (_, payload: unknown) => {
+    const request = followUpReorderPayloadSchema.parse(payload)
+    const position = request.beforeId
+      ? { beforeId: request.beforeId }
+      : { afterId: request.afterId! }
+    return requireFollowUpQueue().reorder(request.conversationKey, request.itemId, position)
+  })
+  ipcMain.handle('codex:follow-ups:send-now', (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().requestSendNow(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:retry', (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().retry(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:resume', (_, payload: unknown) => {
+    const request = followUpConversationActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().resume(request.conversationKey)
+  })
+  ipcMain.handle('codex:follow-ups:clear', (_, payload: unknown) => {
+    const request = followUpConversationActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().clear(request.conversationKey)
+  })
+  ipcMain.handle('codex:follow-ups:set-default-mode', (_, payload: unknown) => {
+    const request = followUpSetDefaultModePayloadSchema.parse(payload)
+    return requireFollowUpQueue().setDefaultMode(request.mode)
+  })
+  ipcMain.handle('codex:follow-ups:prepare-next-turn', async (_, payload: unknown) => {
+    const request = followUpClaimNextPayloadSchema.parse(payload)
+    const queue = requireFollowUpQueue()
+    const message = await queue.materializeQueuedMessage(request.conversationKey, request.itemId)
+    return {
+      request: {
+        conversationKey: request.conversationKey,
+        itemId: message.id
+      },
+      message
+    }
+  })
+  ipcMain.handle('codex:follow-ups:materialize-item', async (_, payload: unknown) => {
+    const request = followUpItemActionPayloadSchema.parse(payload)
+    return requireFollowUpQueue().materializeItem(request.conversationKey, request.itemId)
+  })
+  ipcMain.handle('codex:follow-ups:steer-next', async (_, payload: unknown) => {
+    const request = followUpClaimNextPayloadSchema.parse(payload)
+    return steerQueuedFollowUp(requireFollowUpQueue(), runtime, request)
+  })
+  ipcMain.handle('codex:follow-ups:steer-item', async (_, payload: unknown) => {
+    const request = followUpSteerItemPayloadSchema.parse(payload)
+    return steerQueuedFollowUp(requireFollowUpQueue(), runtime, request)
+  })
   ipcMain.handle('codex:projects:get-state', () => requireProjectApi().getState())
   ipcMain.handle('codex:projects:pick-workspace-root', async () => {
     const option = await requireProjectApi().pickWorkspaceRoot()
@@ -490,12 +632,14 @@ app.whenReady().then(() => {
   ipcMain.handle('codex:conversations:archive', async (_, payload: unknown) => {
     const request = sidebarConversationActionPayloadSchema.parse(payload)
     const state = await requireConversationApi().archiveConversation(request)
+    await requireFollowUpQueue().setArchived(request.conversationId, true)
     await broadcastConversationState()
     return state
   })
   ipcMain.handle('codex:conversations:unarchive', async (_, payload: unknown) => {
     const request = sidebarConversationActionPayloadSchema.parse(payload)
     const state = await requireConversationApi().unarchiveConversation(request)
+    await requireFollowUpQueue().setArchived(request.conversationId, false)
     await broadcastConversationState()
     return state
   })
@@ -522,7 +666,13 @@ app.whenReady().then(() => {
     const request = codexChatRequestSchema.parse(payload)
     void runtime
       .startChatStream(request, port, {
-        onThreadIdAvailable: (threadId, thread) => {
+        onThreadIdAvailable: async (threadId, thread) => {
+          if (thread?.originConversationId) {
+            await requireFollowUpQueue().migrateConversationKey(
+              thread.originConversationId,
+              threadId
+            )
+          }
           if (thread) {
             broadcastStartedConversation(threadId, thread)
             return

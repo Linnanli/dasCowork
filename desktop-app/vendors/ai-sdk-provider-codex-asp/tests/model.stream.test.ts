@@ -295,6 +295,7 @@ describe("CodexLanguageModel.doStream", () =>
 
         const { stream } = await model.doStream({
             prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ clientUserMessageId: "queue-message-1" }),
         });
 
         const parts = await readAll(stream);
@@ -349,6 +350,7 @@ describe("CodexLanguageModel.doStream", () =>
         );
         expect(turnStartMessage).toBeDefined();
         expect(turnStartMessage?.params).toMatchObject({
+            clientUserMessageId: "queue-message-1",
             input: [{ type: "text", text: "hi", text_elements: [] }],
         });
     });
@@ -523,6 +525,36 @@ describe("CodexLanguageModel.doStream", () =>
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
         expect(completedMethods).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
+    });
+
+    it("does not start a turn when onThreadStarted fails", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({
+                onThreadStarted: () =>
+                {
+                    throw new Error("queue migration failed");
+                },
+            }),
+        });
+
+        const parts = await readAll(stream);
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+
+        expect(parts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: "error" }),
+        ]));
+        expect(methods).toEqual(["initialize", "initialized", "thread/start"]);
     });
 
     it("passes configured custom model providers through thread/start config", async () =>

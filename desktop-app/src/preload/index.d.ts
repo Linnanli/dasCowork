@@ -1,6 +1,7 @@
 import type {
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopCodexFollowUpApi,
   DesktopComposerContextApi,
   DesktopConversationsApi,
   DesktopProjectsApi
@@ -15,6 +16,7 @@ export type DesktopAppApi = {
   composerContext: DesktopComposerContextApi
   projects: DesktopProjectsApi
   conversations: DesktopConversationsApi
+  followUps: DesktopCodexFollowUpApi
 }
 
 declare global {

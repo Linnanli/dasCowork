@@ -1,7 +1,7 @@
 import { NoSuchModelError } from "@ai-sdk/provider";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { CODEX_PROVIDER_ID } from "../src";
+import { CODEX_PROVIDER_ID, codexCallOptions, CodexSteerError } from "../src";
 import type { JsonRpcMessage } from "../src/client/transport";
 import { CodexLanguageModel } from "../src/model";
 import { createCodexAppServer } from "../src/provider";
@@ -11,6 +11,14 @@ import { MockTransport } from "./helpers/mock-transport";
 class ScriptedTransport extends MockTransport
 {
     pauseTurnCompletion = false;
+    simulateSteerTurnRace = false;
+    failSteerTransport = false;
+    steerError: {
+        code: number;
+        message: string;
+        data?: unknown;
+    } | null = null;
+    private steerRequestCount = 0;
 
     completeTurn(): void
     {
@@ -79,6 +87,48 @@ class ScriptedTransport extends MockTransport
         if (message.method === "turn/interrupt")
         {
             this.emitMessage({ id: message.id, result: {} });
+            return;
+        }
+
+        if (message.method === "turn/steer")
+        {
+            this.steerRequestCount++;
+
+            if (this.failSteerTransport)
+            {
+                throw new Error("transport closed");
+            }
+
+            if (this.simulateSteerTurnRace && this.steerRequestCount === 1)
+            {
+                this.emitMessage({
+                    method: "turn/started",
+                    params: { threadId: "thr_1", turn: { id: "turn_2" } },
+                });
+                queueMicrotask(() =>
+                {
+                    this.emitMessage({
+                        id: message.id,
+                        error: {
+                            code: -32600,
+                            message: "expected active turn id `turn_1` but found `turn_2`",
+                        },
+                    });
+                });
+                return;
+            }
+
+            if (this.steerError)
+            {
+                this.emitMessage({ id: message.id, error: this.steerError });
+                return;
+            }
+
+            const params = message.params as { expectedTurnId?: string };
+            this.emitMessage({
+                id: message.id,
+                result: { turnId: params.expectedTurnId ?? "turn_1" },
+            });
             return;
         }
 
@@ -434,6 +484,230 @@ describe("createCodexAppServer", () =>
         });
 
         // Complete the turn so the stream closes cleanly
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("per-call onSessionCreated takes precedence over the provider fallback", async () =>
+    {
+        const transport = new ScriptedTransport();
+        const fallbackCallback = vi.fn();
+        const callCallback = vi.fn();
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: fallbackCallback,
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+            providerOptions: codexCallOptions({ onSessionCreated: callCallback }),
+        });
+        await readAll(stream);
+
+        expect(callCallback).toHaveBeenCalledOnce();
+        expect(callCallback.mock.calls[0]?.[0]).toMatchObject({
+            threadId: "thr_1",
+            turnId: "turn_1",
+        });
+        expect(fallbackCallback).not.toHaveBeenCalled();
+    });
+
+    it("session.steerPrompt maps the prompt and sends only turn/steer", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+            providerOptions: codexCallOptions({
+                onSessionCreated: (session) =>
+                {
+                    capturedSession = session;
+                },
+            }),
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(capturedSession).not.toBeNull();
+
+        const turnStartCountBeforeSteer = transport.sentMessages.filter(
+            (message) => "method" in message && message.method === "turn/start",
+        ).length;
+        const result = await capturedSession!.steerPrompt(
+            [{
+                role: "user",
+                content: [
+                    { type: "text", text: "Focus on the provider tests" },
+                    {
+                        type: "file",
+                        mediaType: "application/vnd.dascowork.local-file",
+                        data: new URL("file:///tmp/provider.ts"),
+                        filename: "provider.ts",
+                    },
+                    {
+                        type: "file",
+                        mediaType: "image/png",
+                        data: new URL("https://example.test/screenshot.png"),
+                    },
+                ],
+            }],
+            { clientUserMessageId: "follow-up-1" },
+        );
+
+        expect(result).toEqual({ turnId: "turn_1" });
+        const steerMessages = transport.sentMessages.filter(
+            (message): message is { method: string; params?: unknown } =>
+                "method" in message && message.method === "turn/steer",
+        );
+        expect(steerMessages).toHaveLength(1);
+        const steerParams = steerMessages[0]?.params as {
+            input: Array<{ type: string; text?: string; url?: string }>;
+        };
+        expect(steerParams).toMatchObject({
+            threadId: "thr_1",
+            clientUserMessageId: "follow-up-1",
+            expectedTurnId: "turn_1",
+            input: [
+                {
+                    type: "text",
+                    text_elements: [],
+                },
+                { type: "image", url: "https://example.test/screenshot.png" },
+            ],
+        });
+        expect(steerParams.input[0]?.text).toContain("/tmp/provider.ts");
+        expect(transport.sentMessages.filter(
+            (message) => "method" in message && message.method === "turn/start",
+        )).toHaveLength(turnStartCountBeforeSteer);
+
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.steerPrompt retries once with the latest turn id after a race", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        transport.simulateSteerTurnRace = true;
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        await expect(capturedSession!.steerPrompt(
+            [{ role: "user", content: [{ type: "text", text: "race" }] }],
+            { clientUserMessageId: "follow-up-race" },
+        )).resolves.toEqual({ turnId: "turn_2" });
+
+        const steerMessages = transport.sentMessages.filter(
+            (message): message is { method: string; params?: unknown } =>
+                "method" in message && message.method === "turn/steer",
+        );
+        expect(steerMessages).toHaveLength(2);
+        expect(steerMessages.map((message) =>
+            (message.params as { expectedTurnId: string }).expectedTurnId,
+        )).toEqual(["turn_1", "turn_2"]);
+
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.steerPrompt classifies unsupported active turns", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        transport.steerError = {
+            code: -32600,
+            message: "cannot steer a review turn",
+            data: {
+                message: "cannot steer a review turn",
+                codexErrorInfo: {
+                    activeTurnNotSteerable: { turnKind: "review" },
+                },
+                additionalDetails: null,
+            },
+        };
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const error = await capturedSession!.steerPrompt(
+            [{ role: "user", content: [{ type: "text", text: "review steer" }] }],
+            { clientUserMessageId: "follow-up-review" },
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(CodexSteerError);
+        expect(error).toMatchObject({ code: "unsupported_active_turn_kind" });
+
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.steerPrompt marks transport failures as an unknown delivery result", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        transport.failSteerTransport = true;
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const error = await capturedSession!.steerPrompt(
+            [{ role: "user", content: [{ type: "text", text: "uncertain steer" }] }],
+            { clientUserMessageId: "follow-up-unknown" },
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(CodexSteerError);
+        expect(error).toMatchObject({ code: "steer_result_unknown" });
+
         transport.completeTurn();
         await readAll(stream);
     });

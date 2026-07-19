@@ -84,7 +84,7 @@ describe('createChatStreamBridge', () => {
     expect((startedPorts[1] as unknown as FakeMessagePort).peer?.closed).toBe(false)
   })
 
-  it('closes and settles an aborted renderer subscription exactly once', () => {
+  it('waits for the authoritative aborted event after requesting abort', () => {
     let startedPort: MessagePort | undefined
     const callbacks = createCallbacks()
     const bridge = createChatStreamBridge({
@@ -104,13 +104,85 @@ describe('createChatStreamBridge', () => {
     bridge.abortChatStream('stream-1')
 
     expect(abortMessages).toBe(1)
+    expect(callbacks.onAbort).not.toHaveBeenCalled()
+    expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(false)
+
+    startedPort?.postMessage({ type: 'aborted' })
+
     expect(callbacks.onAbort).toHaveBeenCalledTimes(1)
     expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(true)
 
     startedPort?.postMessage({ type: 'aborted' })
 
     expect(callbacks.onAbort).toHaveBeenCalledTimes(1)
-    expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(true)
+  })
+
+  it.each([
+    {
+      terminal: { type: 'finish', threadId: 'thread-1' } satisfies CodexChatStreamEvent,
+      callback: 'onFinish' as const,
+      expectedArgument: 'thread-1'
+    },
+    {
+      terminal: { type: 'error', error: 'provider failed' } satisfies CodexChatStreamEvent,
+      callback: 'onError' as const,
+      expectedArgument: 'provider failed'
+    }
+  ])(
+    'uses main $terminal.type as the terminal result when it races with abort',
+    ({ terminal, callback, expectedArgument }) => {
+      let startedPort: MessagePort | undefined
+      const callbacks = createCallbacks()
+      const bridge = createChatStreamBridge({
+        createStreamId: () => 'stream-1',
+        createMessageChannel: createFakeMessageChannel,
+        postStart: (_request, port) => {
+          startedPort = port
+        }
+      })
+
+      bridge.startChatStream(createRequest('chat-1'), callbacks)
+      bridge.abortChatStream('stream-1')
+
+      expect(callbacks.onAbort).not.toHaveBeenCalled()
+      startedPort?.postMessage(terminal)
+
+      expect(callbacks[callback]).toHaveBeenCalledWith(expectedArgument)
+      expect(callbacks.onAbort).not.toHaveBeenCalled()
+      expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(true)
+    }
+  )
+
+  it('ignores non-terminal events while an abort request is pending', () => {
+    let startedPort: MessagePort | undefined
+    const controlMessages: unknown[] = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, port) => {
+        startedPort = port
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    ;(startedPort as unknown as FakeMessagePort).onmessage = (event) => {
+      controlMessages.push(event.data)
+    }
+    bridge.abortChatStream('stream-1')
+    startedPort?.postMessage({ type: 'thread-bound', threadId: 'thread-1' })
+    startedPort?.postMessage({
+      type: 'chunk',
+      chunk: { type: 'text-start', id: 'text-1' }
+    } satisfies CodexChatStreamEvent)
+
+    expect(callbacks.onThreadBound).not.toHaveBeenCalled()
+    expect(controlMessages).toContainEqual({
+      type: 'thread-bound-ack',
+      threadId: 'thread-1'
+    })
+    expect(callbacks.onChunk).not.toHaveBeenCalled()
+    expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(false)
   })
 
   it('removes a finished stream before invoking its callback', () => {
@@ -132,7 +204,7 @@ describe('createChatStreamBridge', () => {
     expect(callbacks.onAbort).not.toHaveBeenCalled()
   })
 
-  it('does not retain ports or callbacks after repeated renderer cancellations', () => {
+  it('keeps stopping streams open until main settles them, then releases them', () => {
     const startedPorts: MessagePort[] = []
     let nextId = 0
     const bridge = createChatStreamBridge({
@@ -148,13 +220,16 @@ describe('createChatStreamBridge', () => {
     })
 
     expect(
-      startedPorts.every((port) => (port as unknown as FakeMessagePort).peer?.closed === true)
+      startedPorts.every((port) => (port as unknown as FakeMessagePort).peer?.closed === false)
     ).toBe(true)
     callbacks.forEach((streamCallbacks) => {
-      expect(streamCallbacks.onAbort).toHaveBeenCalledTimes(1)
+      expect(streamCallbacks.onAbort).not.toHaveBeenCalled()
     })
 
     startedPorts.forEach((port) => port.postMessage({ type: 'aborted' }))
+    expect(
+      startedPorts.every((port) => (port as unknown as FakeMessagePort).peer?.closed === true)
+    ).toBe(true)
     callbacks.forEach((streamCallbacks) => {
       expect(streamCallbacks.onAbort).toHaveBeenCalledTimes(1)
     })

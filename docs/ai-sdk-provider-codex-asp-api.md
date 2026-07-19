@@ -10,6 +10,15 @@
 
 本 provider 不直接调用 OpenAI-compatible API、Responses API 或第三方 LLM SDK。真正的模型请求由 `codex-app-server` 根据 thread / turn 配置发起。
 
+运行中追问有两个不同协议：
+
+- Queue 在当前 turn 终止后，仍通过既有聊天链路创建新的 `turn/start`。
+- Steer 在同一个活跃 `CodexSession` 上调用 `turn/steer`，必须带当前
+  `expectedTurnId` 与稳定的 `clientUserMessageId`，不会创建新的 turn。
+
+兼容 API `CodexSession.injectMessage()` 会启动新 turn，不属于 P0-01 的 Steer
+实现，也不得用“中断后重发”替代 `turn/steer`。
+
 主要源码：
 
 - `desktop-app/vendors/ai-sdk-provider-codex-asp/src/index.ts`
@@ -721,6 +730,10 @@ type CodexSession = {
   readonly turnId: string | undefined;
   isActive(): boolean;
   injectMessage(input: string | UserInput[]): Promise<void>;
+  steerPrompt(
+    prompt: LanguageModelV3Prompt,
+    options: { clientUserMessageId: string },
+  ): Promise<{ turnId: string }>;
   interrupt(): Promise<void>;
 };
 ```
@@ -728,6 +741,10 @@ type CodexSession = {
 行为：
 
 - `injectMessage()` 当前发送 `turn/start`，由 app-server 在 active turn 下路由成 steer input；没有直接使用 `turn/steer`。
+- `steerPrompt()` 直接发送 `turn/steer`，复用当前 session 的附件解析器，携带最新
+  `expectedTurnId` 和稳定 `clientUserMessageId`，绝不降级成 `turn/start`。
+- `CodexSteerError.code === "steer_result_unknown"` 表示请求已经发出但结果无法确认；
+  调用方必须暂停等待用户决定，不能自动重试。
 - `interrupt()` 发送 `turn/interrupt`，需要已有 `turnId`。
 - stream 完成、错误、abort 后 session 会标记 inactive。
 

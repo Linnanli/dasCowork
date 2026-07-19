@@ -1,4 +1,10 @@
-import type { AppServerClient } from "./client/app-server-client";
+import type { LanguageModelV3Prompt } from "@ai-sdk/provider";
+
+import { type AppServerClient, JsonRpcError } from "./client/app-server-client";
+import { CodexProviderError } from "./errors";
+import type { ThreadReadResponse } from "./protocol/app-server-protocol/v2/ThreadReadResponse";
+import type { TurnSteerParams } from "./protocol/app-server-protocol/v2/TurnSteerParams";
+import type { TurnSteerResponse } from "./protocol/app-server-protocol/v2/TurnSteerResponse";
 import type { UserInput } from "./protocol/app-server-protocol/v2/UserInput";
 import type {
     CodexTurnInterruptParams,
@@ -6,6 +12,63 @@ import type {
     CodexTurnStartParams,
     CodexTurnStartResult,
 } from "./protocol/types";
+import type { PromptFileResolver } from "./utils/prompt-file-resolver";
+
+export type CodexSteerErrorCode =
+    | "session_inactive"
+    | "steer_result_unknown"
+    | "expected_turn_mismatch"
+    | "unsupported_active_turn_kind"
+    | "app_server_rejected"
+    | "attachment_resolution_failed";
+
+export interface CodexSteerResult
+{
+    turnId: string;
+}
+
+export class CodexSteerError extends CodexProviderError
+{
+    readonly code: CodexSteerErrorCode;
+
+    constructor(code: CodexSteerErrorCode, message: string, options?: { cause?: unknown })
+    {
+        super(message, options);
+        this.name = "CodexSteerError";
+        this.code = code;
+    }
+}
+
+function inactiveSessionError(cause?: unknown): CodexSteerError
+{
+    return new CodexSteerError(
+        "session_inactive",
+        "Cannot steer a session without an active turn.",
+        cause === undefined ? undefined : { cause },
+    );
+}
+
+function isExpectedTurnMismatch(error: unknown): error is JsonRpcError
+{
+    return error instanceof JsonRpcError
+        && error.message.startsWith("expected active turn id ");
+}
+
+function isUnsupportedActiveTurnKind(error: unknown): error is JsonRpcError
+{
+    if (!(error instanceof JsonRpcError))
+    {
+        return false;
+    }
+
+    const data = error.data as {
+        codexErrorInfo?: { activeTurnNotSteerable?: unknown };
+    } | undefined;
+
+    return data?.codexErrorInfo?.activeTurnNotSteerable !== undefined
+        || error.message === "cannot steer a review turn"
+        || error.message === "cannot steer a compact turn";
+}
 
 export interface CodexSession
 {
@@ -13,6 +76,10 @@ export interface CodexSession
     readonly turnId: string | undefined;
     isActive(): boolean;
     injectMessage(input: string | UserInput[]): Promise<void>;
+    steerPrompt(
+        prompt: LanguageModelV3Prompt,
+        options: { clientUserMessageId: string },
+    ): Promise<CodexSteerResult>;
     interrupt(): Promise<void>;
 }
 
@@ -23,18 +90,21 @@ export class CodexSessionImpl implements CodexSession
     private _active = true;
     private readonly client: AppServerClient;
     private readonly interruptTimeoutMs: number;
+    private readonly fileResolver: PromptFileResolver;
 
     constructor(opts: {
         client: AppServerClient;
         threadId: string;
         turnId: string | undefined;
         interruptTimeoutMs: number;
+        fileResolver: PromptFileResolver;
     })
     {
         this.client = opts.client;
         this._threadId = opts.threadId;
         this._turnId = opts.turnId;
         this.interruptTimeoutMs = opts.interruptTimeoutMs;
+        this.fileResolver = opts.fileResolver;
     }
 
     get threadId(): string
@@ -96,6 +166,131 @@ export class CodexSessionImpl implements CodexSession
         {
             this._turnId = newTurnId;
         }
+    }
+
+    async steerPrompt(
+        prompt: LanguageModelV3Prompt,
+        options: { clientUserMessageId: string },
+    ): Promise<CodexSteerResult>
+    {
+        if (!this._active || !this._turnId)
+        {
+            throw inactiveSessionError();
+        }
+
+        let input: UserInput[];
+        try
+        {
+            input = await this.fileResolver.resolve(prompt, true, {
+                activeThreadId: this._threadId,
+                loadTask: (threadId) =>
+                    this.client.request<ThreadReadResponse>("thread/read", {
+                        threadId,
+                        includeTurns: true,
+                    }),
+            });
+        }
+        catch (error)
+        {
+            throw new CodexSteerError(
+                "attachment_resolution_failed",
+                "Failed to resolve steer prompt attachments.",
+                { cause: error },
+            );
+        }
+
+        if (!this._active || !this._turnId)
+        {
+            await this.fileResolver.cleanup();
+            throw inactiveSessionError();
+        }
+
+        let expectedTurnId = this._turnId;
+
+        for (let attempt = 0; attempt < 2; attempt++)
+        {
+            if (!this._active)
+            {
+                throw inactiveSessionError();
+            }
+
+            const params: TurnSteerParams = {
+                threadId: this._threadId,
+                input,
+                expectedTurnId,
+                clientUserMessageId: options.clientUserMessageId,
+            };
+
+            try
+            {
+                const result = await this.client.request<TurnSteerResponse>(
+                    "turn/steer",
+                    params,
+                );
+                return { turnId: result.turnId };
+            }
+            catch (error)
+            {
+                if (!this._active)
+                {
+                    throw new CodexSteerError(
+                        "steer_result_unknown",
+                        "The session ended before the steer result could be confirmed.",
+                        { cause: error },
+                    );
+                }
+
+                const latestTurnId = this._turnId;
+                const shouldRetry = attempt === 0
+                    && isExpectedTurnMismatch(error)
+                    && latestTurnId !== undefined
+                    && latestTurnId !== expectedTurnId;
+
+                if (shouldRetry)
+                {
+                    expectedTurnId = latestTurnId;
+                    continue;
+                }
+
+                if (isExpectedTurnMismatch(error))
+                {
+                    throw new CodexSteerError(
+                        "expected_turn_mismatch",
+                        error.message,
+                        { cause: error },
+                    );
+                }
+
+                if (isUnsupportedActiveTurnKind(error))
+                {
+                    throw new CodexSteerError(
+                        "unsupported_active_turn_kind",
+                        error.message,
+                        { cause: error },
+                    );
+                }
+
+                if (!(error instanceof JsonRpcError))
+                {
+                    throw new CodexSteerError(
+                        "steer_result_unknown",
+                        "The steer request result could not be confirmed.",
+                        { cause: error },
+                    );
+                }
+
+                throw new CodexSteerError(
+                    "app_server_rejected",
+                    error instanceof Error ? error.message : "App server rejected the steer request.",
+                    { cause: error },
+                );
+            }
+        }
+
+        throw new CodexSteerError(
+            "expected_turn_mismatch",
+            "The active turn changed while steering.",
+        );
     }
 
     async interrupt(): Promise<void>

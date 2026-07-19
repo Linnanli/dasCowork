@@ -6,8 +6,10 @@ import {
 } from '../../../shared/composerContext'
 
 type LocalImageAttachmentSource = {
+  capabilityToken?: string
   label: string
   mediaType: string
+  path?: string
   previewUrl: string
 }
 
@@ -38,11 +40,17 @@ export function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 export function createLocalImageAttachment({
+  capabilityToken,
   label,
   mediaType,
+  path,
   previewUrl
 }: LocalImageAttachmentSource): CreateAttachment {
+  const identity = path
+    ? ({ path, capabilityToken } satisfies LocalImageAttachmentIdentity)
+    : undefined
   return {
+    ...(identity ? { id: `local-image:${encodeURIComponent(JSON.stringify(identity))}` } : {}),
     type: 'image' as const,
     name: label,
     contentType: mediaType,
@@ -57,12 +65,35 @@ export function createLocalImageAttachment({
   }
 }
 
+export type LocalImageAttachmentIdentity = {
+  capabilityToken?: string
+  path: string
+}
+
+export function localImageAttachmentIdentityFromId(
+  attachmentId: string
+): LocalImageAttachmentIdentity | undefined {
+  const prefix = 'local-image:'
+  if (!attachmentId.startsWith(prefix)) return undefined
+  try {
+    const value = JSON.parse(decodeURIComponent(attachmentId.slice(prefix.length))) as unknown
+    if (!value || typeof value !== 'object') return undefined
+    const identity = value as Partial<LocalImageAttachmentIdentity>
+    if (typeof identity.path !== 'string' || identity.path.length === 0) return undefined
+    return identity as LocalImageAttachmentIdentity
+  } catch {
+    return undefined
+  }
+}
+
 export function createLocalPathAttachment({
+  capabilityToken,
   fileUrl,
   kind,
   label,
   path
 }: {
+  capabilityToken?: string
   fileUrl: string
   kind: 'file' | 'folder'
   label: string
@@ -70,7 +101,7 @@ export function createLocalPathAttachment({
 }): CreateAttachment {
   const contentType =
     kind === 'folder' ? localFolderAttachmentMediaType : localFileAttachmentMediaType
-  const identity = { fileUrl, kind, path } satisfies LocalPathAttachmentIdentity
+  const identity = { capabilityToken, fileUrl, kind, path } satisfies LocalPathAttachmentIdentity
   return {
     id: `local-context:${encodeURIComponent(JSON.stringify(identity))}`,
     type: 'file',
@@ -88,6 +119,7 @@ export function createLocalPathAttachment({
 }
 
 export type LocalPathAttachmentIdentity = {
+  capabilityToken?: string
   fileUrl: string
   kind: 'file' | 'folder'
   path: string
@@ -106,6 +138,8 @@ export function localPathAttachmentIdentityFromId(
       (identity.kind !== 'file' && identity.kind !== 'folder') ||
       typeof identity.path !== 'string' ||
       typeof identity.fileUrl !== 'string' ||
+      (identity.capabilityToken !== undefined &&
+        (typeof identity.capabilityToken !== 'string' || identity.capabilityToken.length === 0)) ||
       !identity.fileUrl.startsWith('file:')
     ) {
       return undefined

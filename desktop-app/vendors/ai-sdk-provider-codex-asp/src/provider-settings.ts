@@ -154,6 +154,13 @@ export interface CodexCallOptions
     sandboxPolicy?: SandboxPolicy;
     /** Controls turn summary generation. */
     summary?: "auto" | "concise" | "detailed" | "none";
+    /** Stable client-side user message id used to reconcile persisted history. */
+    clientUserMessageId?: string;
+    /**
+     * Called with the session created for this exact model call. When present,
+     * this takes precedence over the provider-level compatibility callback.
+     */
+    onSessionCreated?: (session: CodexSession) => void;
     /** Approval callbacks for this call; falls back to provider-level `approvals`. */
     approvals?: {
         onCommandApproval?: CommandApprovalHandler;
@@ -269,6 +276,9 @@ export interface CodexProviderSettings extends CodexCustomModelProviderSettings
     };
     /** Emit plan updates as tool-call/tool-result parts. Default: true. */
     emitPlanUpdates?: boolean;
-    /** Called when a streaming session is created, providing access to inject messages and interrupt. */
+    /**
+     * Compatibility fallback called when a streaming session is created.
+     * Prefer the per-call callback to associate concurrent runs precisely.
+     */
     onSessionCreated?: (session: CodexSession) => void;
 }

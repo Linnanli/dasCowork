@@ -2,6 +2,7 @@ const draftStorageKey = 'das-cowork.conversation-drafts.v2'
 const legacyDraftStorageKey = 'das-cowork.conversation-drafts.v1'
 
 export type ConversationDraftAttachment = {
+  capabilityToken?: string
   fileUrl: string
   kind: 'file' | 'folder'
   label: string
@@ -158,6 +159,8 @@ function isDraftAttachment(value: unknown): value is ConversationDraftAttachment
     typeof attachment.path === 'string' &&
     typeof attachment.label === 'string' &&
     typeof attachment.fileUrl === 'string' &&
+    (attachment.capabilityToken === undefined ||
+      (typeof attachment.capabilityToken === 'string' && attachment.capabilityToken.length > 0)) &&
     attachment.fileUrl.startsWith('file:')
   )
 }

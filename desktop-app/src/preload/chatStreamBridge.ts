@@ -6,8 +6,7 @@ import type {
 
 type ActiveChatStream = {
   port: MessagePort
-  onAbort: () => void
-  abortNotified: boolean
+  abortRequested: boolean
 }
 
 export type ChatStreamBridgeDependencies = {
@@ -35,33 +34,32 @@ export function createChatStreamBridge(
       const channel = dependencies.createMessageChannel()
       activeStreams.set(streamId, {
         port: channel.port1,
-        onAbort: callbacks.onAbort,
-        abortNotified: false
+        abortRequested: false
       })
       channel.port1.onmessage = (event: MessageEvent<CodexChatStreamEvent>) => {
         const message = event.data
         const activeStream = activeStreams.get(streamId)
         if (!activeStream) return
-        if (message.type === 'thread-bound' && !activeStream.abortNotified) {
-          callbacks.onThreadBound(message.threadId)
+        if (message.type === 'thread-bound') {
+          if (!activeStream.abortRequested) callbacks.onThreadBound(message.threadId)
           activeStream.port.postMessage({ type: 'thread-bound-ack', threadId: message.threadId })
         }
-        if (message.type === 'chunk' && !activeStream.abortNotified) {
+        if (message.type === 'chunk' && !activeStream.abortRequested) {
           callbacks.onChunk(message.chunk)
         }
         if (message.type === 'finish') {
           const stream = closeStream(streamId)
-          if (!stream || stream.abortNotified) return
+          if (!stream) return
           callbacks.onFinish(message.threadId)
         }
         if (message.type === 'aborted') {
           const stream = closeStream(streamId)
-          if (!stream || stream.abortNotified) return
+          if (!stream) return
           callbacks.onAbort()
         }
         if (message.type === 'error') {
           const stream = closeStream(streamId)
-          if (!stream || stream.abortNotified) return
+          if (!stream) return
           callbacks.onError(message.error)
         }
       }
@@ -70,11 +68,9 @@ export function createChatStreamBridge(
     },
     abortChatStream: (streamId) => {
       const stream = activeStreams.get(streamId)
-      if (!stream || stream.abortNotified) return
+      if (!stream || stream.abortRequested) return
+      stream.abortRequested = true
       stream.port.postMessage({ type: 'abort' })
-      stream.abortNotified = true
-      stream.onAbort()
-      closeStream(streamId)
     }
   }
 }

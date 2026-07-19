@@ -202,6 +202,8 @@ const composerRuntimeState = vi.hoisted<{
   setTextCalls: string[]
 }>(() => ({ eventHandlers: {}, insertedContextItems: [], setTextCalls: [] }))
 
+const assistantThreadState = vi.hoisted<{ isRunning: boolean }>(() => ({ isRunning: false }))
+
 const projectHookState = vi.hoisted<{ controller: ProjectStateController }>(() => ({
   controller: {
     state: {
@@ -304,6 +306,33 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       pickLocalContext: vi.fn(async () => [])
     },
     chat: {},
+    followUps: {
+      getState: vi.fn(async (conversationKey: string) => ({
+        version: 2 as const,
+        revision: 0,
+        conversationKey,
+        defaultMode: 'queue' as const,
+        archived: false,
+        items: []
+      })),
+      enqueue: vi.fn(),
+      edit: vi.fn(),
+      beginEdit: vi.fn(),
+      commitEdit: vi.fn(),
+      cancelEdit: vi.fn(),
+      delete: vi.fn(),
+      reorder: vi.fn(),
+      requestSendNow: vi.fn(),
+      retry: vi.fn(),
+      resume: vi.fn(),
+      clear: vi.fn(),
+      setDefaultMode: vi.fn(async () => undefined),
+      prepareNextTurn: vi.fn(),
+      materializeItem: vi.fn(),
+      steerItem: vi.fn(),
+      steerNext: vi.fn(),
+      subscribe: vi.fn(() => () => undefined)
+    },
     composerContext: {
       list: vi.fn(async () => emptyComposerContextResult),
       refresh: vi.fn(async () => emptyComposerContextResult),
@@ -630,7 +659,7 @@ vi.mock('@assistant-ui/react', () => {
         dictation: false
       },
       isLoading: false,
-      isRunning: false,
+      isRunning: assistantThreadState.isRunning,
       messages: [] as MockThreadMessageState['message'][]
     },
     threads: {
@@ -649,6 +678,7 @@ vi.mock('@assistant-ui/react', () => {
     },
     thread: {
       ...assistantState.thread,
+      isRunning: assistantThreadState.isRunning,
       messages: threadMessagesState.messages
     }
   })
@@ -660,6 +690,12 @@ vi.mock('@assistant-ui/react', () => {
     on: () => vi.fn(),
     composer: () => ({
       getState: () => ({ runConfig: undefined }),
+      addAttachment: vi.fn(async () => undefined),
+      reset: vi.fn(async () => {
+        composerState.attachments = []
+        composerState.isEmpty = true
+        composerState.text = ''
+      }),
       setText: (text: string) => {
         composerRuntimeState.setTextCalls.push(text)
         composerState.text = text
@@ -671,7 +707,7 @@ vi.mock('@assistant-ui/react', () => {
     thread: () => ({
       append: vi.fn(),
       getModelContext: () => ({ tools: modelContextState.tools }),
-      getState: () => ({ isRunning: false })
+      getState: () => ({ isRunning: assistantThreadState.isRunning })
     })
   }
 
@@ -942,6 +978,7 @@ describe('App composer', () => {
     composerRuntimeState.eventHandlers = {}
     composerRuntimeState.insertedContextItems = []
     composerRuntimeState.setTextCalls = []
+    assistantThreadState.isRunning = false
     runtimeState.setActiveDraft.mockReset()
     runtimeState.setActiveDraftAttachments.mockReset()
     projectHookState.controller.state = {
@@ -1005,6 +1042,322 @@ describe('App composer', () => {
     ).toBe(true)
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
     expect(triggerChars).toEqual(['/'])
+  })
+
+  it('attaches queued follow-ups to the Composer without a persistent mode toggle', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-queue',
+      threadId: 'thread-queue',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    vi.mocked(window.desktopApp.followUps.getState).mockResolvedValue({
+      version: 2,
+      revision: 1,
+      conversationKey: 'thread-queue',
+      defaultMode: 'queue',
+      archived: false,
+      items: [
+        {
+          id: 'queued-one',
+          conversationKey: 'thread-queue',
+          createdAt: '2026-07-18T00:00:00.000Z',
+          updatedAt: '2026-07-18T00:00:00.000Z',
+          preferredMode: 'queue',
+          status: 'queued',
+          message: {
+            id: 'queued-one',
+            text: 'Follow up while running',
+            attachments: [],
+            contextReferences: [],
+            trustedContext: {
+              conversationId: 'conversation-queue',
+              threadId: 'thread-queue',
+              hostId: 'local',
+              cwd: '/repo',
+              workspaceRoots: ['/repo']
+            }
+          }
+        }
+      ]
+    })
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const queue = container.querySelector('[data-slot="queued-follow-up-list"]')
+    const composer = container.querySelector('[data-slot="aui_composer-shell"]')
+    expect(queue).not.toBeNull()
+    expect(composer?.className).toContain('rounded-t-none')
+    expect(container.querySelector('[role="radiogroup"]')).toBeNull()
+    expect(container.querySelector('[data-slot="follow-up-mode-toggle"]')).toBeNull()
+  })
+
+  it('resumes a durable queue edit and keeps save-edit available after the turn finishes', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-edit',
+      threadId: 'thread-edit',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    const trustedContext = {
+      conversationId: 'conversation-edit',
+      threadId: 'thread-edit',
+      hostId: 'local',
+      cwd: '/repo',
+      workspaceRoots: ['/repo']
+    }
+    const editingState = {
+      version: 2 as const,
+      revision: 2,
+      conversationKey: 'thread-edit',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: [
+        {
+          id: 'queued-edit',
+          conversationKey: 'thread-edit',
+          createdAt: '2026-07-18T00:00:00.000Z',
+          updatedAt: '2026-07-18T00:01:00.000Z',
+          preferredMode: 'queue' as const,
+          status: 'editing' as const,
+          edit: {
+            previousStatus: 'queued' as const,
+            begunAt: '2026-07-18T00:01:00.000Z'
+          },
+          message: {
+            id: 'queued-edit',
+            text: '继续修改这条消息',
+            attachments: [],
+            contextReferences: [],
+            trustedContext
+          }
+        }
+      ]
+    }
+    vi.mocked(window.desktopApp.followUps.getState).mockResolvedValue(editingState)
+    vi.mocked(window.desktopApp.followUps.beginEdit).mockResolvedValue({
+      state: editingState,
+      message: {
+        id: 'queued-edit',
+        parts: [{ type: 'text', text: '继续修改这条消息' }],
+        contextReferences: [],
+        trustedContext
+      }
+    })
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const ordinarySend = container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')
+    expect(ordinarySend?.disabled).toBe(true)
+    expect(container.querySelector('[data-slot="queued-follow-up-edit-recovery"]')).not.toBeNull()
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === '继续编辑')
+        ?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.followUps.beginEdit).toHaveBeenCalledWith('thread-edit', 'queued-edit')
+    expect(composerRuntimeState.setTextCalls).toContain('继续修改这条消息')
+    expect(container.querySelector('[data-slot="queued-follow-up-edit-recovery"]')).toBeNull()
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="保存编辑后的排队消息"]')
+    ).not.toBeNull()
+    expect(container.querySelector('button[aria-label="发送消息"]')).toBeNull()
+  })
+
+  it('clears the Composer after enqueueing a Steer even when the Steer is rejected', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-steer-failure',
+      threadId: 'thread-steer-failure',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    assistantThreadState.isRunning = true
+    composerState.text = 'Keep one durable copy of this steer.'
+    composerState.isEmpty = false
+    runtimeState.activeEntry.draft = 'Keep one durable copy of this steer.'
+    const queueState = {
+      version: 2 as const,
+      revision: 1,
+      conversationKey: 'thread-steer-failure',
+      defaultMode: 'steer' as const,
+      archived: false,
+      items: []
+    }
+    vi.mocked(window.desktopApp.followUps.getState).mockResolvedValue(queueState)
+    vi.mocked(window.desktopApp.followUps.enqueue).mockResolvedValue({
+      ...queueState,
+      revision: 2
+    })
+    vi.mocked(window.desktopApp.followUps.steerItem).mockRejectedValue(
+      new Error('turn already ended')
+    )
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="立即调整当前任务"]')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.followUps.enqueue).toHaveBeenCalledOnce()
+    expect(window.desktopApp.followUps.steerItem).toHaveBeenCalledOnce()
+    expect(composerState.text).toBe('')
+  })
+
+  it('steers a newly submitted follow-up by its id even when an older Queue item exists', async () => {
+    assistantThreadState.isRunning = true
+    composerState.text = 'Guide the running task'
+    composerState.isEmpty = false
+    runtimeState.activeEntry.draft = 'Guide the running task'
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-steer',
+      threadId: 'thread-steer',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    const state = {
+      version: 2 as const,
+      revision: 1,
+      conversationKey: 'thread-steer',
+      defaultMode: 'steer' as const,
+      archived: false,
+      items: [
+        {
+          id: 'older-queue-item',
+          conversationKey: 'thread-steer',
+          createdAt: '2026-07-18T00:00:00.000Z',
+          updatedAt: '2026-07-18T00:00:00.000Z',
+          preferredMode: 'queue' as const,
+          status: 'queued' as const,
+          message: {
+            id: 'older-queue-item',
+            text: 'Older queued request',
+            attachments: [],
+            contextReferences: [],
+            trustedContext: {
+              conversationId: 'conversation-steer',
+              threadId: 'thread-steer',
+              hostId: 'local',
+              cwd: '/repo',
+              workspaceRoots: ['/repo']
+            }
+          }
+        }
+      ]
+    }
+    const getState = vi.mocked(window.desktopApp.followUps.getState)
+    const enqueue = vi.mocked(window.desktopApp.followUps.enqueue)
+    const steerItem = vi.mocked(window.desktopApp.followUps.steerItem)
+    getState.mockResolvedValue(state)
+    enqueue.mockResolvedValue({ ...state, revision: 2 })
+    steerItem.mockResolvedValue({ ...state, revision: 3 })
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const labels = Array.from(container.querySelectorAll('button')).map((button) =>
+      button.getAttribute('aria-label')
+    )
+    expect(labels).toContain('立即调整当前任务')
+    const submit = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="立即调整当前任务"]'
+    )
+    await act(async () => {
+      submit?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const submittedSnapshot = enqueue.mock.calls[0]?.[1]
+    expect(enqueue).toHaveBeenCalledWith('thread-steer', expect.any(Object), 'steer')
+    expect(steerItem).toHaveBeenCalledWith('thread-steer', submittedSnapshot?.id)
+    expect(submittedSnapshot?.id).not.toBe('older-queue-item')
+  })
+
+  it('uses Shift to invert a Queue submission to Steer without changing the saved default', async () => {
+    assistantThreadState.isRunning = true
+    composerState.text = 'Guide once with Shift'
+    composerState.isEmpty = false
+    runtimeState.activeEntry.draft = 'Guide once with Shift'
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-shift-steer',
+      threadId: 'thread-shift-steer',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    const state = {
+      version: 2 as const,
+      revision: 1,
+      conversationKey: 'thread-shift-steer',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }
+    const getState = vi.mocked(window.desktopApp.followUps.getState)
+    const enqueue = vi.mocked(window.desktopApp.followUps.enqueue)
+    const steerItem = vi.mocked(window.desktopApp.followUps.steerItem)
+    const setDefaultMode = vi.mocked(window.desktopApp.followUps.setDefaultMode)
+    getState.mockResolvedValue(state)
+    enqueue.mockResolvedValue({ ...state, revision: 2 })
+    steerItem.mockResolvedValue({ ...state, revision: 3 })
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const submit = container.querySelector<HTMLButtonElement>('button[aria-label="将追问加入队列"]')
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const submittedSnapshot = enqueue.mock.calls[0]?.[1]
+    expect(enqueue).toHaveBeenCalledWith('thread-shift-steer', expect.any(Object), 'steer')
+    expect(steerItem).toHaveBeenCalledWith('thread-shift-steer', submittedSnapshot?.id)
+    expect(setDefaultMode).not.toHaveBeenCalled()
   })
 
   it('preserves a new draft when the preceding send fails before acceptance', async () => {

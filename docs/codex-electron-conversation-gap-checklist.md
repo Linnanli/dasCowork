@@ -55,20 +55,33 @@
 
 ### P0-01 运行中追问队列与 Steer
 
-- [ ] 支持在 Agent 运行时继续输入和发送消息。
-- [ ] 允许用户选择“排队等待”或“立即改变当前任务方向”。
-- [ ] 队列消息可以编辑、删除、拖拽排序和立即发送。
-- [ ] 用户中断当前任务后，未发送队列进入暂停状态，并可恢复。
-- [ ] 队列消息保留文本、图片、文件和 `@` 上下文。
-- [ ] 同一会话的并发规则由 main/provider 正确串行化，不绕过 app-server。
-- [ ] 覆盖排队、Steer、中断、恢复、发送失败和切换会话场景的测试。
+- [x] Agent 运行中仍可输入；空输入显示 Stop，有内容显示 Queue/Steer。
+- [x] Queue/Steer 默认模式可持久保存，反向快捷键只影响本次提交。
+- [x] Queue 支持编辑、删除、键盘/拖拽排序、立即发送、失败重试。
+- [x] Steer 直接使用 app-server `turn/steer`，携带 `expectedTurnId` 和稳定消息 id。
+- [x] 未被 app-server 接受的 Steer 必须恢复到队首，不能丢失或静默变成新 turn。
+- [x] main 按会话持久化队列并提供唯一发送租约，刷新、重启和多窗口下不丢、不重发。
+- [x] 自然完成后自动处理队首；用户中断后队列暂停，显式恢复后才继续。
+- [x] 失败项阻塞队首；后续项不得越过；崩溃后的不确定项不得自动重发。
+- [x] 队列保存不可变的文本、图片、文件、文件夹、任务引用和 `@` 上下文快照。
+- [x] 附件在发送时重新校验，并在成功、删除和会话清理时释放持久资源。
+- [x] main 在发出终态事件前完成 active-run 清理；终态和队列调度均幂等。
+- [x] Steer 的乐观消息与实时/历史消息按稳定 id 合并，切换会话后不重复。
+- [x] 审批、结构化提问、归档、local id → thread id 迁移均有明确队列行为。
+- [x] 所有队列操作支持键盘与屏幕阅读器反馈。
+- [x] 单元与端到端测试覆盖 Queue、Steer、竞态、中断、恢复、失败、附件失效、刷新、重启、会话切换和重复事件。
 
-状态：**缺失**
+状态：**已实施（2026-07-18）**
 
-当前证据：
+实现证据：
 
-- [运行时输入框只保留停止按钮](../desktop-app/src/renderer/src/App.tsx#L2148)
-- [main 拒绝同一会话的第二个活跃 turn](../desktop-app/src/main/codexChatRuntimeService.ts#L479)
+- [运行中 Queue/Steer Composer 与队列交互](../desktop-app/src/renderer/src/App.tsx)
+- [持久队列、租约、暂停与恢复](../desktop-app/src/main/followUps/ConversationFollowUpQueueService.ts)
+- [持久附件与崩溃回收](../desktop-app/src/main/followUps/FollowUpAssetStore.ts)
+- [权威终态与精确 active session](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [provider `turn/steer` 实现](../desktop-app/vendors/ai-sdk-provider-codex-asp/src/session.ts)
+- [Queue/Steer Electron 端到端测试](../desktop-app/tests/e2e/follow-up-queue-steer.e2e.ts)
+- [P0-01 可靠性与实现计划](../.omx/plans/p0-01-running-follow-up-queue-steer-plan.md)
 
 参考证据：
 
@@ -461,7 +474,7 @@
 
 ### 批次一：对话不中断
 
-- [ ] P0-01 运行中追问队列与 Steer
+- [x] P0-01 运行中追问队列与 Steer
 - [ ] P0-02 活跃任务重连与局部恢复
 - [ ] P0-05 会话管理入口
 - [ ] P0-06 审批与结构化提问补全

@@ -16,6 +16,7 @@ import {
 } from '../runtime/ConversationChatRegistry'
 import type { ConversationDraftAttachment } from '../runtime/ConversationDraftStore'
 import type { ActiveConversationContext } from '../lib/ElectronIpcChatTransport'
+import { useConversationFollowUpCoordinator } from './useConversationFollowUpCoordinator'
 
 export type ConversationRuntimeIndicator = {
   active: boolean
@@ -71,6 +72,10 @@ export function useCodexIpcAssistantRuntime(
     registry.subscribe,
     registry.getSnapshot,
     registry.getSnapshot
+  )
+  useConversationFollowUpCoordinator(
+    registrySnapshot.entries,
+    window.desktopApp.followUps as typeof window.desktopApp.followUps | undefined
   )
   const activeEntry = registrySnapshot.activeEntry
   const activeConversation =

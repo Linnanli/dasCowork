@@ -161,6 +161,7 @@ function thread(overrides: Partial<Thread> = {}): Thread
 {
     return {
         id: "thread",
+        extra: null,
         sessionId: "session",
         forkedFromId: null,
         parentThreadId: null,

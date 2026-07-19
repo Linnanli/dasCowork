@@ -176,6 +176,44 @@ await streamText({
 
 See [`src/provider.ts`](src/provider.ts) for full type definitions.
 
+### Active session steering
+
+Use the per-call `onSessionCreated` callback when a host needs to associate the
+live session with one exact `streamText()` call. The provider-level callback is
+kept as a compatibility fallback and is only called when the per-call callback
+is absent.
+
+```ts
+let activeSession;
+
+const result = streamText({
+  model: codex("gpt-5.5"),
+  prompt: "Run the test suite and investigate failures.",
+  providerOptions: codexCallOptions({
+    onSessionCreated: (session) => {
+      activeSession = session;
+    },
+  }),
+});
+
+await activeSession.steerPrompt(
+  [{
+    role: "user",
+    content: [{ type: "text", text: "Focus on the provider tests first." }],
+  }],
+  { clientUserMessageId: "follow-up-123" },
+);
+```
+
+`steerPrompt()` maps the prompt with the same attachment and context rules as
+the original turn, then sends `turn/steer` with the latest active `turnId` as
+`expectedTurnId`. It never falls back to `turn/start`. Rejections throw
+`CodexSteerError`, whose `code` distinguishes inactive sessions, turn-id
+mismatches, unsupported review/compaction turns, attachment resolution
+failures, unknown in-flight results, and other app-server rejections. Unknown
+results must not be retried automatically because app-server acceptance cannot
+be ruled out.
+
 ## Examples
 
 See the [`examples/`](examples/) directory:

@@ -171,7 +171,22 @@ export class AppServerClient
         });
 
         this.onPacket?.({ direction: "outbound", message });
-        await this.transport.sendMessage(message);
+        try
+        {
+            await this.transport.sendMessage(message);
+        }
+        catch (error)
+        {
+            const pending = this.pendingRequests.get(id);
+            if (pending)
+            {
+                clearTimeout(pending.timer);
+                this.pendingRequests.delete(id);
+                pending.reject(error);
+                await promise.catch(() => undefined);
+            }
+            throw error;
+        }
         return promise;
     }
 

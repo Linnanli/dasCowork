@@ -114,6 +114,7 @@ async function notifyThreadStarted({
         debugLog?.("inbound", "onThreadStarted:error", {
             message: errorMessage(error),
         });
+        throw error;
     }
 }
 
@@ -1145,6 +1146,7 @@ export class CodexLanguageModel implements LanguageModelV3
 
                         const turnStartParams: CodexTurnStartParams = stripUndefined({
                             threadId,
+                            clientUserMessageId: callOptions?.clientUserMessageId,
                             input: turnInput,
                             cwd: callOptions?.cwd ?? this.config.providerSettings.defaultTurnSettings?.cwd,
                             runtimeWorkspaceRoots: callOptions?.runtimeWorkspaceRoots ?? this.config.providerSettings.defaultTurnSettings?.runtimeWorkspaceRoots,
@@ -1171,8 +1173,11 @@ export class CodexLanguageModel implements LanguageModelV3
                             threadId: activeThreadId,
                             turnId: activeTurnId,
                             interruptTimeoutMs,
+                            fileResolver,
                         });
-                        this.config.providerSettings.onSessionCreated?.(session);
+                        const onSessionCreated = callOptions?.onSessionCreated
+                            ?? this.config.providerSettings.onSessionCreated;
+                        onSessionCreated?.(session);
                     }
                     catch (error)
                     {

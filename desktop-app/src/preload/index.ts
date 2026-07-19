@@ -7,11 +7,13 @@ import type {
   CodexStatus,
   DesktopCodexApi,
   DesktopCodexChatApi,
+  DesktopCodexFollowUpApi,
   DesktopComposerContextApi,
   DesktopConversationsApi,
   DesktopProjectsApi,
   LocalContextPickerKind,
   LocalContextReference,
+  FollowUpQueueChangeEvent,
   ProjectCreateBlankResult,
   SidebarConversationListState,
   SidebarConversationOpenResult,
@@ -26,6 +28,7 @@ import type {
 } from '../shared/projects/projectTypes'
 import { createChatStreamBridge } from './chatStreamBridge'
 import { createComposerContextBridge } from './composerContextBridge'
+import { assertFollowUpSnapshotFitsIpc } from './followUpPayloadGuard'
 
 const desktopEnvironment = {
   platform: process.platform
@@ -139,13 +142,88 @@ const desktopConversations: DesktopConversationsApi = {
   }
 }
 
+const desktopFollowUps: DesktopCodexFollowUpApi = {
+  getState: (conversationKey) =>
+    ipcRenderer.invoke('codex:follow-ups:get-state', { conversationKey }),
+  enqueue: (conversationKey, snapshot, preferredMode) => {
+    assertFollowUpSnapshotFitsIpc(snapshot)
+    return ipcRenderer.invoke('codex:follow-ups:enqueue', {
+      conversationKey,
+      snapshot,
+      preferredMode
+    })
+  },
+  edit: (conversationKey, itemId, replacementSnapshot) => {
+    assertFollowUpSnapshotFitsIpc(replacementSnapshot)
+    return ipcRenderer.invoke('codex:follow-ups:edit', {
+      conversationKey,
+      itemId,
+      replacementSnapshot
+    })
+  },
+  beginEdit: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:begin-edit', { conversationKey, itemId }),
+  commitEdit: (conversationKey, itemId, replacementSnapshot) => {
+    assertFollowUpSnapshotFitsIpc(replacementSnapshot)
+    return ipcRenderer.invoke('codex:follow-ups:commit-edit', {
+      conversationKey,
+      itemId,
+      replacementSnapshot
+    })
+  },
+  cancelEdit: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:cancel-edit', { conversationKey, itemId }),
+  delete: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:delete', { conversationKey, itemId }),
+  reorder: (conversationKey, itemId, position) =>
+    ipcRenderer.invoke('codex:follow-ups:reorder', {
+      conversationKey,
+      itemId,
+      ...position
+    }),
+  requestSendNow: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:send-now', { conversationKey, itemId }),
+  retry: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:retry', { conversationKey, itemId }),
+  resume: (conversationKey) => ipcRenderer.invoke('codex:follow-ups:resume', { conversationKey }),
+  clear: (conversationKey) => ipcRenderer.invoke('codex:follow-ups:clear', { conversationKey }),
+  setDefaultMode: (mode) => ipcRenderer.invoke('codex:follow-ups:set-default-mode', { mode }),
+  prepareNextTurn: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:prepare-next-turn', {
+      conversationKey,
+      ...(itemId ? { itemId } : {})
+    }),
+  materializeItem: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:materialize-item', {
+      conversationKey,
+      itemId
+    }),
+  steerNext: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:steer-next', {
+      conversationKey,
+      ...(itemId ? { itemId } : {})
+    }),
+  steerItem: (conversationKey, itemId) =>
+    ipcRenderer.invoke('codex:follow-ups:steer-item', {
+      conversationKey,
+      itemId
+    }),
+  subscribe: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: FollowUpQueueChangeEvent): void =>
+      callback(payload)
+    ipcRenderer.on('codex:follow-ups:changed', listener)
+    return () => ipcRenderer.removeListener('codex:follow-ups:changed', listener)
+  }
+}
+
 const desktopApp = {
   environment: desktopEnvironment,
   codex: desktopCodex,
   chat: desktopCodexChat,
   composerContext: desktopComposerContext,
   projects: desktopProjects,
-  conversations: desktopConversations
+  conversations: desktopConversations,
+  followUps: desktopFollowUps
 }
 
 if (process.contextIsolated) {

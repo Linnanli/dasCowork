@@ -8,6 +8,8 @@ import {
   type LocalContextPickerKind,
   type LocalContextReference
 } from '../shared/codexIpcApi'
+import type { LocalImageFileIdentity } from './localImageCapabilityStore'
+import type { LocalPathFileIdentity } from './localPathCapabilityStore'
 import { mediaTypeForPath, toAppMediaUrl } from './localMediaProtocol'
 
 type LocalContextDialogKind = LocalContextPickerKind | 'files' | 'folders'
@@ -18,6 +20,16 @@ export type LocalContextPickerDialogOptions = {
 
 export type LocalContextPickerDependencies = {
   choosePickerKind?: () => Promise<'files' | 'folders' | null>
+  issueLocalImageCapability?: (
+    path: string,
+    mediaType: string,
+    identity: LocalImageFileIdentity
+  ) => string
+  issueLocalPathCapability?: (
+    path: string,
+    kind: 'file' | 'folder',
+    identity: LocalPathFileIdentity
+  ) => string
   showOpenDialog(options: LocalContextPickerDialogOptions): Promise<{
     canceled: boolean
     filePaths: string[]
@@ -25,6 +37,10 @@ export type LocalContextPickerDependencies = {
   stat(path: string): Promise<{
     isFile(): boolean
     isDirectory(): boolean
+    dev?: number
+    ino?: number
+    size?: number
+    mtimeMs?: number
   }>
 }
 
@@ -74,14 +90,75 @@ export async function pickLocalContext(
     const mediaType = selectedKind === 'file' ? mediaTypeForPath(path) : undefined
     const previewUrl = mediaType?.startsWith('image/') ? toAppMediaUrl(path) : null
 
-    references.push(
-      mediaType && previewUrl
-        ? { kind: 'image', path, label, mediaType, previewUrl }
-        : { kind: selectedKind, path, label, fileUrl }
-    )
+    if (mediaType && previewUrl) {
+      const identity = localImageIdentityFrom(stats)
+      const capabilityToken =
+        identity && dependencies.issueLocalImageCapability
+          ? dependencies.issueLocalImageCapability(path, mediaType, identity)
+          : undefined
+      references.push({
+        kind: 'image',
+        path,
+        label,
+        mediaType,
+        previewUrl,
+        ...(capabilityToken ? { capabilityToken } : {})
+      })
+    } else {
+      const identity = localPathIdentityFrom(stats)
+      const capabilityToken =
+        identity && dependencies.issueLocalPathCapability
+          ? dependencies.issueLocalPathCapability(path, selectedKind, identity)
+          : undefined
+      references.push({
+        kind: selectedKind,
+        path,
+        label,
+        fileUrl,
+        ...(capabilityToken ? { capabilityToken } : {})
+      })
+    }
   }
 
   return localContextReferenceListSchema.parse(references)
+}
+
+function localPathIdentityFrom(
+  stats: Awaited<ReturnType<LocalContextPickerDependencies['stat']>>
+): LocalPathFileIdentity | null {
+  if (
+    typeof stats.dev !== 'number' ||
+    typeof stats.ino !== 'number' ||
+    typeof stats.size !== 'number' ||
+    typeof stats.mtimeMs !== 'number'
+  ) {
+    return null
+  }
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs
+  }
+}
+
+function localImageIdentityFrom(
+  stats: Awaited<ReturnType<LocalContextPickerDependencies['stat']>>
+): LocalImageFileIdentity | null {
+  if (
+    typeof stats.dev !== 'number' ||
+    typeof stats.ino !== 'number' ||
+    typeof stats.size !== 'number' ||
+    typeof stats.mtimeMs !== 'number'
+  ) {
+    return null
+  }
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs
+  }
 }
 
 function selectedPathKind(
