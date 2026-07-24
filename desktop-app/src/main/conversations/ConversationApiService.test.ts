@@ -742,6 +742,7 @@ describe('ConversationApiService', () => {
       conversationId: 'thread-local',
       threadId: 'thread-local',
       title: 'History with tools',
+      historyRevision: '2026-06-30T04:05:00.000Z',
       messages
     })
     expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-local')
@@ -787,6 +788,72 @@ describe('ConversationApiService', () => {
     })
     expect(JSON.stringify(opened.messages)).not.toContain('file:')
     expect(JSON.stringify(opened.messages)).not.toContain('base64')
+  })
+
+  it('waits for a live conversation turn before reading its canonical history', async () => {
+    const threadClient = createClient()
+    let settle!: () => void
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
+      id: 'thread-local',
+      title: 'Completed after reconnect',
+      preview: 'Completed after reconnect',
+      createdAt: '2026-06-30T04:00:00.000Z',
+      updatedAt: '2026-06-30T04:05:00.000Z',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      messages: []
+    })
+    const waitForConversationSettlement = vi.fn(() => settlement)
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState },
+      waitForConversationSettlement
+    })
+
+    const opened = service.openConversation({ conversationId: 'thread-local' })
+    await Promise.resolve()
+
+    expect(waitForConversationSettlement).toHaveBeenCalledWith('thread-local')
+    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
+
+    settle()
+    await opened
+
+    expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-local')
+  })
+
+  it('uses only the full app-server history when opening a settled conversation', async () => {
+    const threadClient = createClient()
+    const appServerThread: AppServerThreadRow = {
+      id: 'thread-local',
+      title: 'App-server history',
+      preview: 'App-server history',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      messages: [
+        {
+          id: 'app-server-message',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Returned by app-server.' }]
+        }
+      ]
+    }
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue(appServerThread)
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await expect(
+      service.openConversation({ conversationId: 'thread-local' })
+    ).resolves.toMatchObject({
+      messages: appServerThread.messages
+    })
   })
 
   it('does not preserve missing known threads without an explicit ensure request', async () => {

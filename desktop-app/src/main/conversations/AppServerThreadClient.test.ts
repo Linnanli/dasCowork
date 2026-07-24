@@ -17,11 +17,7 @@ function createHistoryClient(threads: HistoryThread[] = []): AppServerHistoryCli
     listTurns: vi.fn(async (threadId: string) => {
       const thread = threads.find((candidate) => candidate.id === threadId)
       if (!thread) throw new Error(`unexpected thread ${threadId}`)
-      return {
-        data: [...thread.turns].reverse(),
-        nextCursor: null,
-        backwardsCursor: null
-      }
+      return { data: thread.turns, nextCursor: null, backwardsCursor: null }
     }),
     archiveThread: vi.fn(async () => undefined),
     unarchiveThread: vi.fn(async () => undefined),

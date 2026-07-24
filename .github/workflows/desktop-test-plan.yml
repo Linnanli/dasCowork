@@ -1,0 +1,86 @@
+name: Desktop test-plan gate
+
+on:
+  pull_request:
+    paths:
+      - "desktop-app/**"
+      - "codex/codex-rs/app-server/**"
+      - "docs/test-plan.md"
+      - ".github/workflows/desktop-test-plan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-test-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            desktop-app/package-lock.json
+            desktop-app/vendors/ai-sdk-provider-codex-asp/package-lock.json
+
+      - name: Install provider dependencies
+        run: npm ci
+        working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop-app
+
+      - name: Provider lint, typecheck, and tests
+        working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Desktop lint, typecheck, and tests
+        working-directory: desktop-app
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Verify test-plan coverage contract
+        run: npm --prefix desktop-app run test:plan-coverage
+
+      - name: Run Mock E2E
+        run: npm --prefix desktop-app run test:e2e -- --reporter=line
+
+      - name: Repeat abnormal Mock E2E
+        run: npm --prefix desktop-app run test:e2e:stability
+
+      - name: Check change scope
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base="$(git merge-base HEAD "origin/$GITHUB_BASE_REF")"
+          else
+            base="$(git rev-parse HEAD^)"
+          fi
+          git diff --check "$base" HEAD
+          if git diff --name-only "$base" HEAD -- codex/codex-rs/app-server | grep -q .; then
+            echo "Changes to codex/codex-rs/app-server are outside this project boundary." >&2
+            exit 1
+          fi
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-playwright-diagnostics
+          if-no-files-found: ignore
+          path: |
+            desktop-app/test-results
+            desktop-app/playwright-report

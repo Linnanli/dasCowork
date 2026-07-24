@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { codexChatTerminalFallbackSchema } from '../shared/codexIpcApi'
 import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
@@ -6,7 +7,6 @@ import type {
   CodexModelList,
   CodexStatus,
   DesktopCodexApi,
-  DesktopCodexChatApi,
   DesktopCodexFollowUpApi,
   DesktopComposerContextApi,
   DesktopConversationsApi,
@@ -59,15 +59,37 @@ const desktopCodex: DesktopCodexApi = {
       callback(request)
     ipcRenderer.on('codex:approval-request', listener)
     return () => ipcRenderer.removeListener('codex:approval-request', listener)
+  },
+  onApprovalSettled: (callback: (requestId: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, requestId: unknown): void => {
+      if (typeof requestId === 'string' && requestId.length > 0) callback(requestId)
+    }
+    ipcRenderer.on('codex:approval-settled', listener)
+    return () => ipcRenderer.removeListener('codex:approval-settled', listener)
   }
 }
 
-const desktopCodexChat: DesktopCodexChatApi = createChatStreamBridge({
+const desktopCodexChat = createChatStreamBridge({
   createStreamId: () => crypto.randomUUID(),
   createMessageChannel: () => new MessageChannel(),
-  postStart: (request: CodexChatRequest, port: MessagePort) => {
-    ipcRenderer.postMessage('codex-chat:start', request, [port])
+  postStart: (request: CodexChatRequest, streamId: string, port: MessagePort) => {
+    ipcRenderer.postMessage('codex-chat:start', { streamId, request }, [port])
+  },
+  postDetached: (streamId, request) => {
+    ipcRenderer.send('codex-chat:port-detached', { streamId, chatId: request.chatId })
+  },
+  subscribeTerminal: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = codexChatTerminalFallbackSchema.safeParse(payload, { jitless: true })
+      if (parsed.success) callback(parsed.data)
+    }
+    ipcRenderer.on('codex-chat:terminal', listener)
+    return () => ipcRenderer.removeListener('codex-chat:terminal', listener)
   }
+})
+
+window.addEventListener('beforeunload', () => {
+  desktopCodexChat.detachActiveStreams()
 })
 
 const desktopComposerContext: DesktopComposerContextApi = createComposerContextBridge(

@@ -70,7 +70,11 @@ function ServerRequestCard({
   }
 
   return (
-    <article aria-busy={Boolean(busyAction)} className="rounded-lg border border-border/70 p-3">
+    <article
+      aria-busy={Boolean(busyAction)}
+      className="rounded-lg border border-border/70 p-3"
+      data-request-id={request.id}
+    >
       {renderRequestBody(request, conversationTitle, onRespond, onReject, runAction, busyAction)}
       {error ? (
         <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

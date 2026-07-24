@@ -52,39 +52,40 @@ export class CodexWorker
             return;
         }
 
-        this.inner = this.settings.transportFactory();
+        const inner = this.settings.transportFactory();
+        this.inner = inner;
 
         // While a tool call is parked and no session is attached (the gap
         // between two doStream() steps), inbound messages would otherwise be
         // dropped — e.g. item/completed of exec commands that were still
         // running when the step closed. Buffer them for replay on resume.
-        this.inner.on("message", (message) =>
+        inner.on("message", (message) =>
         {
-            if (this.pendingToolCall && this.sessionListeners.length === 0)
+            if (this.inner === inner && this.pendingToolCall && this.sessionListeners.length === 0)
             {
                 this.bufferedMessages.push(message);
             }
         });
 
-        this.inner.on("close", () =>
+        inner.on("close", () =>
         {
-            this.initialized = false;
-            this.initializeResult = undefined;
-            this.inner = null;
-            this.state = "disconnected";
-            this.bufferedMessages = [];
+            this.handleInnerTransportTermination(inner);
         });
 
-        this.inner.on("error", () =>
+        inner.on("error", () =>
         {
-            this.initialized = false;
-            this.initializeResult = undefined;
-            this.inner = null;
-            this.state = "disconnected";
-            this.bufferedMessages = [];
+            this.handleInnerTransportTermination(inner);
         });
 
-        await this.inner.connect();
+        try
+        {
+            await inner.connect();
+        }
+        catch (error)
+        {
+            this.handleInnerTransportTermination(inner);
+            throw error;
+        }
     }
 
     acquire(): void
@@ -195,5 +196,20 @@ export class CodexWorker
         {
             this.state = "disconnected";
         }
+    }
+
+    private handleInnerTransportTermination(transport: CodexTransport): void
+    {
+        if (this.inner !== transport)
+        {
+            return;
+        }
+
+        this.initialized = false;
+        this.initializeResult = undefined;
+        this.pendingToolCall = null;
+        this.inner = null;
+        this.state = "disconnected";
+        this.bufferedMessages = [];
     }
 }

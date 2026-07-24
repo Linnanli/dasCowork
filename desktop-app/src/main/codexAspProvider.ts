@@ -1,9 +1,12 @@
 import {
+  CodexAppServerConnection,
   createCodexAppServer,
+  type CodexAppServerConnectionDiagnostics,
   type CodexProvider,
   type CodexProviderSettings,
   type CommandApprovalHandler,
-  type FileChangeApprovalHandler
+  type FileChangeApprovalHandler,
+  StdioTransport
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { CodexAppServerLaunchOptions } from './codexAppServerLaunch'
@@ -11,6 +14,12 @@ import type { CodexAppServerLaunchOptions } from './codexAppServerLaunch'
 type CodexApprovalSettings = NonNullable<CodexProviderSettings['approvals']>
 type ToolUserInputHandler = NonNullable<CodexApprovalSettings['onToolUserInput']>
 type ElicitationHandler = NonNullable<CodexApprovalSettings['onElicitation']>
+
+export type CodexAspSharedConnection = {
+  transportFactory: NonNullable<CodexProviderSettings['transportFactory']>
+  shutdown(): Promise<void>
+  getDiagnostics?(): CodexAppServerConnectionDiagnostics
+}
 
 export type CodexAspProviderSettingsInput = {
   launch: CodexAppServerLaunchOptions
@@ -20,11 +29,41 @@ export type CodexAspProviderSettingsInput = {
   onFileChangeApproval: FileChangeApprovalHandler
   onToolUserInput: ToolUserInputHandler
   onElicitation: ElicitationHandler
+  connection?: CodexAspSharedConnection
+}
+
+export function createCodexAspSharedConnection(
+  launch: CodexAppServerLaunchOptions
+): CodexAspSharedConnection {
+  const transport = createCodexAspStdioTransport(launch)
+  const sharedConnection = new CodexAppServerConnection({
+    transportFactory: () => new StdioTransport(transport.stdio),
+    idleTimeoutMs: 300_000
+  })
+
+  return {
+    transportFactory: (context) => sharedConnection.createTransport(context),
+    shutdown: () => sharedConnection.shutdown(),
+    getDiagnostics: () => sharedConnection.getDiagnostics()
+  }
 }
 
 export function createCodexAspProviderSettings(
   input: CodexAspProviderSettingsInput
 ): CodexProviderSettings {
+  const connectionSettings = input.connection
+    ? {
+        transportFactory: input.connection.transportFactory
+      }
+    : {
+        transport: createCodexAspStdioTransport(input.launch),
+        persistent: {
+          scope: 'provider' as const,
+          poolSize: 4,
+          idleTimeoutMs: 300_000
+        }
+      }
+
   return {
     defaultModel: input.defaultModel,
     clientInfo: {
@@ -33,15 +72,7 @@ export function createCodexAspProviderSettings(
       version: '1.0.0'
     },
     experimentalApi: true,
-    transport: {
-      type: 'stdio',
-      stdio: {
-        command: input.launch.command,
-        args: input.launch.args,
-        cwd: input.launch.cwd,
-        env: toStdioEnv(input.launch.env)
-      }
-    },
+    ...connectionSettings,
     defaultThreadSettings: {
       cwd: input.cwd,
       approvalPolicy: 'on-request',
@@ -57,11 +88,6 @@ export function createCodexAspProviderSettings(
       onFileChangeApproval: input.onFileChangeApproval,
       onToolUserInput: input.onToolUserInput,
       onElicitation: input.onElicitation
-    },
-    persistent: {
-      scope: 'provider',
-      poolSize: 4,
-      idleTimeoutMs: 300_000
     },
     toolTimeoutMs: 120_000,
     interruptTimeoutMs: 10_000,
@@ -79,6 +105,20 @@ export function createCodexAspProviderSettings(
 
 export function createCodexAspProvider(input: CodexAspProviderSettingsInput): CodexProvider {
   return createCodexAppServer(createCodexAspProviderSettings(input))
+}
+
+export function createCodexAspStdioTransport(
+  launch: CodexAppServerLaunchOptions
+): NonNullable<CodexProviderSettings['transport']> {
+  return {
+    type: 'stdio',
+    stdio: {
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: toStdioEnv(launch.env)
+    }
+  }
 }
 
 function toStdioEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> | undefined {

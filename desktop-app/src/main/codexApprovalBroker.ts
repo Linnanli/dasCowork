@@ -20,6 +20,7 @@ export class CodexApprovalBroker {
   private readonly timeoutMs: number
   private readonly pending = new Map<string, PendingApproval>()
   private readonly listeners = new Set<(request: CodexApprovalRequest) => void>()
+  private readonly settledListeners = new Set<(requestId: string) => void>()
   private readonly coordinator = new ApprovalCoordinator({
     sendApproval: ({ id, response }) => this.resolvePending(id, response)
   })
@@ -33,7 +34,23 @@ export class CodexApprovalBroker {
     return () => this.listeners.delete(listener)
   }
 
-  request(input: CodexApprovalRequestInput): Promise<CodexApprovalResponse> {
+  onSettled(listener: (requestId: string) => void): () => void {
+    this.settledListeners.add(listener)
+    return () => this.settledListeners.delete(listener)
+  }
+
+  getPendingCount(): number {
+    return this.pending.size
+  }
+
+  getPendingRequestIds(): string[] {
+    return [...this.pending.keys()]
+  }
+
+  request(
+    input: CodexApprovalRequestInput,
+    onCreated?: (requestId: string) => void
+  ): Promise<CodexApprovalResponse> {
     const request: CodexApprovalRequest = {
       id: crypto.randomUUID(),
       kind: input.kind,
@@ -46,18 +63,20 @@ export class CodexApprovalBroker {
       const timeout = setTimeout(() => {
         this.pending.delete(request.id)
         this.coordinator.forget(request.id)
+        this.notifySettled(request.id)
         resolve({ action: 'decline', reason: 'Approval timed out' })
       }, this.timeoutMs)
       this.pending.set(request.id, { resolve, reject, timeout })
     })
 
+    onCreated?.(request.id)
     for (const listener of this.listeners) listener(registeredRequest)
     return promise
   }
 
-  respond(requestId: string, response: CodexApprovalResponse): void {
+  respond(requestId: string, response: CodexApprovalResponse): Promise<void> {
     if (!this.pending.has(requestId)) throw new Error(`Unknown approval request: ${requestId}`)
-    void this.coordinator.respond(requestId, response)
+    return this.coordinator.respond(requestId, response)
   }
 
   private resolvePending(requestId: string, response: CodexApprovalResponse): void {
@@ -65,16 +84,27 @@ export class CodexApprovalBroker {
     if (!pending) throw new Error(`Unknown approval request: ${requestId}`)
     this.pending.delete(requestId)
     clearTimeout(pending.timeout)
+    this.notifySettled(requestId)
     pending.resolve(response)
   }
 
+  reject(requestId: string, error: Error): boolean {
+    const pending = this.pending.get(requestId)
+    if (!pending) return false
+    this.pending.delete(requestId)
+    clearTimeout(pending.timeout)
+    this.coordinator.forget(requestId)
+    this.notifySettled(requestId)
+    pending.reject(error)
+    return true
+  }
+
   rejectAll(error: Error): void {
-    for (const [id, pending] of this.pending) {
-      this.pending.delete(id)
-      clearTimeout(pending.timeout)
-      this.coordinator.forget(id)
-      pending.reject(error)
-    }
+    for (const id of this.pending.keys()) this.reject(id, error)
     this.coordinator.clear()
+  }
+
+  private notifySettled(requestId: string): void {
+    for (const listener of this.settledListeners) listener(requestId)
   }
 }

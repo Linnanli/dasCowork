@@ -5,6 +5,31 @@ import { MockTransport } from "./helpers/mock-transport";
 
 describe("Worker pool thread affinity", () =>
 {
+    it("marks a disconnected worker busy before handing it to a waiter", async () =>
+    {
+        const pool = new CodexWorkerPool({
+            poolSize: 1,
+            transportFactory: () => new MockTransport(),
+            idleTimeoutMs: 60_000,
+        });
+
+        try
+        {
+            const worker = await pool.acquire();
+            const waiting = pool.acquire();
+
+            worker.state = "disconnected";
+            pool.release(worker);
+
+            expect(await waiting).toBe(worker);
+            expect(worker.state).toBe("busy");
+        }
+        finally
+        {
+            await pool.shutdown();
+        }
+    });
+
     it("re-acquires the worker with matching pendingToolCall threadId", async () =>
     {
         const pool = new CodexWorkerPool({

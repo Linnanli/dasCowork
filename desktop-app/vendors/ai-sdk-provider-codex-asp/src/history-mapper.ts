@@ -19,22 +19,38 @@ import {
     unifiedDiffForFileChangeBatches,
 } from "./protocol/turn-diff";
 import type { CodexTurnInputItem } from "./protocol/types";
+import { normalizedFailedTurnError } from "./turn-error";
 import { stripUndefined } from "./utils/object";
 
 type UiMessagePart = UIMessage["parts"][number];
 type DynamicToolUiPart = Extract<UiMessagePart, { type: "dynamic-tool" }>;
 type FileUiPart = Extract<UiMessagePart, { type: "file" }>;
+type HistoricalTerminalTurnStatus = Extract<Turn["status"], "failed" | "interrupted">;
 
-export type CodexTurnForUi =
-    Pick<Turn, "id" | "durationMs">
-    & Partial<Omit<Turn, "id" | "durationMs" | "items">>
-    & { items: readonly CodexRenderableThreadItem[]; };
+type CodexHistoricalTurnMessageMetadata = {
+    codexTurn: {
+        turnId: string
+        status: HistoricalTerminalTurnStatus
+        error?: NonNullable<Turn["error"]>
+    }
+};
+
+type CodexHistorySourceMessageMetadata = {
+    codexSource: {
+        turnId: string
+    }
+};
+
+export type CodexTurnForUi = Pick<Turn, "id" | "durationMs"> &
+  Partial<Omit<Turn, "id" | "durationMs" | "items">> & {
+      items: readonly CodexRenderableThreadItem[]
+  };
 
 export type CodexThreadForUi = Pick<Thread, "id"> & {
-    turns: CodexTurnForUi[];
+    turns: CodexTurnForUi[]
     // Thread-list and history responses may omit cwd or return null for
     // threads created before the working directory was recorded.
-    cwd?: Thread["cwd"] | null;
+    cwd?: Thread["cwd"] | null
 };
 
 export function mapCodexThreadToUiMessages(thread: CodexThreadForUi): UIMessage[]
@@ -59,6 +75,9 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
             id: assistantMessageId ?? `assistant:${turn.id}:turn-diff`,
             role: "assistant",
             parts: assistantParts,
+            metadata: {
+                codexSource: { turnId: turn.id },
+            } satisfies CodexHistorySourceMessageMetadata,
         });
 
         assistantParts = [];
@@ -67,10 +86,10 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
 
     const appendAssistantPart = (sourceItemId: string, part: UiMessagePart): void =>
     {
-        // A turn can contain multiple assistant-side segments separated by a
-        // user message (for example, sub-agent activity before the user's
-        // prompt). Anchor each segment to its first source item so that its
-        // ID is both unique and stable when history is reloaded.
+    // A turn can contain multiple assistant-side segments separated by a
+    // user message (for example, sub-agent activity before the user's
+    // prompt). Anchor each segment to its first source item so that its
+    // ID is both unique and stable when history is reloaded.
         assistantMessageId ??= `assistant:${turn.id}:${sourceItemId}`;
         assistantParts.push(part);
     };
@@ -151,7 +170,55 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
     }
 
     flushAssistant();
+    appendHistoricalTerminalState(messages, turn);
     return messages;
+}
+
+function appendHistoricalTerminalState(messages: UIMessage[], turn: CodexTurnForUi): void
+{
+    if (turn.status !== "failed" && turn.status !== "interrupted")
+    {
+        return;
+    }
+
+    const error = normalizedFailedTurnError(turn.status, turn.error);
+    const metadata: CodexHistoricalTurnMessageMetadata = {
+        codexTurn: {
+            turnId: turn.id,
+            status: turn.status,
+            ...(error ? { error } : {}),
+        },
+    };
+    const lastMessageIndex = messages.length - 1;
+    const lastMessage = messages[lastMessageIndex];
+    if (lastMessage?.role === "assistant")
+    {
+        messages[lastMessageIndex] = {
+            ...lastMessage,
+            metadata: mergeMessageMetadata(lastMessage.metadata, metadata),
+        };
+        return;
+    }
+
+    messages.push({
+        id: `assistant:${turn.id}:terminal`,
+        role: "assistant",
+        parts: [],
+        metadata: {
+            codexSource: { turnId: turn.id },
+            ...metadata,
+        } satisfies CodexHistorySourceMessageMetadata & CodexHistoricalTurnMessageMetadata,
+    });
+}
+
+function mergeMessageMetadata(
+    current: UIMessage["metadata"],
+    terminal: CodexHistoricalTurnMessageMetadata,
+): Record<string, unknown>
+{
+    return current && typeof current === "object" && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>), ...terminal }
+        : terminal;
 }
 
 function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiPart | null
@@ -180,7 +247,10 @@ function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiP
     };
 }
 
-function fileChangeDiffBatchesForTurn(turn: CodexTurnForUi, initialCwd?: string): FileChangeDiffBatch[]
+function fileChangeDiffBatchesForTurn(
+    turn: CodexTurnForUi,
+    initialCwd?: string,
+): FileChangeDiffBatch[]
 {
     const batches: FileChangeDiffBatch[] = [];
     let cwd = initialCwd;
@@ -193,10 +263,12 @@ function fileChangeDiffBatchesForTurn(turn: CodexTurnForUi, initialCwd?: string)
             continue;
         }
 
-        if (item.type === "fileChange"
-            && item.status !== "failed"
-            && item.status !== "declined"
-            && item.changes.length > 0)
+        if (
+            item.type === "fileChange" &&
+      item.status !== "failed" &&
+      item.status !== "declined" &&
+      item.changes.length > 0
+        )
         {
             batches.push({ changes: item.changes, cwd });
         }
@@ -306,7 +378,9 @@ function userInputFilePart(entry: CodexTurnInputItem): FileUiPart | null
     }
 }
 
-function dynamicToolPartForInvocation(invocation: CodexThreadItemToolInvocation): DynamicToolUiPart
+function dynamicToolPartForInvocation(
+    invocation: CodexThreadItemToolInvocation,
+): DynamicToolUiPart
 {
     return {
         type: "dynamic-tool",
@@ -319,7 +393,9 @@ function dynamicToolPartForInvocation(invocation: CodexThreadItemToolInvocation)
     };
 }
 
-function imageGenerationFilePart(item: Extract<ThreadItem, { type: "imageGeneration" }>): FileUiPart
+function imageGenerationFilePart(
+    item: Extract<ThreadItem, { type: "imageGeneration" }>,
+): FileUiPart
 {
     const providerMetadata = providerMetadataForImageGeneration(item);
     return stripUndefined({
@@ -339,9 +415,7 @@ function providerMetadataForImageGeneration(
         savedPath: item.savedPath,
     });
 
-    return Object.keys(metadata).length > 0
-        ? { [CODEX_PROVIDER_ID]: metadata }
-        : undefined;
+    return Object.keys(metadata).length > 0 ? { [CODEX_PROVIDER_ID]: metadata } : undefined;
 }
 
 function imageDataUrl(data: string): string

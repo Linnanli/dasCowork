@@ -8,6 +8,7 @@ export default defineConfig({
     timeout: 20_000
   },
   workers: 1,
+  retries: 0,
   reporter: [['list']],
   use: {
     trace: 'retain-on-failure',

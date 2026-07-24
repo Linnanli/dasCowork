@@ -1,5 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodexSession } from '@janole/ai-sdk-provider-codex-asp'
+import {
+  CodexSteerError,
+  type CodexCommandApprovalRequest,
+  type CodexSession
+} from '@janole/ai-sdk-provider-codex-asp'
+
+import { createVitestPlanAssertionRecorder } from '../../scripts/lib/test-plan-assertions.mjs'
+
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+const raceAssertionIds = [
+  'claim、接受与队列结算至多一次',
+  '正确的恢复、暂停或拒绝状态',
+  'terminal 和 active run 不被竞态覆盖'
+]
+
+async function assertRacePlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  for (const scenarioId of scenarioIds) {
+    for (const assertionId of raceAssertionIds) {
+      await planAssert({ scenarioId, assertionId, assertion })
+    }
+  }
+}
 
 const providerState = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -29,7 +54,11 @@ import {
   type CodexChatRuntimeServiceOptions,
   type ModelCatalogLike
 } from './codexChatRuntimeService'
-import type { ConversationFollowUpQueueService } from './followUps/ConversationFollowUpQueueService'
+import type { CodexTurnLifecycleEvent } from '../shared/codexIpcApi'
+import type {
+  ConversationFollowUpQueueService,
+  FollowUpClaim
+} from './followUps/ConversationFollowUpQueueService'
 import { ProjectStore, createDefaultProjectState } from './projects/ProjectStore'
 
 class FakePort implements CodexPortLike {
@@ -84,8 +113,11 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 
 type RuntimeStreamTextInput = {
   resumeThreadId?: string
+  startFreshTerminalRetry?: boolean
   onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
+  onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void | Promise<void>
   onSessionCreated?: (session: CodexSession) => void
+  onProviderToolCall?: (toolName: string) => void
 }
 
 function streamTextWithStartedThread(
@@ -93,6 +125,7 @@ function streamTextWithStartedThread(
 ): NonNullable<CodexChatRuntimeServiceOptions['streamText']> {
   return vi.fn(async (input: RuntimeStreamTextInput) => {
     await input.onThreadStarted?.({ threadId })
+    await completeCanonicalTurn(input, threadId)
     return {
       toUIMessageStream: () => emptyUiMessageStream()
     }
@@ -113,6 +146,53 @@ function deferred<T = void>(): {
   return { promise, resolve, reject }
 }
 
+function activeSession(
+  threadId: string,
+  turnId: string,
+  interrupt: () => Promise<void>
+): CodexSession {
+  return {
+    threadId,
+    turnId,
+    isActive: () => true,
+    injectMessage: async () => undefined,
+    steerPrompt: async () => ({ turnId }),
+    interrupt
+  }
+}
+
+async function completeCanonicalTurn(
+  input: RuntimeStreamTextInput,
+  threadId = 'thread-prestarted',
+  turnId = 'turn-prestarted'
+): Promise<void> {
+  input.onSessionCreated?.(activeSession(threadId, turnId, async () => undefined))
+  await input.onTurnLifecycle?.({
+    type: 'turn-started',
+    sequence: 1,
+    threadId,
+    turnId
+  })
+  await input.onTurnLifecycle?.({
+    type: 'turn-completed',
+    sequence: 2,
+    threadId,
+    turnId,
+    outcome: 'completed'
+  })
+}
+
+function isTerminalMessage(value: unknown): value is { type: 'finish' | 'aborted' | 'error' } {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    'type' in value &&
+    ((value as { type?: unknown }).type === 'finish' ||
+      (value as { type?: unknown }).type === 'aborted' ||
+      (value as { type?: unknown }).type === 'error')
+  )
+}
+
 async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
@@ -121,6 +201,41 @@ async function* waitThenEnd(promise: Promise<unknown>): AsyncGenerator<never, vo
   await promise
   if (process.env['NODE_ENV'] === '__unused_test_stream__') {
     yield undefined as never
+  }
+}
+
+function createSteerClaim(overrides: Partial<FollowUpClaim> = {}): FollowUpClaim {
+  return {
+    conversationKey: 'conversation-1',
+    leaseToken: 'lease-1',
+    item: {
+      id: 'follow-up-1',
+      conversationKey: 'conversation-1',
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+      preferredMode: 'steer',
+      message: {
+        id: 'follow-up-1',
+        text: 'change direction',
+        attachments: [],
+        contextReferences: [],
+        trustedContext: {
+          conversationId: 'conversation-1',
+          threadId: 'thread-1',
+          hostId: 'local',
+          cwd: '/repo',
+          workspaceRoots: ['/repo']
+        }
+      },
+      status: 'steering',
+      lease: {
+        token: 'lease-1',
+        operation: 'turn-steer',
+        claimedAt: '2026-07-18T00:00:00.000Z',
+        owner: 'main'
+      }
+    },
+    ...overrides
   }
 }
 
@@ -161,9 +276,10 @@ describe('CodexChatRuntimeService', () => {
 
   it('keeps catalog validation required after an unavailable catalog list', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await completeCanonicalTurn(input)
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
     providerState.listModels.mockResolvedValue([
       {
         id: 'provider-model',
@@ -214,12 +330,15 @@ describe('CodexChatRuntimeService', () => {
   it('restores app media URLs only in the model-input request copy', async () => {
     const port = new FakePort()
     let originalMessages: unknown
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: (options?: { originalMessages?: unknown }) => {
-        originalMessages = options?.originalMessages
-        return emptyUiMessageStream()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await completeCanonicalTurn(input)
+      return {
+        toUIMessageStream: (options?: { originalMessages?: unknown }) => {
+          originalMessages = options?.originalMessages
+          return emptyUiMessageStream()
+        }
       }
-    }))
+    })
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -270,7 +389,7 @@ describe('CodexChatRuntimeService', () => {
     )
     expect(originalMessages).toBe(messages)
     expect(messages[0]!.parts[0]!.url).toBe('app://fs/@fs/tmp/codex-clipboard.png')
-    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: undefined })
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
   })
 
   it('rejects invalid app media URLs before invoking the provider boundary', async () => {
@@ -318,9 +437,10 @@ describe('CodexChatRuntimeService', () => {
 
   it('revalidates local path attachments before invoking the provider boundary', async () => {
     const port = new FakePort()
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await completeCanonicalTurn(input)
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -451,10 +571,8 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'backend-default'
       })
     )
-    expect(port.messages).toEqual([
-      { type: 'thread-bound', threadId: 'thread-prestarted' },
-      { type: 'finish', threadId: 'thread-prestarted' }
-    ])
+    expect(port.messages).toContainEqual({ type: 'thread-bound', threadId: 'thread-prestarted' })
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
   })
 
   it('rejects chat request modelId values that are not in the catalog', async () => {
@@ -538,10 +656,8 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'canonical-model'
       })
     )
-    expect(port.messages).toEqual([
-      { type: 'thread-bound', threadId: 'thread-prestarted' },
-      { type: 'finish', threadId: 'thread-prestarted' }
-    ])
+    expect(port.messages).toContainEqual({ type: 'thread-bound', threadId: 'thread-prestarted' })
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
   })
 
   it('delegates selected model validation to the catalog', async () => {
@@ -577,6 +693,7 @@ describe('CodexChatRuntimeService', () => {
       },
       streamText: async (input: RuntimeStreamTextInput) => {
         await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        await completeCanonicalTurn(input)
         return {
           toUIMessageStream: () =>
             (async function* () {
@@ -598,13 +715,15 @@ describe('CodexChatRuntimeService', () => {
       port
     )
 
-    expect(port.messages).toEqual([
-      { type: 'thread-bound', threadId: 'thread-prestarted' },
-      { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
-      { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } },
-      { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } },
-      { type: 'finish', threadId: 'thread-prestarted' }
-    ])
+    expect(port.messages).toEqual(
+      expect.arrayContaining([
+        { type: 'thread-bound', threadId: 'thread-prestarted' },
+        { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
+        { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } },
+        { type: 'chunk', chunk: { type: 'text-end', id: 'text-1' } }
+      ])
+    )
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
   })
 
   it('forwards completed turn duration to UI message metadata', async () => {
@@ -675,7 +794,176 @@ describe('CodexChatRuntimeService', () => {
       port
     )
 
-    expect(port.messages).toEqual([{ type: 'error', error: 'The free quota has been exhausted.' }])
+    expect(port.messages.filter((message) => isTerminalMessage(message))).toEqual([
+      { type: 'error', error: 'The free quota has been exhausted.' }
+    ])
+  })
+
+  it('preserves an upstream failure detail after canonical failed completion', async () => {
+    const port = new FakePort()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        onSessionCreated?.(activeSession('thread-quota', 'turn-quota', async () => undefined))
+        const failedLifecycle = {
+          type: 'turn-completed',
+          sequence: 1,
+          threadId: 'thread-quota',
+          turnId: 'turn-quota',
+          outcome: 'failed',
+          error: 'The canonical quota has been exhausted.'
+        } as const
+        await onTurnLifecycle?.(failedLifecycle)
+        return {
+          toUIMessageStream: (options: { onError?: (error: unknown) => string } = {}) =>
+            (async function* () {
+              yield {
+                type: 'error',
+                errorText:
+                  options.onError?.(new Error('The stream quota has been exhausted.')) ??
+                  'missing error'
+              }
+            })()
+        }
+      }
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-quota',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(port.messages.filter((message) => isTerminalMessage(message))).toEqual([
+      { type: 'error', error: 'The canonical quota has been exhausted.' }
+    ])
+  })
+
+  it('forwards accepted item state without exposing its payload to the renderer', async () => {
+    const port = new FakePort()
+    const command = {
+      id: 'command-journal',
+      type: 'commandExecution' as const,
+      command: 'pwd',
+      cwd: '/repo',
+      processId: 'pid-journal',
+      source: 'agent' as const,
+      status: 'completed' as const,
+      commandActions: [],
+      aggregatedOutput: '/repo',
+      exitCode: 0,
+      durationMs: 8
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        onSessionCreated?.(activeSession('thread-journal', 'turn-journal', async () => undefined))
+        await onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-journal',
+          turnId: 'turn-journal'
+        })
+        await onTurnLifecycle?.({
+          type: 'item-completed',
+          sequence: 2,
+          threadId: 'thread-journal',
+          turnId: 'turn-journal',
+          itemId: command.id,
+          itemType: command.type,
+          item: command
+        })
+        await onTurnLifecycle?.({
+          type: 'turn-completed',
+          sequence: 3,
+          threadId: 'thread-journal',
+          turnId: 'turn-journal',
+          outcome: 'completed'
+        })
+        return { toUIMessageStream: () => emptyUiMessageStream() }
+      }
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-journal',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(port.messages).toContainEqual({
+      type: 'turn-lifecycle',
+      event: expect.objectContaining({
+        type: 'item-completed',
+        itemId: command.id,
+        itemType: command.type
+      })
+    })
+    expect(JSON.stringify(port.messages)).not.toContain('aggregatedOutput')
+  })
+
+  it('redacts credentials and supplies a fallback before forwarding stream errors', async () => {
+    const errors = ['Authorization: Bearer secret-token api_key=secret-value sk-secret123', '   ']
+    const ports = [new FakePort(), new FakePort()]
+    let invocation = 0
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => {
+        const currentError = errors[invocation++]
+        return {
+          toUIMessageStream: (options: { onError?: (error: unknown) => string } = {}) =>
+            (async function* () {
+              yield {
+                type: 'error',
+                errorText: options.onError?.(new Error(currentError)) ?? 'missing error'
+              }
+            })()
+        }
+      }
+    })
+
+    for (const [index, port] of ports.entries()) {
+      await service.startChatStream(
+        {
+          chatId: `chat-${index}`,
+          trigger: 'submit-message',
+          messages: [],
+          modelId: 'gpt-test',
+          body: { conversationId: `conversation-${index}` }
+        },
+        port
+      )
+    }
+
+    expect(ports[0].messages).toEqual([
+      {
+        type: 'error',
+        error: 'Authorization: [REDACTED] api_key=[REDACTED] sk-[REDACTED]'
+      }
+    ])
+    expect(ports[1].messages).toEqual([{ type: 'error', error: '模型响应未完成，请重试。' }])
   })
 
   it('persists project assignment to the canonical app-server thread id', async () => {
@@ -706,6 +994,7 @@ describe('CodexChatRuntimeService', () => {
       projectStore,
       streamText: async (input: RuntimeStreamTextInput) => {
         await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        await completeCanonicalTurn(input)
         return {
           toUIMessageStream: () =>
             (async function* () {
@@ -783,6 +1072,7 @@ describe('CodexChatRuntimeService', () => {
       projectStore,
       streamText: async (input: RuntimeStreamTextInput) => {
         await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        await completeCanonicalTurn(input)
         return {
           toUIMessageStream: () =>
             (async function* () {
@@ -812,11 +1102,13 @@ describe('CodexChatRuntimeService', () => {
         'failed to persist project assignment for thread-prestarted',
         expect.any(Error)
       )
-      expect(port.messages).toEqual([
-        { type: 'thread-bound', threadId: 'thread-prestarted' },
-        { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
-        { type: 'finish', threadId: 'thread-prestarted' }
-      ])
+      expect(port.messages).toEqual(
+        expect.arrayContaining([
+          { type: 'thread-bound', threadId: 'thread-prestarted' },
+          { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } }
+        ])
+      )
+      expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
     } finally {
       consoleError.mockRestore()
     }
@@ -840,20 +1132,20 @@ describe('CodexChatRuntimeService', () => {
     const onThreadIdAvailable = vi.fn((threadId: string) => {
       events.push(`callback:${threadId}`)
     })
-    const streamText = vi.fn(
-      async ({ resumeThreadId, onThreadStarted }: RuntimeStreamTextInput) => {
-        expect(resumeThreadId).toBeUndefined()
-        events.push('streamText')
-        await onThreadStarted?.({ threadId: 'thread-prestarted' })
-        return {
-          toUIMessageStream: () =>
-            (async function* () {
-              events.push('chunk')
-              yield { type: 'text-start', id: 'text-1' } as never
-            })()
-        }
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      const { resumeThreadId, onThreadStarted } = input
+      expect(resumeThreadId).toBeUndefined()
+      events.push('streamText')
+      await onThreadStarted?.({ threadId: 'thread-prestarted' })
+      await completeCanonicalTurn(input)
+      return {
+        toUIMessageStream: () =>
+          (async function* () {
+            events.push('chunk')
+            yield { type: 'text-start', id: 'text-1' } as never
+          })()
       }
-    )
+    })
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -903,11 +1195,51 @@ describe('CodexChatRuntimeService', () => {
       })
     )
     expect(result.threadId).toBe('thread-prestarted')
-    expect(port.messages).toEqual([
-      { type: 'thread-bound', threadId: 'thread-prestarted' },
-      { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } },
-      { type: 'finish', threadId: 'thread-prestarted' }
-    ])
+    expect(port.messages).toEqual(
+      expect.arrayContaining([
+        { type: 'thread-bound', threadId: 'thread-prestarted' },
+        { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } }
+      ])
+    )
+    expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
+  })
+
+  it('starts an explicit terminal retry in a fresh app-server thread', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-replacement' })
+      await completeCanonicalTurn(input, 'thread-replacement')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'conversation-1',
+        trigger: 'regenerate-message',
+        messages: [{ id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'retry' }] }],
+        modelId: 'gpt-test',
+        body: { threadId: 'thread-existing', retryTerminalTurn: true }
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeThreadId: undefined,
+        startFreshTerminalRetry: true,
+        onThreadStarted: expect.any(Function)
+      })
+    )
+    expect(port.messages).toContainEqual({ type: 'thread-bound', threadId: 'thread-replacement' })
   })
 
   it('waits for async thread publication work before streaming first-turn chunks', async () => {
@@ -1138,6 +1470,15 @@ describe('CodexChatRuntimeService', () => {
           injectMessage: vi.fn(),
           interrupt: vi.fn()
         })
+        await input.onTurnLifecycle?.({
+          type: 'item-completed',
+          sequence: 1,
+          threadId: 'thread-real',
+          turnId: 'turn-real',
+          itemId: 'user-message-real',
+          itemType: 'userMessage',
+          compareKey: JSON.stringify({ text: 'queued', attachments: [] })
+        })
         return { toUIMessageStream: () => emptyUiMessageStream() }
       }
     })
@@ -1260,8 +1601,18 @@ describe('CodexChatRuntimeService', () => {
   it('tracks and interrupts an active conversation by conversation id or app-server thread id', async () => {
     const port = new FakePort()
     const metadataSeen = deferred()
-    const abortSeen = deferred()
-    let capturedAbortSignal: AbortSignal | undefined
+    const completed = deferred()
+    const interrupt = vi.fn(async () => {
+      await lifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-real',
+        turnId: 'turn-real',
+        outcome: 'interrupted'
+      })
+      completed.resolve()
+    })
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -1269,9 +1620,9 @@ describe('CodexChatRuntimeService', () => {
         args: ['--listen', 'stdio://'],
         displayBinary: '/bin/codex-app-server --listen stdio://'
       },
-      streamText: async ({ abortSignal }) => {
-        capturedAbortSignal = abortSignal
-        abortSignal.addEventListener('abort', () => abortSeen.resolve(), { once: true })
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(activeSession('thread-real', 'turn-real', interrupt))
         return {
           toUIMessageStream: () =>
             (async function* () {
@@ -1286,7 +1637,7 @@ describe('CodexChatRuntimeService', () => {
                 }
               } as never
               metadataSeen.resolve()
-              await abortSeen.promise
+              await completed.promise
             })()
         }
       }
@@ -1308,8 +1659,7 @@ describe('CodexChatRuntimeService', () => {
     expect(service.isConversationRunning('thread-real')).toBe(true)
 
     service.interruptConversation('thread-real')
-    await abortSeen.promise
-    expect(capturedAbortSignal?.aborted).toBe(true)
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
     await streamPromise
 
     expect(service.isConversationRunning('conversation-1')).toBe(false)
@@ -1317,18 +1667,261 @@ describe('CodexChatRuntimeService', () => {
     expect(port.messages.at(-1)).toEqual({ type: 'aborted' })
   })
 
-  it('rejects a duplicate active turn without replacing the original run', async () => {
+  it('does not deliver a terminal until the matching canonical completion arrives', async () => {
+    const port = new FakePort()
+    const releaseStream = deferred()
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const interrupt = vi.fn(async () => undefined)
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(activeSession('thread-gated', 'turn-gated', interrupt))
+        return { toUIMessageStream: () => waitThenEnd(releaseStream.promise) }
+      }
+    })
+
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-gated',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-gated' }
+      },
+      port
+    )
+
+    await vi.waitFor(() => expect(service.isConversationRunning('conversation-gated')).toBe(true))
+    service.interruptConversation('conversation-gated')
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
+    expect(port.messages.filter((message) => isTerminalMessage(message))).toEqual([])
+    expect(service.isConversationRunning('conversation-gated')).toBe(true)
+
+    await lifecycle?.({
+      type: 'turn-completed',
+      sequence: 1,
+      threadId: 'thread-gated',
+      turnId: 'turn-gated',
+      outcome: 'interrupted'
+    })
+    releaseStream.resolve()
+    await run
+
+    expect(port.messages.filter((message) => isTerminalMessage(message))).toEqual([
+      { type: 'aborted' }
+    ])
+  })
+
+  it('interrupts a stop requested before session and turn binding once the session becomes available', async () => {
+    const port = new FakePort()
+    const publishSession = deferred()
+    const completed = deferred()
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const interrupt = vi.fn(async () => {
+      await lifecycle?.({
+        type: 'turn-completed',
+        sequence: 1,
+        threadId: 'thread-late',
+        turnId: 'turn-late',
+        outcome: 'interrupted'
+      })
+      completed.resolve()
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        await publishSession.promise
+        onSessionCreated?.(activeSession('thread-late', 'turn-late', interrupt))
+        return { toUIMessageStream: () => waitThenEnd(completed.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-late',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-late' }
+      },
+      port
+    )
+
+    await vi.waitFor(() => expect(service.isConversationRunning('conversation-late')).toBe(true))
+    service.interruptConversation('conversation-late')
+    expect(interrupt).not.toHaveBeenCalled()
+
+    publishSession.resolve()
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
+    await run
+
+    expect(port.messages.filter((message) => isTerminalMessage(message))).toEqual([
+      { type: 'aborted' }
+    ])
+  })
+
+  it.each([
+    ['completed', { type: 'finish', threadId: 'thread-race' }],
+    ['failed', { type: 'error', error: '模型响应未完成，请重试。' }]
+  ] as const)('lets canonical %s win a stop race', async (outcome, expectedTerminal) => {
+    const port = new FakePort()
+    const releaseStream = deferred()
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(activeSession('thread-race', 'turn-race', async () => undefined))
+        return { toUIMessageStream: () => waitThenEnd(releaseStream.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: `chat-race-${outcome}`,
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: `conversation-race-${outcome}` }
+      },
+      port
+    )
+
+    await vi.waitFor(() =>
+      expect(service.isConversationRunning(`conversation-race-${outcome}`)).toBe(true)
+    )
+    service.interruptConversation(`conversation-race-${outcome}`)
+    await lifecycle?.({
+      type: 'turn-completed',
+      sequence: 1,
+      threadId: 'thread-race',
+      turnId: 'turn-race',
+      outcome
+    })
+    releaseStream.resolve()
+    await run
+
+    expect(port.messages.at(-1)).toEqual(expectedTerminal)
+  })
+
+  it('reconciles a missing completion from matching thread history before aborting the provider stream', async () => {
+    const port = new FakePort()
+    const abortSeen = deferred()
+    const readCanonicalTurnOutcome = vi.fn(async () => 'interrupted' as const)
+    const interrupt = vi.fn(async () => undefined)
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      canonicalOutcomeTimeoutMs: 0,
+      readCanonicalTurnOutcome,
+      streamText: async ({ abortSignal, onSessionCreated }) => {
+        onSessionCreated?.(activeSession('thread-history', 'turn-history', interrupt))
+        abortSignal.addEventListener('abort', () => abortSeen.resolve(), { once: true })
+        return { toUIMessageStream: () => waitThenEnd(abortSeen.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-history',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-history' }
+      },
+      port
+    )
+
+    await vi.waitFor(() => expect(service.isConversationRunning('conversation-history')).toBe(true))
+    service.interruptConversation('conversation-history')
+    await run
+
+    expect(readCanonicalTurnOutcome).toHaveBeenCalledWith('thread-history', 'turn-history')
+    expect(port.messages.at(-1)).toEqual({ type: 'aborted' })
+  })
+
+  it('reports an unknown stop outcome as an error instead of an interrupted terminal', async () => {
+    const port = new FakePort()
+    const abortSeen = deferred()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      canonicalOutcomeTimeoutMs: 0,
+      readCanonicalTurnOutcome: async () => undefined,
+      streamText: async ({ abortSignal, onSessionCreated }) => {
+        onSessionCreated?.(activeSession('thread-unknown', 'turn-unknown', async () => undefined))
+        abortSignal.addEventListener('abort', () => abortSeen.resolve(), { once: true })
+        return { toUIMessageStream: () => waitThenEnd(abortSeen.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-unknown',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-unknown' }
+      },
+      port
+    )
+
+    await vi.waitFor(() => expect(service.isConversationRunning('conversation-unknown')).toBe(true))
+    service.interruptConversation('conversation-unknown')
+    await run
+
+    expect(port.messages.at(-1)).toEqual({
+      type: 'error',
+      error: '停止结果无法确认，请重新打开任务检查状态'
+    })
+  })
+
+  it('B15 rejects a duplicate active turn without replacing the original run', async () => {
     const firstPort = new FakePort()
     const duplicatePort = new FakePort()
     const firstEntered = deferred()
-    const firstAborted = deferred()
-    const streamText = vi.fn(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
-      abortSignal.addEventListener('abort', () => firstAborted.resolve(), { once: true })
-      firstEntered.resolve()
-      return {
-        toUIMessageStream: () => waitThenEnd(firstAborted.promise)
+    const firstCompleted = deferred()
+    const streamText = vi.fn(
+      async ({ onSessionCreated, onTurnLifecycle }: RuntimeStreamTextInput) => {
+        onSessionCreated?.(
+          activeSession('thread-first', 'turn-first', async () => {
+            await onTurnLifecycle?.({
+              type: 'turn-completed',
+              sequence: 1,
+              threadId: 'thread-first',
+              turnId: 'turn-first',
+              outcome: 'interrupted'
+            })
+            firstCompleted.resolve()
+          })
+        )
+        firstEntered.resolve()
+        return {
+          toUIMessageStream: () => waitThenEnd(firstCompleted.promise)
+        }
       }
-    }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+    ) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -1375,13 +1968,25 @@ describe('CodexChatRuntimeService', () => {
     await firstRequest
     expect(firstPort.messages.at(-1)).toEqual({ type: 'aborted' })
     expect(service.isConversationRunning('conversation-1')).toBe(false)
+    await assertRacePlanEvidence(['B15'], () => {
+      expect(streamText).toHaveBeenCalledTimes(1)
+      expect(duplicatePort.messages).toEqual([
+        {
+          type: 'error',
+          error: 'Conversation already has an active turn: conversation-1'
+        }
+      ])
+      expect(firstPort.messages.at(-1)).toEqual({ type: 'aborted' })
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
   })
 
   it('clears the active run before delivering the authoritative terminal event', async () => {
     const secondPort = new FakePort()
-    const streamText = vi.fn(async () => ({
-      toUIMessageStream: () => emptyUiMessageStream()
-    }))
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await completeCanonicalTurn(input)
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -1392,13 +1997,9 @@ describe('CodexChatRuntimeService', () => {
       streamText
     })
     let secondRun: Promise<unknown> | undefined
-    const firstPort = new FakePort(true, (message) => {
-      if (
-        typeof message === 'object' &&
-        message !== null &&
-        'type' in message &&
-        message.type === 'finish'
-      ) {
+    const firstPort = new FakePort()
+    const onTerminal = (terminal: { type: string }): void => {
+      if (terminal.type === 'finish') {
         secondRun = service.startChatStream(
           {
             chatId: 'chat-second',
@@ -1410,7 +2011,7 @@ describe('CodexChatRuntimeService', () => {
           secondPort
         )
       }
-    })
+    }
 
     await service.startChatStream(
       {
@@ -1420,11 +2021,16 @@ describe('CodexChatRuntimeService', () => {
         modelId: 'gpt-test',
         body: { conversationId: 'conversation-1' }
       },
-      firstPort
+      firstPort,
+      { onTerminal }
     )
+    await expect.poll(() => secondRun).toBeDefined()
     await secondRun
 
-    expect(secondPort.messages).toEqual([{ type: 'finish', threadId: undefined }])
+    expect(secondPort.messages.at(-1)).toEqual({
+      type: 'finish',
+      threadId: 'thread-prestarted'
+    })
   })
 
   it('steers through the exact provider session associated with the active run', async () => {
@@ -1482,19 +2088,1415 @@ describe('CodexChatRuntimeService', () => {
     await run
   })
 
+  it('B13 preserves a pending Steer claim when the local conversation id migrates to a thread id', async () => {
+    const finish = deferred()
+    const acknowledgeClaim = vi.fn(async (conversationKey: string) => ({
+      version: 2 as const,
+      revision: 2,
+      conversationKey,
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: [createSteerClaim().item]
+    }))
+    const commitClaim = vi.fn(async (conversationKey: string) => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey,
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    let onThreadStarted: RuntimeStreamTextInput['onThreadStarted']
+    let onTurnLifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        acknowledgeClaim,
+        commitClaim,
+        failClaim: vi.fn()
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onThreadStarted = input.onThreadStarted
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-real',
+          turnId: 'turn-real',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-real' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-local',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-local' }
+      },
+      new FakePort(),
+      { onThreadIdAvailable: vi.fn(async () => undefined) }
+    )
+    await flushAsyncWork()
+
+    const baseClaim = createSteerClaim()
+    const localClaim: FollowUpClaim = {
+      ...baseClaim,
+      conversationKey: 'conversation-local',
+      item: {
+        ...baseClaim.item,
+        conversationKey: 'conversation-local',
+        message: {
+          ...baseClaim.item.message,
+          trustedContext: {
+            ...baseClaim.item.message.trustedContext,
+            conversationId: 'conversation-local',
+            threadId: undefined
+          }
+        }
+      }
+    }
+    await service.steerClaimedFollowUp(localClaim, {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await onThreadStarted?.({ threadId: 'thread-real' })
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 1,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      itemId: 'canonical-user-item',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    })
+
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('thread-real', 'follow-up-1', 'lease-1')
+    )
+    expect(acknowledgeClaim).toHaveBeenCalledWith('thread-real', 'follow-up-1', 'lease-1')
+    expect(commitClaim).not.toHaveBeenCalledWith('conversation-local', 'follow-up-1', 'lease-1')
+    await assertRacePlanEvidence(['B13'], () => {
+      expect(acknowledgeClaim).toHaveBeenCalledWith('thread-real', 'follow-up-1', 'lease-1')
+      expect(commitClaim).toHaveBeenCalledWith('thread-real', 'follow-up-1', 'lease-1')
+      expect(commitClaim).not.toHaveBeenCalledWith('conversation-local', 'follow-up-1', 'lease-1')
+      expect(service.isConversationRunning('thread-real')).toBe(true)
+    })
+
+    finish.resolve()
+    await run
+  })
+
+  it('B16 rejects a provider session bound to another active run without steering either session', async () => {
+    const firstFinish = deferred()
+    const firstSteerPrompt = vi.fn(async () => ({ turnId: 'turn-first' }))
+    const mismatchedSteerPrompt = vi.fn(async () => ({ turnId: 'turn-mismatched' }))
+    let invocation = 0
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async (input: RuntimeStreamTextInput) => {
+        invocation += 1
+        if (invocation === 1) {
+          input.onSessionCreated?.({
+            threadId: 'thread-shared',
+            turnId: 'turn-first',
+            isActive: () => true,
+            steerPrompt: firstSteerPrompt,
+            injectMessage: vi.fn(),
+            interrupt: vi.fn()
+          })
+          return {
+            toUIMessageStream: () => waitThenEnd(firstFinish.promise)
+          }
+        }
+        input.onSessionCreated?.({
+          threadId: 'thread-shared',
+          turnId: 'turn-mismatched',
+          isActive: () => true,
+          steerPrompt: mismatchedSteerPrompt,
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => emptyUiMessageStream() }
+      }
+    })
+    const firstRun = service.startChatStream(
+      {
+        chatId: 'chat-first',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-first' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    const mismatchedPort = new FakePort()
+    await service.startChatStream(
+      {
+        chatId: 'chat-mismatched',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-mismatched' }
+      },
+      mismatchedPort
+    )
+
+    expect(mismatchedPort.messages.at(-1)).toEqual({
+      type: 'error',
+      error: 'Conversation already has an active turn: thread-shared'
+    })
+    await expect(
+      service.steerConversation(
+        'conversation-mismatched',
+        { id: 'wrong-steer', role: 'user', parts: [{ type: 'text', text: 'wrong' }] },
+        'wrong-steer'
+      )
+    ).rejects.toMatchObject({ code: 'session_inactive' })
+    expect(firstSteerPrompt).not.toHaveBeenCalled()
+    expect(mismatchedSteerPrompt).not.toHaveBeenCalled()
+    await assertRacePlanEvidence(['B16'], () => {
+      expect(mismatchedPort.messages.at(-1)).toEqual({
+        type: 'error',
+        error: 'Conversation already has an active turn: thread-shared'
+      })
+      expect(firstSteerPrompt).not.toHaveBeenCalled()
+      expect(mismatchedSteerPrompt).not.toHaveBeenCalled()
+      expect(service.isConversationRunning('conversation-first')).toBe(true)
+    })
+
+    firstFinish.resolve()
+    await firstRun
+  })
+
+  it('B04/E14 keeps a steer claim leased until canonical acknowledgement is durable', async () => {
+    const finish = deferred()
+    const acknowledgeClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 2,
+      conversationKey: 'thread-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: [createSteerClaim().item]
+    }))
+    const commitClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'thread-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const followUpQueue = {
+      acknowledgeClaim,
+      commitClaim,
+      failClaim: vi.fn()
+    } as unknown as ConversationFollowUpQueueService
+    let onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void | Promise<void>) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+    const claim = {
+      conversationKey: 'conversation-1',
+      leaseToken: 'lease-1',
+      item: {
+        id: 'follow-up-1',
+        conversationKey: 'conversation-1',
+        createdAt: '2026-07-18T00:00:00.000Z',
+        updatedAt: '2026-07-18T00:00:00.000Z',
+        preferredMode: 'steer' as const,
+        message: {
+          id: 'follow-up-1',
+          text: 'change direction',
+          attachments: [],
+          contextReferences: [],
+          trustedContext: {
+            conversationId: 'conversation-1',
+            threadId: 'thread-1',
+            hostId: 'local',
+            cwd: '/repo',
+            workspaceRoots: ['/repo']
+          }
+        },
+        status: 'steering' as const,
+        lease: {
+          token: 'lease-1',
+          operation: 'turn-steer' as const,
+          claimedAt: '2026-07-18T00:00:00.000Z',
+          owner: 'main'
+        }
+      }
+    }
+
+    await service.steerClaimedFollowUp(claim, {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    expect(commitClaim).not.toHaveBeenCalled()
+
+    await onTurnLifecycle?.({
+      type: 'item-started',
+      sequence: 1,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    })
+    expect(commitClaim).not.toHaveBeenCalled()
+
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 2,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    })
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    )
+    expect(acknowledgeClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    expect(acknowledgeClaim.mock.invocationCallOrder[0]).toBeLessThan(
+      commitClaim.mock.invocationCallOrder[0]
+    )
+    await assertRacePlanEvidence(['B04'], () => {
+      expect(acknowledgeClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+      expect(acknowledgeClaim.mock.invocationCallOrder[0]).toBeLessThan(
+        commitClaim.mock.invocationCallOrder[0]
+      )
+      expect(service.isConversationRunning('conversation-1')).toBe(true)
+    })
+
+    finish.resolve()
+    await run
+  })
+
+  it('B08 moves an unconfirmed successful steer to recovery-uncertain at the fake-clock 30s deadline', async () => {
+    const finish = deferred()
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const steerPrompt = vi.fn(async () => ({ turnId: 'turn-1' }))
+    let expireConfirmation: (() => void) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim: vi.fn(),
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      scheduleTimeout: (callback, timeoutMs) => {
+        expect(timeoutMs).toBe(30_000)
+        expireConfirmation = callback
+        return 1 as unknown as ReturnType<typeof setTimeout>
+      },
+      clearScheduledTimeout: vi.fn(),
+      streamText: async (input: RuntimeStreamTextInput) => {
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt,
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    await service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    expireConfirmation?.()
+    await vi.waitFor(() =>
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({
+          status: 'paused-recovery-uncertain',
+          kind: 'recovery-uncertain'
+        })
+      )
+    )
+    expect(steerPrompt).toHaveBeenCalledTimes(1)
+
+    finish.resolve()
+    await run
+    expect(failClaim).toHaveBeenCalledTimes(1)
+    await assertRacePlanEvidence(['B08'], () => {
+      expect(steerPrompt).toHaveBeenCalledTimes(1)
+      expect(failClaim).toHaveBeenCalledTimes(1)
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({
+          status: 'paused-recovery-uncertain',
+          kind: 'recovery-uncertain'
+        })
+      )
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
+  })
+
+  it.each(['completed', 'failed', 'interrupted'] as const)(
+    'keeps an RPC-successful steer recovery-uncertain when canonical %s arrives before its acknowledgement',
+    async (outcome) => {
+      const finish = deferred()
+      const failClaim = vi.fn(async () => ({
+        version: 2 as const,
+        revision: 3,
+        conversationKey: 'conversation-1',
+        defaultMode: 'queue' as const,
+        archived: false,
+        items: []
+      }))
+      const commitClaim = vi.fn()
+      let onTurnLifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+      const service = new CodexChatRuntimeService({
+        cwd: '/repo',
+        launch: {
+          command: '/bin/codex-app-server',
+          args: ['--listen', 'stdio://'],
+          displayBinary: '/bin/codex-app-server --listen stdio://'
+        },
+        followUpQueue: {
+          commitClaim,
+          failClaim
+        } as unknown as ConversationFollowUpQueueService,
+        streamText: async (input: RuntimeStreamTextInput) => {
+          onTurnLifecycle = input.onTurnLifecycle
+          input.onSessionCreated?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            isActive: () => true,
+            steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+            injectMessage: vi.fn(),
+            interrupt: vi.fn()
+          })
+          return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+        }
+      })
+      const run = service.startChatStream(
+        {
+          chatId: `chat-${outcome}`,
+          trigger: 'submit-message',
+          messages: [],
+          modelId: 'gpt-test',
+          body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+        },
+        new FakePort()
+      )
+      await flushAsyncWork()
+
+      await service.steerClaimedFollowUp(createSteerClaim(), {
+        id: 'follow-up-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'change direction' }]
+      })
+      const terminal: CodexTurnLifecycleEvent = {
+        type: 'turn-completed',
+        sequence: 1,
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        outcome
+      }
+      await onTurnLifecycle?.(terminal)
+      await onTurnLifecycle?.({ ...terminal, sequence: 2 })
+
+      expect(failClaim).toHaveBeenCalledTimes(1)
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({
+          status: 'paused-recovery-uncertain',
+          kind: 'recovery-uncertain'
+        })
+      )
+
+      await onTurnLifecycle?.({
+        type: 'item-completed',
+        sequence: 3,
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        itemId: 'late-canonical-user-item',
+        itemType: 'userMessage',
+        clientUserMessageId: 'follow-up-1'
+      })
+      expect(commitClaim).not.toHaveBeenCalled()
+
+      finish.resolve()
+      await run
+      expect(failClaim).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('keeps an explicit app-server steer rejection classified as rejected', async () => {
+    const finish = deferred()
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim: vi.fn(),
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => {
+            throw new CodexSteerError('app_server_rejected', 'steer rejected')
+          }),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-rejected',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    await expect(
+      service.steerClaimedFollowUp(createSteerClaim(), {
+        id: 'follow-up-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'change direction' }]
+      })
+    ).rejects.toThrow('steer rejected')
+    expect(failClaim).toHaveBeenCalledWith(
+      'conversation-1',
+      'follow-up-1',
+      'lease-1',
+      expect.objectContaining({ status: 'paused-failed', kind: 'steer-rejected' })
+    )
+
+    finish.resolve()
+    await run
+    expect(failClaim).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an acknowledged steer consumed when the model stream later fails', async () => {
+    const failStream = deferred()
+    const commitClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const failClaim = vi.fn()
+    let onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void | Promise<void>) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim,
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              await failStream.promise
+              yield { type: 'error', errorText: 'stream disconnected before completion' }
+            })()
+        }
+      }
+    })
+    const port = new FakePort()
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      port
+    )
+    await flushAsyncWork()
+
+    await service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 1,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    })
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    )
+
+    failStream.resolve()
+    await run
+
+    expect(failClaim).not.toHaveBeenCalled()
+    expect(port.messages.at(-1)).toEqual({
+      type: 'error',
+      error: 'stream disconnected before completion'
+    })
+  })
+
+  it('matches a legacy canonical steer acknowledgement by compare key', async () => {
+    const finish = deferred()
+    const commitClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'thread-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const followUpQueue = {
+      commitClaim,
+      failClaim: vi.fn()
+    } as unknown as ConversationFollowUpQueueService
+    let onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void | Promise<void>) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    await service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 2,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      compareKey: JSON.stringify({ text: 'change direction', attachments: [] })
+    })
+
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    )
+    finish.resolve()
+    await run
+  })
+
+  it('B11 ignores an ambiguous legacy acknowledgement and logs only sanitized correlation', async () => {
+    const finish = deferred()
+    const commitClaim = vi.fn()
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let onTurnLifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim,
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-ambiguous',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    const firstClaim = createSteerClaim()
+    const secondClaim = createSteerClaim({
+      leaseToken: 'lease-2',
+      item: {
+        ...firstClaim.item,
+        id: 'follow-up-2',
+        message: { ...firstClaim.item.message, id: 'follow-up-2' },
+        lease: { ...firstClaim.item.lease!, token: 'lease-2' }
+      }
+    })
+    await Promise.all([
+      service.steerClaimedFollowUp(firstClaim, {
+        id: 'follow-up-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'sensitive duplicate prompt' }]
+      }),
+      service.steerClaimedFollowUp(secondClaim, {
+        id: 'follow-up-2',
+        role: 'user',
+        parts: [{ type: 'text', text: 'sensitive duplicate prompt' }]
+      })
+    ])
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 1,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'legacy-user-item',
+      itemType: 'userMessage',
+      compareKey: JSON.stringify({ text: 'sensitive duplicate prompt', attachments: [] })
+    })
+
+    expect(commitClaim).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledWith('ambiguous legacy steer acknowledgement ignored', {
+      turnId: 'turn-1',
+      candidateCount: 2,
+      messageIds: ['follow-up-1', 'follow-up-2']
+    })
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('sensitive duplicate prompt')
+
+    finish.resolve()
+    await run
+    expect(failClaim).toHaveBeenCalledTimes(2)
+    await assertRacePlanEvidence(['B11'], () => {
+      expect(commitClaim).not.toHaveBeenCalled()
+      expect(warning).toHaveBeenCalledWith('ambiguous legacy steer acknowledgement ignored', {
+        turnId: 'turn-1',
+        candidateCount: 2,
+        messageIds: ['follow-up-1', 'follow-up-2']
+      })
+      expect(failClaim).toHaveBeenCalledTimes(2)
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
+    warning.mockRestore()
+  })
+
+  it('B05/B09 accepts one ID-bearing canonical steer before its RPC settles and ignores the duplicate', async () => {
+    const finish = deferred()
+    const steerResult = deferred<{ turnId: string }>()
+    const commitClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: [] as []
+    }))
+    let onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void | Promise<void>) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim,
+        failClaim: vi.fn()
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(() => steerResult.promise),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    const steer = service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await flushAsyncWork()
+    const canonicalEvent: CodexTurnLifecycleEvent = {
+      type: 'item-completed',
+      sequence: 1,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    }
+    await onTurnLifecycle?.(canonicalEvent)
+    await onTurnLifecycle?.(canonicalEvent)
+
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    )
+    expect(commitClaim).toHaveBeenCalledTimes(1)
+    steerResult.resolve({ turnId: 'turn-1' })
+    await expect(steer).resolves.toEqual({ turnId: 'turn-1' })
+
+    finish.resolve()
+    await run
+    await assertRacePlanEvidence(['B05', 'B09'], async () => {
+      expect(commitClaim).toHaveBeenCalledTimes(1)
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+      await expect(steerResult.promise).resolves.toEqual({ turnId: 'turn-1' })
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
+  })
+
+  it('does not let an accepted same-content steer absorb a later legacy acknowledgement', async () => {
+    const finish = deferred()
+    const firstCommit = deferred<{
+      version: 2
+      revision: number
+      conversationKey: string
+      defaultMode: 'queue'
+      archived: boolean
+      items: []
+    }>()
+    const commitClaim = vi.fn(async (_conversationKey: string, itemId: string) => {
+      if (itemId === 'follow-up-1') return firstCommit.promise
+      return {
+        version: 2 as const,
+        revision: 4,
+        conversationKey: 'conversation-1',
+        defaultMode: 'queue' as const,
+        archived: false,
+        items: [] as []
+      }
+    })
+    let onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void | Promise<void>) | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim,
+        failClaim: vi.fn()
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        onTurnLifecycle = input.onTurnLifecycle
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    await service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 1,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
+    })
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-1', 'lease-1')
+    )
+
+    const baseClaim = createSteerClaim()
+    const secondClaim = createSteerClaim({
+      leaseToken: 'lease-2',
+      item: {
+        ...baseClaim.item,
+        id: 'follow-up-2',
+        message: {
+          ...baseClaim.item.message,
+          id: 'follow-up-2'
+        },
+        lease: {
+          ...baseClaim.item.lease!,
+          token: 'lease-2'
+        }
+      }
+    })
+    await service.steerClaimedFollowUp(secondClaim, {
+      id: 'follow-up-2',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    await onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 2,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-2',
+      itemType: 'userMessage',
+      compareKey: JSON.stringify({ text: 'change direction', attachments: [] })
+    })
+
+    await vi.waitFor(() =>
+      expect(commitClaim).toHaveBeenCalledWith('conversation-1', 'follow-up-2', 'lease-2')
+    )
+    firstCommit.resolve({
+      version: 2,
+      revision: 5,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue',
+      archived: false,
+      items: []
+    })
+    finish.resolve()
+    await run
+  })
+
+  it('retains a run and retries durable steer settlement before the next turn', async () => {
+    const firstFinish = deferred()
+    const failClaim = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('queue write unavailable'))
+      .mockResolvedValue({
+        version: 2 as const,
+        revision: 3,
+        conversationKey: 'conversation-1',
+        defaultMode: 'queue' as const,
+        archived: false,
+        items: []
+      })
+    let streamInvocation = 0
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim: vi.fn(),
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        streamInvocation += 1
+        if (streamInvocation === 1) {
+          input.onSessionCreated?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            isActive: () => true,
+            steerPrompt: vi.fn(async () => ({ turnId: 'turn-1' })),
+            injectMessage: vi.fn(),
+            interrupt: vi.fn()
+          })
+          return { toUIMessageStream: () => waitThenEnd(firstFinish.promise) }
+        }
+        await completeCanonicalTurn(input, 'thread-1', 'turn-recovery')
+        return { toUIMessageStream: () => emptyUiMessageStream() }
+      }
+    })
+    const firstPort = new FakePort()
+    const firstRun = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      firstPort
+    )
+    await flushAsyncWork()
+    await service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+
+    firstFinish.resolve()
+    await firstRun
+
+    expect(firstPort.messages.at(-1)).toEqual({
+      type: 'error',
+      error:
+        'The task ended, but follow-up state could not be saved. Retry this conversation to recover it.'
+    })
+    expect(service.isConversationRunning('conversation-1')).toBe(true)
+    expect(failClaim).toHaveBeenCalledTimes(1)
+
+    const recoveryPort = new FakePort()
+    await service.startChatStream(
+      {
+        chatId: 'chat-2',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      recoveryPort
+    )
+
+    expect(failClaim).toHaveBeenCalledTimes(2)
+    expect(recoveryPort.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-1' })
+    expect(service.isConversationRunning('conversation-1')).toBe(false)
+  })
+
+  it.each([
+    {
+      label: 'turn-race',
+      rejection: new CodexSteerError('session_inactive', 'turn ended'),
+      disposition: { status: 'queued', kind: 'turn-race' }
+    },
+    {
+      label: 'server-rejection',
+      rejection: new CodexSteerError('app_server_rejected', 'steer rejected'),
+      disposition: { status: 'paused-failed', kind: 'steer-rejected' }
+    }
+  ])(
+    'B06/D20 preserves an explicit $label steer rejection after terminal settlement',
+    async ({ rejection, disposition }) => {
+      const finish = deferred()
+      const steerResult = deferred<{ turnId: string }>()
+      const commitClaim = vi.fn()
+      const failClaim = vi.fn(async () => ({
+        version: 2 as const,
+        revision: 3,
+        conversationKey: 'conversation-1',
+        defaultMode: 'queue' as const,
+        archived: false,
+        items: []
+      }))
+      const service = new CodexChatRuntimeService({
+        cwd: '/repo',
+        launch: {
+          command: '/bin/codex-app-server',
+          args: ['--listen', 'stdio://'],
+          displayBinary: '/bin/codex-app-server --listen stdio://'
+        },
+        followUpQueue: {
+          commitClaim,
+          failClaim
+        } as unknown as ConversationFollowUpQueueService,
+        streamText: async (input: RuntimeStreamTextInput) => {
+          input.onSessionCreated?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            isActive: () => true,
+            steerPrompt: vi.fn(() => steerResult.promise),
+            injectMessage: vi.fn(),
+            interrupt: vi.fn()
+          })
+          return {
+            toUIMessageStream: () =>
+              (async function* () {
+                await finish.promise
+                yield {
+                  type: 'tool-output-error',
+                  toolCallId: 'tool-failed-before-steer-rejection',
+                  errorText: 'tool failed'
+                } as never
+              })()
+          }
+        }
+      })
+      const run = service.startChatStream(
+        {
+          chatId: 'chat-1',
+          trigger: 'submit-message',
+          messages: [],
+          modelId: 'gpt-test',
+          body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+        },
+        new FakePort()
+      )
+      await flushAsyncWork()
+
+      const steer = service.steerClaimedFollowUp(createSteerClaim(), {
+        id: 'follow-up-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'change direction' }]
+      })
+      finish.resolve()
+      await run
+      expect(failClaim).not.toHaveBeenCalled()
+      expect(commitClaim).not.toHaveBeenCalled()
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+      steerResult.reject(rejection)
+
+      await expect(steer).rejects.toThrow(rejection.message)
+      await vi.waitFor(() =>
+        expect(failClaim).toHaveBeenCalledWith(
+          'conversation-1',
+          'follow-up-1',
+          'lease-1',
+          expect.objectContaining(disposition)
+        )
+      )
+      expect(failClaim).toHaveBeenCalledTimes(1)
+      expect(commitClaim).not.toHaveBeenCalled()
+      await planAssert({
+        scenarioId: 'D20',
+        assertionId: '工具失败与 steer 拒绝并发时只结算一次',
+        assertion: () => {
+          expect(service.isConversationRunning('conversation-1')).toBe(false)
+          expect(failClaim).toHaveBeenCalledTimes(1)
+          expect(failClaim).toHaveBeenCalledWith(
+            'conversation-1',
+            'follow-up-1',
+            'lease-1',
+            expect.objectContaining(disposition)
+          )
+          expect(commitClaim).not.toHaveBeenCalled()
+        }
+      })
+      await assertRacePlanEvidence(['B06'], () => {
+        expect(service.isConversationRunning('conversation-1')).toBe(false)
+        expect(failClaim).toHaveBeenCalledTimes(1)
+        expect(failClaim).toHaveBeenCalledWith(
+          'conversation-1',
+          'follow-up-1',
+          'lease-1',
+          expect.objectContaining(disposition)
+        )
+        expect(commitClaim).not.toHaveBeenCalled()
+      })
+    }
+  )
+
+  it('B07 reports a late steer RPC success as unknown after terminal recovery', async () => {
+    const finish = deferred()
+    const steerResult = deferred<{ turnId: string }>()
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 3,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: {
+        commitClaim: vi.fn(),
+        failClaim
+      } as unknown as ConversationFollowUpQueueService,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        input.onSessionCreated?.({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          isActive: () => true,
+          steerPrompt: vi.fn(() => steerResult.promise),
+          injectMessage: vi.fn(),
+          interrupt: vi.fn()
+        })
+        return { toUIMessageStream: () => waitThenEnd(finish.promise) }
+      }
+    })
+    const run = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { conversationId: 'conversation-1', threadId: 'thread-1' }
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    const steer = service.steerClaimedFollowUp(createSteerClaim(), {
+      id: 'follow-up-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+    finish.resolve()
+    await run
+    expect(failClaim).not.toHaveBeenCalled()
+    steerResult.resolve({ turnId: 'turn-1' })
+
+    await expect(steer).rejects.toMatchObject({ code: 'steer_result_unknown' })
+    await vi.waitFor(() =>
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({
+          status: 'paused-recovery-uncertain',
+          kind: 'recovery-uncertain'
+        })
+      )
+    )
+    expect(failClaim).toHaveBeenCalledTimes(1)
+    await assertRacePlanEvidence(['B07'], () => {
+      expect(failClaim).toHaveBeenCalledTimes(1)
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({
+          status: 'paused-recovery-uncertain',
+          kind: 'recovery-uncertain'
+        })
+      )
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
+  })
+
+  it('B01 returns an inactive preflight steer to the queue before throwing', async () => {
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 2,
+      conversationKey: 'conversation-1',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: { failClaim } as unknown as ConversationFollowUpQueueService
+    })
+
+    await expect(
+      service.steerClaimedFollowUp(createSteerClaim(), {
+        id: 'follow-up-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'change direction' }]
+      })
+    ).rejects.toThrow('steerable active turn')
+    expect(failClaim).toHaveBeenCalledWith(
+      'conversation-1',
+      'follow-up-1',
+      'lease-1',
+      expect.objectContaining({ status: 'queued', kind: 'turn-race' })
+    )
+    await assertRacePlanEvidence(['B01'], () => {
+      expect(failClaim).toHaveBeenCalledTimes(1)
+      expect(failClaim).toHaveBeenCalledWith(
+        'conversation-1',
+        'follow-up-1',
+        'lease-1',
+        expect.objectContaining({ status: 'queued', kind: 'turn-race' })
+      )
+      expect(service.isConversationRunning('conversation-1')).toBe(false)
+    })
+  })
+
   it('allows different conversations to enter execution concurrently', async () => {
     const ports = [new FakePort(), new FakePort()]
     const entered = [deferred(), deferred()]
-    const aborted = [deferred(), deferred()]
+    const completed = [deferred(), deferred()]
     let invocation = 0
-    const streamText = vi.fn(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
-      const index = invocation++
-      abortSignal.addEventListener('abort', () => aborted[index].resolve(), { once: true })
-      entered[index].resolve()
-      return {
-        toUIMessageStream: () => waitThenEnd(aborted[index].promise)
+    const streamText = vi.fn(
+      async ({ onSessionCreated, onTurnLifecycle }: RuntimeStreamTextInput) => {
+        const index = invocation++
+        onSessionCreated?.(
+          activeSession(`thread-${index}`, `turn-${index}`, async () => {
+            await onTurnLifecycle?.({
+              type: 'turn-completed',
+              sequence: 1,
+              threadId: `thread-${index}`,
+              turnId: `turn-${index}`,
+              outcome: 'interrupted'
+            })
+            completed[index].resolve()
+          })
+        )
+        entered[index].resolve()
+        return {
+          toUIMessageStream: () => waitThenEnd(completed[index].promise)
+        }
       }
-    }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+    ) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -1535,7 +3537,7 @@ describe('CodexChatRuntimeService', () => {
     const healthyPort = new FakePort()
     const failedPort = new FakePort()
     const healthyEntered = deferred()
-    const healthyAborted = deferred()
+    const healthyCompleted = deferred()
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
       launch: {
@@ -1543,12 +3545,23 @@ describe('CodexChatRuntimeService', () => {
         args: ['--listen', 'stdio://'],
         displayBinary: '/bin/codex-app-server --listen stdio://'
       },
-      streamText: async ({ request, abortSignal }) => {
+      streamText: async ({ request, onSessionCreated, onTurnLifecycle }) => {
         if (request.body?.conversationId === 'healthy') {
-          abortSignal.addEventListener('abort', () => healthyAborted.resolve(), { once: true })
+          onSessionCreated?.(
+            activeSession('thread-healthy', 'turn-healthy', async () => {
+              await onTurnLifecycle?.({
+                type: 'turn-completed',
+                sequence: 1,
+                threadId: 'thread-healthy',
+                turnId: 'turn-healthy',
+                outcome: 'interrupted'
+              })
+              healthyCompleted.resolve()
+            })
+          )
           healthyEntered.resolve()
           return {
-            toUIMessageStream: () => waitThenEnd(healthyAborted.promise)
+            toUIMessageStream: () => waitThenEnd(healthyCompleted.promise)
           }
         }
         return {
@@ -1590,7 +3603,7 @@ describe('CodexChatRuntimeService', () => {
 
     service.interruptConversation('healthy')
     await healthyRequest
-    expect(healthyPort.messages).toEqual([{ type: 'aborted' }])
+    expect(healthyPort.messages.at(-1)).toEqual({ type: 'aborted' })
   })
 
   it('sends stream errors to the provided port', async () => {
@@ -1618,6 +3631,625 @@ describe('CodexChatRuntimeService', () => {
     )
 
     expect(port.messages).toEqual([{ type: 'error', error: 'boom' }])
+  })
+
+  it('D15 closes a pending approval when the model stream fails', async () => {
+    const port = new FakePort()
+    const approvalRequested = deferred<void>()
+    let pendingApproval: Promise<unknown> | undefined
+    let approvalRequestId: string | undefined
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async (input) => {
+        const requestApproval = input.approvals?.onCommandApproval
+        if (!requestApproval) throw new Error('Expected the runtime to configure command approvals')
+        pendingApproval = Promise.resolve(
+          requestApproval({
+            threadId: 'thread-approval-failure',
+            turnId: 'turn-approval-failure',
+            itemId: 'item-approval-failure',
+            startedAtMs: 0,
+            environmentId: null,
+            command: 'pwd'
+          } satisfies CodexCommandApprovalRequest)
+        )
+        void pendingApproval?.catch(() => undefined)
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              await approvalRequested.promise
+              yield { type: 'error', errorText: 'model transport disconnected' } as never
+            })()
+        }
+      }
+    })
+    service.onApprovalRequest((request) => {
+      approvalRequestId = request.id
+      approvalRequested.resolve()
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-approval-failure',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    await expect(pendingApproval).rejects.toThrow('The task ended before approval was completed.')
+    expect(port.messages).toEqual([{ type: 'error', error: 'model transport disconnected' }])
+    expect(service.isConversationRunning('chat-approval-failure')).toBe(false)
+    expect(() => service.respondApproval(approvalRequestId!, { action: 'approve' })).toThrow(
+      'Unknown approval request'
+    )
+    await planAssert({
+      scenarioId: 'D15',
+      assertionId: '终态后旧审批失效且不能再执行',
+      assertion: async () => {
+        await expect(pendingApproval).rejects.toThrow(
+          'The task ended before approval was completed.'
+        )
+        expect(port.messages).toEqual([{ type: 'error', error: 'model transport disconnected' }])
+        expect(service.isConversationRunning('chat-approval-failure')).toBe(false)
+        expect(() => service.respondApproval(approvalRequestId!, { action: 'approve' })).toThrow(
+          'Unknown approval request'
+        )
+      }
+    })
+  })
+
+  it('C22 keeps the canonical turn running when the MessagePort closes', async () => {
+    const port = new FakePort()
+    const entered = deferred<void>()
+    const completed = deferred<void>()
+    const onTerminal = vi.fn()
+    const interrupt = vi.fn(async () => undefined)
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(activeSession('thread-port-close', 'turn-port-close', interrupt))
+        await onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-port-close',
+          turnId: 'turn-port-close'
+        })
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(completed.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port,
+      { onTerminal }
+    )
+    await entered.promise
+    service.handleChatStreamPortClosed('chat-1')
+    expect(interrupt).not.toHaveBeenCalled()
+    await lifecycle?.({
+      type: 'turn-completed',
+      sequence: 2,
+      threadId: 'thread-port-close',
+      turnId: 'turn-port-close',
+      outcome: 'completed'
+    })
+    completed.resolve()
+    await running
+
+    expect(port.messages).toContainEqual({
+      type: 'turn-lifecycle',
+      event: {
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-port-close',
+        turnId: 'turn-port-close'
+      }
+    })
+    expect(
+      port.messages.filter((message) =>
+        Boolean(
+          message &&
+          typeof message === 'object' &&
+          'type' in message &&
+          (message.type === 'finish' || message.type === 'aborted' || message.type === 'error')
+        )
+      )
+    ).toEqual([])
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    expect(onTerminal).toHaveBeenCalledWith({
+      type: 'finish',
+      threadId: 'thread-port-close'
+    })
+    expect(service.isConversationRunning('chat-1')).toBe(false)
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: '保留可见内容并显示单一终态',
+      assertion: () =>
+        expect(onTerminal).toHaveBeenCalledWith({
+          type: 'finish',
+          threadId: 'thread-port-close'
+        })
+    })
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: 'terminal 只结算一次且 Composer 恢复',
+      assertion: () => {
+        expect(onTerminal).toHaveBeenCalledTimes(1)
+        expect(service.isConversationRunning('chat-1')).toBe(false)
+      }
+    })
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: '无自动重试、额外请求或迟到事件应用',
+      assertion: () => {
+        expect(interrupt).not.toHaveBeenCalled()
+        expect(
+          port.messages.filter((message) =>
+            Boolean(
+              message &&
+              typeof message === 'object' &&
+              'type' in message &&
+              (message.type === 'finish' || message.type === 'aborted' || message.type === 'error')
+            )
+          )
+        ).toEqual([])
+      }
+    })
+  })
+
+  it('rejects lifecycle events for another thread, another turn, or an old sequence', async () => {
+    const port = new FakePort()
+    const entered = deferred<void>()
+    const completed = deferred<void>()
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(
+          activeSession('thread-canonical', 'turn-canonical', async () => undefined)
+        )
+        await onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-canonical',
+          turnId: 'turn-canonical'
+        })
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(completed.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-lifecycle-identity',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+    await entered.promise
+
+    await lifecycle?.({
+      type: 'turn-started',
+      sequence: 2,
+      threadId: 'thread-other',
+      turnId: 'turn-canonical'
+    })
+    await lifecycle?.({
+      type: 'turn-started',
+      sequence: 2,
+      threadId: 'thread-canonical',
+      turnId: 'turn-other'
+    })
+    await lifecycle?.({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-canonical',
+      turnId: 'turn-canonical'
+    })
+
+    expect(
+      port.messages.filter((message) => {
+        return (
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message &&
+          message.type === 'turn-lifecycle'
+        )
+      })
+    ).toEqual([
+      {
+        type: 'turn-lifecycle',
+        event: {
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-canonical',
+          turnId: 'turn-canonical'
+        }
+      }
+    ])
+    expect(service.isConversationRunning('chat-lifecycle-identity')).toBe(true)
+
+    await lifecycle?.({
+      type: 'turn-completed',
+      sequence: 2,
+      threadId: 'thread-canonical',
+      turnId: 'turn-canonical',
+      outcome: 'completed'
+    })
+    completed.resolve()
+    await running
+
+    expect(port.messages).toContainEqual({ type: 'finish', threadId: 'thread-canonical' })
+  })
+
+  it('does not bind an alias from a rejected lifecycle event before turn-started', async () => {
+    const port = new FakePort()
+    const entered = deferred<void>()
+    const completed = deferred<void>()
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(completed.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-pre-bind-lifecycle',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+    await entered.promise
+
+    await lifecycle?.({
+      type: 'item-started',
+      sequence: 1,
+      threadId: 'thread-rejected-before-bind',
+      turnId: 'turn-rejected-before-bind',
+      itemId: 'item-rejected',
+      itemType: 'agentMessage'
+    })
+
+    expect(service.isConversationRunning('thread-rejected-before-bind')).toBe(false)
+    expect(
+      port.messages.filter(
+        (message) =>
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message &&
+          message.type === 'turn-lifecycle'
+      )
+    ).toEqual([])
+
+    await lifecycle?.({
+      type: 'turn-started',
+      sequence: 2,
+      threadId: 'thread-canonical-after-rejection',
+      turnId: 'turn-canonical-after-rejection'
+    })
+    expect(service.isConversationRunning('thread-canonical-after-rejection')).toBe(true)
+
+    await lifecycle?.({
+      type: 'turn-completed',
+      sequence: 3,
+      threadId: 'thread-canonical-after-rejection',
+      turnId: 'turn-canonical-after-rejection',
+      outcome: 'completed'
+    })
+    completed.resolve()
+    await running
+
+    expect(port.messages).toContainEqual({
+      type: 'finish',
+      threadId: 'thread-canonical-after-rejection'
+    })
+  })
+
+  it('closes admission before shutdown and drains an already-admitted start', async () => {
+    const preparation = deferred<void>()
+    const streamStarted = deferred<void>()
+    const streamFinished = deferred<void>()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => {
+        streamStarted.resolve()
+        return { toUIMessageStream: () => waitThenEnd(streamFinished.promise) }
+      }
+    })
+    const recoverBlockedConversationRun = vi.spyOn(
+      service as unknown as { recoverBlockedConversationRun: () => Promise<void> },
+      'recoverBlockedConversationRun'
+    )
+    recoverBlockedConversationRun.mockImplementation(() => preparation.promise)
+
+    const admittedStart = service.startChatStream(
+      {
+        chatId: 'chat-admitted-before-stop',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      new FakePort()
+    )
+    await flushAsyncWork()
+
+    const stopping = service.stop()
+    const rejectedPort = new FakePort()
+    const rejectedStart = await service.startChatStream(
+      {
+        chatId: 'chat-rejected-during-stop',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      rejectedPort
+    )
+
+    expect(rejectedStart).toEqual({ threadId: undefined })
+    expect(rejectedPort.messages).toEqual([{ type: 'error', error: 'Codex runtime is stopping' }])
+    expect(recoverBlockedConversationRun).toHaveBeenCalledOnce()
+    expect(providerState.shutdown).not.toHaveBeenCalled()
+
+    preparation.resolve()
+    await streamStarted.promise
+    await flushAsyncWork()
+    expect(providerState.shutdown).not.toHaveBeenCalled()
+
+    streamFinished.resolve()
+    await Promise.all([admittedStart, stopping])
+
+    expect(service.isConversationRunning('chat-admitted-before-stop')).toBe(false)
+    expect(providerState.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('shares one shutdown promise across concurrent stop calls', async () => {
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      }
+    })
+
+    await Promise.all([service.stop(), service.stop()])
+
+    expect(providerState.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for active stream cleanup before shutting down the provider', async () => {
+    const entered = deferred<void>()
+    const finished = deferred<void>()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => {
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(finished.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-stop-waits',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      new FakePort()
+    )
+    await entered.promise
+
+    let stopped = false
+    const stopping = service.stop().then(() => {
+      stopped = true
+    })
+    await flushAsyncWork()
+    expect(stopped).toBe(false)
+    expect(providerState.shutdown).not.toHaveBeenCalled()
+
+    finished.resolve()
+    await Promise.all([running, stopping])
+
+    expect(providerState.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('forces local stream release when shutdown misses its canonical deadline', async () => {
+    const entered = deferred<void>()
+    const released = deferred<void>()
+    let triggerDeadline: (() => void) | undefined
+    const interrupt = vi.fn(async () => new Promise<void>(() => undefined))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      shutdownTimeoutMs: 1,
+      scheduleTimeout: (callback) => {
+        triggerDeadline = callback
+        return {} as ReturnType<typeof setTimeout>
+      },
+      clearScheduledTimeout: vi.fn(),
+      streamText: async ({ abortSignal, onSessionCreated, onTurnLifecycle }) => {
+        onSessionCreated?.(activeSession('thread-shutdown', 'turn-shutdown', interrupt))
+        await onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-shutdown',
+          turnId: 'turn-shutdown'
+        })
+        abortSignal.addEventListener('abort', () => released.resolve(), { once: true })
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(released.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'chat-shutdown-deadline',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      new FakePort()
+    )
+    await entered.promise
+
+    const stopping = service.stop()
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
+    expect(triggerDeadline).toBeDefined()
+    triggerDeadline?.()
+    await stopping
+    await running
+
+    expect(service.isConversationRunning('chat-shutdown-deadline')).toBe(false)
+    expect(providerState.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases follow-up leases and steer confirmation timers when shutdown misses its deadline', async () => {
+    const entered = deferred<void>()
+    const released = deferred<void>()
+    const scheduled: Array<{ callback: () => void; timeoutMs: number; timer: object }> = []
+    const clearScheduledTimeout = vi.fn()
+    const failClaim = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 2,
+      conversationKey: 'conversation-shutdown-follow-up',
+      defaultMode: 'queue' as const,
+      archived: false,
+      items: []
+    }))
+    const interrupt = vi.fn(async () => new Promise<void>(() => undefined))
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      followUpQueue: { failClaim } as unknown as ConversationFollowUpQueueService,
+      shutdownTimeoutMs: 1,
+      scheduleTimeout: (callback, timeoutMs) => {
+        const timer = {}
+        scheduled.push({ callback, timeoutMs, timer })
+        return timer as ReturnType<typeof setTimeout>
+      },
+      clearScheduledTimeout,
+      streamText: async ({ abortSignal, onSessionCreated, onTurnLifecycle }) => {
+        onSessionCreated?.(
+          activeSession('thread-shutdown-follow-up', 'turn-shutdown-follow-up', interrupt)
+        )
+        await onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-shutdown-follow-up',
+          turnId: 'turn-shutdown-follow-up'
+        })
+        abortSignal.addEventListener('abort', () => released.resolve(), { once: true })
+        entered.resolve()
+        return { toUIMessageStream: () => waitThenEnd(released.promise) }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'conversation-shutdown-follow-up',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      new FakePort()
+    )
+    await entered.promise
+
+    const claim = createSteerClaim({
+      conversationKey: 'conversation-shutdown-follow-up',
+      item: {
+        ...createSteerClaim().item,
+        conversationKey: 'conversation-shutdown-follow-up',
+        message: {
+          ...createSteerClaim().item.message,
+          trustedContext: {
+            ...createSteerClaim().item.message.trustedContext,
+            conversationId: 'conversation-shutdown-follow-up'
+          }
+        }
+      }
+    })
+    await service.steerClaimedFollowUp(claim, {
+      id: claim.item.id,
+      role: 'user',
+      parts: [{ type: 'text', text: 'change direction' }]
+    })
+
+    const steerTimer = scheduled.find(({ timeoutMs }) => timeoutMs === 30_000)
+    expect(steerTimer).toBeDefined()
+    const stopping = service.stop()
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
+    const shutdownTimer = scheduled.find(({ timeoutMs }) => timeoutMs === 1)
+    expect(shutdownTimer).toBeDefined()
+    shutdownTimer?.callback()
+
+    await Promise.all([running, stopping])
+
+    expect(failClaim).toHaveBeenCalledWith(
+      'conversation-shutdown-follow-up',
+      claim.item.id,
+      claim.leaseToken,
+      expect.objectContaining({ kind: 'recovery-uncertain', status: 'paused-recovery-uncertain' })
+    )
+    expect(clearScheduledTimeout).toHaveBeenCalledWith(steerTimer?.timer)
+    expect(service.isConversationRunning('conversation-shutdown-follow-up')).toBe(false)
   })
 
   it('passes the live-agent lifecycle observer into the active stream call', async () => {
@@ -1649,27 +4281,5 @@ describe('CodexChatRuntimeService', () => {
     )
 
     expect(observedCallback).toBe(onAgentLifecycle)
-  })
-
-  it('broadcasts approval requests', async () => {
-    const listener = vi.fn()
-    const service = new CodexChatRuntimeService({
-      cwd: '/repo',
-      launch: {
-        command: '/bin/codex-app-server',
-        args: ['--listen', 'stdio://'],
-        displayBinary: '/bin/codex-app-server --listen stdio://'
-      }
-    })
-    service.onApprovalRequest(listener)
-
-    const requestPromise = service.requestApprovalForTest({
-      kind: 'command',
-      params: { command: 'pwd' }
-    })
-    const request = listener.mock.calls[0][0]
-    service.respondApproval(request.id, { action: 'approve' })
-
-    await expect(requestPromise).resolves.toEqual({ action: 'approve' })
   })
 })

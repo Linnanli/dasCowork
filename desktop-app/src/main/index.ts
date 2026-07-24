@@ -15,11 +15,13 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   createCodexContextCatalogClient,
+  createCodexHistoryClient,
   type CodexContextCatalogClient
 } from '@janole/ai-sdk-provider-codex-asp'
 import icon from '../../resources/icon.png?asset'
 import { createBeforeQuitHandler } from './appShutdown'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
+import { createCodexAspSharedConnection, type CodexAspSharedConnection } from './codexAspProvider'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
 import { AppServerThreadClient } from './conversations/AppServerThreadClient'
 import {
@@ -62,7 +64,8 @@ import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
 import {
-  codexChatRequestSchema,
+  codexChatPortDetachedPayloadSchema,
+  codexChatStartPayloadSchema,
   isExternalHttpUrl,
   codexOpenExternalHttpUrlPayloadSchema,
   projectCreateBlankPayloadSchema,
@@ -97,6 +100,7 @@ let composerContextCatalog: ComposerContextCatalogService | undefined
 let composerContextSearch: ComposerContextSearchService | undefined
 let composerContextChanges: ComposerContextChangeBroker | undefined
 let composerContextClient: CodexContextCatalogClient | undefined
+let codexAppServerConnection: CodexAspSharedConnection | undefined
 let followUpQueue: ConversationFollowUpQueueService | undefined
 const localImageCapabilities = new LocalImageCapabilityStore()
 const localPathCapabilities = new LocalPathCapabilityStore()
@@ -121,10 +125,23 @@ function createCodexRuntime(): CodexChatRuntimeService {
     mainDir: __dirname,
     resourcesPath: process.resourcesPath
   })
-  const threadClient = new AppServerThreadClient({ launch })
+  const connection = createCodexAspSharedConnection(launch)
+  codexAppServerConnection = connection
+  const historyClient = createCodexHistoryClient({
+    clientInfo: {
+      name: 'dascowork_desktop_sidebar',
+      title: 'dasCowork Desktop Sidebar',
+      version: '1.0.0'
+    },
+    experimentalApi: true,
+    transportFactory: connection.transportFactory
+  })
+  const threadClient = new AppServerThreadClient({ historyClient })
   conversationApi = new ConversationApiService({
     threadClient,
-    projectStore: projectRuntimeServices.projectStore
+    projectStore: projectRuntimeServices.projectStore,
+    waitForConversationSettlement: (conversationId) =>
+      codexRuntime?.waitForConversationSettlement(conversationId) ?? Promise.resolve()
   })
   const liveAgents = new LiveAgentRegistry(threadClient)
   const agentRoles = new LocalAgentRoleCatalog({
@@ -139,15 +156,8 @@ function createCodexRuntime(): CodexChatRuntimeService {
       version: '1.0.0'
     },
     experimentalApi: true,
-    transport: {
-      type: 'stdio',
-      stdio: {
-        command: launch.command,
-        args: launch.args,
-        cwd: launch.cwd,
-        env: launch.env
-      }
-    }
+    connectionLifecycle: 'per-operation',
+    transportFactory: connection.transportFactory
   })
   composerContextCatalog = new ComposerContextCatalogService({
     provider: composerContextClient,
@@ -184,12 +194,26 @@ function createCodexRuntime(): CodexChatRuntimeService {
         capabilities: localPathCapabilities,
         stat
       }),
-    logger: (event, details) => console.info(`[follow-up:${event}]`, details)
+    logger: (event, details) => console.info(`[follow-up:${event}]`, details),
+    findAcceptedClientUserMessageIds: async (conversationKey, candidateIds) => {
+      const thread = await historyClient.readThread(conversationKey, { includeTurns: true })
+      const candidates = new Set(candidateIds)
+      const accepted = new Set<string>()
+      for (const turn of thread.turns) {
+        for (const item of turn.items) {
+          if (item.type === 'userMessage' && item.clientId && candidates.has(item.clientId)) {
+            accepted.add(item.clientId)
+          }
+        }
+      }
+      return [...accepted]
+    }
   })
   followUpQueue.subscribe(broadcastFollowUpChange)
 
   return new CodexChatRuntimeService({
     launch,
+    connection,
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore,
@@ -399,7 +423,15 @@ function createWindow(runtime: CodexChatRuntimeService): void {
       mainWindow.webContents.send('codex:approval-request', request)
     }
   })
-  mainWindow.on('closed', () => unsubscribeApprovals())
+  const unsubscribeSettledApprovals = runtime.onApprovalSettled((requestId) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('codex:approval-settled', requestId)
+    }
+  })
+  mainWindow.on('closed', () => {
+    unsubscribeApprovals()
+    unsubscribeSettledApprovals()
+  })
   mainWindow.webContents.once('destroyed', () => {
     void composerContextSearch?.stopOwnedBy(ownerWebContentsId)
   })
@@ -660,10 +692,17 @@ app.whenReady().then(() => {
     const request = sidebarPreferencesPatchSchema.parse(payload)
     return requireConversationApi().setPreferences(request)
   })
+  ipcMain.on('codex-chat:port-detached', (_, payload: unknown) => {
+    const request = codexChatPortDetachedPayloadSchema.parse(payload)
+    runtime.handleChatStreamPortClosed(request.chatId)
+  })
   ipcMain.on('codex-chat:start', (event, payload: unknown) => {
     const port = event.ports[0]
     if (!port) return
-    const request = codexChatRequestSchema.parse(payload)
+    const { request, streamId } = codexChatStartPayloadSchema.parse(payload)
+    port.once('close', () => {
+      runtime.handleChatStreamPortClosed(request.chatId)
+    })
     void runtime
       .startChatStream(request, port, {
         onThreadIdAvailable: async (threadId, thread) => {
@@ -678,6 +717,11 @@ app.whenReady().then(() => {
             return
           }
           void broadcastConversationState({ awaitThreadId: threadId })
+        },
+        onTerminal: (terminal) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('codex-chat:terminal', { streamId, terminal })
+          }
         }
       })
       .then((result) =>
@@ -716,6 +760,7 @@ app.on(
       } finally {
         composerContextChanges?.dispose()
         await Promise.allSettled([codexRuntime?.stop(), composerContextClient?.shutdown()])
+        await codexAppServerConnection?.shutdown()
       }
     },
     quit: () => app.quit(),

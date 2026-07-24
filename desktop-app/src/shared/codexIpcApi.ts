@@ -87,6 +87,7 @@ export type SidebarConversationOpenResult = {
   threadId: string
   title: string | null
   messages: UIMessage[]
+  historyRevision?: string | null
   projectAssignment?: ThreadProjectAssignment
   cwd?: string | null
 }
@@ -106,6 +107,7 @@ export type CodexChatRequestBody = {
   projectSelection?: ProjectSelection
   conversationId?: string
   threadId?: string
+  retryTerminalTurn?: boolean
   followUpRequest?: FollowUpTurnStartRequest
 } & Record<string, unknown>
 
@@ -115,16 +117,57 @@ export const codexChatRequestBodySchema = z
     projectSelection: projectSelectionSchema.optional(),
     conversationId: z.string().min(1).optional(),
     threadId: z.string().min(1).optional(),
+    retryTerminalTurn: z.literal(true).optional(),
     followUpRequest: followUpTurnStartRequestSchema.optional()
   })
   .catchall(z.unknown()) satisfies z.ZodType<CodexChatRequestBody>
 
+export type CodexTurnLifecycleEvent =
+  | {
+      type: 'turn-started'
+      sequence: number
+      threadId: string
+      turnId: string
+    }
+  | {
+      type: 'item-started' | 'item-completed'
+      sequence: number
+      threadId: string
+      turnId: string
+      itemId: string
+      itemType: string
+      clientUserMessageId?: string
+      compareKey?: string
+    }
+  | {
+      type: 'turn-completed'
+      sequence: number
+      threadId: string
+      turnId: string
+      outcome: 'completed' | 'interrupted' | 'failed'
+    }
+
 export type CodexChatStreamEvent =
   | { type: 'thread-bound'; threadId: string }
+  | { type: 'turn-lifecycle'; event: CodexTurnLifecycleEvent }
   | { type: 'chunk'; chunk: UIMessageChunk }
   | { type: 'finish'; threadId?: string }
   | { type: 'aborted' }
   | { type: 'error'; error: string }
+
+export type CodexChatTerminalEvent = Extract<
+  CodexChatStreamEvent,
+  { type: 'finish' | 'aborted' | 'error' }
+>
+
+/**
+ * A terminal signal sent over regular Electron IPC when the stream MessagePort
+ * has already failed. Chunks intentionally remain MessagePort-only.
+ */
+export type CodexChatTerminalFallback = {
+  streamId: string
+  terminal: CodexChatTerminalEvent
+}
 
 export type CodexChatControlMessage =
   | { type: 'abort' }
@@ -132,6 +175,7 @@ export type CodexChatControlMessage =
 
 export type CodexChatStreamCallbacks = {
   onThreadBound(threadId: string): void
+  onTurnLifecycle?(event: CodexTurnLifecycleEvent): void
   onChunk(chunk: UIMessageChunk): void
   onFinish(threadId?: string): void
   onAbort(): void
@@ -140,11 +184,45 @@ export type CodexChatStreamCallbacks = {
 
 export const codexChatStreamEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('thread-bound'), threadId: z.string().min(1) }),
+  z.object({
+    type: z.literal('turn-lifecycle'),
+    event: z.discriminatedUnion('type', [
+      z.object({
+        type: z.literal('turn-started'),
+        sequence: z.number().int().nonnegative(),
+        threadId: z.string().min(1),
+        turnId: z.string().min(1)
+      }),
+      z.object({
+        type: z.enum(['item-started', 'item-completed']),
+        sequence: z.number().int().nonnegative(),
+        threadId: z.string().min(1),
+        turnId: z.string().min(1),
+        itemId: z.string().min(1),
+        itemType: z.string().min(1),
+        clientUserMessageId: z.string().min(1).optional(),
+        compareKey: z.string().min(1).optional()
+      }),
+      z.object({
+        type: z.literal('turn-completed'),
+        sequence: z.number().int().nonnegative(),
+        threadId: z.string().min(1),
+        turnId: z.string().min(1),
+        outcome: z.enum(['completed', 'interrupted', 'failed'])
+      })
+    ])
+  }),
   z.object({ type: z.literal('chunk'), chunk: z.custom<UIMessageChunk>(isUiMessageChunk) }),
   z.object({ type: z.literal('finish'), threadId: z.string().min(1).optional() }),
   z.object({ type: z.literal('aborted') }),
   z.object({ type: z.literal('error'), error: z.string() })
 ]) satisfies z.ZodType<CodexChatStreamEvent>
+
+export const codexChatTerminalEventSchema = z.union([
+  z.object({ type: z.literal('finish'), threadId: z.string().min(1).optional() }),
+  z.object({ type: z.literal('aborted') }),
+  z.object({ type: z.literal('error'), error: z.string() })
+]) satisfies z.ZodType<CodexChatTerminalEvent>
 
 export const codexChatControlMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('abort') }),
@@ -214,6 +292,31 @@ export const codexChatRequestSchema = z.object({
   metadata: z.unknown().optional(),
   body: codexChatRequestBodySchema.optional()
 }) satisfies z.ZodType<CodexChatRequest>
+
+export type CodexChatStartPayload = {
+  streamId: string
+  request: CodexChatRequest
+}
+
+export type CodexChatPortDetachedPayload = {
+  streamId: string
+  chatId: string
+}
+
+export const codexChatStartPayloadSchema = z.object({
+  streamId: z.string().min(1),
+  request: codexChatRequestSchema
+}) satisfies z.ZodType<CodexChatStartPayload>
+
+export const codexChatPortDetachedPayloadSchema = z.object({
+  streamId: z.string().min(1),
+  chatId: z.string().min(1)
+}) satisfies z.ZodType<CodexChatPortDetachedPayload>
+
+export const codexChatTerminalFallbackSchema = z.object({
+  streamId: z.string().min(1),
+  terminal: codexChatTerminalEventSchema
+}) satisfies z.ZodType<CodexChatTerminalFallback>
 
 export const codexApprovalResponseSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('approve') }),
@@ -315,6 +418,7 @@ export const sidebarConversationOpenResultSchema = z.object({
   threadId: z.string().min(1),
   title: z.string().nullable(),
   messages: z.array(z.custom<UIMessage>(isUiMessage)),
+  historyRevision: z.string().nullable().optional(),
   projectAssignment: z.custom<ThreadProjectAssignment>().optional(),
   cwd: z.string().nullable().optional()
 }) satisfies z.ZodType<SidebarConversationOpenResult>
@@ -338,6 +442,7 @@ export type DesktopCodexApi = {
   pickLocalContext(kind: LocalContextPickerKind): Promise<LocalContextReference[]>
   onStatusChange(callback: (status: CodexStatus) => void): () => void
   onApprovalRequest(callback: (request: CodexApprovalRequest) => void): () => void
+  onApprovalSettled?(callback: (requestId: string) => void): () => void
 }
 
 export type DesktopCodexChatApi = {

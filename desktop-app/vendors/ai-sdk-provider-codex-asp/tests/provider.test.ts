@@ -7,16 +7,18 @@ import { CodexLanguageModel } from "../src/model";
 import { createCodexAppServer } from "../src/provider";
 import type { CodexSession } from "../src/session";
 import { MockTransport } from "./helpers/mock-transport";
+import { planAssertionsForTest } from "./helpers/plan-assertion";
 
 class ScriptedTransport extends MockTransport
 {
     pauseTurnCompletion = false;
     simulateSteerTurnRace = false;
     failSteerTransport = false;
+    completeTurnBeforeSteerRejection = false;
     steerError: {
-        code: number;
-        message: string;
-        data?: unknown;
+        code: number
+        message: string
+        data?: unknown
     } | null = null;
     private steerRequestCount = 0;
 
@@ -52,7 +54,10 @@ class ScriptedTransport extends MockTransport
 
         if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -69,9 +74,7 @@ class ScriptedTransport extends MockTransport
                             displayName: "GPT-5.3 Codex",
                             description: "Test model",
                             hidden: false,
-                            supportedReasoningEfforts: [
-                                { reasoningEffort: "medium", description: "Default" },
-                            ],
+                            supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Default" }],
                             defaultReasoningEffort: "medium",
                             inputModalities: ["text", "image"],
                             supportsPersonality: false,
@@ -120,6 +123,10 @@ class ScriptedTransport extends MockTransport
 
             if (this.steerError)
             {
+                if (this.completeTurnBeforeSteerRejection)
+                {
+                    this.completeTurn();
+                }
                 this.emitMessage({ id: message.id, error: this.steerError });
                 return;
             }
@@ -194,9 +201,9 @@ async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
     return parts;
 }
 
-describe("createCodexAppServer", () => 
+describe("createCodexAppServer", () =>
 {
-    it("creates provider with v3 specification and language model factory", () => 
+    it("creates provider with v3 specification and language model factory", () =>
     {
         const provider = createCodexAppServer({
             clientInfo: { name: "test", version: "0.1.0" },
@@ -217,7 +224,7 @@ describe("createCodexAppServer", () =>
         });
     });
 
-    it("supports callable provider and chat alias", () => 
+    it("supports callable provider and chat alias", () =>
     {
         const provider = createCodexAppServer();
 
@@ -275,16 +282,12 @@ describe("createCodexAppServer", () =>
         });
     });
 
-    it("throws NoSuchModelError for embedding and image models", () => 
+    it("throws NoSuchModelError for embedding and image models", () =>
     {
         const provider = createCodexAppServer();
 
-        expect(() => provider.embeddingModel("embed-model")).toThrowError(
-            NoSuchModelError,
-        );
-        expect(() => provider.imageModel("image-model")).toThrowError(
-            NoSuchModelError,
-        );
+        expect(() => provider.embeddingModel("embed-model")).toThrowError(NoSuchModelError);
+        expect(() => provider.imageModel("image-model")).toThrowError(NoSuchModelError);
     });
 
     it("uses separate persistent pools by default", async () =>
@@ -329,8 +332,7 @@ describe("createCodexAppServer", () =>
 
             const initializeCount = transports
                 .flatMap((transport) => transport.sentMessages)
-                .filter((msg) => "method" in msg && msg.method === "initialize")
-                .length;
+                .filter((msg) => "method" in msg && msg.method === "initialize").length;
 
             expect(factoryCalls).toBe(2);
             expect(initializeCount).toBe(2);
@@ -386,8 +388,7 @@ describe("createCodexAppServer", () =>
 
             const initializeCount = transports
                 .flatMap((transport) => transport.sentMessages)
-                .filter((msg) => "method" in msg && msg.method === "initialize")
-                .length;
+                .filter((msg) => "method" in msg && msg.method === "initialize").length;
 
             expect(factoryCalls).toBe(1);
             expect(initializeCount).toBe(1);
@@ -544,23 +545,25 @@ describe("createCodexAppServer", () =>
             (message) => "method" in message && message.method === "turn/start",
         ).length;
         const result = await capturedSession!.steerPrompt(
-            [{
-                role: "user",
-                content: [
-                    { type: "text", text: "Focus on the provider tests" },
-                    {
-                        type: "file",
-                        mediaType: "application/vnd.dascowork.local-file",
-                        data: new URL("file:///tmp/provider.ts"),
-                        filename: "provider.ts",
-                    },
-                    {
-                        type: "file",
-                        mediaType: "image/png",
-                        data: new URL("https://example.test/screenshot.png"),
-                    },
-                ],
-            }],
+            [
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: "Focus on the provider tests" },
+                        {
+                            type: "file",
+                            mediaType: "application/vnd.dascowork.local-file",
+                            data: new URL("file:///tmp/provider.ts"),
+                            filename: "provider.ts",
+                        },
+                        {
+                            type: "file",
+                            mediaType: "image/png",
+                            data: new URL("https://example.test/screenshot.png"),
+                        },
+                    ],
+                },
+            ],
             { clientUserMessageId: "follow-up-1" },
         );
 
@@ -571,7 +574,7 @@ describe("createCodexAppServer", () =>
         );
         expect(steerMessages).toHaveLength(1);
         const steerParams = steerMessages[0]?.params as {
-            input: Array<{ type: string; text?: string; url?: string }>;
+            input: Array<{ type: string; text?: string; url?: string }>
         };
         expect(steerParams).toMatchObject({
             threadId: "thr_1",
@@ -586,16 +589,19 @@ describe("createCodexAppServer", () =>
             ],
         });
         expect(steerParams.input[0]?.text).toContain("/tmp/provider.ts");
-        expect(transport.sentMessages.filter(
-            (message) => "method" in message && message.method === "turn/start",
-        )).toHaveLength(turnStartCountBeforeSteer);
+        expect(
+            transport.sentMessages.filter(
+                (message) => "method" in message && message.method === "turn/start",
+            ),
+        ).toHaveLength(turnStartCountBeforeSteer);
 
         transport.completeTurn();
         await readAll(stream);
     });
 
-    it("session.steerPrompt retries once with the latest turn id after a race", async () =>
+    it("B02 retries once with the latest turn id after an expected-turn mismatch", async () =>
     {
+        const assertB02 = planAssertionsForTest("B02");
         const transport = new ScriptedTransport();
         transport.pauseTurnCompletion = true;
         transport.simulateSteerTurnRace = true;
@@ -616,22 +622,32 @@ describe("createCodexAppServer", () =>
         });
         await new Promise((resolve) => setTimeout(resolve, 10));
 
-        await expect(capturedSession!.steerPrompt(
+        const steerResult = await capturedSession!.steerPrompt(
             [{ role: "user", content: [{ type: "text", text: "race" }] }],
             { clientUserMessageId: "follow-up-race" },
-        )).resolves.toEqual({ turnId: "turn_2" });
+        );
 
         const steerMessages = transport.sentMessages.filter(
             (message): message is { method: string; params?: unknown } =>
                 "method" in message && message.method === "turn/steer",
         );
-        expect(steerMessages).toHaveLength(2);
-        expect(steerMessages.map((message) =>
-            (message.params as { expectedTurnId: string }).expectedTurnId,
-        )).toEqual(["turn_1", "turn_2"]);
+        await assertB02("claim、接受与队列结算至多一次", () => expect(steerMessages).toHaveLength(2));
+        await assertB02("正确的恢复、暂停或拒绝状态", () =>
+        {
+            expect(steerResult).toEqual({ turnId: "turn_2" });
+            expect(
+                steerMessages.map(
+                    (message) => (message.params as { expectedTurnId: string }).expectedTurnId,
+                ),
+            ).toEqual(["turn_1", "turn_2"]);
+        },
+        );
 
         transport.completeTurn();
         await readAll(stream);
+        await assertB02("terminal 和 active run 不被竞态覆盖", () =>
+            expect(capturedSession!.isActive()).toBe(false),
+        );
     });
 
     it("session.steerPrompt classifies unsupported active turns", async () =>
@@ -666,15 +682,60 @@ describe("createCodexAppServer", () =>
         });
         await new Promise((resolve) => setTimeout(resolve, 10));
 
-        const error = await capturedSession!.steerPrompt(
-            [{ role: "user", content: [{ type: "text", text: "review steer" }] }],
-            { clientUserMessageId: "follow-up-review" },
-        ).catch((caught: unknown) => caught);
+        const error = await capturedSession!
+            .steerPrompt([{ role: "user", content: [{ type: "text", text: "review steer" }] }], {
+                clientUserMessageId: "follow-up-review",
+            })
+            .catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(CodexSteerError);
         expect(error).toMatchObject({ code: "unsupported_active_turn_kind" });
 
         transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.steerPrompt surfaces the JSON-RPC rejection after turn completion marks the session inactive", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        transport.completeTurnBeforeSteerRejection = true;
+        transport.steerError = {
+            code: -32042,
+            message: "server rejected steer",
+        };
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        await expect(
+            capturedSession!.steerPrompt(
+                [{ role: "user", content: [{ type: "text", text: "reject this steer" }] }],
+                { clientUserMessageId: "follow-up-rejected" },
+            ),
+        ).rejects.toMatchObject({
+            code: "app_server_rejected",
+            message: "server rejected steer",
+        });
+        expect(
+            transport.sentMessages.filter(
+                (message) => "method" in message && message.method === "turn/steer",
+            ),
+        ).toHaveLength(1);
+
         await readAll(stream);
     });
 
@@ -700,10 +761,11 @@ describe("createCodexAppServer", () =>
         });
         await new Promise((resolve) => setTimeout(resolve, 10));
 
-        const error = await capturedSession!.steerPrompt(
-            [{ role: "user", content: [{ type: "text", text: "uncertain steer" }] }],
-            { clientUserMessageId: "follow-up-unknown" },
-        ).catch((caught: unknown) => caught);
+        const error = await capturedSession!
+            .steerPrompt([{ role: "user", content: [{ type: "text", text: "uncertain steer" }] }], {
+                clientUserMessageId: "follow-up-unknown",
+            })
+            .catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(CodexSteerError);
         expect(error).toMatchObject({ code: "steer_result_unknown" });
@@ -747,6 +809,85 @@ describe("createCodexAppServer", () =>
         });
 
         // Complete the turn so the stream closes cleanly
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.interrupt sends at most one RPC for concurrent requests to the same turn", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.pauseTurnCompletion = true;
+        let capturedSession: CodexSession | null = null;
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        await Promise.all([capturedSession!.interrupt(), capturedSession!.interrupt()]);
+
+        expect(
+            transport.sentMessages.filter(
+                (message) => "method" in message && message.method === "turn/interrupt",
+            ),
+        ).toHaveLength(1);
+
+        transport.completeTurn();
+        await readAll(stream);
+    });
+
+    it("session.interrupt does not retry the same turn after an RPC rejection", async () =>
+    {
+        class InterruptRejectingTransport extends ScriptedTransport
+        {
+            override async sendMessage(message: JsonRpcMessage): Promise<void>
+            {
+                if ("id" in message && message.id !== undefined && "method" in message && message.method === "turn/interrupt")
+                {
+                    await MockTransport.prototype.sendMessage.call(this, message);
+                    this.emitMessage({ id: message.id, error: { code: -32000, message: "interrupt rejected" } });
+                    return;
+                }
+                await super.sendMessage(message);
+            }
+        }
+
+        const transport = new InterruptRejectingTransport();
+        transport.pauseTurnCompletion = true;
+        let capturedSession: CodexSession | null = null;
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                capturedSession = session;
+            },
+        });
+        const model = provider.languageModel("gpt-5.5");
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        await expect(capturedSession!.interrupt()).rejects.toThrow("interrupt rejected");
+        await expect(capturedSession!.interrupt()).rejects.toThrow("interrupt rejected");
+
+        expect(
+            transport.sentMessages.filter(
+                (message) => "method" in message && message.method === "turn/interrupt",
+            ),
+        ).toHaveLength(1);
+
         transport.completeTurn();
         await readAll(stream);
     });

@@ -5,11 +5,35 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../scripts/lib/test-plan-assertions.mjs'
+
 import { LocalImageCapabilityStore } from '../localImageCapabilityStore'
+import type { FollowUpAssetInput } from '../../shared/codexFollowUpApi'
 import { FollowUpAssetCapacityError, FollowUpAssetStore } from './FollowUpAssetStore'
 
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+const queueAssertionIds = [
+  '队列顺序、revision、lease 与消费状态正确',
+  '重启从持久化状态恢复',
+  '不能重复 claim 或自动重发'
+]
+
+async function assertQueuePlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of queueAssertionIds) {
+    await record(assertionId, assertion)
+  }
+}
+
 describe('FollowUpAssetStore', () => {
-  it('persists immutable bytes behind a relative handle and validates the checksum', async () => {
+  it('E20 persists immutable bytes behind a relative handle and validates the checksum', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
     const store = new FollowUpAssetStore(directory)
 
@@ -26,17 +50,19 @@ describe('FollowUpAssetStore', () => {
       await transaction.commit()
       await transaction.finalize()
 
-      expect(transaction.assets[0].relativePath.startsWith('/')).toBe(false)
-      await expect(store.validate(transaction.assets)).resolves.toBeUndefined()
-      await expect(store.materialize(transaction.assets)).resolves.toMatchObject([
-        {
-          displayName: 'image.png',
-          dataUrl: `data:image/png;base64,${Buffer.from('image bytes').toString('base64')}`
-        }
-      ])
-      await expect(
-        readFile(join(directory, transaction.assets[0].relativePath), 'utf8')
-      ).resolves.toBe('image bytes')
+      await assertQueuePlanEvidence(['E20'], async () => {
+        expect(transaction.assets[0].relativePath.startsWith('/')).toBe(false)
+        await expect(store.validate(transaction.assets)).resolves.toBeUndefined()
+        await expect(store.materialize(transaction.assets)).resolves.toMatchObject([
+          {
+            displayName: 'image.png',
+            dataUrl: `data:image/png;base64,${Buffer.from('image bytes').toString('base64')}`
+          }
+        ])
+        await expect(
+          readFile(join(directory, transaction.assets[0].relativePath), 'utf8')
+        ).resolves.toBe('image bytes')
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -81,7 +107,7 @@ describe('FollowUpAssetStore', () => {
     }
   })
 
-  it('transfers an existing attachment to a migrated owner only when explicitly allowed', async () => {
+  it('E21 transfers an existing attachment to a migrated owner only when explicitly allowed', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
     const store = new FollowUpAssetStore(directory, {
       maxBytesPerItem: 5,
@@ -198,7 +224,7 @@ describe('FollowUpAssetStore', () => {
     }
   })
 
-  it('rejects a selected image whose path now resolves to a different file identity', async () => {
+  it('E20/G04 rejects a selected image whose path now resolves to a different file identity', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
     const sourcePath = join(directory, 'picked-image.png')
     const movedPath = join(directory, 'original-image.png')
@@ -220,25 +246,55 @@ describe('FollowUpAssetStore', () => {
       await rename(sourcePath, movedPath)
       await writeFile(sourcePath, 'replacement image bytes')
 
-      await expect(
-        store.prepare('message-local-image', [
-          {
-            kind: 'local-image',
-            id: 'image-local',
-            path: sourcePath,
-            capabilityToken,
-            previewUrl: 'app://fs/@fs/tmp/picked-image.png',
-            displayName: 'picked-image.png',
-            mediaType: 'image/png'
-          }
-        ])
-      ).rejects.toThrow('not authorized')
+      const rejectedPreparation = store.prepare('message-local-image', [
+        {
+          kind: 'local-image',
+          id: 'image-local',
+          path: sourcePath,
+          capabilityToken,
+          previewUrl: 'app://fs/@fs/tmp/picked-image.png',
+          displayName: 'picked-image.png',
+          mediaType: 'image/png'
+        }
+      ])
+      const rejectionMessage = await rejectedPreparation.then(
+        () => '',
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      )
+      const recordG04 = planAssertionsForScenarios(['G04'], planAssert)
+      await recordG04('跨对话与信任边界隔离', () => {
+        expect(rejectionMessage).toContain('not authorized')
+      })
+      await recordG04('资源、并发和终态无残留', () => {
+        expect(() =>
+          capabilities.consumeAll([
+            {
+              token: capabilityToken,
+              path: sourcePath,
+              mediaType: 'image/png',
+              identity: {
+                dev: metadata.dev,
+                ino: metadata.ino,
+                size: metadata.size,
+                mtimeMs: metadata.mtimeMs
+              }
+            }
+          ])
+        ).not.toThrow()
+      })
+      await recordG04('诊断可关联而不泄露密钥', () => {
+        expect(rejectionMessage).not.toContain(capabilityToken)
+        expect(rejectionMessage).not.toContain(sourcePath)
+      })
+      await assertQueuePlanEvidence(['E20'], () => {
+        expect(rejectionMessage).toContain('not authorized')
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
   })
 
-  it('checks local image size before authorizing or reading its bytes', async () => {
+  it('E20/E25 checks local image size before authorizing or reading its bytes', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
     const sourcePath = join(directory, 'picked-image.png')
     const authorizeLocalImages = vi.fn()
@@ -250,22 +306,23 @@ describe('FollowUpAssetStore', () => {
         authorizeLocalImages
       })
 
-      await expect(
-        store.prepare('message-local-image', [
-          {
-            kind: 'local-image',
-            id: 'image-local',
-            path: sourcePath,
-            capabilityToken: 'picker-token',
-            previewUrl: 'app://fs/@fs/tmp/picked-image.png',
-            displayName: 'picked-image.png',
-            mediaType: 'image/png'
-          }
-        ])
-      ).rejects.toMatchObject({
-        code: 'item-assets-too-large'
-      } satisfies Partial<FollowUpAssetCapacityError>)
-      expect(authorizeLocalImages).not.toHaveBeenCalled()
+      const rejectedPreparation = store.prepare('message-local-image', [
+        {
+          kind: 'local-image',
+          id: 'image-local',
+          path: sourcePath,
+          capabilityToken: 'picker-token',
+          previewUrl: 'app://fs/@fs/tmp/picked-image.png',
+          displayName: 'picked-image.png',
+          mediaType: 'image/png'
+        }
+      ])
+      await assertQueuePlanEvidence(['E20', 'E25'], async () => {
+        await expect(rejectedPreparation).rejects.toMatchObject({
+          code: 'item-assets-too-large'
+        } satisfies Partial<FollowUpAssetCapacityError>)
+        expect(authorizeLocalImages).not.toHaveBeenCalled()
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -359,7 +416,7 @@ describe('FollowUpAssetStore', () => {
     }
   })
 
-  it('checks total queue capacity before consuming a local image capability', async () => {
+  it('E20/E25 checks total queue capacity before consuming a local image capability', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
     const sourcePath = join(directory, 'picked-image.png')
     const authorizeLocalImages = vi.fn()
@@ -383,22 +440,23 @@ describe('FollowUpAssetStore', () => {
       await existing.finalize()
       await writeFile(sourcePath, '123')
 
-      await expect(
-        store.prepare('new-image', [
-          {
-            kind: 'local-image',
-            id: 'new-image',
-            path: sourcePath,
-            capabilityToken: 'picker-token',
-            previewUrl: 'app://fs/@fs/tmp/picked-image.png',
-            displayName: 'picked-image.png',
-            mediaType: 'image/png'
-          }
-        ])
-      ).rejects.toMatchObject({
-        code: 'queue-assets-too-large'
-      } satisfies Partial<FollowUpAssetCapacityError>)
-      expect(authorizeLocalImages).not.toHaveBeenCalled()
+      const rejectedPreparation = store.prepare('new-image', [
+        {
+          kind: 'local-image',
+          id: 'new-image',
+          path: sourcePath,
+          capabilityToken: 'picker-token',
+          previewUrl: 'app://fs/@fs/tmp/picked-image.png',
+          displayName: 'picked-image.png',
+          mediaType: 'image/png'
+        }
+      ])
+      await assertQueuePlanEvidence(['E20', 'E25'], async () => {
+        await expect(rejectedPreparation).rejects.toMatchObject({
+          code: 'queue-assets-too-large'
+        } satisfies Partial<FollowUpAssetCapacityError>)
+        expect(authorizeLocalImages).not.toHaveBeenCalled()
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -505,57 +563,108 @@ describe('FollowUpAssetStore', () => {
     }
   })
 
-  it('enforces per-item and total capacity before committing files', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
-    const store = new FollowUpAssetStore(directory, {
-      maxBytesPerItem: 5,
-      maxTotalBytes: 7
-    })
+  it.each([
+    ['limit - 1', 4, true],
+    ['limit', 5, true],
+    ['limit + 1', 6, false]
+  ] as const)(
+    'E25 enforces the single-attachment capacity at %s',
+    async (_boundary, sizeBytes, accepted) => {
+      const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
+      const store = new FollowUpAssetStore(directory, {
+        maxBytesPerItem: 5,
+        maxTotalBytes: 20
+      })
 
-    try {
-      await expect(
-        store.prepare('too-large', [
-          {
-            id: 'asset',
-            displayName: 'large.bin',
-            mediaType: 'application/octet-stream',
-            encoding: 'base64',
-            data: Buffer.from('123456').toString('base64')
-          }
-        ])
-      ).rejects.toMatchObject({
-        code: 'item-assets-too-large'
-      } satisfies Partial<FollowUpAssetCapacityError>)
-
-      const first = await store.prepare('first', [
-        {
-          id: 'asset',
-          displayName: 'first.bin',
-          mediaType: 'application/octet-stream',
-          encoding: 'base64',
-          data: Buffer.from('12345').toString('base64')
+      try {
+        const preparation = store.prepare('single-asset', [inlineAsset('asset', sizeBytes)])
+        if (!accepted) {
+          await expect(preparation).rejects.toMatchObject({
+            code: 'item-assets-too-large'
+          } satisfies Partial<FollowUpAssetCapacityError>)
+          return
         }
-      ])
-      await first.commit()
-      await first.finalize()
 
-      await expect(
-        store.prepare('second', [
-          {
-            id: 'asset',
-            displayName: 'second.bin',
-            mediaType: 'application/octet-stream',
-            encoding: 'base64',
-            data: Buffer.from('123').toString('base64')
-          }
-        ])
-      ).rejects.toMatchObject({
-        code: 'queue-assets-too-large'
-      } satisfies Partial<FollowUpAssetCapacityError>)
-    } finally {
-      await rm(directory, { recursive: true, force: true })
+        const transaction = await preparation
+        expect(transaction.assets).toHaveLength(1)
+        expect(transaction.assets[0].sizeBytes).toBe(sizeBytes)
+        await transaction.rollback()
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
     }
-  })
+  )
+
+  it.each([
+    ['limit - 1', 2, true],
+    ['limit', 3, true],
+    ['limit + 1', 4, false]
+  ] as const)(
+    'E25 enforces the aggregate per-item capacity at %s',
+    async (_boundary, secondSizeBytes, accepted) => {
+      const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
+      const store = new FollowUpAssetStore(directory, {
+        maxBytesPerItem: 5,
+        maxTotalBytes: 20
+      })
+
+      try {
+        const preparation = store.prepare('aggregate-item', [
+          inlineAsset('first', 2),
+          inlineAsset('second', secondSizeBytes)
+        ])
+        if (!accepted) {
+          await expect(preparation).rejects.toMatchObject({
+            code: 'item-assets-too-large'
+          } satisfies Partial<FollowUpAssetCapacityError>)
+          return
+        }
+
+        const transaction = await preparation
+        expect(transaction.assets.reduce((total, asset) => total + asset.sizeBytes, 0)).toBe(
+          2 + secondSizeBytes
+        )
+        await transaction.rollback()
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.each([
+    ['limit - 1', 3, true],
+    ['limit', 4, true],
+    ['limit + 1', 5, false]
+  ] as const)(
+    'E25 enforces total queue asset capacity at %s',
+    async (_boundary, secondSizeBytes, accepted) => {
+      const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
+      const store = new FollowUpAssetStore(directory, {
+        maxBytesPerItem: 7,
+        maxTotalBytes: 7
+      })
+
+      try {
+        const first = await store.prepare('first', [inlineAsset('first', 3)])
+        await first.commit()
+        await first.finalize()
+
+        const preparation = store.prepare('second', [inlineAsset('second', secondSizeBytes)])
+        if (!accepted) {
+          await expect(preparation).rejects.toMatchObject({
+            code: 'queue-assets-too-large'
+          } satisfies Partial<FollowUpAssetCapacityError>)
+          return
+        }
+
+        const transaction = await preparation
+        expect(transaction.assets[0].sizeBytes).toBe(secondSizeBytes)
+        await transaction.rollback()
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
+  )
 
   it('rejects malformed base64 before creating a queue resource', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-assets-'))
@@ -578,3 +687,13 @@ describe('FollowUpAssetStore', () => {
     }
   })
 })
+
+function inlineAsset(id: string, sizeBytes: number): FollowUpAssetInput {
+  return {
+    id,
+    displayName: `${id}.bin`,
+    mediaType: 'application/octet-stream',
+    encoding: 'base64' as const,
+    data: Buffer.alloc(sizeBytes, id.charCodeAt(0)).toString('base64')
+  }
+}

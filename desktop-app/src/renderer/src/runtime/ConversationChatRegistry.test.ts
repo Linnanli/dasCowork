@@ -1,13 +1,43 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../../scripts/lib/test-plan-assertions.mjs'
+
 import type {
   CodexChatStreamCallbacks,
   DesktopCodexChatApi,
   SidebarConversation,
   SidebarConversationOpenResult
 } from '../../../shared/codexIpcApi'
+import { LOCAL_FILE_ATTACHMENT_MEDIA_TYPE } from '../../../shared/composerContext'
 import { ConversationDraftStore } from './ConversationDraftStore'
 import { ConversationChatRegistry } from './ConversationChatRegistry'
+import { ConversationTranscriptRecoveryStore } from './ConversationTranscriptRecoveryStore'
+
+const steerAssertionIds = [
+  '已显示回答保持不变',
+  '复用原 turn，不能额外启动 turn',
+  '队列顺序与对话隔离正确'
+]
+const uiAssertionIds = [
+  '错误、取消与重试 UI 正确',
+  '历史与已显示内容保留',
+  '可访问性、脱敏和 Composer 状态正确'
+]
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+async function assertPlanEvidence(
+  scenarioIds: readonly string[],
+  assertionIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of assertionIds) {
+    await record(assertionId, assertion)
+  }
+}
 
 class MemoryStorage {
   private readonly values = new Map<string, string>()
@@ -17,12 +47,17 @@ class MemoryStorage {
   setItem(key: string, value: string): void {
     this.values.set(key, value)
   }
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
 }
 
 function registryFixture(): {
   bridge: DesktopCodexChatApi
   callbacks: Map<string, CodexChatStreamCallbacks>
   registry: ConversationChatRegistry
+  transcriptRecoveryStore: ConversationTranscriptRecoveryStore
+  recoveryStorage: MemoryStorage
 } {
   const callbacks = new Map<string, CodexChatStreamCallbacks>()
   const bridge: DesktopCodexChatApi = {
@@ -33,13 +68,16 @@ function registryFixture(): {
     abortChatStream: vi.fn()
   }
   let sequence = 0
+  const recoveryStorage = new MemoryStorage()
+  const transcriptRecoveryStore = new ConversationTranscriptRecoveryStore(recoveryStorage)
   const registry = new ConversationChatRegistry({
     chatBridge: bridge,
     selectedModelId: 'gpt-test',
     draftStore: new ConversationDraftStore(new MemoryStorage()),
+    transcriptRecoveryStore,
     createId: () => `local-${sequence++}`
   })
-  return { bridge, callbacks, registry }
+  return { bridge, callbacks, registry, transcriptRecoveryStore, recoveryStorage }
 }
 
 describe('ConversationChatRegistry', () => {
@@ -48,17 +86,17 @@ describe('ConversationChatRegistry', () => {
     const entry = registry.getSnapshot().activeEntry
 
     await entry.transport.sendMessages({
-      chatId: entry.chat.id,
+      chatId: entry.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
       messages: [],
       abortSignal: undefined
     })
-    callbacks.get(entry.chat.id)?.onThreadBound('thread-real')
+    callbacks.get(entry.controller.id)?.onThreadBound('thread-real')
 
     expect(registry.resolve('thread-real')).toBe(entry)
     expect(registry.getSnapshot().entries).toHaveLength(1)
-    expect(entry.chat.id).toBe('local-0')
+    expect(entry.controller.id).toBe('local-0')
   })
 
   it('reuses an alias without loading history or creating a second entry', async () => {
@@ -70,6 +108,209 @@ describe('ConversationChatRegistry', () => {
     await expect(registry.openConversation('thread-real', load)).resolves.toBe(entry)
     expect(load).not.toHaveBeenCalled()
     expect(registry.getSnapshot().entries).toHaveLength(1)
+  })
+
+  it('F16 treats app-server history as canonical after a failed turn', async () => {
+    const { registry } = registryFixture()
+    const user = {
+      id: 'recovery-user',
+      role: 'user' as const,
+      parts: [{ type: 'text' as const, text: 'recover partial answer' }]
+    }
+    const entry = await registry.openConversation('recovery', async () => ({
+      conversationId: 'recovery',
+      threadId: 'thread-recovery',
+      title: 'recovery',
+      messages: [user]
+    }))
+
+    expect(entry.messages).toHaveLength(1)
+    expect(entry.messages[0]).toMatchObject({
+      role: 'user',
+      sourceMessageId: user.id,
+      parts: user.parts
+    })
+  })
+
+  it('drops a persisted failed fallback after a later assistant response succeeds', () => {
+    const { registry, recoveryStorage } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.bindThread(entry, 'thread-recovery')
+    const failedMessage = {
+      id: 'assistant:failed-turn:terminal',
+      role: 'assistant' as const,
+      parts: [],
+      metadata: { codexTurn: { turnId: 'failed-turn', status: 'failed' as const } }
+    }
+    const recoveredMessage = {
+      id: 'assistant:recovered-turn:message',
+      role: 'assistant' as const,
+      parts: [{ type: 'text' as const, text: 'The queued follow-up completed.' }]
+    }
+
+    entry.controller.replaceMessages([failedMessage])
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('failed-turn')
+
+    entry.controller.replaceMessages([failedMessage, recoveredMessage])
+
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('"recoveries":{}')
+  })
+
+  it('clears a failed fallback only after a later turn settles successfully', async () => {
+    const { bridge, callbacks, registry, recoveryStorage } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    const failedSend = entry.controller.sendMessage({
+      id: 'failed-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'fail first' }]
+    })
+    await vi.waitFor(() => expect(callbacks.get(entry.controller.id)).toBeDefined())
+    const failedStream = callbacks.get(entry.controller.id)
+    failedStream?.onThreadBound('thread-recovery')
+    failedStream?.onTurnLifecycle?.({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-recovery',
+      turnId: 'failed-turn'
+    })
+    failedStream?.onError('network disconnect')
+    await expect(failedSend).rejects.toThrow('network disconnect')
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('failed-turn')
+
+    const recoveredSend = entry.controller.sendMessage({
+      id: 'recovered-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'recover now' }]
+    })
+    await vi.waitFor(() => expect(vi.mocked(bridge.startChatStream)).toHaveBeenCalledTimes(2))
+    const recoveredStream = callbacks.get(entry.controller.id)
+    recoveredStream?.onTurnLifecycle?.({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-recovery',
+      turnId: 'recovered-turn'
+    })
+    recoveredStream?.onChunk({ type: 'start', messageId: 'recovered-assistant' })
+    recoveredStream?.onChunk({ type: 'text-start', id: 'recovered-text' })
+    recoveredStream?.onChunk({ type: 'text-delta', id: 'recovered-text', delta: 'Recovered.' })
+    recoveredStream?.onTurnLifecycle?.({
+      type: 'turn-completed',
+      sequence: 2,
+      threadId: 'thread-recovery',
+      turnId: 'recovered-turn',
+      outcome: 'completed'
+    })
+    recoveredStream?.onChunk({ type: 'finish' })
+    recoveredStream?.onFinish('thread-recovery')
+    await recoveredSend
+
+    expect(entry.status).toBe('ready')
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('"recoveries":{}')
+  })
+
+  it('B08 restores only a stable-id local attachment overlay', async () => {
+    const { bridge, registry, transcriptRecoveryStore } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.bindThread(entry, 'thread-client-tool')
+    const user = {
+      id: 'client-tool-user',
+      role: 'user' as const,
+      parts: [
+        {
+          type: 'text' as const,
+          text: 'read the attached document'
+        },
+        {
+          type: 'file' as const,
+          mediaType: LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+          filename: 'notes.txt',
+          url: 'file:///tmp/notes.txt'
+        }
+      ]
+    }
+    transcriptRecoveryStore.saveLocalAttachmentOverlay('thread-client-tool', [user], 'revision-1')
+    const serverHistory = [
+      {
+        id: user.id,
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'read the attached document' }]
+      }
+    ]
+
+    const reloaded = new ConversationChatRegistry({
+      chatBridge: bridge,
+      selectedModelId: 'gpt-test',
+      draftStore: new ConversationDraftStore(new MemoryStorage()),
+      transcriptRecoveryStore,
+      createId: () => 'local-reloaded'
+    })
+    const restored = await reloaded.openConversation('thread-client-tool', async () => ({
+      conversationId: 'thread-client-tool',
+      threadId: 'thread-client-tool',
+      title: 'attachment history',
+      historyRevision: 'revision-2',
+      messages: serverHistory
+    }))
+
+    expect(restored.messages).toHaveLength(1)
+    expect(restored.messages[0]?.parts).toContainEqual(user.parts[1])
+  })
+
+  it('does not re-save a canonical attachment during history hydration', async () => {
+    const { bridge, transcriptRecoveryStore, recoveryStorage } = registryFixture()
+    const user = {
+      id: 'canonical-attachment-user',
+      role: 'user' as const,
+      parts: [
+        { type: 'text' as const, text: 'already recorded by app-server' },
+        {
+          type: 'file' as const,
+          mediaType: LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+          filename: 'notes.txt',
+          url: 'file:///tmp/notes.txt'
+        }
+      ]
+    }
+    transcriptRecoveryStore.saveLocalAttachmentOverlay('thread-canonical', [user], 'revision-1')
+
+    const hydrated = new ConversationChatRegistry({
+      chatBridge: bridge,
+      transcriptRecoveryStore,
+      createId: () => 'local-hydrated'
+    })
+    await hydrated.openConversation('thread-canonical', async () => ({
+      conversationId: 'thread-canonical',
+      threadId: 'thread-canonical',
+      title: 'canonical attachment history',
+      historyRevision: 'revision-2',
+      messages: [user]
+    }))
+
+    expect(JSON.parse(recoveryStorage.getItem('das-cowork.transcript-recovery.v1') ?? '{}')).toMatchObject({
+      recoveries: {}
+    })
+
+    const reloaded = new ConversationChatRegistry({
+      chatBridge: bridge,
+      transcriptRecoveryStore,
+      createId: () => 'local-reloaded'
+    })
+    const withoutAttachment = await reloaded.openConversation('thread-canonical', async () => ({
+      conversationId: 'thread-canonical',
+      threadId: 'thread-canonical',
+      title: 'canonical attachment history',
+      historyRevision: 'revision-3',
+      messages: [
+        {
+          ...user,
+          parts: [{ type: 'text' as const, text: 'already recorded by app-server' }]
+        }
+      ]
+    }))
+
+    expect(withoutAttachment.messages[0]?.parts).toEqual([
+      { type: 'text', text: 'already recorded by app-server' }
+    ])
   })
 
   it('keeps the last navigation active when history loads out of order', async () => {
@@ -89,8 +330,8 @@ describe('ConversationChatRegistry', () => {
     await Promise.all([openA, openB, openC])
 
     expect(registry.getSnapshot().activeEntry.context.conversationId).toBe('c')
-    expect(registry.resolve('thread-a')?.chat.messages[0]?.id).toBe('message-a')
-    expect(registry.resolve('thread-b')?.chat.messages[0]?.id).toBe('message-b')
+    expect(registry.resolve('thread-a')?.messages[0]?.renderId).toBe('message:message-a')
+    expect(registry.resolve('thread-b')?.messages[0]?.renderId).toBe('message:message-b')
   })
 
   it('seeds a loading conversation with metadata already known by the sidebar', async () => {
@@ -108,7 +349,7 @@ describe('ConversationChatRegistry', () => {
     const open = registry.openConversation('sidebar-id', () => pending.promise)
     const loadingEntry = registry.getSnapshot().activeEntry
 
-    expect(loadingEntry).toMatchObject({ loaded: false, phase: 'loading' })
+    expect(loadingEntry).toMatchObject({ loaded: false, status: 'loading' })
     expect(loadingEntry.context).toMatchObject({
       conversationId: 'sidebar-id',
       title: 'Known conversation',
@@ -120,17 +361,42 @@ describe('ConversationChatRegistry', () => {
     await open
   })
 
+  it('shares a pending history load when automatic restoration and a sidebar click target the same conversation', async () => {
+    const { registry } = registryFixture()
+    const pending = deferred<SidebarConversationOpenResult>()
+    const automaticRestore = vi.fn(() => pending.promise)
+    const sidebarOpen = vi.fn(async () => openResult('sidebar-id'))
+
+    const restored = registry.openConversation('sidebar-id', automaticRestore)
+    const clicked = registry.openConversation('sidebar-id', sidebarOpen)
+
+    expect(automaticRestore).toHaveBeenCalledOnce()
+    expect(sidebarOpen).not.toHaveBeenCalled()
+    expect(registry.getSnapshot().activeEntry).toMatchObject({
+      localId: 'sidebar-id',
+      loaded: false,
+      status: 'loading'
+    })
+
+    pending.resolve(openResult('sidebar-id'))
+    const [restoredEntry, clickedEntry] = await Promise.all([restored, clicked])
+
+    expect(clickedEntry).toBe(restoredEntry)
+    expect(restoredEntry).toMatchObject({ loaded: true, status: 'ready' })
+    expect(restoredEntry.messages[0]?.renderId).toBe('message:message-sidebar-id')
+  })
+
   it('does not let a pending history load overwrite a live thread-bound entry', async () => {
     const { callbacks, registry } = registryFixture()
     const liveEntry = registry.getSnapshot().activeEntry
-    liveEntry.chat.messages = [
+    liveEntry.controller.replaceMessages([
       { id: 'live-message', role: 'assistant', parts: [{ type: 'text', text: 'live' }] }
-    ]
+    ])
     await liveEntry.transport.sendMessages({
-      chatId: liveEntry.chat.id,
+      chatId: liveEntry.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
-      messages: liveEntry.chat.messages,
+      messages: [],
       abortSignal: undefined
     })
 
@@ -139,13 +405,13 @@ describe('ConversationChatRegistry', () => {
     const placeholder = registry.getSnapshot().activeEntry
     expect(placeholder.localId).toBe('sidebar-id')
 
-    callbacks.get(liveEntry.chat.id)?.onThreadBound('thread-sidebar-id')
+    callbacks.get(liveEntry.controller.id)?.onThreadBound('thread-sidebar-id')
 
     pending.resolve(openResult('sidebar-id'))
     const openedEntry = await open
 
     expect(openedEntry).toBe(liveEntry)
-    expect(liveEntry.chat.messages[0]?.id).toBe('live-message')
+    expect(liveEntry.messages[0]?.renderId).toBe('message:live-message')
     expect(registry.getSnapshot().entries).not.toContainEqual(
       expect.objectContaining({ localId: 'sidebar-id' })
     )
@@ -162,14 +428,14 @@ describe('ConversationChatRegistry', () => {
   it('merges a loaded sidebar placeholder into the live entry when thread binding arrives late', async () => {
     const { callbacks, registry } = registryFixture()
     const liveEntry = registry.getSnapshot().activeEntry
-    liveEntry.chat.messages = [
+    liveEntry.controller.replaceMessages([
       { id: 'live-message', role: 'user', parts: [{ type: 'text', text: 'live' }] }
-    ]
+    ])
     await liveEntry.transport.sendMessages({
-      chatId: liveEntry.chat.id,
+      chatId: liveEntry.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
-      messages: liveEntry.chat.messages,
+      messages: [],
       abortSignal: undefined
     })
 
@@ -181,13 +447,13 @@ describe('ConversationChatRegistry', () => {
     }))
     expect(placeholder).not.toBe(liveEntry)
 
-    callbacks.get(liveEntry.chat.id)?.onThreadBound('thread-sidebar-id')
+    callbacks.get(liveEntry.controller.id)?.onThreadBound('thread-sidebar-id')
 
     expect(registry.resolve('thread-sidebar-id')).toBe(liveEntry)
     expect(registry.resolve('sidebar-id')).toBe(liveEntry)
     expect(registry.getSnapshot().activeEntry).toBe(liveEntry)
     expect(registry.getSnapshot().entries).toEqual([liveEntry])
-    expect(liveEntry.chat.messages[0]?.id).toBe('live-message')
+    expect(liveEntry.messages[0]?.renderId).toBe('message:live-message')
     expect(liveEntry.context).toMatchObject({
       conversationId: 'sidebar-id',
       threadId: 'thread-sidebar-id',
@@ -213,14 +479,14 @@ describe('ConversationChatRegistry', () => {
     })
     const failedEntry = registry.resolve('retry-me')
     expect(failedOpenResult).toBe(failedEntry)
-    expect(failedEntry).toMatchObject({ loaded: false, phase: 'error' })
+    expect(failedEntry).toMatchObject({ loaded: false, status: 'error' })
 
     const retriedEntry = await registry.openConversation('retry-me', async () =>
       openResult('retry-me')
     )
 
     expect(retriedEntry).toBe(failedEntry)
-    expect(retriedEntry).toMatchObject({ loaded: true, phase: 'ready' })
+    expect(retriedEntry).toMatchObject({ loaded: true, status: 'ready' })
     expect(retriedEntry.context.threadId).toBe('thread-retry-me')
   })
 
@@ -251,15 +517,37 @@ describe('ConversationChatRegistry', () => {
   it('binds a thread created after abort back to its origin entry', async () => {
     const { callbacks, registry } = registryFixture()
     const originEntry = registry.getSnapshot().activeEntry
-    await originEntry.transport.sendMessages({
-      chatId: originEntry.chat.id,
-      trigger: 'submit-message',
-      messageId: undefined,
-      messages: [],
-      abortSignal: undefined
+    const send = originEntry.controller.sendMessage({
+      id: 'aborted-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'abort this turn' }]
     })
-    callbacks.get(originEntry.chat.id)?.onAbort()
-    expect(originEntry.phase).toBe('ready')
+    await vi.waitFor(() => expect(callbacks.get(originEntry.controller.id)).toBeDefined())
+    callbacks.get(originEntry.controller.id)?.onTurnLifecycle?.({
+      type: 'turn-started',
+      threadId: 'thread-aborted',
+      turnId: 'turn-aborted',
+      sequence: 1
+    })
+    callbacks.get(originEntry.controller.id)?.onTurnLifecycle?.({
+      type: 'turn-completed',
+      threadId: 'thread-aborted',
+      turnId: 'turn-aborted',
+      sequence: 2,
+      outcome: 'interrupted'
+    })
+    callbacks.get(originEntry.controller.id)?.onAbort()
+    await send
+    expect(originEntry.status).toBe('ready')
+    expect(originEntry.error).toBeUndefined()
+    expect(originEntry.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      metadata: {
+        codexTurn: {
+          status: 'interrupted'
+        }
+      }
+    })
 
     registry.applyConversationMetadata([
       {
@@ -282,31 +570,368 @@ describe('ConversationChatRegistry', () => {
     expect(load).not.toHaveBeenCalled()
   })
 
-  it('tracks submitted, background unread, and entry-scoped errors independently', async () => {
+  it('F15 tracks submitted, background unread, and entry-scoped errors independently', async () => {
     const { callbacks, registry } = registryFixture()
     const entryA = registry.getSnapshot().activeEntry
-    await entryA.transport.sendMessages({
-      chatId: entryA.chat.id,
-      trigger: 'submit-message',
-      messageId: undefined,
-      messages: [],
-      abortSignal: undefined
+    const send = entryA.controller.sendMessage({
+      id: 'failing-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'fail this turn' }]
     })
-    expect(entryA.phase).toBe('submitted')
+    void send.catch(() => undefined)
+    await vi.waitFor(() => expect(callbacks.get(entryA.controller.id)).toBeDefined())
+    expect(entryA.status).toBe('submitted')
 
     const entryB = registry.startNewConversation()
-    callbacks.get(entryA.chat.id)?.onChunk({ type: 'text-start', id: 'text-a' })
-    expect(entryA.phase).toBe('streaming')
+    callbacks.get(entryA.controller.id)?.onChunk({ type: 'text-start', id: 'text-a' })
+    expect(entryA.status).toBe('streaming')
     expect(entryA.unread).toBe(true)
     expect(entryB.unread).toBe(false)
 
-    callbacks.get(entryA.chat.id)?.onError('A failed')
-    expect(entryA.phase).toBe('error')
+    callbacks.get(entryA.controller.id)?.onError('A failed')
+    await expect(send).rejects.toThrow('A failed')
+    expect(entryA.status).toBe('error')
     expect(entryA.error?.message).toBe('A failed')
-    expect(entryB.phase).toBe('ready')
+    expect(entryA.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      metadata: {
+        codexTurn: {
+          status: 'failed',
+          error: { message: 'A failed' }
+        }
+      }
+    })
+    expect(entryB.status).toBe('ready')
 
     await registry.openConversation(entryA.localId, async () => openResult('unused'))
     expect(entryA.unread).toBe(false)
+    await assertPlanEvidence(['F15'], uiAssertionIds, () => {
+      expect(entryA.status).toBe('error')
+      expect(entryA.error?.message).toBe('A failed')
+      expect(entryA.unread).toBe(false)
+      expect(entryB.status).toBe('ready')
+    })
+  })
+
+  it('A13 preserves a pending Steer while navigating away from and back to its running conversation', async () => {
+    const { bridge, callbacks, registry } = registryFixture()
+    const entryA = registry.getSnapshot().activeEntry
+    const send = entryA.controller.sendMessage({
+      id: 'a13-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'keep this response visible' }]
+    })
+    await vi.waitFor(() => expect(callbacks.get(entryA.controller.id)).toBeDefined())
+    const streamA = callbacks.get(entryA.controller.id)
+    streamA?.onChunk({ type: 'start', messageId: 'a13-assistant' })
+    streamA?.onChunk({ type: 'text-start', id: 'a13-text' })
+    streamA?.onChunk({ type: 'text-delta', id: 'a13-text', delta: 'visible before navigation' })
+    await vi.waitFor(() =>
+      expect(entryA.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            parts: [expect.objectContaining({ type: 'text', text: 'visible before navigation' })]
+          })
+        ])
+      )
+    )
+
+    entryA.controller.stageSteeringMessage(
+      {
+        id: 'a13-steer',
+        role: 'user',
+        parts: [{ type: 'text', text: 'continue with this correction' }]
+      },
+      { clientUserMessageId: 'a13-steer', targetTurnId: entryA.controller.getActiveTurnId()! }
+    )
+    const entryB = registry.startNewConversation()
+    expect(registry.getSnapshot().activeEntry).toBe(entryB)
+    streamA?.onChunk({ type: 'text-delta', id: 'a13-text', delta: ' while away' })
+    await vi.waitFor(() => expect(entryA.unread).toBe(true))
+
+    const reload = vi.fn(async () => openResult('should-not-reload'))
+    await expect(registry.openConversation(entryA.localId, reload)).resolves.toBe(entryA)
+    expect(reload).not.toHaveBeenCalled()
+    expect(registry.getSnapshot().activeEntry).toBe(entryA)
+    expect(entryA.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          parts: [
+            expect.objectContaining({
+              type: 'text',
+              text: expect.stringContaining('visible before navigation')
+            })
+          ]
+        }),
+        expect.objectContaining({
+          renderId: 'steer:a13-steer',
+          targetTurnId: entryA.controller.getActiveTurnId(),
+          status: 'pending'
+        })
+      ])
+    )
+    expect(vi.mocked(bridge.startChatStream)).toHaveBeenCalledTimes(1)
+    await assertPlanEvidence(['A13'], steerAssertionIds, () => {
+      expect(vi.mocked(bridge.startChatStream)).toHaveBeenCalledTimes(1)
+      expect(registry.getSnapshot().activeEntry).toBe(entryA)
+      expect(entryA.messages).toEqual(
+        expect.arrayContaining([expect.objectContaining({ renderId: 'steer:a13-steer', status: 'pending' })])
+      )
+    })
+
+    streamA?.onChunk({ type: 'finish' })
+    streamA?.onFinish()
+    await send
+  })
+
+  it('A14 keeps concurrent Steers, transports, and transcript output isolated per conversation', async () => {
+    const { bridge, callbacks, registry } = registryFixture()
+    const entryA = registry.getSnapshot().activeEntry
+    const sendA = entryA.controller.sendMessage({
+      id: 'a14-user-a',
+      role: 'user',
+      parts: [{ type: 'text', text: 'conversation A' }]
+    })
+    await vi.waitFor(() => expect(callbacks.get(entryA.controller.id)).toBeDefined())
+    const streamA = callbacks.get(entryA.controller.id)
+    streamA?.onChunk({ type: 'start', messageId: 'a14-assistant-a' })
+    streamA?.onChunk({ type: 'text-start', id: 'a14-text-a' })
+    streamA?.onChunk({ type: 'text-delta', id: 'a14-text-a', delta: 'answer A' })
+    await vi.waitFor(() =>
+      expect(entryA.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            parts: [expect.objectContaining({ type: 'text', text: 'answer A' })]
+          })
+        ])
+      )
+    )
+
+    const entryB = registry.startNewConversation()
+    const sendB = entryB.controller.sendMessage({
+      id: 'a14-user-b',
+      role: 'user',
+      parts: [{ type: 'text', text: 'conversation B' }]
+    })
+    await vi.waitFor(() => expect(callbacks.get(entryB.controller.id)).toBeDefined())
+    const streamB = callbacks.get(entryB.controller.id)
+    streamB?.onChunk({ type: 'start', messageId: 'a14-assistant-b' })
+    streamB?.onChunk({ type: 'text-start', id: 'a14-text-b' })
+    streamB?.onChunk({ type: 'text-delta', id: 'a14-text-b', delta: 'answer B' })
+    await vi.waitFor(() =>
+      expect(entryB.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            parts: [expect.objectContaining({ type: 'text', text: 'answer B' })]
+          })
+        ])
+      )
+    )
+
+    entryA.controller.stageSteeringMessage(
+      { id: 'a14-steer-a', role: 'user', parts: [{ type: 'text', text: 'steer A' }] },
+      { clientUserMessageId: 'a14-steer-a', targetTurnId: entryA.controller.getActiveTurnId()! }
+    )
+    entryB.controller.stageSteeringMessage(
+      { id: 'a14-steer-b', role: 'user', parts: [{ type: 'text', text: 'steer B' }] },
+      { clientUserMessageId: 'a14-steer-b', targetTurnId: entryB.controller.getActiveTurnId()! }
+    )
+
+    const startedChatIds = vi
+      .mocked(bridge.startChatStream)
+      .mock.calls.map(([request]) => request.chatId)
+    expect(startedChatIds).toEqual([entryA.controller.id, entryB.controller.id])
+    expect(entryA.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          parts: [expect.objectContaining({ type: 'text', text: 'answer A' })]
+        }),
+        expect.objectContaining({ renderId: 'steer:a14-steer-a' })
+      ])
+    )
+    expect(entryA.messages.map((message) => message.renderId)).not.toContain('steer:a14-steer-b')
+    expect(entryB.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          parts: [expect.objectContaining({ type: 'text', text: 'answer B' })]
+        }),
+        expect.objectContaining({ renderId: 'steer:a14-steer-b' })
+      ])
+    )
+    expect(entryB.messages.map((message) => message.renderId)).not.toContain('steer:a14-steer-a')
+
+    streamA?.onChunk({ type: 'finish' })
+    streamA?.onFinish()
+    streamB?.onChunk({ type: 'finish' })
+    streamB?.onFinish()
+    await Promise.all([sendA, sendB])
+    await assertPlanEvidence(['A14'], steerAssertionIds, () => {
+      expect(vi.mocked(bridge.startChatStream)).toHaveBeenCalledTimes(2)
+      expect(entryA.messages.map((message) => message.renderId)).not.toContain('steer:a14-steer-b')
+      expect(entryB.messages.map((message) => message.renderId)).not.toContain('steer:a14-steer-a')
+    })
+  })
+
+  it('projects one real stream into assistant, Steer user, and assistant segments', async () => {
+    const { callbacks, registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    const send = entry.controller.sendMessage({
+      id: 'initial-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'start' }]
+    })
+
+    await vi.waitFor(() => expect(callbacks.get(entry.controller.id)).toBeDefined())
+    const stream = callbacks.get(entry.controller.id)
+    stream?.onThreadBound('thread-real')
+    stream?.onTurnLifecycle?.({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-real',
+      turnId: 'turn-real'
+    })
+    stream?.onTurnLifecycle?.({
+      type: 'item-started',
+      sequence: 2,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      itemId: 'assistant-before-item',
+      itemType: 'agentMessage'
+    })
+    stream?.onChunk({ type: 'start', messageId: 'active-assistant' })
+    stream?.onChunk({
+      type: 'text-start',
+      id: 'text-before',
+      providerMetadata: codexMetadata('turn-real', 'assistant-before-item')
+    })
+    stream?.onChunk({
+      type: 'text-delta',
+      id: 'text-before',
+      delta: 'before steer',
+      providerMetadata: codexMetadata('turn-real', 'assistant-before-item')
+    })
+    await vi.waitFor(() => {
+      expect(entry.messages.at(-1)?.renderId).toBe(
+        'message:assistant:turn-real:assistant-before-item'
+      )
+      expect(entry.messages.at(-1)?.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: 'before steer' })
+      ])
+    })
+
+    entry.controller.stageSteeringMessage(
+      {
+        id: 'steer-message',
+        role: 'user',
+        parts: [{ type: 'text', text: 'new direction' }]
+      },
+      { clientUserMessageId: 'steer-message', targetTurnId: 'turn-real' }
+    )
+    expect(entry.messages.map((message) => message.renderId)).toEqual([
+      'message:initial-user',
+      'message:assistant:turn-real:assistant-before-item',
+      'steer:steer-message',
+      'message:assistant:local-turn-1:after-steer-message'
+    ])
+    expect(entry.messages[2]).toMatchObject({
+      kind: 'steering-user-message',
+      status: 'pending',
+      targetTurnId: 'turn-real'
+    })
+
+    stream?.onTurnLifecycle?.({
+      type: 'item-started',
+      sequence: 3,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      itemId: 'steer-source-item',
+      itemType: 'userMessage',
+      clientUserMessageId: 'steer-message'
+    })
+    stream?.onTurnLifecycle?.({
+      type: 'item-completed',
+      sequence: 4,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      itemId: 'steer-source-item',
+      itemType: 'userMessage',
+      clientUserMessageId: 'steer-message'
+    })
+    stream?.onTurnLifecycle?.({
+      type: 'item-started',
+      sequence: 5,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      itemId: 'assistant-after-item',
+      itemType: 'agentMessage'
+    })
+    stream?.onChunk({
+      type: 'text-end',
+      id: 'text-before',
+      providerMetadata: codexMetadata('turn-real', 'assistant-before-item')
+    })
+    stream?.onChunk({
+      type: 'text-start',
+      id: 'text-after',
+      providerMetadata: codexMetadata('turn-real', 'assistant-after-item')
+    })
+    stream?.onChunk({
+      type: 'text-delta',
+      id: 'text-after',
+      delta: 'after steer',
+      providerMetadata: codexMetadata('turn-real', 'assistant-after-item')
+    })
+    await vi.waitFor(() => {
+      expect(entry.messages.map((message) => message.renderId)).toEqual([
+        'message:initial-user',
+        'message:assistant:turn-real:assistant-before-item',
+        'steer:steer-message',
+        'message:assistant:turn-real:assistant-after-item'
+      ])
+    })
+    expect(entry.messages[2]).toMatchObject({
+      status: 'accepted',
+      sourceItemId: 'steer-source-item'
+    })
+
+    stream?.onChunk({
+      type: 'text-end',
+      id: 'text-after',
+      providerMetadata: codexMetadata('turn-real', 'assistant-after-item')
+    })
+    stream?.onTurnLifecycle?.({
+      type: 'turn-completed',
+      sequence: 6,
+      threadId: 'thread-real',
+      turnId: 'turn-real',
+      outcome: 'completed'
+    })
+    stream?.onChunk({ type: 'finish' })
+    stream?.onFinish('thread-real')
+    await send
+
+    expect(entry.status).toBe('ready')
+    expect(entry.messages.map((message) => message.renderId)).toEqual([
+      'message:initial-user',
+      'message:assistant:turn-real:assistant-before-item',
+      'steer:steer-message',
+      'message:assistant:turn-real:assistant-after-item'
+    ])
+    expect(entry.messages[1]?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'before steer' })
+    ])
+    expect(entry.messages[3]?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'after steer' })
+    ])
+    expect(new Set(entry.messages.map((message) => message.renderId)).size).toBe(
+      entry.messages.length
+    )
   })
 
   it('keeps a draft until the stream is accepted and preserves it on early failure', async () => {
@@ -322,7 +947,7 @@ describe('ConversationChatRegistry', () => {
       }
     ])
     await entry.transport.sendMessages({
-      chatId: entry.chat.id,
+      chatId: entry.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
       messages: [],
@@ -330,18 +955,18 @@ describe('ConversationChatRegistry', () => {
     })
 
     expect(entry.draft).toBe('keep me')
-    callbacks.get(entry.chat.id)?.onError('attachment validation failed')
+    callbacks.get(entry.controller.id)?.onError('attachment validation failed')
     expect(entry.draft).toBe('keep me')
     expect(entry.draftAttachments).toHaveLength(1)
 
     await entry.transport.sendMessages({
-      chatId: entry.chat.id,
+      chatId: entry.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
       messages: [],
       abortSignal: undefined
     })
-    callbacks.get(entry.chat.id)?.onThreadBound('thread-real')
+    callbacks.get(entry.controller.id)?.onThreadBound('thread-real')
     expect(entry.draft).toBe('')
     expect(entry.draftAttachments).toEqual([])
   })
@@ -354,14 +979,14 @@ describe('ConversationChatRegistry', () => {
     registry.setSelectedModel(entryB, 'model-b')
 
     await entryA.transport.sendMessages({
-      chatId: entryA.chat.id,
+      chatId: entryA.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
       messages: [],
       abortSignal: undefined
     })
     await entryB.transport.sendMessages({
-      chatId: entryB.chat.id,
+      chatId: entryB.controller.id,
       trigger: 'submit-message',
       messageId: undefined,
       messages: [],
@@ -369,23 +994,34 @@ describe('ConversationChatRegistry', () => {
     })
 
     const requests = vi.mocked(bridge.startChatStream).mock.calls.map(([request]) => request)
-    expect(requests.find((request) => request.chatId === entryA.chat.id)?.modelId).toBe('model-a')
-    expect(requests.find((request) => request.chatId === entryB.chat.id)?.modelId).toBe('model-b')
+    expect(requests.find((request) => request.chatId === entryA.controller.id)?.modelId).toBe(
+      'model-a'
+    )
+    expect(requests.find((request) => request.chatId === entryB.controller.id)?.modelId).toBe(
+      'model-b'
+    )
   })
 
-  it('stops each running Chat when the registry is destroyed', async () => {
+  it('detaches each running Chat without interrupting its canonical turn on registry teardown', async () => {
     const { bridge, registry } = registryFixture()
     const entryA = registry.getSnapshot().activeEntry
-    void entryA.chat.sendMessage({ text: 'A' })
+    void entryA.controller.sendMessage({
+      id: 'message-a',
+      role: 'user',
+      parts: [{ type: 'text', text: 'A' }]
+    })
     const entryB = registry.startNewConversation()
-    void entryB.chat.sendMessage({ text: 'B' })
+    void entryB.controller.sendMessage({
+      id: 'message-b',
+      role: 'user',
+      parts: [{ type: 'text', text: 'B' }]
+    })
     await flushMicrotasks()
 
     registry.destroy()
     await flushMicrotasks()
 
-    expect(bridge.abortChatStream).toHaveBeenCalledWith(`stream-${entryA.chat.id}`)
-    expect(bridge.abortChatStream).toHaveBeenCalledWith(`stream-${entryB.chat.id}`)
+    expect(bridge.abortChatStream).not.toHaveBeenCalled()
   })
 })
 
@@ -418,4 +1054,16 @@ function deferred<T>(): {
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+function codexMetadata(
+  turnId: string,
+  sourceItemId: string
+): Record<string, Record<string, string>> {
+  return {
+    '@janole/ai-sdk-provider-codex-asp': {
+      turnId,
+      sourceItemId
+    }
+  }
 }

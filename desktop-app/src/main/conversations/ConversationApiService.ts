@@ -32,6 +32,7 @@ export type ConversationProjectStoreLike = {
 export type ConversationApiServiceOptions = {
   threadClient: ConversationThreadClientLike
   projectStore: ConversationProjectStoreLike
+  waitForConversationSettlement?: (conversationId: string) => Promise<void>
 }
 
 export type ObservedStartedThread = {
@@ -50,7 +51,6 @@ const defaultPreferences: SidebarPreferences = {
   collapsedSectionIds: [],
   collapsedGroupIds: []
 }
-
 const emptyProjectState: ProjectState = {
   workspaceRootOptions: [],
   localProjects: {},
@@ -190,6 +190,10 @@ export class ConversationApiService {
   async openConversation(
     input: SidebarConversationActionPayload
   ): Promise<SidebarConversationOpenResult> {
+    // A page reload can reconnect while the main process still owns a live
+    // turn.  Reading history before that turn settles produces a valid but
+    // incomplete snapshot that the renderer has no stream to complete.
+    await this.options.waitForConversationSettlement?.(input.conversationId)
     const [projectState, thread] = await Promise.all([
       this.options.projectStore.getState(),
       this.options.threadClient.readThreadWithFullTurns(input.conversationId)
@@ -201,6 +205,7 @@ export class ConversationApiService {
       threadId: thread.id,
       title: thread.title,
       messages,
+      historyRevision: thread.updatedAt ?? null,
       projectAssignment: resolveAssignment(projectState, thread),
       cwd: thread.cwd
     }

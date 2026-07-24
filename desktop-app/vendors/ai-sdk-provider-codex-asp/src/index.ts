@@ -9,6 +9,9 @@ export type {
 export { ApprovalsDispatcher } from "./approvals";
 export type { AppServerClientSettings } from "./client/app-server-client";
 export { AppServerClient, JsonRpcError } from "./client/app-server-client";
+export type { CodexAppServerConnectionSettings } from "./client/app-server-connection";
+export { CodexAppServerConnection } from "./client/app-server-connection";
+export type { CodexAppServerConnectionDiagnostics } from "./client/connection-broker";
 export type {
     CodexTransport,
     CodexTransportEventMap,
@@ -81,6 +84,7 @@ export type {
     CodexLanguageModelSettings,
     CodexModelConfig,
     CodexThreadDefaults,
+    CodexTurnLifecycleEvent,
 } from "./model";
 export { CodexLanguageModel } from "./model";
 export { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
@@ -104,6 +108,7 @@ export {
     toolNameForItem,
     toolResultForItem,
     userInputText,
+    userMessageCompareKey,
     webSearchHasContent,
 } from "./protocol/shared-item-extractors";
 export type {

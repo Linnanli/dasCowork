@@ -58,6 +58,27 @@ function fuzzyFile(path: string)
 
 describe("CodexContextCatalogClient", () =>
 {
+    it("leases and releases a client for each catalog operation when sharing a host connection", async () =>
+    {
+        const clients: CatalogMockClient[] = [];
+        const client = new CodexContextCatalogClient({
+            connectionLifecycle: "per-operation",
+            createClient: () =>
+            {
+                const next = new CatalogMockClient(() => ({ data: [], nextCursor: null }));
+                clients.push(next);
+                return next;
+            },
+        });
+
+        await Promise.all([client.listApps(), client.listApps()]);
+
+        expect(clients).toHaveLength(2);
+        expect(clients.map((item) => item.connectCount)).toEqual([1, 1]);
+        expect(clients.map((item) => item.disconnectCount)).toEqual([1, 1]);
+        await client.shutdown();
+    });
+
     it("normalizes enabled skills and installed local plugins", async () =>
     {
         const mock = new CatalogMockClient((method) =>

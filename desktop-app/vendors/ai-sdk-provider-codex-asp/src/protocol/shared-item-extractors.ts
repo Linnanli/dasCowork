@@ -256,6 +256,47 @@ export function userInputText(value: readonly CodexTurnInputItem[]): string
     return restoreFilesMentionedContext(text).text;
 }
 
+export function userMessageCompareKey(
+    item: Extract<CodexRenderableThreadItem, { type: "userMessage" }>,
+): string
+{
+    const text = userInputText(item.content).trim();
+    const attachments = item.content.flatMap<{
+        type: "image";
+        url: string;
+        detail?: string;
+    } | {
+        type: "localImage";
+        path: string;
+        detail?: string;
+    }>((input) =>
+    {
+        switch (input.type)
+        {
+            case "image":
+                return [{
+                    type: input.type,
+                    url: input.url,
+                    ...(input.detail ? { detail: input.detail } : {}),
+                }];
+            case "localImage":
+                return [{
+                    type: input.type,
+                    path: input.path,
+                    ...(input.detail ? { detail: input.detail } : {}),
+                }];
+            case "text":
+            case "skill":
+            case "mention":
+                return [];
+            default:
+                return assertNever(input);
+        }
+    });
+
+    return JSON.stringify({ text, attachments });
+}
+
 export function reasoningTextForItem(item: Extract<ThreadItem, { type: "plan" | "reasoning" }>): string
 {
     if (item.type === "plan")

@@ -1,7 +1,35 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../../scripts/lib/test-plan-assertions.mjs'
+
 import { ElectronIpcChatTransport } from './ElectronIpcChatTransport'
 import type { DesktopCodexChatApi } from '../../../shared/codexIpcApi'
+
+const terminalAssertionIds = [
+  '保留可见内容并显示单一终态',
+  'terminal 只结算一次且 Composer 恢复',
+  '无自动重试、额外请求或迟到事件应用'
+]
+const securityAssertionIds = [
+  '跨对话与信任边界隔离',
+  '资源、并发和终态无残留',
+  '诊断可关联而不泄露密钥'
+]
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+async function assertPlanEvidence(
+  scenarioIds: readonly string[],
+  assertionIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of assertionIds) {
+    await record(assertionId, assertion)
+  }
+}
 
 describe('ElectronIpcChatTransport', () => {
   it('returns a stream that yields chunks from the desktop bridge', async () => {
@@ -66,7 +94,29 @@ describe('ElectronIpcChatTransport', () => {
     expect(bridge.abortChatStream).toHaveBeenCalledWith('stream-1')
   })
 
-  it('binds project selection and strips renderer execution hints from request body', async () => {
+  it('C22 keeps the app-server turn running when its readable consumer cancels', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    const stream = await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    await stream.cancel()
+
+    expect(bridge.abortChatStream).not.toHaveBeenCalled()
+  })
+
+  it('G01 strips forged renderer execution hints from the request body', async () => {
     const bridge: DesktopCodexChatApi = {
       startChatStream: vi.fn(() => 'stream-1'),
       abortChatStream: vi.fn()
@@ -103,9 +153,14 @@ describe('ElectronIpcChatTransport', () => {
     const request = vi.mocked(bridge.startChatStream).mock.calls[0][0]
     expect(request.body).not.toHaveProperty('conversationId')
     expect(request.body).not.toHaveProperty('threadId')
+    await assertPlanEvidence(['G01'], securityAssertionIds, () => {
+      expect(request.body).not.toHaveProperty('conversationId')
+      expect(request.body).not.toHaveProperty('threadId')
+      expect(request.body).toEqual({ projectSelection: { projectKind: 'path', path: '/repo' } })
+    })
   })
 
-  it('binds active conversation identity from the trusted runtime context', async () => {
+  it('G01 binds conversation identity from the trusted runtime context', async () => {
     const bridge: DesktopCodexChatApi = {
       startChatStream: vi.fn(() => 'stream-1'),
       abortChatStream: vi.fn()
@@ -183,7 +238,7 @@ describe('ElectronIpcChatTransport', () => {
     )
   })
 
-  it('ignores bridge chunks after the readable stream has finished', async () => {
+  it('C24 ignores bridge chunks after the readable stream has finished', async () => {
     let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
     const bridge: DesktopCodexChatApi = {
       startChatStream: vi.fn((_request, nextCallbacks) => {
@@ -207,9 +262,12 @@ describe('ElectronIpcChatTransport', () => {
     callbacks?.onFinish()
 
     expect(() => callbacks?.onChunk({ type: 'text-start', id: 'late-text' })).not.toThrow()
+    await assertPlanEvidence(['C24'], terminalAssertionIds, () =>
+      expect(() => callbacks?.onChunk({ type: 'text-start', id: 'late-text' })).not.toThrow()
+    )
   })
 
-  it('ignores bridge finish events after the readable stream has errored', async () => {
+  it('C24 ignores bridge finish events after the readable stream has errored', async () => {
     let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
     const bridge: DesktopCodexChatApi = {
       startChatStream: vi.fn((_request, nextCallbacks) => {
@@ -233,6 +291,9 @@ describe('ElectronIpcChatTransport', () => {
     callbacks?.onError('boom')
 
     expect(() => callbacks?.onFinish()).not.toThrow()
+    await assertPlanEvidence(['C24'], terminalAssertionIds, () =>
+      expect(() => callbacks?.onFinish()).not.toThrow()
+    )
   })
 
   it('calls onStreamFinished with stream-scoped context when the stream finishes', async () => {
@@ -309,7 +370,7 @@ describe('ElectronIpcChatTransport', () => {
     })
   })
 
-  it('does not call onStreamFinished for a late finish after an error', async () => {
+  it('C24 does not call onStreamFinished for a late finish after an error', async () => {
     let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
     const bridge: DesktopCodexChatApi = {
       startChatStream: vi.fn((_request, nextCallbacks) => {
@@ -335,6 +396,66 @@ describe('ElectronIpcChatTransport', () => {
     callbacks?.onError('boom')
     callbacks?.onFinish('thread-real')
 
+    expect(onStreamFinished).not.toHaveBeenCalled()
+    await assertPlanEvidence(['C24'], terminalAssertionIds, () =>
+      expect(onStreamFinished).not.toHaveBeenCalled()
+    )
+  })
+
+  it('B10/C24/G11 ignores late chunk, lifecycle, binding, finish, abort, and error callbacks after the first terminal', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamAccepted = vi.fn()
+    const onThreadBound = vi.fn()
+    const onTurnLifecycle = vi.fn()
+    const onStreamAborted = vi.fn()
+    const onStreamError = vi.fn()
+    const onStreamFinished = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamAccepted,
+      onThreadBound,
+      onTurnLifecycle,
+      onStreamAborted,
+      onStreamError,
+      onStreamFinished
+    })
+
+    const stream = await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks?.onError('first terminal')
+    callbacks?.onChunk({ type: 'text-start', id: 'late-text' })
+    callbacks?.onTurnLifecycle?.({
+      type: 'turn-completed',
+      sequence: 1,
+      threadId: 'thread-late',
+      turnId: 'turn-late',
+      outcome: 'completed'
+    })
+    callbacks?.onThreadBound('thread-late')
+    callbacks?.onFinish('thread-late')
+    callbacks?.onAbort()
+    callbacks?.onError('second terminal')
+
+    await expect(stream.getReader().read()).rejects.toThrow('first terminal')
+    expect(onStreamError).toHaveBeenCalledOnce()
+    expect(onStreamError).toHaveBeenCalledWith('first terminal')
+    expect(onStreamAccepted).not.toHaveBeenCalled()
+    expect(onThreadBound).not.toHaveBeenCalled()
+    expect(onTurnLifecycle).not.toHaveBeenCalled()
+    expect(onStreamAborted).not.toHaveBeenCalled()
     expect(onStreamFinished).not.toHaveBeenCalled()
   })
 })

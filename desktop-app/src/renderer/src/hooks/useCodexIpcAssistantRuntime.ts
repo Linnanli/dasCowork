@@ -105,10 +105,14 @@ export function useCodexIpcAssistantRuntime(
         return [...current, request]
       })
     })
+    const removeSettledApproval = window.desktopApp.codex.onApprovalSettled?.((requestId) => {
+      setServerRequests((current) => current.filter((item) => item.id !== requestId))
+    })
 
     return () => {
       cancelled = true
       removeApproval()
+      removeSettledApproval?.()
     }
   }, [registry])
 
@@ -156,7 +160,6 @@ export function useCodexIpcAssistantRuntime(
       registry.setDraftAttachments(activeEntry, attachments),
     [activeEntry, registry]
   )
-
   const setActiveScroll = useCallback(
     (scroll: ConversationScrollSnapshot) => registry.setScroll(activeEntry, scroll),
     [activeEntry, registry]
@@ -185,7 +188,7 @@ export function useCodexIpcAssistantRuntime(
         active: entry === activeEntry,
         attention,
         running: entry
-          ? entry.phase === 'submitted' || entry.phase === 'streaming'
+          ? entry.status === 'submitted' || entry.status === 'streaming'
           : Boolean(conversation.running),
         unread: entry ? entry.unread : Boolean(conversation.unread)
       }

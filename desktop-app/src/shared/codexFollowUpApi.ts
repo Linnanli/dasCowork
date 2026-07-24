@@ -30,6 +30,7 @@ export const followUpStatusSchema = z.enum([
   'editing',
   'steering',
   'sending',
+  'accepted',
   'paused-interrupted',
   'paused-failed',
   'paused-recovery-uncertain'
@@ -327,6 +328,13 @@ export type PreparedFollowUpTurnStart = {
   message: MaterializedQueuedUserMessage
 }
 
+export type FollowUpSteerPendingAck = {
+  delivery: 'pending-ack'
+  clientUserMessageId: string
+  targetTurnId: string
+  state?: ConversationFollowUpState
+}
+
 export const followUpBeginEditResultSchema = z.object({
   state: conversationFollowUpStateSchema,
   message: materializedQueuedUserMessageSchema
@@ -371,7 +379,7 @@ export type DesktopCodexFollowUpApi = {
   setDefaultMode(mode: FollowUpMode): Promise<void>
   prepareNextTurn(conversationKey: string, itemId?: string): Promise<PreparedFollowUpTurnStart>
   materializeItem(conversationKey: string, itemId: string): Promise<MaterializedQueuedUserMessage>
-  steerItem(conversationKey: string, itemId: string): Promise<ConversationFollowUpState>
-  steerNext(conversationKey: string, itemId?: string): Promise<ConversationFollowUpState>
+  steerItem(conversationKey: string, itemId: string): Promise<FollowUpSteerPendingAck>
+  steerNext(conversationKey: string, itemId?: string): Promise<FollowUpSteerPendingAck>
   subscribe(listener: (event: FollowUpQueueChangeEvent) => void): () => void
 }

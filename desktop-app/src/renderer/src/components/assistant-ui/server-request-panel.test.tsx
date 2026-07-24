@@ -24,7 +24,7 @@ describe('ServerRequestPanel', () => {
     container.remove()
   })
 
-  it('renders every approval with its conversation source', () => {
+  it('D18/F20 renders every approval with a stable request id and conversation source', () => {
     act(() => {
       root.render(
         <ServerRequestPanel
@@ -38,7 +38,9 @@ describe('ServerRequestPanel', () => {
       )
     })
 
-    expect(container.querySelectorAll('article')).toHaveLength(2)
+    const cards = [...container.querySelectorAll('article')]
+    expect(cards).toHaveLength(2)
+    expect(cards.map((card) => card.getAttribute('data-request-id'))).toEqual(['a', 'b'])
     expect(container.textContent).toContain('Conversation A')
     expect(container.textContent).toContain('Unknown conversation')
   })

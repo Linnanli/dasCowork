@@ -4,6 +4,8 @@ import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import { createVitestPlanAssertionRecorder } from '../../../scripts/lib/test-plan-assertions.mjs'
+
 import {
   ConversationFollowUpQueueStore,
   createDefaultConversationFollowUpQueueStoreState,
@@ -11,7 +13,18 @@ import {
 } from './ConversationFollowUpQueueStore'
 import type { QueuedFollowUpItem } from '../../shared/codexFollowUpApi'
 
-function item(status: 'queued' | 'sending' | 'paused-failed' | 'editing'): QueuedFollowUpItem {
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+function item(
+  status:
+    | 'queued'
+    | 'sending'
+    | 'steering'
+    | 'accepted'
+    | 'paused-failed'
+    | 'paused-recovery-uncertain'
+    | 'editing'
+): QueuedFollowUpItem {
   return {
     id: 'message-1',
     conversationKey: 'conversation-1',
@@ -31,11 +44,11 @@ function item(status: 'queued' | 'sending' | 'paused-failed' | 'editing'): Queue
         workspaceRoots: ['/repo']
       }
     },
-    ...(status === 'sending'
+    ...(status === 'sending' || status === 'steering'
       ? {
           lease: {
             token: 'lease-1',
-            operation: 'turn-start' as const,
+            operation: status === 'sending' ? ('turn-start' as const) : ('turn-steer' as const),
             claimedAt: '2026-07-18T00:00:00.000Z',
             owner: 'runtime'
           }
@@ -53,7 +66,14 @@ function item(status: 'queued' | 'sending' | 'paused-failed' | 'editing'): Queue
 }
 
 function stateWith(
-  status: 'queued' | 'sending' | 'paused-failed' | 'editing'
+  status:
+    | 'queued'
+    | 'sending'
+    | 'steering'
+    | 'accepted'
+    | 'paused-failed'
+    | 'paused-recovery-uncertain'
+    | 'editing'
 ): ConversationFollowUpQueueStoreState {
   return {
     ...createDefaultConversationFollowUpQueueStoreState(),
@@ -69,7 +89,7 @@ function stateWith(
 }
 
 describe('ConversationFollowUpQueueStore', () => {
-  it('persists queue order, status, revision, and default mode', async () => {
+  it('E02/E23 persists queue order, status, revision, and default mode', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
     const filePath = join(directory, 'state.json')
 
@@ -87,7 +107,7 @@ describe('ConversationFollowUpQueueStore', () => {
     }
   })
 
-  it('migrates a durable v1 file to v2 without losing queued items', async () => {
+  it('E21 migrates a durable v1 file to v2 without losing queued items', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
     const filePath = join(directory, 'state.json')
     const legacyState = {
@@ -119,7 +139,7 @@ describe('ConversationFollowUpQueueStore', () => {
     }
   })
 
-  it('keeps an editing reservation durable across restart', async () => {
+  it('E02 keeps an editing reservation durable across restart', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
     const filePath = join(directory, 'state.json')
 
@@ -137,16 +157,77 @@ describe('ConversationFollowUpQueueStore', () => {
     }
   })
 
-  it('recovers an unconfirmed delivery as recovery-uncertain without retaining its lease', async () => {
-    const store = ConversationFollowUpQueueStore.inMemory(stateWith('sending'))
-    const recovered = (await store.getState()).conversations['conversation-1'].items[0]
+  it('E12 keeps an unclaimed queued follow-up sendable after an on-disk restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
+    const filePath = join(directory, 'state.json')
 
-    expect(recovered.status).toBe('paused-recovery-uncertain')
-    expect(recovered.pause?.kind).toBe('recovery-uncertain')
-    expect(recovered.lease).toBeUndefined()
+    try {
+      const store = ConversationFollowUpQueueStore.onDisk(filePath)
+      await store.setState(stateWith('queued'))
+
+      const recovered = await ConversationFollowUpQueueStore.onDisk(filePath).getState()
+      const item = recovered.conversations['conversation-1'].items[0]
+      await planAssert({
+        scenarioId: 'E12',
+        assertionId: '队列顺序、revision、lease 与消费状态正确',
+        assertion: () =>
+          expect(item).toMatchObject({
+            id: 'message-1',
+            status: 'queued'
+          })
+      })
+      await planAssert({
+        scenarioId: 'E12',
+        assertionId: '重启从持久化状态恢复',
+        assertion: () => expect(item?.lease).toBeUndefined()
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
-  it('serializes overlapping disk writes in invocation order', async () => {
+  it('preserves an accepted marker for startup reconciliation after an on-disk restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
+    const filePath = join(directory, 'state.json')
+
+    try {
+      const store = ConversationFollowUpQueueStore.onDisk(filePath)
+      await store.setState(stateWith('accepted'))
+
+      const recovered = await ConversationFollowUpQueueStore.onDisk(filePath).getState()
+      expect(recovered.conversations['conversation-1'].items).toMatchObject([
+        { id: 'message-1', status: 'accepted' }
+      ])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['sending', 'steering'] as const)(
+    'preserves an on-disk %s delivery for canonical history reconciliation',
+    async (status) => {
+      const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
+      const filePath = join(directory, 'state.json')
+      const state = stateWith(status === 'sending' ? 'sending' : 'steering')
+
+      try {
+        const store = ConversationFollowUpQueueStore.onDisk(filePath)
+        await store.setState(state)
+
+        const recovered = await ConversationFollowUpQueueStore.onDisk(filePath).getState()
+        const item = recovered.conversations['conversation-1'].items[0]
+        expect(item).toMatchObject({
+          id: 'message-1',
+          status,
+          lease: { token: 'lease-1' }
+        })
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('E23 serializes overlapping disk writes in invocation order', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-store-'))
     const filePath = join(directory, 'state.json')
     let releaseFirst = (): void => undefined
@@ -175,13 +256,32 @@ describe('ConversationFollowUpQueueStore', () => {
         (JSON.parse(await readFile(filePath, 'utf8')) as ConversationFollowUpQueueStoreState)
           .revision
       ).toBe(2)
+      await planAssert({
+        scenarioId: 'E23',
+        assertionId: '队列顺序、revision、lease 与消费状态正确',
+        assertion: () => expect(started).toEqual([1, 2])
+      })
+      await planAssert({
+        scenarioId: 'E23',
+        assertionId: '重启从持久化状态恢复',
+        assertion: async () =>
+          expect(
+            (JSON.parse(await readFile(filePath, 'utf8')) as ConversationFollowUpQueueStoreState)
+              .revision
+          ).toBe(2)
+      })
+      await planAssert({
+        scenarioId: 'E23',
+        assertionId: '不能重复 claim 或自动重发',
+        assertion: () => expect(started).toHaveLength(2)
+      })
     } finally {
       releaseFirst()
       await rm(directory, { recursive: true, force: true })
     }
   })
 
-  it('keeps the last durable in-memory state when a disk write fails', async () => {
+  it('E18 keeps the last durable in-memory state when a disk write fails', async () => {
     const writeJsonAtomically = vi
       .fn()
       .mockResolvedValueOnce(undefined)
@@ -198,5 +298,21 @@ describe('ConversationFollowUpQueueStore', () => {
     const current = await store.getState()
     expect(current.revision).toBe(1)
     expect(current.conversations['conversation-1'].items[0].status).toBe('queued')
+    await planAssert({
+      scenarioId: 'E18',
+      assertionId: '队列顺序、revision、lease 与消费状态正确',
+      assertion: () => expect(current.revision).toBe(1)
+    })
+    await planAssert({
+      scenarioId: 'E18',
+      assertionId: '重启从持久化状态恢复',
+      assertion: () =>
+        expect(current.conversations['conversation-1'].items[0].status).toBe('queued')
+    })
+    await planAssert({
+      scenarioId: 'E18',
+      assertionId: '不能重复 claim 或自动重发',
+      assertion: () => expect(writeJsonAtomically).toHaveBeenCalledTimes(2)
+    })
   })
 })

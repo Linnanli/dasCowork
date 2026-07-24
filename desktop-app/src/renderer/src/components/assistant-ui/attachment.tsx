@@ -127,6 +127,7 @@ const AttachmentThumb: FC = () => {
 const AttachmentUI: FC = () => {
   const aui = useAui()
   const isComposer = aui.attachment.source !== 'message'
+  const attachmentName = useAuiState((state) => state.attachment.name)
   const typeLabel = useAuiState((state) => {
     switch (state.attachment.type) {
       case 'image':
@@ -165,6 +166,7 @@ const AttachmentUI: FC = () => {
                   'aui-attachment-tile bg-muted relative flex size-14 cursor-pointer items-center justify-center overflow-hidden rounded-md border text-muted-foreground transition-opacity hover:opacity-75',
                   isError && 'border-destructive'
                 )}
+                data-attachment-name={attachmentName}
                 role="button"
                 tabIndex={0}
                 aria-label={`${typeLabel} attachment${

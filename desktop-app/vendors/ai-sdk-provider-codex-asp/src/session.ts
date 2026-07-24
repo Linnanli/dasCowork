@@ -91,6 +91,7 @@ export class CodexSessionImpl implements CodexSession
     private readonly client: AppServerClient;
     private readonly interruptTimeoutMs: number;
     private readonly fileResolver: PromptFileResolver;
+    private readonly interruptPromises = new Map<string, Promise<void>>();
 
     constructor(opts: {
         client: AppServerClient;
@@ -231,7 +232,13 @@ export class CodexSessionImpl implements CodexSession
             }
             catch (error)
             {
-                if (!this._active)
+                // A closed session means a transport failure cannot be
+                // confirmed, but a JSON-RPC error is an explicit app-server
+                // response. Preserve that distinction even when the matching
+                // turn/completed notification reached us before its steer
+                // response, otherwise a known rejection becomes an
+                // unnecessary recovery-uncertain queue state.
+                if (!this._active && !(error instanceof JsonRpcError))
                 {
                     throw new CodexSteerError(
                         "steer_result_unknown",
@@ -300,15 +307,24 @@ export class CodexSessionImpl implements CodexSession
             return;
         }
 
+        const interruptKey = `${this._threadId}:${this._turnId}`;
+        const existing = this.interruptPromises.get(interruptKey);
+        if (existing)
+        {
+            return existing;
+        }
+
         const interruptParams: CodexTurnInterruptParams = {
             threadId: this._threadId,
             turnId: this._turnId,
         };
 
-        await this.client.request<CodexTurnInterruptResult>(
+        const interrupt = this.client.request<CodexTurnInterruptResult>(
             "turn/interrupt",
             interruptParams,
             this.interruptTimeoutMs,
-        );
+        ).then(() => undefined);
+        this.interruptPromises.set(interruptKey, interrupt);
+        return interrupt;
     }
 }

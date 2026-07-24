@@ -1,6 +1,10 @@
 import type { CodexToolCallResult } from "../protocol/types";
 import { stripUndefined } from "../utils/object";
 import type {
+    BrokerLogicalChannel,
+    CodexAppServerConnectionBroker,
+} from "./connection-broker";
+import type {
     CodexTransport,
     CodexTransportEventMap,
     JsonRpcMessage,
@@ -11,17 +15,31 @@ import type { CodexWorkerPool } from "./worker-pool";
 
 export interface PersistentTransportSettings
 {
-    pool: CodexWorkerPool;
+    /** Legacy per-provider worker pool. Shared desktop hosts use `broker`. */
+    pool?: CodexWorkerPool;
+    /** Host-scoped physical connection; each PersistentTransport is a logical channel. */
+    broker?: CodexAppServerConnectionBroker;
     signal?: AbortSignal;
     threadId?: string;
+    onLeaseRequested?: () => void;
+    onLeaseReleased?: () => void;
 }
 
-export class PersistentTransport implements CodexTransport
+let nextLogicalChannelId = 1;
+
+export class PersistentTransport implements CodexTransport, BrokerLogicalChannel
 {
-    private readonly pool: CodexWorkerPool;
+    readonly channelId = `channel-${nextLogicalChannelId++}`;
+    private readonly pool: CodexWorkerPool | undefined;
+    private readonly broker: CodexAppServerConnectionBroker | undefined;
     private readonly signal: AbortSignal | undefined;
-    private readonly threadId: string | undefined;
+    private readonly configuredThreadId: string | undefined;
+    private boundThreadId: string | undefined;
+    private readonly onLeaseRequested: (() => void) | undefined;
+    private readonly onLeaseReleased: (() => void) | undefined;
     private worker: CodexWorker | null = null;
+    private leaseActive = false;
+    private brokerConnected = false;
     private pendingInitializeId: string | number | null = null;
     private initializeIntercepted = false;
 
@@ -34,18 +52,77 @@ export class PersistentTransport implements CodexTransport
     constructor(settings: PersistentTransportSettings)
     {
         this.pool = settings.pool;
+        this.broker = settings.broker;
+        if (!this.pool && !this.broker)
+        {
+            throw new Error("PersistentTransport requires a worker pool or connection broker.");
+        }
+        if (this.pool && this.broker)
+        {
+            throw new Error("PersistentTransport cannot use a worker pool and connection broker together.");
+        }
         this.signal = settings.signal;
-        this.threadId = settings.threadId;
+        this.configuredThreadId = settings.threadId;
+        this.boundThreadId = settings.threadId;
+        this.onLeaseRequested = settings.onLeaseRequested;
+        this.onLeaseReleased = settings.onLeaseReleased;
     }
 
     async connect(): Promise<void>
     {
-        this.worker = await this.pool.acquire(stripUndefined({ signal: this.signal, threadId: this.threadId }));
-        await this.worker.ensureConnected();
+        if (this.broker)
+        {
+            if (this.brokerConnected)
+            {
+                return;
+            }
+            this.onLeaseRequested?.();
+            this.leaseActive = true;
+            try
+            {
+                await this.broker.attach(this);
+                this.brokerConnected = true;
+            }
+            catch (error)
+            {
+                this.releaseLease();
+                throw error;
+            }
+            return;
+        }
+
+        this.onLeaseRequested?.();
+        this.leaseActive = true;
+        try
+        {
+            this.worker = await this.pool!.acquire(
+                stripUndefined({ signal: this.signal, threadId: this.boundThreadId }),
+            );
+            await this.worker.ensureConnected();
+        }
+        catch (error)
+        {
+            await this.disconnect();
+            throw error;
+        }
     }
 
     disconnect(): Promise<void>
     {
+        if (this.broker)
+        {
+            if (this.brokerConnected)
+            {
+                this.brokerConnected = false;
+                this.broker.detach(this);
+            }
+            this.messageListeners.clear();
+            this.errorListeners.clear();
+            this.closeListeners.clear();
+            this.releaseLease();
+            return Promise.resolve();
+        }
+
         if (this.worker)
         {
             const w = this.worker;
@@ -53,13 +130,20 @@ export class PersistentTransport implements CodexTransport
             this.messageListeners.clear();
             this.errorListeners.clear();
             this.closeListeners.clear();
-            this.pool.release(w);
+            this.pool!.release(w);
         }
+        this.releaseLease();
         return Promise.resolve();
     }
 
     async sendMessage(message: JsonRpcMessage): Promise<void>
     {
+        if (this.broker)
+        {
+            await this.broker.sendMessage(this, message);
+            return;
+        }
+
         if (!this.worker)
         {
             throw new Error("PersistentTransport is not connected.");
@@ -92,6 +176,12 @@ export class PersistentTransport implements CodexTransport
 
     async sendNotification(method: string, params?: unknown): Promise<void>
     {
+        if (this.broker)
+        {
+            await this.broker.sendNotification(this, method, params);
+            return;
+        }
+
         if (!this.worker)
         {
             throw new Error("PersistentTransport is not connected.");
@@ -105,11 +195,38 @@ export class PersistentTransport implements CodexTransport
         await this.worker.sendNotification(method, params);
     }
 
+    cancelRequest(id: string | number): void
+    {
+        this.broker?.cancelRequest(this, id);
+    }
+
     on<K extends keyof CodexTransportEventMap>(
         event: K,
         listener: CodexTransportEventMap[K],
     ): () => void
     {
+        if (this.broker)
+        {
+            if (event === "message")
+            {
+                const msgListener = listener as (message: JsonRpcMessage) => void;
+                this.messageListeners.add(msgListener);
+                return () => this.messageListeners.delete(msgListener);
+            }
+            if (event === "error")
+            {
+                const errListener = listener as (error: unknown) => void;
+                this.errorListeners.add(errListener);
+                return () => this.errorListeners.delete(errListener);
+            }
+            const closeListener = listener as (
+                code: number | null,
+                signal: NodeJS.Signals | null,
+            ) => void;
+            this.closeListeners.add(closeListener);
+            return () => this.closeListeners.delete(closeListener);
+        }
+
         if (!this.worker)
         {
             throw new Error("PersistentTransport is not connected.");
@@ -178,17 +295,31 @@ export class PersistentTransport implements CodexTransport
 
     getPendingToolCall(): PendingToolCall | null
     {
+        if (this.broker)
+        {
+            return this.broker.getPendingToolCall(this);
+        }
         return this.worker?.pendingToolCall ?? null;
     }
 
     /** Returns and clears messages buffered on the worker while the tool call was parked between steps. */
     drainBufferedMessages(): JsonRpcMessage[]
     {
+        if (this.broker)
+        {
+            return this.broker.drainBufferedMessages(this);
+        }
         return this.worker?.drainBufferedMessages() ?? [];
     }
 
     async respondToToolCall(result: CodexToolCallResult): Promise<void>
     {
+        if (this.broker)
+        {
+            await this.broker.respondToToolCall(this, result);
+            return;
+        }
+
         if (!this.worker?.pendingToolCall)
         {
             throw new Error("No pending tool call to respond to.");
@@ -203,13 +334,81 @@ export class PersistentTransport implements CodexTransport
         });
     }
 
-    parkToolCall(pending: PendingToolCall): void
+    parkToolCall(pending: PendingToolCall): boolean
     {
+        if (this.broker)
+        {
+            return this.broker.parkToolCall(this, pending);
+        }
+
         if (!this.worker)
         {
             throw new Error("PersistentTransport is not connected.");
         }
+        const existing = this.worker.pendingToolCall;
+        if (existing)
+        {
+            if (existing.requestId === pending.requestId || existing.callId === pending.callId)
+            {
+                return false;
+            }
+            throw new Error(`Thread ${pending.threadId} already has a pending cross-call tool request.`);
+        }
         this.worker.pendingToolCall = pending;
+        return true;
+    }
+
+    get threadId(): string | undefined
+    {
+        return this.boundThreadId;
+    }
+
+    bindThread(threadId: string): void
+    {
+        this.boundThreadId = threadId;
+    }
+
+    receiveMessage(message: JsonRpcMessage): void
+    {
+        for (const listener of this.messageListeners)
+        {
+            listener(message);
+        }
+    }
+
+    receiveError(error: unknown): void
+    {
+        // A fatal physical failure invalidates this logical channel as well.
+        // Release its host lease here so application shutdown never waits for a
+        // caller to observe the propagated client error and disconnect later.
+        if (this.broker && this.brokerConnected)
+        {
+            this.brokerConnected = false;
+            this.broker.detach(this);
+            this.releaseLease();
+        }
+        for (const listener of this.errorListeners)
+        {
+            listener(error);
+        }
+    }
+
+    receiveClose(code: number | null, signal: NodeJS.Signals | null): void
+    {
+        for (const listener of this.closeListeners)
+        {
+            listener(code, signal);
+        }
+    }
+
+    private releaseLease(): void
+    {
+        if (!this.leaseActive)
+        {
+            return;
+        }
+        this.leaseActive = false;
+        this.onLeaseReleased?.();
     }
 }
 

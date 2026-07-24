@@ -4,7 +4,31 @@ import { act, createElement, type ElementType, type ReactNode, useState } from '
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../scripts/lib/test-plan-assertions.mjs'
+
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+const uiAssertionIds = [
+  '错误、取消与重试 UI 正确',
+  '历史与已显示内容保留',
+  '可访问性、脱敏和 Composer 状态正确'
+]
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+async function assertUiPlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of uiAssertionIds) {
+    await record(assertionId, assertion)
+  }
+}
+
+const nativeHTMLElementFocus = HTMLElement.prototype.focus
 
 import type {
   CodexApprovalRequest,
@@ -118,13 +142,23 @@ const runtimeState = vi.hoisted<{
     localId: string
     newConversation: boolean
     context: ActiveConversationContext
-    phase: 'loading' | 'ready' | 'streaming' | 'error'
+    status: 'loading' | 'submitted' | 'ready' | 'streaming' | 'error'
     error?: Error
     unread: boolean
     draft: string
     draftAttachments: []
     loaded: boolean
-    chat: object
+    messages: []
+    controller: {
+      sendMessage: ReturnType<typeof vi.fn>
+      editMessage: ReturnType<typeof vi.fn>
+      regenerate: ReturnType<typeof vi.fn>
+      stop: ReturnType<typeof vi.fn>
+      getActiveTurnId: ReturnType<typeof vi.fn>
+      stageSteeringMessage: ReturnType<typeof vi.fn>
+      rejectSteeringMessage: ReturnType<typeof vi.fn>
+      retargetSteeringMessage: ReturnType<typeof vi.fn>
+    }
     transport: object
     scroll?: { scrollTop: number; followBottom: boolean }
   }
@@ -146,12 +180,22 @@ const runtimeState = vi.hoisted<{
     localId: 'local-test',
     newConversation: true,
     context: { conversationId: 'local-test' },
-    phase: 'ready',
+    status: 'ready',
     unread: false,
     draft: '',
     draftAttachments: [],
     loaded: true,
-    chat: {},
+    messages: [],
+    controller: {
+      sendMessage: vi.fn(async () => undefined),
+      editMessage: vi.fn(async () => undefined),
+      regenerate: vi.fn(async () => undefined),
+      stop: vi.fn(),
+      getActiveTurnId: vi.fn(() => 'turn-active'),
+      stageSteeringMessage: vi.fn(() => ({ renderId: 'steer:message' })),
+      rejectSteeringMessage: vi.fn(),
+      retargetSteeringMessage: vi.fn()
+    },
     transport: {}
   },
   activeConversation: undefined,
@@ -180,7 +224,21 @@ const modelContextState = vi.hoisted<{ tools?: Record<string, { description?: st
 )
 
 const aiSdkRuntimeState = vi.hoisted<{
-  options?: { isDisabled?: boolean }
+  options?: {
+    isDisabled?: boolean
+    convertMessage?: (
+      message: {
+        renderId: string
+        role: 'assistant' | 'user'
+        parts: []
+        metadata?: unknown
+      },
+      index: number
+    ) => {
+      status?: { type: string; reason?: string; error?: unknown }
+    }
+    onReload?: (parentId: string | null, config: { runConfig?: unknown }) => Promise<void>
+  }
 }>(() => ({}))
 
 const composerState = vi.hoisted<{
@@ -269,11 +327,16 @@ function resetThreadMessageState(): void {
   runtimeState.activeConversation = undefined
   runtimeState.activeEntry.newConversation = true
   runtimeState.activeEntry.context = { conversationId: 'local-test' }
-  runtimeState.activeEntry.phase = 'ready'
+  runtimeState.activeEntry.status = 'ready'
   delete runtimeState.activeEntry.error
   runtimeState.activeEntry.loaded = true
+  runtimeState.activeEntry.messages = []
   runtimeState.activeEntry.draft = ''
   runtimeState.activeEntry.draftAttachments = []
+  for (const method of Object.values(runtimeState.activeEntry.controller)) {
+    method.mockClear()
+  }
+  runtimeState.activeEntry.controller.getActiveTurnId.mockReturnValue('turn-active')
   delete runtimeState.activeEntry.scroll
   runtimeState.serverRequests = []
   mentionAdapterState.calls = []
@@ -534,17 +597,6 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
   }
 })
 
-vi.mock('@ai-sdk/react', () => ({
-  useChat: () => ({})
-}))
-
-vi.mock('@assistant-ui/react-ai-sdk', () => ({
-  useAISDKRuntime: (_chat: unknown, options?: { isDisabled?: boolean }) => {
-    aiSdkRuntimeState.options = options
-    return {}
-  }
-}))
-
 vi.mock('./projects/useProjectState', () => ({
   useProjectState: () => projectHookState.controller
 }))
@@ -741,6 +793,10 @@ vi.mock('@assistant-ui/react', () => {
       Root: primitive('ActionBar.Root')
     },
     AssistantRuntimeProvider: primitive('AssistantRuntimeProvider'),
+    useExternalStoreRuntime: (options: NonNullable<typeof aiSdkRuntimeState.options>) => {
+      aiSdkRuntimeState.options = options
+      return {}
+    },
     getExternalStoreMessages: () => threadMessageState.externalMessages,
     AttachmentPrimitive: {
       Name: primitive('Attachment.Name'),
@@ -1280,7 +1336,12 @@ describe('App composer', () => {
     const steerItem = vi.mocked(window.desktopApp.followUps.steerItem)
     getState.mockResolvedValue(state)
     enqueue.mockResolvedValue({ ...state, revision: 2 })
-    steerItem.mockResolvedValue({ ...state, revision: 3 })
+    steerItem.mockImplementation(async (_conversationKey, itemId) => ({
+      delivery: 'pending-ack',
+      clientUserMessageId: itemId,
+      targetTurnId: 'turn-server',
+      state: { ...state, revision: 3 }
+    }))
 
     act(() => {
       root.render(<App />)
@@ -1336,7 +1397,12 @@ describe('App composer', () => {
     const setDefaultMode = vi.mocked(window.desktopApp.followUps.setDefaultMode)
     getState.mockResolvedValue(state)
     enqueue.mockResolvedValue({ ...state, revision: 2 })
-    steerItem.mockResolvedValue({ ...state, revision: 3 })
+    steerItem.mockImplementation(async (_conversationKey, itemId) => ({
+      delivery: 'pending-ack',
+      clientUserMessageId: itemId,
+      targetTurnId: 'turn-server',
+      state: { ...state, revision: 3 }
+    }))
 
     act(() => {
       root.render(<App />)
@@ -1383,7 +1449,7 @@ describe('App composer', () => {
       root.render(<App />)
     })
     act(() => {
-      runtimeState.activeEntry.phase = 'error'
+      runtimeState.activeEntry.status = 'error'
       runtimeState.activeEntry.error = new Error('attachment validation failed')
       root.render(<App />)
     })
@@ -1856,7 +1922,7 @@ describe('App composer', () => {
   })
 
   it('keeps sidebar navigation available while a response is streaming', () => {
-    runtimeState.activeEntry.phase = 'streaming'
+    runtimeState.activeEntry.status = 'streaming'
 
     act(() => {
       root.render(<App />)
@@ -1885,10 +1951,168 @@ describe('App composer', () => {
     expect(aiSdkRuntimeState.options?.isDisabled).toBe(true)
   })
 
+  it('F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus', async () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const focusAnchor = document.createElement('button')
+    focusAnchor.focus = nativeHTMLElementFocus.bind(focusAnchor)
+    document.body.appendChild(focusAnchor)
+    focusAnchor.focus()
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = {
+      type: 'incomplete',
+      reason: 'cancelled'
+    }
+    threadMessageState.message.content = [{ type: 'text', text: 'partial answer' }]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    const converted = aiSdkRuntimeState.options?.convertMessage?.(
+      {
+        renderId: 'message:assistant-failed',
+        role: 'assistant',
+        parts: [],
+        metadata: {
+          codexTurn: {
+            turnId: 'turn-failed',
+            status: 'failed',
+            error: { message: '   ' }
+          }
+        }
+      },
+      0
+    )
+    expect(converted?.status).toEqual({
+      type: 'incomplete',
+      reason: 'error',
+      error: '模型响应未完成，请重试。'
+    })
+
+    const errorCard = container.querySelector('[data-slot="aui_assistant-message-error"]')
+    const retry = container.querySelector('[data-slot="aui_assistant-message-retry"]')
+    expect(errorCard?.getAttribute('role')).toBe('alert')
+    expect(errorCard?.getAttribute('aria-live')).toBe('polite')
+    expect(retry?.textContent).toBe('重试')
+    expect(retry?.tagName).toBe('BUTTON')
+    expect(document.activeElement).toBe(focusAnchor)
+    await assertUiPlanEvidence(['F01', 'F03', 'F06', 'F07', 'F18', 'F20'], () => {
+      expect(converted?.status).toEqual({
+        type: 'incomplete',
+        reason: 'error',
+        error: '模型响应未完成，请重试。'
+      })
+      expect(errorCard?.getAttribute('role')).toBe('alert')
+      expect(retry?.textContent).toBe('重试')
+      expect(document.activeElement).toBe(focusAnchor)
+    })
+    focusAnchor.remove()
+  })
+
+  it('F17 maps interrupted history metadata to cancelled without an error payload', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const converted = aiSdkRuntimeState.options?.convertMessage?.(
+      {
+        renderId: 'message:assistant-interrupted',
+        role: 'assistant',
+        parts: [],
+        metadata: {
+          codexTurn: {
+            turnId: 'turn-interrupted',
+            status: 'interrupted'
+          }
+        }
+      },
+      0
+    )
+    expect(converted?.status).toEqual({
+      type: 'incomplete',
+      reason: 'cancelled'
+    })
+
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = {
+      type: 'incomplete',
+      reason: 'cancelled'
+    }
+    act(() => {
+      root.render(<App />)
+    })
+    expect(
+      container.querySelector('[data-slot="aui_assistant-message-cancelled"]')?.textContent
+    ).toBe('已取消')
+  })
+
+  it('F10 coalesces concurrent reload actions into one regenerate request', async () => {
+    let resolveRegenerate: (() => void) | undefined
+    runtimeState.activeEntry.controller.regenerate.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRegenerate = resolve
+        })
+    )
+    act(() => {
+      root.render(<App />)
+    })
+
+    const onReload = aiSdkRuntimeState.options?.onReload
+    expect(onReload).toBeDefined()
+    let first!: Promise<void>
+    let second!: Promise<void>
+    act(() => {
+      first =
+        onReload?.('message:user-one', { runConfig: { model: 'gpt-test' } }) ?? Promise.resolve()
+      second =
+        onReload?.('message:user-one', { runConfig: { model: 'gpt-test' } }) ?? Promise.resolve()
+    })
+
+    expect(runtimeState.activeEntry.controller.regenerate).toHaveBeenCalledTimes(1)
+    expect(runtimeState.activeEntry.controller.regenerate).toHaveBeenCalledWith(
+      'message:user-one',
+      { metadata: { model: 'gpt-test' } }
+    )
+
+    await act(async () => {
+      resolveRegenerate?.()
+      await Promise.all([first, second])
+    })
+  })
+
+  it('F09 disables retry while a new turn is running', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = {
+      type: 'incomplete',
+      reason: 'cancelled'
+    }
+    threadMessageState.message.content = [{ type: 'text', text: 'partial answer' }]
+    assistantThreadState.isRunning = true
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-slot="aui_assistant-message-retry"]')
+        ?.disabled
+    ).toBe(true)
+    await assertUiPlanEvidence(['F09'], () => {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-slot="aui_assistant-message-retry"]')
+          ?.disabled
+      ).toBe(true)
+    })
+  })
+
   it('does not render the new-conversation welcome message while existing history loads', () => {
     runtimeState.activeEntry.loaded = false
     runtimeState.activeEntry.newConversation = false
-    runtimeState.activeEntry.phase = 'loading'
+    runtimeState.activeEntry.status = 'loading'
     runtimeState.activeConversation = {
       conversationId: 'thread-loading',
       title: 'Loading thread'
@@ -1987,7 +2211,7 @@ describe('App composer', () => {
 
   it('shows a retry action when existing conversation history fails to load', async () => {
     runtimeState.activeEntry.loaded = false
-    runtimeState.activeEntry.phase = 'error'
+    runtimeState.activeEntry.status = 'error'
     runtimeState.activeEntry.error = new Error('history unavailable')
     runtimeState.activeConversation = {
       conversationId: 'thread-broken',

@@ -24,6 +24,11 @@ export interface CodexContextCatalogJsonRpcClientLike
 export interface CodexContextCatalogClientSettings extends CodexProviderSettings
 {
     createClient?: () => CodexContextCatalogJsonRpcClientLike;
+    /**
+     * Lease a logical client for each request instead of reserving a physical
+     * app-server connection for the whole catalog lifetime.
+     */
+    connectionLifecycle?: "persistent" | "per-operation";
 }
 
 export interface CodexCatalogSkill
@@ -202,16 +207,17 @@ export class CodexContextCatalogClient
                 return;
             }
 
-            const client = await this.connectedClient();
             try
             {
-                await this.fuzzyFileSearch(
-                    client,
-                    params.roots,
-                    query,
-                    () => stopped,
-                    params.onUpdated,
-                    params.onCompleted,
+                await this.withClient((client) =>
+                    this.fuzzyFileSearch(
+                        client,
+                        params.roots,
+                        query,
+                        () => stopped,
+                        params.onUpdated,
+                        params.onCompleted,
+                    ),
                 );
             }
             catch (error)
@@ -220,7 +226,6 @@ export class CodexContextCatalogClient
                 {
                     throw error;
                 }
-                await this.invalidateClient(client);
                 await update(query, false);
             }
         };
@@ -291,6 +296,11 @@ export class CodexContextCatalogClient
         callback: (client: CodexContextCatalogJsonRpcClientLike) => Promise<T>,
     ): Promise<T>
     {
+        if (this.settings.connectionLifecycle === "per-operation")
+        {
+            return this.withLeasedClient(callback);
+        }
+
         const client = await this.connectedClient();
         try
         {
@@ -303,6 +313,24 @@ export class CodexContextCatalogClient
                 await this.invalidateClient(client);
             }
             throw error;
+        }
+    }
+
+    private async withLeasedClient<T>(
+        callback: (client: CodexContextCatalogJsonRpcClientLike) => Promise<T>,
+    ): Promise<T>
+    {
+        const client = this.createClient();
+        try
+        {
+            await client.connect();
+            await client.request<CodexInitializeResult>("initialize", this.initializeParams());
+            await client.notification("initialized");
+            return await callback(client);
+        }
+        finally
+        {
+            await client.disconnect().catch(() => undefined);
         }
     }
 

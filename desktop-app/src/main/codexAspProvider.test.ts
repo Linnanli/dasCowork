@@ -60,4 +60,30 @@ describe('createCodexAspProviderSettings', () => {
       }
     })
   })
+
+  it('uses the host-owned shared connection instead of creating a provider worker pool', () => {
+    const transportFactory = (() => {
+      throw new Error('transport factory is not called while building settings')
+    }) as NonNullable<ReturnType<typeof createCodexAspProviderSettings>['transportFactory']>
+    const settings = createCodexAspProviderSettings({
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      cwd: '/repo',
+      onCommandApproval: () => 'accept' as const,
+      onFileChangeApproval: () => 'accept' as const,
+      onToolUserInput: async () => ({ answers: {} }),
+      onElicitation: async () => ({ action: 'accept' as const, content: null, _meta: null }),
+      connection: {
+        transportFactory,
+        shutdown: async () => undefined
+      }
+    })
+
+    expect(settings.transportFactory).toBe(transportFactory)
+    expect(settings.transport).toBeUndefined()
+    expect(settings.persistent).toBeUndefined()
+  })
 })

@@ -1,4 +1,5 @@
 import type { LanguageModelV3FunctionTool } from "@ai-sdk/provider";
+import { jsonSchema, streamText } from "ai";
 import { describe, expect, it } from "vitest";
 
 import type { JsonRpcMessage } from "../src/client/transport";
@@ -8,16 +9,16 @@ import { CODEX_PROVIDER_ID } from "../src/protocol/provider-metadata";
 import { createCodexAppServer } from "../src/provider";
 import { stripUndefined } from "../src/utils/object";
 import { MockTransport } from "./helpers/mock-transport";
+import { planAssertionsForTest } from "./helpers/plan-assertion";
 
 /**
  * Scripted tool call definition for the mock transport.
  */
-interface ScriptedToolCall
-{
-    callId: string;
-    tool: string;
-    args: Record<string, unknown>;
-    argsJson: string;
+interface ScriptedToolCall {
+    callId: string
+    tool: string
+    args: Record<string, unknown>
+    argsJson: string
 }
 
 /**
@@ -61,7 +62,10 @@ class ToolCallTransport extends MockTransport
 
         if (request.method === "initialize")
         {
-            this.emitMessage({ id: request.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: request.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -189,19 +193,35 @@ class ToolCallTransport extends MockTransport
             {
                 this.emitMessage({
                     method: "item/started",
-                    params: { item: { type: "agentMessage", id: "item_msg", text: "" }, threadId: "thr_1", turnId: "turn_1" },
+                    params: {
+                        item: { type: "agentMessage", id: "item_msg", text: "" },
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                    },
                 });
                 this.emitMessage({
                     method: "item/agentMessage/delta",
-                    params: { threadId: "thr_1", turnId: "turn_1", itemId: "item_msg", delta: this.finalMessage },
+                    params: {
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                        itemId: "item_msg",
+                        delta: this.finalMessage,
+                    },
                 });
                 this.emitMessage({
                     method: "item/completed",
-                    params: { item: { type: "agentMessage", id: "item_msg", text: this.finalMessage }, threadId: "thr_1", turnId: "turn_1" },
+                    params: {
+                        item: { type: "agentMessage", id: "item_msg", text: this.finalMessage },
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                    },
                 });
                 this.emitMessage({
                     method: "turn/completed",
-                    params: { threadId: "thr_1", turn: { id: "turn_1", items: [], status: "completed", error: null } },
+                    params: {
+                        threadId: "thr_1",
+                        turn: { id: "turn_1", items: [], status: "completed", error: null },
+                    },
                 });
             });
         }
@@ -228,7 +248,7 @@ async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
     return parts;
 }
 
-type StreamPart = { type: string;[key: string]: unknown };
+type StreamPart = { type: string; [key: string]: unknown };
 
 const TICKET_TOOL: ScriptedToolCall = {
     callId: "call_ticket",
@@ -279,7 +299,9 @@ function createPersistentProvider(innerTransport: MockTransport)
         pool,
         provider: createCodexAppServer({
             transportFactory: (context) =>
-                new PersistentTransport(stripUndefined({ pool, signal: context.signal, threadId: context.threadId })),
+                new PersistentTransport(
+                    stripUndefined({ pool, signal: context.signal, threadId: context.threadId }),
+                ),
             clientInfo: { name: "test", version: "1.0.0" },
         }),
     };
@@ -291,10 +313,7 @@ describe("Cross-call tool support", () =>
 {
     it("emits tool-call and finishes with tool-calls on first step", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Ticket TICK-42 is open.",
-        );
+        const transport = new ToolCallTransport([TICKET_TOOL], "Ticket TICK-42 is open.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -332,8 +351,9 @@ describe("Cross-call tool support", () =>
         }
     });
 
-    it("resumes with tool result and completes (single tool)", async () =>
+    it("D01 resumes a successful single read-only tool result and emits the normal final answer", async () =>
     {
+        const assertD01 = planAssertionsForTest("D01");
         const transport = new ToolCallTransport(
             [TICKET_TOOL],
             "Ticket TICK-42 is open and assigned to team Alpha.",
@@ -358,18 +378,25 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_ticket",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "TICK-42: open, assigned to team Alpha" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "TICK-42: open, assigned to team Alpha" },
+                            },
+                        ],
                     },
                 ],
             });
@@ -377,10 +404,25 @@ describe("Cross-call tool support", () =>
             const parts = (await readAll(s2)) as StreamPart[];
 
             const textDeltas = parts.filter((p) => p.type === "text-delta");
+            await assertD01("恢复工具结果后正常输出答案", () =>
+            {
+                expect(parts).toContainEqual(
+                    expect.objectContaining({
+                        type: "tool-result",
+                        toolCallId: "call_ticket",
+                        toolName: "lookup_ticket",
+                        result: {
+                            success: true,
+                            contentItems: [{ type: "inputText", text: "TICK-42: open, assigned to team Alpha" }],
+                        },
+                    }),
+                );
+                expect(textDeltas[0]?.delta).toBe("Ticket TICK-42 is open and assigned to team Alpha.");
+                expect(
+                    (parts.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+                ).toBe("stop");
+            });
             expect(textDeltas.length).toBeGreaterThan(0);
-            expect(textDeltas[0]?.delta).toBe("Ticket TICK-42 is open and assigned to team Alpha.");
-
-            expect((parts.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("stop");
         }
         finally
         {
@@ -388,8 +430,57 @@ describe("Cross-call tool support", () =>
         }
     });
 
-    it("handles multi-step: lookup_ticket → check_weather → final answer", async () =>
+    it("forwards client tool input and output into the UI message stream", async () =>
     {
+        const transport = new ToolCallTransport(
+            [TICKET_TOOL],
+            "Ticket TICK-42 is open and assigned to team Alpha.",
+        );
+        const { provider, pool } = createPersistentProvider(transport);
+
+        try
+        {
+            const result = streamText({
+                model: provider.languageModel("codex-test"),
+                messages: [{ role: "user", content: "Check ticket TICK-42" }],
+                tools: {
+                    lookup_ticket: {
+                        description: "Look up a support ticket.",
+                        inputSchema: jsonSchema({
+                            type: "object",
+                            properties: { id: { type: "string" } },
+                            required: ["id"],
+                        }),
+                        execute: () => ({ status: "open", team: "Alpha" }),
+                    },
+                },
+            });
+
+            const parts = (await readAll(result.toUIMessageStream())) as StreamPart[];
+            expect(parts).toContainEqual(
+                expect.objectContaining({
+                    type: "tool-input-available",
+                    toolCallId: "call_ticket",
+                    toolName: "lookup_ticket",
+                }),
+            );
+            expect(parts).toContainEqual(
+                expect.objectContaining({
+                    type: "tool-output-available",
+                    toolCallId: "call_ticket",
+                    output: { status: "open", team: "Alpha" },
+                }),
+            );
+        }
+        finally
+        {
+            await pool.shutdown();
+        }
+    });
+
+    it("D02 serializes multiple tool calls before emitting the final answer", async () =>
+    {
+        const assertD02 = planAssertionsForTest("D02");
         const transport = new ToolCallTransport(
             [TICKET_TOOL, WEATHER_TOOL],
             "TICK-42 is open (team Alpha). Weather in Berlin: 22°C, sunny.",
@@ -402,12 +493,16 @@ describe("Cross-call tool support", () =>
 
             // Step 1: Codex calls lookup_ticket
             const { stream: s1 } = await model.doStream({
-                prompt: [{ role: "user", content: [{ type: "text", text: "Check TICK-42 and Berlin weather" }] }],
+                prompt: [
+                    { role: "user", content: [{ type: "text", text: "Check TICK-42 and Berlin weather" }] },
+                ],
                 tools: SDK_TOOLS,
             });
             const p1 = (await readAll(s1)) as StreamPart[];
             expect(p1.find((p) => p.type === "tool-call")?.toolName).toBe("lookup_ticket");
-            expect((p1.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("tool-calls");
+            expect(
+                (p1.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+            ).toBe("tool-calls");
 
             // Step 2: SDK returns ticket result → Codex calls check_weather
             const { stream: s2 } = await model.doStream({
@@ -416,24 +511,33 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_ticket",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "TICK-42: open, team Alpha" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "TICK-42: open, team Alpha" },
+                            },
+                        ],
                     },
                 ],
             });
             const p2 = (await readAll(s2)) as StreamPart[];
             expect(p2.find((p) => p.type === "tool-call")?.toolName).toBe("check_weather");
-            expect((p2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("tool-calls");
+            expect(
+                (p2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+            ).toBe("tool-calls");
 
             // Step 3: SDK returns weather result → Codex produces final answer
             const { stream: s3 } = await model.doStream({
@@ -442,34 +546,48 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_ticket",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "TICK-42: open, team Alpha" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "TICK-42: open, team Alpha" },
+                            },
+                        ],
                     },
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_weather", toolName: "check_weather", input: { location: "Berlin" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_weather",
+                                toolName: "check_weather",
+                                input: { location: "Berlin" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_weather",
-                            toolName: "check_weather",
-                            output: { type: "text", value: "Berlin: 22°C, sunny" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_weather",
+                                toolName: "check_weather",
+                                output: { type: "text", value: "Berlin: 22°C, sunny" },
+                            },
+                        ],
                     },
                 ],
             });
@@ -477,10 +595,17 @@ describe("Cross-call tool support", () =>
 
             // Final answer
             const textDeltas = p3.filter((p) => p.type === "text-delta");
+            await assertD02("多个工具串行后输出汇总答案", () =>
+            {
+                expect(p2.find((p) => p.type === "tool-call")?.toolName).toBe("check_weather");
+                expect(textDeltas[0]?.delta).toBe(
+                    "TICK-42 is open (team Alpha). Weather in Berlin: 22°C, sunny.",
+                );
+                expect(
+                    (p3.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+                ).toBe("stop");
+            });
             expect(textDeltas.length).toBeGreaterThan(0);
-            expect(textDeltas[0]?.delta).toBe("TICK-42 is open (team Alpha). Weather in Berlin: 22°C, sunny.");
-
-            expect((p3.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("stop");
         }
         finally
         {
@@ -488,13 +613,10 @@ describe("Cross-call tool support", () =>
         }
     });
 
-    it("does not duplicate dynamic tool lifecycle parts on resumed steps", async () =>
+    it("D11 does not duplicate dynamic tool lifecycle parts on resumed steps", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL, WEATHER_TOOL],
-            "Done.",
-            true,
-        );
+        const assertD11 = planAssertionsForTest("D11");
+        const transport = new ToolCallTransport([TICKET_TOOL, WEATHER_TOOL], "Done.", true);
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -520,31 +642,46 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_ticket",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "TICK-42: open" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "TICK-42: open" },
+                            },
+                        ],
                     },
                 ],
                 tools: SDK_TOOLS,
             });
             const step2 = (await readAll(s2)) as StreamPart[];
 
-            expect(step2.filter((part) => part.type === "tool-call")).toEqual([
-                expect.objectContaining({
-                    toolCallId: "call_weather",
-                    toolName: "check_weather",
-                }),
-            ]);
-            expect(step2.some((part) => part.type === "tool-result")).toBe(false);
+            await assertD11("恢复步骤不重复工具生命周期结果", () =>
+            {
+                expect(step2.filter((part) => part.type === "tool-call")).toEqual([
+                    expect.objectContaining({
+                        toolCallId: "call_weather",
+                        toolName: "check_weather",
+                    }),
+                ]);
+                expect(step2.filter((part) => part.type === "tool-result")).toEqual([
+                    expect.objectContaining({
+                        toolCallId: "call_ticket",
+                        toolName: "lookup_ticket",
+                    }),
+                ]);
+            });
         }
         finally
         {
@@ -554,10 +691,7 @@ describe("Cross-call tool support", () =>
 
     it("sends both tools as dynamicTools in thread/start", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Done.",
-        );
+        const transport = new ToolCallTransport([TICKET_TOOL], "Done.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -587,12 +721,10 @@ describe("Cross-call tool support", () =>
         }
     });
 
-    it("handles JSON tool result output", async () =>
+    it("D08 preserves Chinese, emoji, replacement characters, and complex JSON tool output", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Done.",
-        );
+        const assertD08 = planAssertionsForTest("D08");
+        const transport = new ToolCallTransport([TICKET_TOOL], "Done.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -611,18 +743,34 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_ticket",
-                            toolName: "lookup_ticket",
-                            output: { type: "json", value: { status: "open", team: "Alpha" } },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                output: {
+                                    type: "json",
+                                    value: {
+                                        status: "open",
+                                        summary: "北京天气晴朗 ☀️�",
+                                        details: {
+                                            nested: [1, true, null, { labels: ["中文", "emoji 🚀"] }],
+                                        },
+                                    },
+                                },
+                            },
+                        ],
                     },
                 ],
             });
@@ -632,10 +780,24 @@ describe("Cross-call tool support", () =>
                 (msg) => "id" in msg && msg.id === 200 && "result" in msg,
             ) as { result?: { success: boolean; contentItems: Array<{ text: string }> } } | undefined;
 
-            expect(toolResponse?.result?.success).toBe(true);
-            expect(toolResponse?.result?.contentItems[0]?.text).toBe(
-                JSON.stringify({ status: "open", team: "Alpha" }),
-            );
+            await assertD08("复杂 JSON 工具输出完整且只回传一次", () =>
+            {
+                expect(toolResponse?.result?.success).toBe(true);
+                expect(toolResponse?.result?.contentItems[0]?.text).toBe(
+                    JSON.stringify({
+                        status: "open",
+                        summary: "北京天气晴朗 ☀️�",
+                        details: {
+                            nested: [1, true, null, { labels: ["中文", "emoji 🚀"] }],
+                        },
+                    }),
+                );
+                expect(
+                    transport.sentMessages.filter(
+                        (message) => "id" in message && message.id === 200 && "result" in message,
+                    ),
+                ).toHaveLength(1);
+            });
         }
         finally
         {
@@ -645,10 +807,7 @@ describe("Cross-call tool support", () =>
 
     it("responds to pending cross-call with matching toolCallId only", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Done.",
-        );
+        const transport = new ToolCallTransport([TICKET_TOOL], "Done.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -667,7 +826,12 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
@@ -697,7 +861,9 @@ describe("Cross-call tool support", () =>
             ) as { result?: { success: boolean; contentItems: Array<{ text: string }> } } | undefined;
 
             expect(toolResponse?.result?.success).toBe(true);
-            expect(toolResponse?.result?.contentItems).toEqual([{ text: "fresh-ticket-result", type: "inputText" }]);
+            expect(toolResponse?.result?.contentItems).toEqual([
+                { text: "fresh-ticket-result", type: "inputText" },
+            ]);
         }
         finally
         {
@@ -707,10 +873,7 @@ describe("Cross-call tool support", () =>
 
     it("uses only the latest tool message for pending callId and ignores stale history-like tool results", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Done.",
-        );
+        const transport = new ToolCallTransport([TICKET_TOOL], "Done.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -729,29 +892,48 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_old_1", toolName: "lookup_ticket", input: { id: "OLD-1" } },
-                            { type: "tool-call", toolCallId: "call_old_2", toolName: "lookup_ticket", input: { id: "OLD-2" } },
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_old_1",
+                                toolName: "lookup_ticket",
+                                input: { id: "OLD-1" },
+                            },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_old_2",
+                                toolName: "lookup_ticket",
+                                input: { id: "OLD-2" },
+                            },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_old_1",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "old-result-1" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_old_1",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "old-result-1" },
+                            },
+                        ],
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_old_2",
-                            toolName: "lookup_ticket",
-                            output: { type: "text", value: "old-result-2" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_old_2",
+                                toolName: "lookup_ticket",
+                                output: { type: "text", value: "old-result-2" },
+                            },
+                        ],
                     },
                     {
                         role: "tool",
@@ -779,7 +961,9 @@ describe("Cross-call tool support", () =>
             ) as { result?: { success: boolean; contentItems: Array<{ text: string }> } } | undefined;
 
             expect(toolResponse?.result?.success).toBe(true);
-            expect(toolResponse?.result?.contentItems).toEqual([{ text: "fresh-ticket-result", type: "inputText" }]);
+            expect(toolResponse?.result?.contentItems).toEqual([
+                { text: "fresh-ticket-result", type: "inputText" },
+            ]);
         }
         finally
         {
@@ -789,10 +973,7 @@ describe("Cross-call tool support", () =>
 
     it("fails cross-call response when pending toolCallId result is missing", async () =>
     {
-        const transport = new ToolCallTransport(
-            [TICKET_TOOL],
-            "Done.",
-        );
+        const transport = new ToolCallTransport([TICKET_TOOL], "Done.");
         const { provider, pool } = createPersistentProvider(transport);
 
         try
@@ -811,18 +992,25 @@ describe("Cross-call tool support", () =>
                     {
                         role: "assistant",
                         content: [
-                            { type: "tool-call", toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                            {
+                                type: "tool-call",
+                                toolCallId: "call_ticket",
+                                toolName: "lookup_ticket",
+                                input: { id: "TICK-42" },
+                            },
                         ],
                         providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
                     },
                     {
                         role: "tool",
-                        content: [{
-                            type: "tool-result",
-                            toolCallId: "call_stale_only",
-                            toolName: "check_weather",
-                            output: { type: "text", value: "stale-result" },
-                        }],
+                        content: [
+                            {
+                                type: "tool-result",
+                                toolCallId: "call_stale_only",
+                                toolName: "check_weather",
+                                output: { type: "text", value: "stale-result" },
+                            },
+                        ],
                     },
                 ],
             });
@@ -833,10 +1021,12 @@ describe("Cross-call tool support", () =>
             ) as { result?: { success: boolean; contentItems: Array<{ text: string }> } } | undefined;
 
             expect(toolResponse?.result?.success).toBe(false);
-            expect(toolResponse?.result?.contentItems).toEqual([{
-                type: "inputText",
-                text: "Missing tool result for pending callId \"call_ticket\".",
-            }]);
+            expect(toolResponse?.result?.contentItems).toEqual([
+                {
+                    type: "inputText",
+                    text: "Missing tool result for pending callId \"call_ticket\".",
+                },
+            ]);
         }
         finally
         {
@@ -867,7 +1057,18 @@ class ParallelCommandTransport extends MockTransport
     {
         this.emitMessage({
             method: "item/completed",
-            params: { item: { type: "commandExecution", id: "call_cmd1", command: "ls", aggregatedOutput: "file.txt", exitCode: 0, status: "completed" }, threadId: "thr_1", turnId: "turn_1" },
+            params: {
+                item: {
+                    type: "commandExecution",
+                    id: "call_cmd1",
+                    command: "ls",
+                    aggregatedOutput: "file.txt",
+                    exitCode: 0,
+                    status: "completed",
+                },
+                threadId: "thr_1",
+                turnId: "turn_1",
+            },
         });
     }
 
@@ -884,7 +1085,11 @@ class ParallelCommandTransport extends MockTransport
                 {
                     this.emitMessage({
                         method: "item/started",
-                        params: { item: { type: "agentMessage", id: "item_msg", text: "" }, threadId: "thr_1", turnId: "turn_1" },
+                        params: {
+                            item: { type: "agentMessage", id: "item_msg", text: "" },
+                            threadId: "thr_1",
+                            turnId: "turn_1",
+                        },
                     });
                     this.emitMessage({
                         method: "item/agentMessage/delta",
@@ -892,11 +1097,18 @@ class ParallelCommandTransport extends MockTransport
                     });
                     this.emitMessage({
                         method: "item/completed",
-                        params: { item: { type: "agentMessage", id: "item_msg", text: "Done." }, threadId: "thr_1", turnId: "turn_1" },
+                        params: {
+                            item: { type: "agentMessage", id: "item_msg", text: "Done." },
+                            threadId: "thr_1",
+                            turnId: "turn_1",
+                        },
                     });
                     this.emitMessage({
                         method: "turn/completed",
-                        params: { threadId: "thr_1", turn: { id: "turn_1", items: [], status: "completed", error: null } },
+                        params: {
+                            threadId: "thr_1",
+                            turn: { id: "turn_1", items: [], status: "completed", error: null },
+                        },
                     });
                 });
             }
@@ -905,7 +1117,10 @@ class ParallelCommandTransport extends MockTransport
 
         if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -921,12 +1136,19 @@ class ParallelCommandTransport extends MockTransport
 
             queueMicrotask(() =>
             {
-                this.emitMessage({ method: "turn/started", params: { threadId: "thr_1", turn: { id: "turn_1" } } });
+                this.emitMessage({
+                    method: "turn/started",
+                    params: { threadId: "thr_1", turn: { id: "turn_1" } },
+                });
 
                 // Codex starts a provider-executed command ...
                 this.emitMessage({
                     method: "item/started",
-                    params: { item: { type: "commandExecution", id: "call_cmd1", command: "ls", cwd: "/tmp" }, threadId: "thr_1", turnId: "turn_1" },
+                    params: {
+                        item: { type: "commandExecution", id: "call_cmd1", command: "ls", cwd: "/tmp" },
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                    },
                 });
 
                 if (this.completeCommandAt === "step1")
@@ -938,7 +1160,13 @@ class ParallelCommandTransport extends MockTransport
                 this.emitMessage({
                     id: 200,
                     method: "item/tool/call",
-                    params: { threadId: "thr_1", turnId: "turn_1", callId: "call_ticket", tool: "lookup_ticket", arguments: { id: "TICK-42" } },
+                    params: {
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                        callId: "call_ticket",
+                        tool: "lookup_ticket",
+                        arguments: { id: "TICK-42" },
+                    },
                 });
 
                 if (this.completeCommandAt === "between")
@@ -953,25 +1181,34 @@ class ParallelCommandTransport extends MockTransport
 
 describe("Cross-call boundary with in-flight provider-executed calls", () =>
 {
-    const STEP1_PROMPT = [{ role: "user" as const, content: [{ type: "text" as const, text: "Check ticket TICK-42" }] }];
+    const STEP1_PROMPT = [
+        { role: "user" as const, content: [{ type: "text" as const, text: "Check ticket TICK-42" }] },
+    ];
 
     const STEP2_PROMPT = [
         ...STEP1_PROMPT,
         {
             role: "assistant" as const,
             content: [
-                { type: "tool-call" as const, toolCallId: "call_ticket", toolName: "lookup_ticket", input: { id: "TICK-42" } },
+                {
+                    type: "tool-call" as const,
+                    toolCallId: "call_ticket",
+                    toolName: "lookup_ticket",
+                    input: { id: "TICK-42" },
+                },
             ],
             providerOptions: { [CODEX_PROVIDER_ID]: { threadId: "thr_1" } },
         },
         {
             role: "tool" as const,
-            content: [{
-                type: "tool-result" as const,
-                toolCallId: "call_ticket",
-                toolName: "lookup_ticket",
-                output: { type: "text" as const, value: "TICK-42: open" },
-            }],
+            content: [
+                {
+                    type: "tool-result" as const,
+                    toolCallId: "call_ticket",
+                    toolName: "lookup_ticket",
+                    output: { type: "text" as const, value: "TICK-42: open" },
+                },
+            ],
         },
     ];
 
@@ -1010,37 +1247,67 @@ describe("Cross-call boundary with in-flight provider-executed calls", () =>
         expect(step1.some((p) => p.type === "tool-call" && p.toolCallId === "call_ticket")).toBe(true);
 
         // Step 2: the real result arrives via replay, before the final answer.
-        const resultIndex = step2.findIndex((p) => p.type === "tool-result" && p.toolCallId === "call_cmd1");
+        const resultIndex = step2.findIndex(
+            (p) => p.type === "tool-result" && p.toolCallId === "call_cmd1",
+        );
         expect(resultIndex).toBeGreaterThan(-1);
         expect(step2[resultIndex]?.isError).toBeUndefined();
-        expect((step2[resultIndex]?.result as { item?: { aggregatedOutput?: string } })?.item?.aggregatedOutput).toBe("file.txt");
+        expect(
+            (step2[resultIndex]?.result as { item?: { aggregatedOutput?: string } })?.item
+                ?.aggregatedOutput,
+        ).toBe("file.txt");
 
         const textIndex = step2.findIndex((p) => p.type === "text-delta");
         expect(textIndex).toBeGreaterThan(resultIndex);
 
-        expect((step2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("stop");
+        expect(
+            (step2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+        ).toBe("stop");
     });
 
-    it("emits a result completing before the tool request within the same step", async () =>
+    it("C15/D10 emits a result completing before the tool request within the same step", async () =>
     {
+        const assertC15 = planAssertionsForTest("C15");
+        const assertD10 = planAssertionsForTest("D10");
         const { step1 } = await runBothSteps(new ParallelCommandTransport("step1"));
 
-        const resultIndex = step1.findIndex((p) => p.type === "tool-result" && p.toolCallId === "call_cmd1");
+        const resultIndex = step1.findIndex(
+            (p) => p.type === "tool-result" && p.toolCallId === "call_cmd1",
+        );
+        await assertC15("保留可见内容并显示单一终态", () => expect(resultIndex).toBeGreaterThan(-1));
         expect(resultIndex).toBeGreaterThan(-1);
 
-        const clientCallIndex = step1.findIndex((p) => p.type === "tool-call" && p.toolCallId === "call_ticket");
-        expect(clientCallIndex).toBeGreaterThan(resultIndex);
+        const clientCallIndex = step1.findIndex(
+            (p) => p.type === "tool-call" && p.toolCallId === "call_ticket",
+        );
+        await assertC15("无自动重试、额外请求或迟到事件应用", () =>
+            expect(clientCallIndex).toBeGreaterThan(resultIndex),
+        );
+        await assertD10("提前完成结果保持正确事件顺序与单终态", () =>
+        {
+            expect(clientCallIndex).toBeGreaterThan(resultIndex);
+            expect(step1.filter((part) => part.type === "finish")).toHaveLength(1);
+        });
+        await assertC15("terminal 只结算一次且 Composer 恢复", () =>
+            expect(step1.filter((part) => part.type === "finish")).toHaveLength(1),
+        );
     });
 
-    it("closes an adopted call that never completes via the turn-completed safety net", async () =>
+    it("D09 closes an adopted call that never completes via the turn-completed safety net", async () =>
     {
+        const assertD09 = planAssertionsForTest("D09");
         const { step1, step2 } = await runBothSteps(new ParallelCommandTransport("never"));
 
         expect(step1.some((p) => p.type === "tool-result" && p.toolCallId === "call_cmd1")).toBe(false);
 
         // turn/completed in step 2 closes the adopted call with a synthetic error result.
         const resultPart = step2.find((p) => p.type === "tool-result" && p.toolCallId === "call_cmd1");
-        expect(resultPart?.isError).toBe(true);
-        expect((step2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified).toBe("stop");
+        await assertD09("未完成工具由 turn/completed 以错误结果关闭", () =>
+        {
+            expect(resultPart?.isError).toBe(true);
+            expect(
+                (step2.find((p) => p.type === "finish")?.finishReason as { unified: string })?.unified,
+            ).toBe("stop");
+        });
     });
 });

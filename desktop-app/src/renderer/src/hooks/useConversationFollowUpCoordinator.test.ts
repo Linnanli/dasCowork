@@ -4,19 +4,47 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../../scripts/lib/test-plan-assertions.mjs'
+
 import type {
   ConversationFollowUpState,
   DesktopCodexFollowUpApi,
+  FollowUpSteerPendingAck,
   PreparedFollowUpTurnStart,
   QueuedFollowUpItem,
   QueuedUserMessageSnapshotInput
 } from '../../../shared/codexFollowUpApi'
 import type { ConversationChatEntry } from '../runtime/ConversationChatRegistry'
 import {
+  parseComposerContextReferences,
+  serializeComposerContextReference
+} from '../composer/composerContextDirectiveFormatter'
+import {
   dispatchFollowUpHead,
-  steerFollowUpItemWithOptimisticMessage,
+  steerFollowUpItemWithTranscript,
+  toSteeringUIMessage,
   useConversationFollowUpCoordinator
 } from './useConversationFollowUpCoordinator'
+
+const steerAssertionIds = [
+  '已显示回答保持不变',
+  '复用原 turn，不能额外启动 turn',
+  '队列顺序与对话隔离正确'
+]
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+async function assertSteerPlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of steerAssertionIds) {
+    await record(assertionId, assertion)
+  }
+}
 
 describe('conversation follow-up coordinator', () => {
   afterEach(() => {
@@ -44,7 +72,7 @@ describe('conversation follow-up coordinator', () => {
       getState: vi.fn(async () => state)
     })
 
-    await dispatchFollowUpHead(api, createEntry(sendMessage), item, false)
+    await dispatchFollowUpHead(api, createReadyEntry(sendMessage), item)
 
     expect(api.prepareNextTurn).toHaveBeenCalledWith('conversation-1', 'item-1')
     expect(sendMessage).toHaveBeenCalledWith(
@@ -73,7 +101,7 @@ describe('conversation follow-up coordinator', () => {
     const sendMessage = vi.fn(async () => {
       entry.context.threadId = 'thread-migrated'
     })
-    const entry = createEntry(sendMessage)
+    const entry = createReadyEntry(sendMessage)
     const api = createApi({
       prepareNextTurn: vi.fn(async () => ({
         request: {
@@ -90,39 +118,49 @@ describe('conversation follow-up coordinator', () => {
       getState: vi.fn(async () => migratedState)
     })
 
-    await dispatchFollowUpHead(api, entry, item, false)
+    await dispatchFollowUpHead(api, entry, item)
 
     expect(api.getState).toHaveBeenCalledWith('thread-migrated')
   })
 
-  it('shows one stable optimistic Steer message after app-server acceptance', async () => {
+  it('stages one stable first-class Steer message before awaiting app-server acceptance', async () => {
     const item = createItem('steer')
     const entry = createEntry()
-    const state = createState([])
-    const api = createApi({ steerNext: vi.fn(async () => state) })
+    const acknowledgement = deferred({
+      delivery: 'pending-ack' as const,
+      clientUserMessageId: 'item-1',
+      targetTurnId: 'turn-server'
+    })
+    const steering = steerFollowUpItemWithTranscript(
+      item.message,
+      entry,
+      () => acknowledgement.promise
+    )
 
-    await dispatchFollowUpHead(api, entry, item, true)
-    await dispatchFollowUpHead(api, entry, item, true)
+    expect(entry.controller.stageSteeringMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'item-1' }),
+      { clientUserMessageId: 'item-1', targetTurnId: 'turn-active' }
+    )
+    expect(entry.controller.retargetSteeringMessage).not.toHaveBeenCalled()
 
-    expect(entry.chat.messages.filter((message) => message.id === 'item-1')).toHaveLength(1)
-    expect(api.steerNext).toHaveBeenCalledWith('conversation-1', 'item-1')
+    acknowledgement.resolve()
+    await steering
+    expect(entry.controller.retargetSteeringMessage).toHaveBeenCalledWith('item-1', 'turn-server')
   })
 
-  it('removes the optimistic Steer message when app-server rejects it', async () => {
+  it('rejects the first-class Steer message when app-server rejects it', async () => {
     const item = createItem('steer')
     const entry = createEntry()
-    const api = createApi({
-      steerNext: vi.fn(async () => {
+
+    await expect(
+      steerFollowUpItemWithTranscript(item.message, entry, async () => {
         throw new Error('turn ended')
       })
-    })
-
-    await expect(dispatchFollowUpHead(api, entry, item, true)).rejects.toThrow('turn ended')
-    expect(entry.chat.messages).toEqual([])
+    ).rejects.toThrow('turn ended')
+    expect(entry.controller.rejectSteeringMessage).toHaveBeenCalledWith('item-1')
   })
 
-  it('renders a local image correctly in an optimistic Composer Steer message', async () => {
-    const entry = createEntry()
+  it('materializes a local image correctly in a first-class Composer Steer message', () => {
     const message = {
       ...createItem('steer').message,
       attachments: [
@@ -138,13 +176,7 @@ describe('conversation follow-up coordinator', () => {
       ]
     } satisfies QueuedUserMessageSnapshotInput
 
-    await steerFollowUpItemWithOptimisticMessage(
-      entry.chat,
-      message,
-      vi.fn(async () => undefined)
-    )
-
-    expect(entry.chat.messages[0]?.parts).toEqual([
+    expect(toSteeringUIMessage(message).parts).toEqual([
       { type: 'text', text: 'follow up' },
       {
         type: 'file',
@@ -155,29 +187,23 @@ describe('conversation follow-up coordinator', () => {
     ])
   })
 
-  it('keeps materialized persisted assets in an optimistic queue-row Steer message', async () => {
-    const entry = createEntry()
+  it('keeps materialized persisted assets in a first-class queue-row Steer message', () => {
+    const message = toSteeringUIMessage({
+      id: 'item-1',
+      parts: [
+        { type: 'text', text: 'follow up' },
+        {
+          type: 'file',
+          filename: 'queued.png',
+          mediaType: 'image/png',
+          url: 'data:image/png;base64,cXVldWVk'
+        }
+      ],
+      contextReferences: [],
+      trustedContext: createItem('steer').message.trustedContext
+    })
 
-    await steerFollowUpItemWithOptimisticMessage(
-      entry.chat,
-      {
-        id: 'item-1',
-        parts: [
-          { type: 'text', text: 'follow up' },
-          {
-            type: 'file',
-            filename: 'queued.png',
-            mediaType: 'image/png',
-            url: 'data:image/png;base64,cXVldWVk'
-          }
-        ],
-        contextReferences: [],
-        trustedContext: createItem('steer').message.trustedContext
-      },
-      vi.fn(async () => undefined)
-    )
-
-    expect(entry.chat.messages[0]?.parts).toEqual([
+    expect(message.parts).toEqual([
       { type: 'text', text: 'follow up' },
       {
         type: 'file',
@@ -188,12 +214,104 @@ describe('conversation follow-up coordinator', () => {
     ])
   })
 
-  it('waits for the conversation to finish loading before dispatching the queue head', async () => {
+  it('A12 preserves text, image, file, folder, and context directives on the existing Steer turn', async () => {
+    const directiveReference = {
+      type: 'file' as const,
+      label: 'implementation.ts',
+      path: '/repo/src/implementation.ts'
+    }
+    const contextReference = {
+      version: 1 as const,
+      canonicalId: 'file:/repo/src/implementation.ts',
+      kind: 'file' as const,
+      presentation: 'mention' as const,
+      label: directiveReference.label,
+      path: directiveReference.path
+    }
+    const message = {
+      id: 'rich-steer',
+      text: `Please inspect ${serializeComposerContextReference(directiveReference)}`,
+      attachments: [
+        {
+          kind: 'local-image' as const,
+          id: 'image-1',
+          path: '/repo/diagram.png',
+          capabilityToken: 'image-token',
+          previewUrl: 'app://fs/@fs/repo/diagram.png',
+          displayName: 'diagram.png',
+          mediaType: 'image/png'
+        },
+        {
+          kind: 'file' as const,
+          path: '/repo/src/implementation.ts',
+          label: 'implementation.ts',
+          fileUrl: 'file:///repo/src/implementation.ts'
+        },
+        {
+          kind: 'folder' as const,
+          path: '/repo/docs',
+          label: 'docs',
+          fileUrl: 'file:///repo/docs'
+        }
+      ],
+      contextReferences: [contextReference],
+      trustedContext: createItem('steer').message.trustedContext
+    } satisfies QueuedUserMessageSnapshotInput
+    const entry = createEntry()
+
+    await steerFollowUpItemWithTranscript(message, entry, async () => createSteerAck(message.id))
+
+    const stagedMessage = vi.mocked(entry.controller.stageSteeringMessage).mock.calls[0]?.[0]
+    expect(stagedMessage).toEqual({
+      id: 'rich-steer',
+      role: 'user',
+      parts: [
+        { type: 'text', text: message.text },
+        {
+          type: 'file',
+          filename: 'diagram.png',
+          mediaType: 'image/png',
+          url: 'app://fs/@fs/repo/diagram.png'
+        },
+        {
+          type: 'file',
+          filename: 'implementation.ts',
+          mediaType: 'application/vnd.dascowork.local-file',
+          url: 'file:///repo/src/implementation.ts'
+        },
+        {
+          type: 'file',
+          filename: 'docs',
+          mediaType: 'application/vnd.dascowork.local-folder',
+          url: 'file:///repo/docs'
+        }
+      ]
+    })
+    const textPart = stagedMessage?.parts.find((part) => part.type === 'text')
+    expect(textPart?.type === 'text' ? parseComposerContextReferences(textPart.text) : []).toEqual([
+      directiveReference
+    ])
+    expect(entry.controller.stageSteeringMessage).toHaveBeenCalledWith(expect.anything(), {
+      clientUserMessageId: 'rich-steer',
+      targetTurnId: 'turn-active'
+    })
+    expect(entry.controller.sendMessage).not.toHaveBeenCalled()
+    await assertSteerPlanEvidence(['A12'], () => {
+      expect(stagedMessage?.parts).toHaveLength(4)
+      expect(entry.controller.stageSteeringMessage).toHaveBeenCalledWith(expect.anything(), {
+        clientUserMessageId: 'rich-steer',
+        targetTurnId: 'turn-active'
+      })
+      expect(entry.controller.sendMessage).not.toHaveBeenCalled()
+    })
+  })
+
+  it('waits for loading, then dispatches a recovered failed conversation queue head as a new turn', async () => {
     vi.useFakeTimers()
     const item = createItem('queue')
     const entry = createReadyEntry()
     entry.loaded = false
-    const sendMessage = vi.mocked(entry.chat.sendMessage)
+    const sendMessage = vi.mocked(entry.controller.sendMessage)
     const api = createApi({
       getState: vi
         .fn()
@@ -214,7 +332,7 @@ describe('conversation follow-up coordinator', () => {
       expect(sendMessage).not.toHaveBeenCalled()
 
       entry.loaded = true
-      entry.phase = 'error'
+      entry.status = 'error'
       await act(async () => {
         root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
         await flushPromises()
@@ -222,14 +340,8 @@ describe('conversation follow-up coordinator', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200)
       })
-      expect(sendMessage).not.toHaveBeenCalled()
-
-      entry.phase = 'ready'
-      await act(async () => {
-        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
-        await flushPromises()
-      })
       expect(sendMessage).toHaveBeenCalledTimes(1)
+      expect(entry.controller.clearError).toHaveBeenCalledOnce()
     } finally {
       act(() => root.unmount())
     }
@@ -241,7 +353,7 @@ describe('conversation follow-up coordinator', () => {
     const item = createItem('queue')
     const entry = createReadyEntry()
     const sendMessage = vi
-      .mocked(entry.chat.sendMessage)
+      .mocked(entry.controller.sendMessage)
       .mockRejectedValueOnce(new Error('renderer transport was not ready'))
       .mockResolvedValueOnce(undefined)
     const api = createApi({
@@ -275,6 +387,36 @@ describe('conversation follow-up coordinator', () => {
 
       expect(sendMessage).toHaveBeenCalledTimes(2)
       expect(api.getState).toHaveBeenCalledTimes(3)
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
+  it('does not race an explicit first-class Steer while the turn is running', async () => {
+    const item = createItem('steer')
+    const entry = createEntry()
+    const api = createApi({
+      getState: vi.fn(async () => createState([item])),
+      materializeItem: vi.fn(async () => ({
+        id: item.message.id,
+        parts: [{ type: 'text' as const, text: item.message.text }],
+        contextReferences: [],
+        trustedContext: item.message.trustedContext
+      })),
+      steerNext: vi.fn(async () => createSteerAck(item.id))
+    })
+    const root = createRoot(document.createElement('div'))
+
+    try {
+      await act(async () => {
+        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
+        await flushPromises()
+        await flushPromises()
+      })
+
+      expect(api.materializeItem).not.toHaveBeenCalled()
+      expect(entry.controller.stageSteeringMessage).not.toHaveBeenCalled()
+      expect(api.steerNext).not.toHaveBeenCalled()
     } finally {
       act(() => root.unmount())
     }
@@ -313,9 +455,11 @@ function createApi(overrides: Partial<DesktopCodexFollowUpApi> = {}): DesktopCod
     clear: vi.fn(),
     setDefaultMode: vi.fn(),
     prepareNextTurn: vi.fn(),
-    materializeItem: vi.fn(),
-    steerItem: vi.fn(),
-    steerNext: vi.fn(),
+    materializeItem: vi.fn(async () => {
+      throw new Error('materializeItem was not configured')
+    }),
+    steerItem: vi.fn(async () => createSteerAck('item-1')),
+    steerNext: vi.fn(async () => createSteerAck('item-1')),
     subscribe: vi.fn(() => () => undefined),
     ...overrides
   }
@@ -326,31 +470,67 @@ function createEntry(
     async () => undefined
   )
 ): ConversationChatEntry {
-  return {
+  const controller = {
+    id: 'conversation-1',
+    sendMessage,
+    getActiveTurnId: vi.fn(() => 'turn-active'),
+    stageSteeringMessage: vi.fn(() => ({ renderId: 'steer:item-1' })),
+    rejectSteeringMessage: vi.fn(),
+    retargetSteeringMessage: vi.fn(),
+    clearError: vi.fn()
+  }
+  const entry = {
     localId: 'conversation-1',
     newConversation: false,
-    chat: {
-      messages: [],
-      sendMessage
-    },
+    controller,
     transport: {},
+    messages: [],
     context: {
       conversationId: 'conversation-1',
       threadId: 'conversation-1'
     },
-    phase: 'streaming',
+    status: 'streaming',
     unread: false,
     draft: '',
     draftAttachments: [],
     loaded: true
   } as unknown as ConversationChatEntry
+  vi.mocked(entry.controller.clearError).mockImplementation(() => {
+    entry.status = 'ready'
+  })
+  return entry
 }
 
-function createReadyEntry(): ConversationChatEntry {
-  const entry = createEntry()
-  entry.phase = 'ready'
-  Object.assign(entry.chat, { status: 'ready' })
+function createReadyEntry(
+  sendMessage: (message?: unknown, options?: unknown) => Promise<void> = vi.fn(
+    async () => undefined
+  )
+): ConversationChatEntry {
+  const entry = createEntry(sendMessage)
+  entry.status = 'ready'
   return entry
+}
+
+function createSteerAck(clientUserMessageId: string): FollowUpSteerPendingAck {
+  return {
+    delivery: 'pending-ack',
+    clientUserMessageId,
+    targetTurnId: 'turn-server'
+  }
+}
+
+function deferred<T>(value: T): {
+  promise: Promise<T>
+  resolve: () => void
+} {
+  let resolvePromise!: (value: T) => void
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve
+  })
+  return {
+    promise,
+    resolve: () => resolvePromise(value)
+  }
 }
 
 function preparedTurn(item: QueuedFollowUpItem): PreparedFollowUpTurnStart {

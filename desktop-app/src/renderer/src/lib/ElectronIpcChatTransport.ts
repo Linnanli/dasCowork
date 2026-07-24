@@ -1,6 +1,6 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 
-import type { DesktopCodexChatApi } from '../../../shared/codexIpcApi'
+import type { CodexTurnLifecycleEvent, DesktopCodexChatApi } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 
 export type ActiveConversationContext = {
@@ -19,6 +19,7 @@ export type ElectronIpcChatTransportOptions = {
   getSelectedModelId: () => string | undefined
   onStreamStarted?: () => void
   onThreadBound?: (context: StreamFinishedContext & { threadId: string }) => void
+  onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void
   onStreamAccepted?: () => void
   onStreamAborted?: () => void
   onStreamError?: (error: string) => void
@@ -50,6 +51,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly onThreadBound:
     | ((context: StreamFinishedContext & { threadId: string }) => void)
     | undefined
+  private readonly onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void) | undefined
   private readonly onStreamAccepted: (() => void) | undefined
   private readonly onStreamAborted: (() => void) | undefined
   private readonly onStreamError: ((error: string) => void) | undefined
@@ -63,6 +65,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     this.getSelectedModelId = options.getSelectedModelId
     this.onStreamStarted = options.onStreamStarted
     this.onThreadBound = options.onThreadBound
+    this.onTurnLifecycle = options.onTurnLifecycle
     this.onStreamAccepted = options.onStreamAccepted
     this.onStreamAborted = options.onStreamAborted
     this.onStreamError = options.onStreamError
@@ -126,6 +129,11 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
             body: trustedContext.body
           },
           {
+            onTurnLifecycle: (event) => {
+              if (settled) return
+              markAccepted()
+              this.onTurnLifecycle?.(event)
+            },
             onThreadBound: (threadId) => {
               if (settled) return
               markAccepted()
@@ -143,6 +151,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
               closeStream()
             },
             onAbort: () => {
+              if (settled) return
               markAccepted()
               this.onStreamAborted?.()
               closeStream()
@@ -156,7 +165,9 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
       cancel: () => {
         settled = true
         detachAbortListener()
-        if (streamId) this.chatBridge.abortChatStream(streamId)
+        // A ReadableStream consumer can disappear during a renderer reload or
+        // navigation. That only detaches this renderer subscription; it is
+        // not a user request to interrupt the authoritative app-server turn.
       }
     })
   }

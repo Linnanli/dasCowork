@@ -5,6 +5,7 @@ import { PersistentTransport } from "../src/client/transport-persistent";
 import { CodexWorkerPool } from "../src/client/worker-pool";
 import { createCodexAppServer } from "../src/provider";
 import { MockTransport } from "./helpers/mock-transport";
+import { planAssertionsForTest } from "./helpers/plan-assertion";
 
 class ScriptedTransport extends MockTransport
 {
@@ -19,7 +20,10 @@ class ScriptedTransport extends MockTransport
 
         if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -136,8 +140,7 @@ describe("PersistentTransport", () =>
         await readAll(stream2);
 
         const initializeMessages = innerTransport.sentMessages.filter(
-            (msg): msg is { method: string } =>
-                "method" in msg && msg.method === "initialize",
+            (msg): msg is { method: string } => "method" in msg && msg.method === "initialize",
         );
 
         expect(initializeMessages).toHaveLength(1);
@@ -246,6 +249,47 @@ describe("PersistentTransport", () =>
         await provider.shutdown();
     });
 
+    it("releases a crashed worker before serving a FIFO waiter", async () =>
+    {
+        const transports: MockTransport[] = [];
+        const pool = new CodexWorkerPool({
+            poolSize: 1,
+            transportFactory: () =>
+            {
+                const transport = new ScriptedTransport();
+                transports.push(transport);
+                return transport;
+            },
+        });
+        const active = new PersistentTransport({ pool });
+        const waiting = new PersistentTransport({ pool });
+
+        await active.connect();
+        active.parkToolCall({
+            requestId: 1,
+            callId: "call_crashed_worker",
+            toolName: "exec_command",
+            args: {},
+            threadId: "thr_1",
+        });
+        const waitingConnect = waiting.connect();
+        await Promise.resolve();
+
+        transports[0]?.emitError(new Error("connection reset"));
+        expect(active.getPendingToolCall()).toBeNull();
+        await active.disconnect();
+        await waitingConnect;
+
+        expect(transports).toHaveLength(2);
+        await waiting.sendMessage({ id: "initialize-after-crash", method: "initialize" });
+        expect(transports[1]?.sentMessages).toContainEqual(
+            expect.objectContaining({ method: "initialize" }),
+        );
+
+        await waiting.disconnect();
+        await pool.shutdown();
+    });
+
     it("queues when pool is exhausted and acquires after release", async () =>
     {
         const pool = new CodexWorkerPool({
@@ -320,8 +364,9 @@ describe("PersistentTransport", () =>
         await pool.shutdown();
     });
 
-    it("runs four transports concurrently and never assigns an aborted fifth waiter", async () =>
+    it("G08 runs four transports concurrently and never assigns an aborted fifth waiter", async () =>
     {
+        const assertG08 = planAssertionsForTest("G08");
         let transportCount = 0;
         const pool = new CodexWorkerPool({
             poolSize: 4,
@@ -334,16 +379,16 @@ describe("PersistentTransport", () =>
         const active = Array.from({ length: 4 }, () => new PersistentTransport({ pool }));
 
         await Promise.all(active.map((transport) => transport.connect()));
-        expect(transportCount).toBe(4);
+        await assertG08("跨对话与信任边界隔离", () => expect(transportCount).toBe(4));
 
         const abortController = new AbortController();
         const queued = new PersistentTransport({ pool, signal: abortController.signal });
         const queuedConnect = queued.connect();
         await Promise.resolve();
-        expect(transportCount).toBe(4);
+        await assertG08("资源、并发和终态无残留", () => expect(transportCount).toBe(4));
 
         abortController.abort();
-        await expect(queuedConnect).rejects.toThrow(/abort/i);
+        await assertG08("诊断可关联而不泄露密钥", () => expect(queuedConnect).rejects.toThrow(/abort/i));
 
         await active[0]!.disconnect();
         const replacement = new PersistentTransport({ pool });

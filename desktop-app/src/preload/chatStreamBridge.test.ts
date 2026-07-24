@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { createVitestPlanAssertionRecorder } from '../../scripts/lib/test-plan-assertions.mjs'
 import type {
   CodexChatRequest,
   CodexChatStreamCallbacks,
+  CodexChatTerminalEvent,
   CodexChatStreamEvent
 } from '../shared/codexIpcApi'
 import { createChatStreamBridge } from './chatStreamBridge'
 
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
 class FakeMessagePort {
   onmessage: ((event: MessageEvent) => void) | null = null
+  onmessageerror: ((event: MessageEvent) => void) | null = null
   peer: FakeMessagePort | undefined
   closed = false
 
@@ -32,6 +37,7 @@ function createFakeMessageChannel(): MessageChannel {
 function createCallbacks(): CodexChatStreamCallbacks {
   return {
     onThreadBound: vi.fn(),
+    onTurnLifecycle: vi.fn(),
     onChunk: vi.fn(),
     onFinish: vi.fn(),
     onAbort: vi.fn(),
@@ -55,7 +61,7 @@ describe('createChatStreamBridge', () => {
     const bridge = createChatStreamBridge({
       createStreamId: () => `stream-${++nextId}`,
       createMessageChannel: createFakeMessageChannel,
-      postStart: (_request, port) => startedPorts.push(port)
+      postStart: (_request, _streamId, port) => startedPorts.push(port)
     })
     const firstCallbacks = createCallbacks()
     const secondCallbacks = createCallbacks()
@@ -66,6 +72,15 @@ describe('createChatStreamBridge', () => {
       controlMessages.push(event.data)
     }
     startedPorts[0].postMessage({ type: 'thread-bound', threadId: 'thread-1' })
+    startedPorts[1].postMessage({
+      type: 'turn-lifecycle',
+      event: {
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-2',
+        turnId: 'turn-2'
+      }
+    } satisfies CodexChatStreamEvent)
     startedPorts[0].postMessage({ type: 'finish', threadId: 'thread-1' })
     startedPorts[1].postMessage({
       type: 'chunk',
@@ -79,6 +94,12 @@ describe('createChatStreamBridge', () => {
     })
     expect(firstCallbacks.onFinish).toHaveBeenCalledWith('thread-1')
     expect(secondCallbacks.onThreadBound).not.toHaveBeenCalled()
+    expect(secondCallbacks.onTurnLifecycle).toHaveBeenCalledWith({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-2',
+      turnId: 'turn-2'
+    })
     expect(secondCallbacks.onChunk).toHaveBeenCalledWith({ type: 'text-start', id: 'text-2' })
     expect((startedPorts[0] as unknown as FakeMessagePort).peer?.closed).toBe(true)
     expect((startedPorts[1] as unknown as FakeMessagePort).peer?.closed).toBe(false)
@@ -90,7 +111,7 @@ describe('createChatStreamBridge', () => {
     const bridge = createChatStreamBridge({
       createStreamId: () => 'stream-1',
       createMessageChannel: createFakeMessageChannel,
-      postStart: (_request, port) => {
+      postStart: (_request, _streamId, port) => {
         startedPort = port
       }
     })
@@ -117,6 +138,26 @@ describe('createChatStreamBridge', () => {
     expect(callbacks.onAbort).toHaveBeenCalledTimes(1)
   })
 
+  it('reports every active stream before a renderer unload closes its ports', () => {
+    const detached: Array<{ streamId: string; chatId: string }> = []
+    let nextId = 0
+    const bridge = createChatStreamBridge({
+      createStreamId: () => `stream-${++nextId}`,
+      createMessageChannel: createFakeMessageChannel,
+      postStart: () => undefined,
+      postDetached: (streamId, request) => detached.push({ streamId, chatId: request.chatId })
+    })
+
+    bridge.startChatStream(createRequest('chat-a'), createCallbacks())
+    bridge.startChatStream(createRequest('chat-b'), createCallbacks())
+    bridge.detachActiveStreams()
+
+    expect(detached).toEqual([
+      { streamId: 'stream-1', chatId: 'chat-a' },
+      { streamId: 'stream-2', chatId: 'chat-b' }
+    ])
+  })
+
   it.each([
     {
       terminal: { type: 'finish', threadId: 'thread-1' } satisfies CodexChatStreamEvent,
@@ -136,7 +177,7 @@ describe('createChatStreamBridge', () => {
       const bridge = createChatStreamBridge({
         createStreamId: () => 'stream-1',
         createMessageChannel: createFakeMessageChannel,
-        postStart: (_request, port) => {
+        postStart: (_request, _streamId, port) => {
           startedPort = port
         }
       })
@@ -153,14 +194,14 @@ describe('createChatStreamBridge', () => {
     }
   )
 
-  it('ignores non-terminal events while an abort request is pending', () => {
+  it('keeps canonical lifecycle acknowledgements while suppressing render chunks after abort', () => {
     let startedPort: MessagePort | undefined
     const controlMessages: unknown[] = []
     const callbacks = createCallbacks()
     const bridge = createChatStreamBridge({
       createStreamId: () => 'stream-1',
       createMessageChannel: createFakeMessageChannel,
-      postStart: (_request, port) => {
+      postStart: (_request, _streamId, port) => {
         startedPort = port
       }
     })
@@ -172,6 +213,18 @@ describe('createChatStreamBridge', () => {
     bridge.abortChatStream('stream-1')
     startedPort?.postMessage({ type: 'thread-bound', threadId: 'thread-1' })
     startedPort?.postMessage({
+      type: 'turn-lifecycle',
+      event: {
+        type: 'item-completed',
+        sequence: 4,
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        itemId: 'server-user-1',
+        itemType: 'userMessage',
+        clientUserMessageId: 'follow-up-1'
+      }
+    } satisfies CodexChatStreamEvent)
+    startedPort?.postMessage({
       type: 'chunk',
       chunk: { type: 'text-start', id: 'text-1' }
     } satisfies CodexChatStreamEvent)
@@ -180,6 +233,15 @@ describe('createChatStreamBridge', () => {
     expect(controlMessages).toContainEqual({
       type: 'thread-bound-ack',
       threadId: 'thread-1'
+    })
+    expect(callbacks.onTurnLifecycle).toHaveBeenCalledWith({
+      type: 'item-completed',
+      sequence: 4,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'server-user-1',
+      itemType: 'userMessage',
+      clientUserMessageId: 'follow-up-1'
     })
     expect(callbacks.onChunk).not.toHaveBeenCalled()
     expect((startedPort as unknown as FakeMessagePort).peer?.closed).toBe(false)
@@ -191,7 +253,7 @@ describe('createChatStreamBridge', () => {
     const bridge = createChatStreamBridge({
       createStreamId: () => 'stream-1',
       createMessageChannel: createFakeMessageChannel,
-      postStart: (_request, port) => {
+      postStart: (_request, _streamId, port) => {
         startedPort = port
       }
     })
@@ -210,7 +272,7 @@ describe('createChatStreamBridge', () => {
     const bridge = createChatStreamBridge({
       createStreamId: () => `stream-${++nextId}`,
       createMessageChannel: createFakeMessageChannel,
-      postStart: (_request, port) => startedPorts.push(port)
+      postStart: (_request, _streamId, port) => startedPorts.push(port)
     })
     const callbacks = Array.from({ length: 12 }, () => createCallbacks())
 
@@ -233,5 +295,253 @@ describe('createChatStreamBridge', () => {
     callbacks.forEach((streamCallbacks) => {
       expect(streamCallbacks.onAbort).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('G11 finish-first ignores late aborted, error, and duplicate finish terminals', async () => {
+    let startedPort: MessagePort | undefined
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => {
+        startedPort = port
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPort?.postMessage({ type: 'finish', threadId: 'thread-first' })
+    startedPort?.postMessage({ type: 'aborted' })
+    startedPort?.postMessage({ type: 'error', error: 'late error' })
+    startedPort?.postMessage({ type: 'finish', threadId: 'thread-duplicate' })
+
+    expect(callbacks.onFinish).toHaveBeenCalledTimes(1)
+    expect(callbacks.onFinish).toHaveBeenCalledWith('thread-first')
+    expect(callbacks.onAbort).not.toHaveBeenCalled()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '错误、取消、完成竞态只进入单终态',
+      assertion: () => expect(callbacks.onFinish).toHaveBeenCalledTimes(1)
+    })
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '资源、并发和终态无残留',
+      assertion: () => {
+        expect(callbacks.onAbort).not.toHaveBeenCalled()
+        expect(callbacks.onError).not.toHaveBeenCalled()
+      }
+    })
+  })
+
+  it('G11 aborted-first ignores late finish, error, and duplicate aborted terminals', async () => {
+    let startedPort: MessagePort | undefined
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => {
+        startedPort = port
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPort?.postMessage({ type: 'aborted' })
+    startedPort?.postMessage({ type: 'finish', threadId: 'thread-late' })
+    startedPort?.postMessage({ type: 'error', error: 'late error' })
+    startedPort?.postMessage({ type: 'aborted' })
+
+    expect(callbacks.onAbort).toHaveBeenCalledTimes(1)
+    expect(callbacks.onFinish).not.toHaveBeenCalled()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '错误、取消、完成竞态只进入单终态',
+      assertion: () => expect(callbacks.onAbort).toHaveBeenCalledTimes(1)
+    })
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '资源、并发和终态无残留',
+      assertion: () => {
+        expect(callbacks.onFinish).not.toHaveBeenCalled()
+        expect(callbacks.onError).not.toHaveBeenCalled()
+      }
+    })
+  })
+
+  it('G11 error-first ignores late finish, aborted, and duplicate error terminals', async () => {
+    let startedPort: MessagePort | undefined
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => {
+        startedPort = port
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPort?.postMessage({ type: 'error', error: 'first error' })
+    startedPort?.postMessage({ type: 'finish', threadId: 'thread-late' })
+    startedPort?.postMessage({ type: 'aborted' })
+    startedPort?.postMessage({ type: 'error', error: 'duplicate error' })
+
+    expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledWith('first error')
+    expect(callbacks.onFinish).not.toHaveBeenCalled()
+    expect(callbacks.onAbort).not.toHaveBeenCalled()
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '错误、取消、完成竞态只进入单终态',
+      assertion: () => expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    })
+    await planAssert({
+      scenarioId: 'G11',
+      assertionId: '资源、并发和终态无残留',
+      assertion: () => {
+        expect(callbacks.onFinish).not.toHaveBeenCalled()
+        expect(callbacks.onAbort).not.toHaveBeenCalled()
+      }
+    })
+  })
+
+  it('C22/G11 uses the IPC terminal fallback exactly once after the MessagePort fails', async () => {
+    let startedPort: MessagePort | undefined
+    let terminalListener:
+      | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
+      | undefined
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => {
+        startedPort = port
+      },
+      subscribeTerminal: (listener) => {
+        terminalListener = listener
+        return () => undefined
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    ;(startedPort as unknown as FakeMessagePort).peer?.onmessageerror?.({} as MessageEvent)
+    terminalListener?.({
+      streamId: 'stream-1',
+      terminal: { type: 'error', error: 'The chat connection was interrupted before completion.' }
+    })
+    startedPort?.postMessage({ type: 'aborted' })
+
+    expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      'The chat connection was interrupted before completion.'
+    )
+    expect(callbacks.onAbort).not.toHaveBeenCalled()
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: '保留可见内容并显示单一终态',
+      assertion: () =>
+        expect(callbacks.onError).toHaveBeenCalledWith(
+          'The chat connection was interrupted before completion.'
+        )
+    })
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: 'terminal 只结算一次且 Composer 恢复',
+      assertion: () => expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    })
+    await planAssert({
+      scenarioId: 'C22',
+      assertionId: '无自动重试、额外请求或迟到事件应用',
+      assertion: () => expect(callbacks.onAbort).not.toHaveBeenCalled()
+    })
+  })
+
+  it('C22 lets a healthy MessagePort drain chunks and its terminal before a fallback terminal', () => {
+    vi.useFakeTimers()
+    try {
+      let startedPort: MessagePort | undefined
+      let terminalListener:
+        | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
+        | undefined
+      const callbacks = createCallbacks()
+      const bridge = createChatStreamBridge({
+        createStreamId: () => 'stream-1',
+        createMessageChannel: createFakeMessageChannel,
+        postStart: (_request, _streamId, port) => {
+          startedPort = port
+        },
+        subscribeTerminal: (listener) => {
+          terminalListener = listener
+          return () => undefined
+        }
+      })
+
+      bridge.startChatStream(createRequest('chat-1'), callbacks)
+      terminalListener?.({
+        streamId: 'stream-1',
+        terminal: { type: 'finish', threadId: 'thread-1' }
+      })
+      startedPort?.postMessage({
+        type: 'chunk',
+        chunk: { type: 'text-start', id: 'text-1' }
+      } satisfies CodexChatStreamEvent)
+      startedPort?.postMessage({ type: 'finish', threadId: 'thread-1' })
+      vi.advanceTimersByTime(1_000)
+
+      expect(callbacks.onChunk).toHaveBeenCalledWith({ type: 'text-start', id: 'text-1' })
+      expect(callbacks.onFinish).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C22 waits for the canonical IPC terminal after a broken MessagePort', async () => {
+    vi.useFakeTimers()
+    try {
+      let startedPort: MessagePort | undefined
+      let terminalListener:
+        | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
+        | undefined
+      const callbacks = createCallbacks()
+      const bridge = createChatStreamBridge({
+        createStreamId: () => 'stream-1',
+        createMessageChannel: createFakeMessageChannel,
+        postStart: (_request, _streamId, port) => {
+          startedPort = port
+        },
+        subscribeTerminal: (listener) => {
+          terminalListener = listener
+          return () => undefined
+        }
+      })
+
+      bridge.startChatStream(createRequest('chat-1'), callbacks)
+      ;(startedPort as unknown as FakeMessagePort).peer?.onmessageerror?.({} as MessageEvent)
+      vi.advanceTimersByTime(1_000)
+      expect(callbacks.onError).not.toHaveBeenCalled()
+      terminalListener?.({
+        streamId: 'stream-1',
+        terminal: { type: 'finish', threadId: 'thread-1' }
+      })
+
+      expect(callbacks.onFinish).toHaveBeenCalledTimes(1)
+      expect(callbacks.onFinish).toHaveBeenCalledWith('thread-1')
+      await planAssert({
+        scenarioId: 'C22',
+        assertionId: '保留可见内容并显示单一终态',
+        assertion: () => expect(callbacks.onFinish).toHaveBeenCalledWith('thread-1')
+      })
+      await planAssert({
+        scenarioId: 'C22',
+        assertionId: 'terminal 只结算一次且 Composer 恢复',
+        assertion: () => expect(callbacks.onFinish).toHaveBeenCalledTimes(1)
+      })
+      await planAssert({
+        scenarioId: 'C22',
+        assertionId: '无自动重试、额外请求或迟到事件应用',
+        assertion: () => expect(callbacks.onError).not.toHaveBeenCalled()
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

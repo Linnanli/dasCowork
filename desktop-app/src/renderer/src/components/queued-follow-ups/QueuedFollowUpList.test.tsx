@@ -4,11 +4,33 @@ import { act, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  createVitestPlanAssertionRecorder,
+  planAssertionsForScenarios
+} from '../../../../../scripts/lib/test-plan-assertions.mjs'
+
 import type { QueuedFollowUpItem } from '../../../../shared/codexFollowUpApi'
 import { QueuedFollowUpList, type QueuedFollowUpEditContext } from './QueuedFollowUpList'
 import { QueuedFollowUpPausedBanner } from './QueuedFollowUpPausedBanner'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+const uiAssertionIds = [
+  '错误、取消与重试 UI 正确',
+  '历史与已显示内容保留',
+  '可访问性、脱敏和 Composer 状态正确'
+]
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+async function assertUiPlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  const record = planAssertionsForScenarios(scenarioIds, planAssert)
+  for (const assertionId of uiAssertionIds) {
+    await record(assertionId, assertion)
+  }
+}
 
 describe('queued follow-up components', () => {
   let container: HTMLDivElement
@@ -28,7 +50,7 @@ describe('queued follow-up components', () => {
     container.remove()
   })
 
-  it('renders summaries and labels every queue action for assistive technology', () => {
+  it('E09/E27/F20 renders summaries and labels every queue action for assistive technology', () => {
     const failedItem = {
       ...createItem('two', 'Second message'),
       status: 'paused-failed',
@@ -64,7 +86,32 @@ describe('queued follow-up components', () => {
     expect(container.querySelector('[aria-live="polite"]')).not.toBeNull()
   })
 
-  it('passes edit placement to the composer callback and moves focus to the composer', async () => {
+  it('F18 presents a paused-failed queue message as recoverable queue state', async () => {
+    const failedItem = {
+      ...createItem('failed', 'Queued follow-up'),
+      status: 'paused-failed',
+      pause: { kind: 'send-failed', userMessage: 'The queued asset is unavailable.' }
+    } satisfies QueuedFollowUpItem
+
+    act(() => {
+      root.render(<QueuedFollowUpPausedBanner item={failedItem} />)
+    })
+
+    expect(
+      container.querySelector('[data-slot="queued-follow-up-paused-banner"]')?.getAttribute('role')
+    ).toBe('status')
+    expect(container.textContent).toContain('Follow-up needs attention')
+    expect(container.textContent).toContain('The queued asset is unavailable.')
+    await assertUiPlanEvidence(['F18'], () => {
+      expect(
+        container.querySelector('[data-slot="queued-follow-up-paused-banner"]')?.getAttribute('role')
+      ).toBe('status')
+      expect(container.textContent).toContain('Follow-up needs attention')
+      expect(container.textContent).toContain('The queued asset is unavailable.')
+    })
+  })
+
+  it('E02 passes edit placement to the composer callback and moves focus to the composer', async () => {
     const onEdit = vi.fn<(item: QueuedFollowUpItem, context: QueuedFollowUpEditContext) => void>()
 
     act(() => {
@@ -86,7 +133,7 @@ describe('queued follow-up components', () => {
     expect(document.activeElement?.getAttribute('data-composer-focus')).toBe('true')
   })
 
-  it('keeps focus stable after delete, keyboard reorder, retry, and steer operations', async () => {
+  it('E02/E05/E27 keeps focus stable after delete, keyboard reorder, retry, and steer operations', async () => {
     act(() => {
       root.render(
         <FocusHarness
@@ -119,7 +166,7 @@ describe('queued follow-up components', () => {
     expect(document.activeElement?.getAttribute('data-composer-focus')).toBe('true')
   })
 
-  it('keeps queue mode in the more menu and steers the selected item', async () => {
+  it('E02/E05 keeps queue mode in the more menu and steers the selected item', async () => {
     const onSteer = vi.fn()
     const onToggleQueueing = vi.fn()
 
@@ -171,7 +218,7 @@ describe('queued follow-up components', () => {
     expect(document.activeElement).toBe(button('第 1 条排队消息的更多操作'))
   })
 
-  it('shows a paused queue banner and exposes Resume', async () => {
+  it('E10/E11/F20 shows a paused queue banner and exposes Resume', async () => {
     const onResume = vi.fn()
     const item = {
       ...createItem('one', 'First'),
@@ -188,7 +235,7 @@ describe('queued follow-up components', () => {
     expect(onResume).toHaveBeenCalledOnce()
   })
 
-  it('disables dragging and moving a paused queue head', async () => {
+  it('E28 disables dragging and moving a paused queue head', async () => {
     const pausedHead = {
       ...createItem('one', 'First'),
       status: 'paused-failed',

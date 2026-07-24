@@ -11,11 +11,13 @@ describe('CodexApprovalBroker', () => {
     const pending = broker.request({ kind: 'command', params: { command: 'pwd' } })
     const request = listener.mock.calls[0][0]
 
+    expect(broker.getPendingRequestIds()).toEqual([request.id])
     expect(request.kind).toBe('command')
     expect(request.params).toEqual({ command: 'pwd' })
 
     broker.respond(request.id, { action: 'approve' })
     await expect(pending).resolves.toEqual({ action: 'approve' })
+    expect(broker.getPendingRequestIds()).toEqual([])
   })
 
   it('publishes approval context from request params', async () => {
@@ -58,6 +60,21 @@ describe('CodexApprovalBroker', () => {
     const pending = broker.request({ kind: 'file-change', params: { reason: 'edit' } })
     broker.rejectAll(new Error('stopping'))
     await expect(pending).rejects.toThrow('stopping')
+  })
+
+  it('rejects one pending approval and notifies the UI settlement listener', async () => {
+    const broker = new CodexApprovalBroker({ timeoutMs: 30_000 })
+    const created = vi.fn()
+    const settled = vi.fn()
+    broker.onSettled(settled)
+    const pending = broker.request({ kind: 'command', params: { command: 'pwd' } }, created)
+    const requestId = created.mock.calls[0]?.[0]
+
+    expect(broker.reject(requestId, new Error('turn stopped'))).toBe(true)
+    expect(broker.reject(requestId, new Error('duplicate'))).toBe(false)
+    await expect(pending).rejects.toThrow('turn stopped')
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(settled).toHaveBeenCalledWith(requestId)
   })
 
   it('fails closed when an approval times out', async () => {

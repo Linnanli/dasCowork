@@ -25,6 +25,7 @@ vi.mock('electron', () => ({
 import { CodexChatRuntimeService, type CodexPortLike } from '../codexChatRuntimeService'
 import { ProjectService } from '../projects/ProjectService'
 import { ProjectStore, createDefaultProjectState } from '../projects/ProjectStore'
+import type { CodexTurnLifecycleEvent } from '../../shared/codexIpcApi'
 import { startConversation } from './startConversation'
 
 class FakePort implements CodexPortLike {
@@ -68,6 +69,7 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 
 type RuntimeStreamTextInput = {
   onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
+  onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void | Promise<void>
 }
 
 describe('startConversation', () => {
@@ -82,6 +84,19 @@ describe('startConversation', () => {
     const port = new FakePort()
     const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
       await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+      await input.onTurnLifecycle?.({
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-prestarted',
+        turnId: 'turn-prestarted'
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-prestarted',
+        turnId: 'turn-prestarted',
+        outcome: 'completed'
+      })
       return {
         toUIMessageStream: () => emptyUiMessageStream()
       }
@@ -140,6 +155,25 @@ describe('startConversation', () => {
     })
     expect(port.messages).toEqual([
       { type: 'thread-bound', threadId: 'thread-prestarted' },
+      {
+        type: 'turn-lifecycle',
+        event: {
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-prestarted',
+          turnId: 'turn-prestarted'
+        }
+      },
+      {
+        type: 'turn-lifecycle',
+        event: {
+          type: 'turn-completed',
+          sequence: 2,
+          threadId: 'thread-prestarted',
+          turnId: 'turn-prestarted',
+          outcome: 'completed'
+        }
+      },
       { type: 'finish', threadId: 'thread-prestarted' }
     ])
   })

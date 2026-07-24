@@ -1,4 +1,3 @@
-import { CodexSteerError } from '@janole/ai-sdk-provider-codex-asp'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CodexChatRuntimeService } from '../codexChatRuntimeService'
@@ -7,7 +6,7 @@ import { steerQueuedFollowUp } from './steerQueuedFollowUp'
 
 function createFixture(): {
   queue: ConversationFollowUpQueueService
-  runtime: Pick<CodexChatRuntimeService, 'steerConversation'>
+  runtime: Pick<CodexChatRuntimeService, 'steerClaimedFollowUp'>
 } {
   const item = {
     id: 'follow-up-1',
@@ -60,7 +59,7 @@ function createFixture(): {
     failClaim: vi.fn(async () => ({ ...state, revision: 3 }))
   } as unknown as ConversationFollowUpQueueService
   const runtime = {
-    steerConversation: vi.fn(async () => ({ turnId: 'turn-1' }))
+    steerClaimedFollowUp: vi.fn(async () => ({ turnId: 'turn-1' }))
   }
   return { queue, runtime }
 }
@@ -77,144 +76,61 @@ describe('steerQueuedFollowUp', () => {
     expect(queue.claimItemForSteer).toHaveBeenCalledWith('conversation-1', 'follow-up-1')
   })
 
-  it('returns the uncertain state when an accepted steer cannot be committed locally', async () => {
+  it('keeps the queue claim leased until a canonical user message acknowledges it', async () => {
     const { queue, runtime } = createFixture()
-    vi.mocked(queue.commitClaim).mockRejectedValueOnce(new Error('disk full'))
 
     const result = await steerQueuedFollowUp(queue, runtime, {
       conversationKey: 'conversation-1',
       itemId: 'follow-up-1'
     })
 
-    expect(result).toMatchObject({ revision: 3 })
-    expect(queue.failClaim).toHaveBeenCalledWith(
-      'conversation-1',
-      'follow-up-1',
-      'lease-1',
-      expect.objectContaining({
-        status: 'paused-recovery-uncertain',
-        kind: 'recovery-uncertain'
-      })
-    )
-  })
-
-  it('rejects instead of returning an unpersisted state when both settlement writes fail', async () => {
-    const { queue, runtime } = createFixture()
-    vi.mocked(queue.commitClaim).mockRejectedValueOnce(new Error('disk full'))
-    vi.mocked(queue.failClaim).mockRejectedValueOnce(new Error('disk still full'))
-
-    await expect(
-      steerQueuedFollowUp(queue, runtime, {
-        conversationKey: 'conversation-1',
-        itemId: 'follow-up-1'
-      })
-    ).rejects.toThrow('disk still full')
-
-    expect(runtime.steerConversation).toHaveBeenCalledOnce()
-    expect(queue.getState).not.toHaveBeenCalled()
-  })
-
-  it('returns an uncertain state for an in-flight transport result instead of inviting retry', async () => {
-    const { queue, runtime } = createFixture()
-    vi.mocked(runtime.steerConversation).mockRejectedValueOnce(
-      new CodexSteerError('steer_result_unknown', 'result unknown')
-    )
-
-    const result = await steerQueuedFollowUp(queue, runtime, {
-      conversationKey: 'conversation-1',
-      itemId: 'follow-up-1'
+    expect(result).toMatchObject({
+      delivery: 'pending-ack',
+      clientUserMessageId: 'follow-up-1',
+      targetTurnId: 'turn-1'
     })
-
-    expect(result).toMatchObject({ revision: 3 })
-    expect(queue.failClaim).toHaveBeenCalledWith(
-      'conversation-1',
-      'follow-up-1',
-      'lease-1',
-      expect.objectContaining({
-        status: 'paused-recovery-uncertain',
-        kind: 'recovery-uncertain'
-      })
+    expect(runtime.steerClaimedFollowUp).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseToken: 'lease-1' }),
+      expect.objectContaining({ id: 'follow-up-1', role: 'user' })
     )
     expect(queue.commitClaim).not.toHaveBeenCalled()
-  })
-
-  it('rejects instead of returning an unpersisted state when unknown-result settlement fails', async () => {
-    const { queue, runtime } = createFixture()
-    vi.mocked(runtime.steerConversation).mockRejectedValueOnce(
-      new CodexSteerError('steer_result_unknown', 'result unknown')
-    )
-    vi.mocked(queue.failClaim).mockRejectedValueOnce(new Error('disk full'))
-
-    await expect(
-      steerQueuedFollowUp(queue, runtime, {
-        conversationKey: 'conversation-1',
-        itemId: 'follow-up-1'
-      })
-    ).rejects.toThrow('disk full')
-
+    expect(queue.failClaim).not.toHaveBeenCalled()
     expect(queue.getState).not.toHaveBeenCalled()
   })
 
-  it('returns a definitely inactive preflight steer to the queue', async () => {
+  it('does not settle the lease again when the runtime rejects after taking ownership', async () => {
     const { queue, runtime } = createFixture()
-    vi.mocked(runtime.steerConversation).mockRejectedValueOnce(
-      new CodexSteerError('session_inactive', 'session inactive')
-    )
+    vi.mocked(runtime.steerClaimedFollowUp).mockRejectedValueOnce(new Error('turn ended'))
 
     await expect(
       steerQueuedFollowUp(queue, runtime, {
         conversationKey: 'conversation-1',
         itemId: 'follow-up-1'
       })
-    ).rejects.toThrow('session inactive')
+    ).rejects.toThrow('turn ended')
 
-    expect(queue.failClaim).toHaveBeenCalledWith(
-      'conversation-1',
-      'follow-up-1',
-      'lease-1',
-      expect.objectContaining({ status: 'queued', kind: 'turn-race' })
-    )
+    expect(queue.failClaim).not.toHaveBeenCalled()
+    expect(queue.commitClaim).not.toHaveBeenCalled()
+    expect(queue.getState).not.toHaveBeenCalled()
   })
 
-  it('returns unsupported active turn kinds to the queue', async () => {
+  it('returns materialization failures to the queue before runtime ownership begins', async () => {
     const { queue, runtime } = createFixture()
-    vi.mocked(runtime.steerConversation).mockRejectedValueOnce(
-      new CodexSteerError('unsupported_active_turn_kind', 'review turns cannot be steered')
-    )
+    vi.mocked(queue.materializeClaimMessage).mockRejectedValueOnce(new Error('asset missing'))
 
     await expect(
       steerQueuedFollowUp(queue, runtime, {
         conversationKey: 'conversation-1',
         itemId: 'follow-up-1'
       })
-    ).rejects.toThrow('review turns cannot be steered')
+    ).rejects.toThrow('asset missing')
 
     expect(queue.failClaim).toHaveBeenCalledWith(
       'conversation-1',
       'follow-up-1',
       'lease-1',
-      expect.objectContaining({ status: 'queued', kind: 'turn-race' })
+      expect.objectContaining({ kind: 'attachment-unavailable' })
     )
-  })
-
-  it('clamps persisted steer errors to the queue schema limit', async () => {
-    const { queue, runtime } = createFixture()
-    vi.mocked(runtime.steerConversation).mockRejectedValueOnce(new Error('x'.repeat(2_100)))
-
-    await expect(
-      steerQueuedFollowUp(queue, runtime, {
-        conversationKey: 'conversation-1',
-        itemId: 'follow-up-1'
-      })
-    ).rejects.toThrow()
-
-    expect(queue.failClaim).toHaveBeenCalledWith(
-      'conversation-1',
-      'follow-up-1',
-      'lease-1',
-      expect.objectContaining({
-        userMessage: `${'x'.repeat(1_999)}…`
-      })
-    )
+    expect(runtime.steerClaimedFollowUp).not.toHaveBeenCalled()
   })
 })

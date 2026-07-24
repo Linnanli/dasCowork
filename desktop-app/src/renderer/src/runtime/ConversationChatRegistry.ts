@@ -1,6 +1,9 @@
-import { Chat } from '@ai-sdk/react'
 import type { ChatStatus, UIMessage } from 'ai'
 
+import {
+  LOCAL_FILE_ATTACHMENT_MEDIA_TYPE,
+  LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE
+} from '../../../shared/composerContext'
 import type {
   DesktopCodexChatApi,
   SidebarConversation,
@@ -12,21 +15,27 @@ import {
   type ActiveConversationContext
 } from '../lib/ElectronIpcChatTransport'
 import { ConversationDraftStore, type ConversationDraftAttachment } from './ConversationDraftStore'
+import {
+  ConversationTranscriptController,
+  type ConversationTranscriptMessage
+} from './ConversationTranscriptController'
+import { ConversationTranscriptRecoveryStore } from './ConversationTranscriptRecoveryStore'
 
 export type ConversationScrollSnapshot = {
   scrollTop: number
   followBottom: boolean
 }
 
-export type ConversationEntryPhase = 'loading' | ChatStatus
+export type ConversationEntryStatus = 'loading' | ChatStatus
 
 export type ConversationChatEntry = {
   readonly localId: string
   readonly newConversation: boolean
-  readonly chat: Chat<UIMessage>
+  readonly controller: ConversationTranscriptController
   readonly transport: ElectronIpcChatTransport
+  readonly messages: readonly ConversationTranscriptMessage[]
   context: ActiveConversationContext
-  phase: ConversationEntryPhase
+  status: ConversationEntryStatus
   error?: Error
   selectedModelId?: string
   modelSelectionError?: string
@@ -47,21 +56,27 @@ export type ConversationChatRegistryOptions = {
   chatBridge: DesktopCodexChatApi
   selectedModelId?: string
   draftStore?: ConversationDraftStore
+  transcriptRecoveryStore?: ConversationTranscriptRecoveryStore
   createId?: () => string
 }
 
 type InternalConversationChatEntry = ConversationChatEntry & {
-  acceptedCurrentSend: boolean
+  messages: readonly ConversationTranscriptMessage[]
+  unsubscribeController: () => void
+  historyRevision?: string | null
 }
 
 export class ConversationChatRegistry {
   private readonly chatBridge: DesktopCodexChatApi
   private readonly draftStore: ConversationDraftStore
+  private readonly transcriptRecoveryStore: ConversationTranscriptRecoveryStore
   private readonly createId: () => string
   private readonly entriesByLocalId = new Map<string, InternalConversationChatEntry>()
   private readonly aliases = new Map<string, InternalConversationChatEntry>()
   private readonly conversationMetadata = new Map<string, SidebarConversation>()
+  private readonly inFlightHistoryLoads = new Map<string, Promise<ConversationChatEntry>>()
   private readonly listeners = new Set<() => void>()
+  private readonly recoveryHydrations = new Set<InternalConversationChatEntry>()
   private activeEntry: InternalConversationChatEntry
   private navigationEpoch = 0
   private version = 0
@@ -73,6 +88,8 @@ export class ConversationChatRegistry {
     this.chatBridge = options.chatBridge
     this.defaultSelectedModelId = options.selectedModelId
     this.draftStore = options.draftStore ?? new ConversationDraftStore()
+    this.transcriptRecoveryStore =
+      options.transcriptRecoveryStore ?? new ConversationTranscriptRecoveryStore()
     this.createId = options.createId ?? createLocalConversationId
     this.activeEntry = this.createEntry({
       localId: this.createId(),
@@ -108,12 +125,21 @@ export class ConversationChatRegistry {
     load: () => Promise<SidebarConversationOpenResult>
   ): Promise<ConversationChatEntry> {
     this.assertUsable()
-    const navigationEpoch = ++this.navigationEpoch
     const knownEntry = this.resolveInternal(conversationId)
-    if (knownEntry?.loaded || knownEntry?.phase === 'loading') {
+    if (knownEntry?.loaded) {
       this.activate(knownEntry)
       return knownEntry
     }
+
+    const inFlightLoad =
+      this.inFlightHistoryLoads.get(conversationId) ??
+      (knownEntry ? this.inFlightHistoryLoads.get(knownEntry.localId) : undefined)
+    if (inFlightLoad) {
+      if (knownEntry) this.activate(knownEntry)
+      return inFlightLoad
+    }
+
+    const navigationEpoch = ++this.navigationEpoch
 
     const metadata = this.conversationMetadata.get(conversationId)
     const metadataProjectSelection = projectSelectionFromAssignment(metadata?.projectAssignment)
@@ -123,7 +149,7 @@ export class ConversationChatRegistry {
         localId: conversationId,
         projectSelection: metadataProjectSelection,
         loaded: false,
-        phase: 'loading',
+        status: 'loading',
         newConversation: false
       })
     if (metadata) {
@@ -135,53 +161,20 @@ export class ConversationChatRegistry {
         cwd: metadata.cwd ?? entry.context.cwd
       }
     }
-    entry.phase = 'loading'
+    entry.status = 'loading'
     entry.error = undefined
     this.activate(entry)
 
+    const historyLoad = this.loadConversationHistory(entry, navigationEpoch, load)
+    this.inFlightHistoryLoads.set(conversationId, historyLoad)
+    this.inFlightHistoryLoads.set(entry.localId, historyLoad)
+
     try {
-      const result = await load()
-      if (this.destroyed) return entry
-
-      const canonicalEntry =
-        this.resolveInternal(result.threadId) ?? this.resolveInternal(result.conversationId)
-      if (canonicalEntry && canonicalEntry !== entry) {
-        this.removeEntry(entry, canonicalEntry)
-        if (this.navigationEpoch === navigationEpoch) this.activate(canonicalEntry)
-        else this.emit()
-        return canonicalEntry
+      return await historyLoad
+    } finally {
+      for (const [identity, pendingLoad] of this.inFlightHistoryLoads) {
+        if (pendingLoad === historyLoad) this.inFlightHistoryLoads.delete(identity)
       }
-
-      this.bindAlias(entry, result.conversationId)
-      const boundEntry = this.bindThread(entry, result.threadId) as InternalConversationChatEntry
-      if (boundEntry !== entry) {
-        this.removeEntry(entry, boundEntry)
-        if (this.navigationEpoch === navigationEpoch) this.activate(boundEntry)
-        else this.emit()
-        return boundEntry
-      }
-
-      entry.context = {
-        conversationId: result.conversationId,
-        threadId: result.threadId,
-        title: result.title,
-        projectSelection: projectSelectionFromOpenResult(result),
-        cwd: result.cwd
-      }
-      entry.chat.messages = result.messages
-      entry.chat.clearError()
-      entry.phase = 'ready'
-      entry.error = undefined
-      entry.loaded = true
-      if (this.navigationEpoch === navigationEpoch) this.activate(entry)
-      else this.emit()
-      return entry
-    } catch (error) {
-      entry.phase = 'error'
-      entry.error = toError(error)
-      if (entry !== this.activeEntry) entry.unread = true
-      this.emit()
-      return entry
     }
   }
 
@@ -191,7 +184,7 @@ export class ConversationChatRegistry {
   ): ConversationChatEntry {
     const entry = this.internalEntry(entryOrIdentity)
     if (entry.context.threadId && entry.context.threadId !== threadId) {
-      entry.phase = 'error'
+      entry.status = 'error'
       entry.error = new Error(
         `Conversation ${entry.localId} is already bound to thread ${entry.context.threadId}`
       )
@@ -201,7 +194,7 @@ export class ConversationChatRegistry {
 
     const existingEntry = this.resolveInternal(threadId)
     if (existingEntry && existingEntry !== entry) {
-      if (isRunningPhase(entry.phase) && !isRunningPhase(existingEntry.phase)) {
+      if (isRunningStatus(entry.status) && !isRunningStatus(existingEntry.status)) {
         return this.mergePlaceholderIntoLiveEntry(entry, existingEntry, threadId)
       }
       return existingEntry
@@ -212,6 +205,7 @@ export class ConversationChatRegistry {
     entry.context = { ...entry.context, threadId }
     entry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     entry.draftAttachments = this.draftStore.getAttachments(threadId)
+    this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
     entry.loaded = true
     this.emit()
     return entry
@@ -254,7 +248,7 @@ export class ConversationChatRegistry {
 
   updateActiveProjectSelection(projectSelection: ProjectSelection | undefined): void {
     const entry = this.activeEntry
-    if (entry.context.threadId || entry.chat.messages.length > 0 || entry.phase !== 'ready') return
+    if (entry.context.threadId || entry.messages.length > 0 || entry.status !== 'ready') return
     if (sameProjectSelection(entry.context.projectSelection, projectSelection)) return
     entry.context = { ...entry.context, projectSelection }
     this.emit()
@@ -329,19 +323,84 @@ export class ConversationChatRegistry {
     if (this.destroyed) return
     this.destroyed = true
     for (const entry of this.entriesByLocalId.values()) {
-      if (entry.phase === 'submitted' || entry.phase === 'streaming') void entry.chat.stop()
+      entry.unsubscribeController()
     }
     this.entriesByLocalId.clear()
     this.aliases.clear()
     this.conversationMetadata.clear()
+    this.inFlightHistoryLoads.clear()
     this.listeners.clear()
+  }
+
+  private async loadConversationHistory(
+    entry: InternalConversationChatEntry,
+    navigationEpoch: number,
+    load: () => Promise<SidebarConversationOpenResult>
+  ): Promise<ConversationChatEntry> {
+    try {
+      const result = await load()
+      if (this.destroyed) return entry
+
+      const canonicalEntry =
+        this.resolveInternal(result.threadId) ?? this.resolveInternal(result.conversationId)
+      if (canonicalEntry && canonicalEntry !== entry) {
+        this.removeEntry(entry, canonicalEntry)
+        if (this.navigationEpoch === navigationEpoch) this.activate(canonicalEntry)
+        else this.emit()
+        return canonicalEntry
+      }
+
+      this.bindAlias(entry, result.conversationId)
+      const boundEntry = this.bindThread(entry, result.threadId) as InternalConversationChatEntry
+      if (boundEntry !== entry) {
+        this.removeEntry(entry, boundEntry)
+        if (this.navigationEpoch === navigationEpoch) this.activate(boundEntry)
+        else this.emit()
+        return boundEntry
+      }
+
+      entry.context = {
+        conversationId: result.conversationId,
+        threadId: result.threadId,
+        title: result.title,
+        projectSelection: projectSelectionFromOpenResult(result),
+        cwd: result.cwd
+      }
+      entry.historyRevision = result.historyRevision
+      this.recoveryHydrations.add(entry)
+      try {
+        entry.controller.replaceMessages(
+          mergeRecoveryHistory(
+            this.transcriptRecoveryStore,
+            [result.threadId, result.conversationId, entry.localId],
+            result.messages,
+            result.historyRevision
+          )
+        )
+      } finally {
+        this.recoveryHydrations.delete(entry)
+      }
+      entry.messages = entry.controller.getSnapshot().messages
+      entry.status = 'ready'
+      entry.error = undefined
+      entry.loaded = true
+      if (this.navigationEpoch === navigationEpoch) this.activate(entry)
+      else this.emit()
+      return entry
+    } catch (error) {
+      entry.status = 'error'
+      entry.error = toError(error)
+      if (entry !== this.activeEntry) entry.unread = true
+      this.emit()
+      return entry
+    }
   }
 
   private createEntry(input: {
     localId: string
     projectSelection: ProjectSelection | undefined
     loaded: boolean
-    phase?: ConversationEntryPhase
+    status?: ConversationEntryStatus
     newConversation: boolean
   }): InternalConversationChatEntry {
     const existing = this.entriesByLocalId.get(input.localId)
@@ -353,39 +412,20 @@ export class ConversationChatRegistry {
       getActiveConversation: () => entry.context,
       getProjectSelection: () => entry.context.projectSelection,
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
-      onStreamStarted: () => {
-        entry.acceptedCurrentSend = false
-        entry.phase = 'submitted'
-        entry.error = undefined
-        this.emit()
-      },
+      onStreamStarted: () => entry.controller.handleStreamStarted(),
       onThreadBound: ({ threadId }) => {
         const boundEntry = this.bindThread(entry, threadId)
         if (boundEntry !== entry) {
-          entry.phase = 'error'
+          entry.status = 'error'
           entry.error = new Error(`Thread ${threadId} is already owned by another conversation`)
           this.emit()
         }
       },
-      onStreamAccepted: () => this.markStreamAccepted(entry),
+      onTurnLifecycle: (event) => entry.controller.handleTurnLifecycle(event),
+      onStreamAccepted: () => entry.controller.handleStreamAccepted(),
+      onStreamAborted: () => entry.controller.handleStreamAborted(),
       onStreamFinished: ({ threadId }) => {
         if (threadId) this.bindThread(entry, threadId)
-        this.markStreamAccepted(entry)
-        entry.phase = 'ready'
-        if (entry !== this.activeEntry) entry.unread = true
-        this.emit()
-      },
-      onStreamAborted: () => {
-        this.markStreamAccepted(entry)
-        entry.phase = 'ready'
-        if (entry !== this.activeEntry) entry.unread = true
-        this.emit()
-      },
-      onStreamError: (message) => {
-        entry.phase = 'error'
-        entry.error = new Error(message)
-        if (entry !== this.activeEntry) entry.unread = true
-        this.emit()
       }
     })
     const context: ActiveConversationContext = {
@@ -393,34 +433,58 @@ export class ConversationChatRegistry {
       projectSelection: input.projectSelection
     }
     const stableDraftIdentity = context.threadId ?? input.localId
-    const chat = new Chat<UIMessage>({ id: input.localId, transport })
+    const controller = new ConversationTranscriptController({ id: input.localId, transport })
     Object.assign(entry, {
       localId: input.localId,
       newConversation: input.newConversation,
-      chat,
+      controller,
       transport,
+      messages: controller.getSnapshot().messages,
       context,
-      phase: input.phase ?? 'ready',
+      status: input.status ?? 'ready',
       selectedModelId: this.defaultSelectedModelId,
       unread: false,
       draft: this.draftStore.get(stableDraftIdentity),
       draftAttachments: this.draftStore.getAttachments(stableDraftIdentity),
       loaded: input.loaded,
-      acceptedCurrentSend: false
+      unsubscribeController: () => undefined
     } satisfies InternalConversationChatEntry)
+    let previousControllerStatus = controller.getSnapshot().status
+    entry.unsubscribeController = controller.subscribe(() => {
+      const snapshot = controller.getSnapshot()
+      const completedSuccessfulTurn =
+        isRunningStatus(previousControllerStatus) && snapshot.status === 'ready' && !snapshot.error
+      previousControllerStatus = snapshot.status
+      entry.messages = snapshot.messages
+      entry.status = snapshot.status
+      entry.error = snapshot.error
+      const recoveryIdentity =
+        entry.context.threadId ?? entry.context.conversationId ?? entry.localId
+      if (!this.recoveryHydrations.has(entry) && hasLocalPathAttachments(snapshot.messages)) {
+        this.transcriptRecoveryStore.saveLocalAttachmentOverlay(
+          recoveryIdentity,
+          attachmentOverlaySourceFromTranscript(snapshot.messages),
+          entry.historyRevision
+        )
+      }
+      if (!this.recoveryHydrations.has(entry)) {
+        if (completedSuccessfulTurn) {
+          this.transcriptRecoveryStore.clearTerminalFallback(recoveryIdentity)
+        } else {
+          this.transcriptRecoveryStore.saveTerminalFallback(
+            recoveryIdentity,
+            terminalRecoverySourceFromTranscript(snapshot.messages),
+            entry.historyRevision
+          )
+        }
+      }
+      if (controller.takeCurrentSendAcceptance()) this.clearDraft(entry)
+      if (entry !== this.activeEntry && isRunningStatus(entry.status)) entry.unread = true
+      this.emit()
+    })
     this.entriesByLocalId.set(entry.localId, entry)
     this.aliases.set(entry.localId, entry)
     return entry
-  }
-
-  private markStreamAccepted(entry: InternalConversationChatEntry): void {
-    if (!entry.acceptedCurrentSend) {
-      entry.acceptedCurrentSend = true
-      this.clearDraft(entry)
-    }
-    entry.phase = 'streaming'
-    if (entry !== this.activeEntry) entry.unread = true
-    this.emit()
   }
 
   private clearDraft(entry: InternalConversationChatEntry): void {
@@ -453,6 +517,7 @@ export class ConversationChatRegistry {
     for (const [identity, entry] of this.aliases.entries()) {
       if (entry === placeholder) this.aliases.set(identity, liveEntry)
     }
+    placeholder.unsubscribeController()
     this.entriesByLocalId.delete(placeholder.localId)
     this.aliases.set(threadId, liveEntry)
 
@@ -466,6 +531,7 @@ export class ConversationChatRegistry {
     }
     liveEntry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     liveEntry.draftAttachments = this.draftStore.getAttachments(threadId)
+    this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
     liveEntry.scroll ??= placeholder.scroll
     liveEntry.loaded = true
     liveEntry.unread ||= placeholder.unread
@@ -482,6 +548,7 @@ export class ConversationChatRegistry {
     entry: InternalConversationChatEntry,
     replacement?: InternalConversationChatEntry
   ): void {
+    entry.unsubscribeController()
     this.entriesByLocalId.delete(entry.localId)
     for (const [identity, value] of this.aliases.entries()) {
       if (value !== entry) continue
@@ -562,8 +629,8 @@ function sameConversationContext(
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function isRunningPhase(phase: ConversationEntryPhase): boolean {
-  return phase === 'submitted' || phase === 'streaming'
+function isRunningStatus(status: ConversationEntryStatus): boolean {
+  return status === 'submitted' || status === 'streaming'
 }
 
 function sameProjectSelection(
@@ -579,4 +646,60 @@ function createLocalConversationId(): string {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+function attachmentOverlaySourceFromTranscript(
+  messages: readonly ConversationTranscriptMessage[]
+): Array<Pick<UIMessage, 'id' | 'parts'>> {
+  return messages.map((message) => {
+    if (message.kind === 'steering-user-message') {
+      return {
+        id: message.clientUserMessageId,
+        parts: message.content
+      }
+    }
+    return {
+      id: message.sourceMessageId,
+      parts: message.parts
+    }
+  })
+}
+
+function terminalRecoverySourceFromTranscript(
+  messages: readonly ConversationTranscriptMessage[]
+): UIMessage[] {
+  return messages.flatMap((message) => {
+    if (message.kind !== 'message') return []
+    return [
+      {
+        id: message.sourceMessageId,
+        role: message.role,
+        parts: message.parts,
+        ...(message.metadata === undefined ? {} : { metadata: message.metadata })
+      }
+    ]
+  })
+}
+
+function hasLocalPathAttachments(messages: readonly ConversationTranscriptMessage[]): boolean {
+  return messages.some((message) =>
+    message.parts.some(
+      (part) =>
+        part.type === 'file' &&
+        (part.mediaType === LOCAL_FILE_ATTACHMENT_MEDIA_TYPE ||
+          part.mediaType === LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE)
+    )
+  )
+}
+
+function mergeRecoveryHistory(
+  store: ConversationTranscriptRecoveryStore,
+  identities: readonly string[],
+  history: readonly UIMessage[],
+  historyRevision?: string | null
+): UIMessage[] {
+  return identities.reduce<UIMessage[]>(
+    (selected, identity) => store.mergeWithHistory(identity, selected, historyRevision),
+    [...history]
+  )
 }

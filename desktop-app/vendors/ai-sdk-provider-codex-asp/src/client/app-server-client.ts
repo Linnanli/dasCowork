@@ -49,6 +49,7 @@ type ToolCallRequestHandler = (
     params: CodexToolCallRequestParams,
     request: JsonRpcRequest,
 ) => CodexToolCallResult | Promise<CodexToolCallResult>;
+type TransportTerminationHandler = (error: CodexProviderError) => void;
 
 function isResponse(message: JsonRpcMessage): message is JsonRpcResponse 
 {
@@ -86,9 +87,14 @@ export class AppServerClient
     private readonly notificationHandlers = new Map<string, Set<NotificationHandler>>();
     private readonly anyNotificationHandlers = new Set<AnyNotificationHandler>();
     private readonly requestHandlers = new Map<string, RequestHandler>();
+    private readonly inFlightInboundRequestIds = new Set<JsonRpcId>();
+    private readonly transportTerminationHandlers = new Set<TransportTerminationHandler>();
+    private readonly pendingRequestDrainWaiters = new Set<() => void>();
 
     private removeMessageListener: (() => void) | null = null;
     private removeErrorListener: (() => void) | null = null;
+    private removeCloseListener: (() => void) | null = null;
+    private transportTerminated = false;
 
     constructor(transport: CodexTransport, settings: AppServerClientSettings = {}) 
     {
@@ -109,14 +115,21 @@ export class AppServerClient
             });
         });
 
-        this.removeErrorListener = this.transport.on("error", (error) => 
+        this.removeErrorListener = this.transport.on("error", (error) =>
         {
-            for (const pending of this.pendingRequests.values()) 
-            {
-                clearTimeout(pending.timer);
-                pending.reject(error);
-            }
-            this.pendingRequests.clear();
+            this.handleTransportTermination(error);
+        });
+
+        this.removeCloseListener = this.transport.on("close", (code, signal) =>
+        {
+            const detail = code === null
+                ? signal === null
+                    ? ""
+                    : ` (signal ${signal})`
+                : ` (code ${code})`;
+            this.handleTransportTermination(
+                new CodexProviderError(`App Server transport closed unexpectedly${detail}.`),
+            );
         });
     }
 
@@ -134,12 +147,26 @@ export class AppServerClient
             this.removeErrorListener = null;
         }
 
+        if (this.removeCloseListener)
+        {
+            this.removeCloseListener();
+            this.removeCloseListener = null;
+        }
+
+        const pendingRequestIds = [...this.pendingRequests.keys()];
         for (const pending of this.pendingRequests.values()) 
         {
             clearTimeout(pending.timer);
             pending.reject(new CodexProviderError("Client disconnected."));
         }
         this.pendingRequests.clear();
+        this.inFlightInboundRequestIds.clear();
+        this.resolvePendingRequestDrainWaiters();
+
+        for (const id of pendingRequestIds)
+        {
+            this.transport.cancelRequest?.(id);
+        }
 
         await this.transport.disconnect();
     }
@@ -160,6 +187,8 @@ export class AppServerClient
             const timer = setTimeout(() => 
             {
                 this.pendingRequests.delete(id);
+                this.resolvePendingRequestDrainWaiters();
+                this.transport.cancelRequest?.(id);
                 reject(new CodexProviderError(`Request timed out: ${method}`));
             }, timeoutMs);
 
@@ -182,6 +211,8 @@ export class AppServerClient
             {
                 clearTimeout(pending.timer);
                 this.pendingRequests.delete(id);
+                this.resolvePendingRequestDrainWaiters();
+                this.transport.cancelRequest?.(id);
                 pending.reject(error);
                 await promise.catch(() => undefined);
             }
@@ -239,6 +270,60 @@ export class AppServerClient
         );
     }
 
+    /**
+     * Receives the first unexpected transport error or close for this client.
+     * Explicit disconnect removes the underlying listeners before closing, so it
+     * never calls these handlers.
+     */
+    onTransportTermination(handler: TransportTerminationHandler): () => void
+    {
+        this.transportTerminationHandlers.add(handler);
+        return () =>
+        {
+            this.transportTerminationHandlers.delete(handler);
+        };
+    }
+
+    /**
+     * Waits briefly for in-flight client RPCs before a successful stream
+     * teardown.  A terminal lifecycle notification may race a turn/steer
+     * response, but a non-responsive peer must not pin a logical channel
+     * forever.
+     */
+    waitForPendingRequests(timeoutMs = this.requestTimeoutMs): Promise<boolean>
+    {
+        if (this.pendingRequests.size === 0)
+        {
+            return Promise.resolve(true);
+        }
+
+        if (timeoutMs <= 0)
+        {
+            return Promise.resolve(false);
+        }
+
+        return new Promise((resolve) =>
+        {
+            let settled = false;
+            let timer: ReturnType<typeof setTimeout>;
+            let onDrained: () => void;
+            const finish = (drained: boolean): void =>
+            {
+                if (settled)
+                {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timer);
+                this.pendingRequestDrainWaiters.delete(onDrained);
+                resolve(drained);
+            };
+            onDrained = (): void => finish(true);
+            timer = setTimeout(() => finish(false), timeoutMs);
+            this.pendingRequestDrainWaiters.add(onDrained);
+        });
+    }
+
     /** Feeds an externally buffered message through the normal dispatch path (e.g. replay after a cross-call gap). */
     dispatchMessage(message: JsonRpcMessage): Promise<void>
     {
@@ -271,6 +356,40 @@ export class AppServerClient
         await this.handleNotification(message.method, message.params);
     }
 
+    private handleTransportTermination(cause: unknown): void
+    {
+        if (this.transportTerminated)
+        {
+            return;
+        }
+        this.transportTerminated = true;
+
+        const error = cause instanceof CodexProviderError
+            ? cause
+            : new CodexProviderError("App Server transport terminated unexpectedly.", { cause });
+
+        for (const pending of this.pendingRequests.values())
+        {
+            clearTimeout(pending.timer);
+            pending.reject(error);
+        }
+        this.pendingRequests.clear();
+        this.inFlightInboundRequestIds.clear();
+        this.resolvePendingRequestDrainWaiters();
+
+        for (const handler of this.transportTerminationHandlers)
+        {
+            try
+            {
+                handler(error);
+            }
+            catch
+            {
+                // A consumer callback must not destabilize transport shutdown.
+            }
+        }
+    }
+
     private handleResponse(message: JsonRpcResponse): void 
     {
         const pending = this.pendingRequests.get(message.id);
@@ -281,6 +400,7 @@ export class AppServerClient
 
         clearTimeout(pending.timer);
         this.pendingRequests.delete(message.id);
+        this.resolvePendingRequestDrainWaiters();
 
         if ("error" in message) 
         {
@@ -291,7 +411,7 @@ export class AppServerClient
         pending.resolve((message).result);
     }
 
-    private async handleNotification(method: string, params: unknown): Promise<void> 
+    private async handleNotification(method: string, params: unknown): Promise<void>
     {
         const handlers = this.notificationHandlers.get(method);
         if (handlers) 
@@ -308,8 +428,26 @@ export class AppServerClient
         }
     }
 
+    private resolvePendingRequestDrainWaiters(): void
+    {
+        if (this.pendingRequests.size !== 0) {return;}
+        for (const resolve of this.pendingRequestDrainWaiters)
+        {
+            resolve();
+        }
+        this.pendingRequestDrainWaiters.clear();
+    }
+
     private async handleInboundRequest(request: JsonRpcRequest): Promise<void> 
     {
+        // An app-server retry of an outstanding JSON-RPC request has the same
+        // request id.  Its original handler may deliberately remain pending
+        // across a cross-call step, so invoking it again would create a second
+        // UI tool call and overwrite the parked continuation.
+        if (this.inFlightInboundRequestIds.has(request.id))
+        {
+            return;
+        }
         const handler = this.requestHandlers.get(request.method);
 
         if (!handler) 
@@ -326,6 +464,7 @@ export class AppServerClient
             return;
         }
 
+        this.inFlightInboundRequestIds.add(request.id);
         try 
         {
             const result = await handler(request.params, request);
@@ -354,6 +493,10 @@ export class AppServerClient
             {
                 // Ignore transport errors while replying to inbound requests during shutdown.
             }
+        }
+        finally
+        {
+            this.inFlightInboundRequestIds.delete(request.id);
         }
     }
 }

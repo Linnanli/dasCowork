@@ -1,0 +1,4035 @@
+{
+  "schemaVersion": 1,
+  "description": "引导对话测试计划的机器可读覆盖契约。A01-G12 是唯一场景主键；M 和 R 是最低 Mock E2E 与发布验收组。",
+  "scenarios": [
+    {
+      "id": "A01",
+      "title": "turn 刚开始尚无输出时发送引导",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A01/A02/A03/A04/A10 stages every steer phase on the existing turn without changing visible output",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A02",
+      "title": "reasoning 已开始但尚无助手文本时发送引导",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A01/A02/A03/A04/A10 stages every steer phase on the existing turn without changing visible output",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A03",
+      "title": "助手文本只输出一部分时发送引导",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A04",
+      "title": "助手回答已显示但 turn/completed 尚未到达时发送引导",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A01/A02/A03/A04/A10 stages every steer phase on the existing turn without changing visible output",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A05",
+      "title": "工具调用刚开始时发送引导",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A05/A06/A07/D19 keeps one active turn while staging Steers across all tool phases",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A06",
+      "title": "工具执行中发送引导",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A05/A06/A07/D19 keeps one active turn while staging Steers across all tool phases",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A07",
+      "title": "工具结果返回、下一请求尚未发出时发送引导",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A05/A06/A07/D19 keeps one active turn while staging Steers across all tool phases",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A08",
+      "title": "最终回答流式输出时再次发送引导",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A09",
+      "title": "审批面板等待决定时发送引导",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A10",
+      "title": "同一 turn 连续发送多条引导",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A01/A02/A03/A04/A10 stages every steer phase on the existing turn without changing visible output",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A11",
+      "title": "选择非队首消息发送引导",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A12",
+      "title": "引导包含文本、图片、文件、文件夹和上下文引用",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/hooks/useConversationFollowUpCoordinator.test.ts",
+          "testName": "A12 preserves text, image, file, folder, and context directives on the existing Steer turn",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "A12 steers text, image, file, folder, and a context directive on one active turn",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A13",
+      "title": "引导发送期间切换对话再切回",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationChatRegistry.test.ts",
+          "testName": "A13 preserves a pending Steer while navigating away from and back to its running conversation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A14",
+      "title": "两个不同对话同时运行并分别发送引导",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "已显示回答保持不变",
+        "复用原 turn，不能额外启动 turn",
+        "队列顺序与对话隔离正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationChatRegistry.test.ts",
+          "testName": "A14 keeps concurrent Steers, transports, and transcript output isolated per conversation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "A14 steers two concurrent conversations independently without starting extra turns",
+          "layer": "mock-e2e",
+          "assertions": [
+            "已显示回答保持不变",
+            "复用原 turn，不能额外启动 turn",
+            "队列顺序与对话隔离正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B01",
+      "title": "点击引导时已无活跃 turn",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B01 returns an inactive preflight steer to the queue before throwing",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B02",
+      "title": "expectedTurnId 与当前 turn 不一致",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/provider.test.ts",
+          "testName": "B02 retries once with the latest turn id after an expected-turn mismatch",
+          "layer": "provider-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B03",
+      "title": "点击引导与 turn/completed 同时发生",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M04/B03 @recovery settles a steer and turn-completed race without duplicating the queued message",
+          "layer": "mock-e2e",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B04",
+      "title": "引导 RPC 成功先到，canonical userMessage 后到",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B04/E14 keeps a steer claim leased until canonical acknowledgement is durable",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B05",
+      "title": "canonical userMessage 先到，RPC 成功后到",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B05/B09 accepts one ID-bearing canonical steer before its RPC settles and ignores the duplicate",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B06",
+      "title": "RPC 拒绝与 turn 终止同时发生",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B06/D20 preserves an explicit $label steer rejection after terminal settlement",
+          "fullTestName": "CodexChatRuntimeService > B06/D20 preserves an explicit 'turn-race' steer rejection after terminal settlement",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B07",
+      "title": "turn 已终止后收到迟到 RPC 成功",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B07 reports a late steer RPC success as unknown after terminal recovery",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B08",
+      "title": "RPC 成功但 canonical userMessage 永远不出现",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B08 moves an unconfirmed successful steer to recovery-uncertain at the fake-clock 30s deadline",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B09",
+      "title": "重复收到 canonical userMessage",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B05/B09 accepts one ID-bearing canonical steer before its RPC settles and ignores the duplicate",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B10",
+      "title": "重复收到 turn/completed、finish 或 error",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/B10/C16/C17 @terminal-failure ignores an unknown event and duplicate completion without duplicating the answer",
+          "layer": "mock-e2e",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B11",
+      "title": "两条同文本不同 ID 的引导不能错误去重",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "B11 leaves identical pending Steers unconfirmed for an ambiguous legacy acknowledgement",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        },
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B11 ignores an ambiguous legacy acknowledgement and logs only sanitized correlation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B12",
+      "title": "快速双击引导只产生一次 claim 和 RPC",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/hooks/useConversationFollowUps.test.tsx",
+          "testName": "B12/B14 collapses rapid duplicate Steer actions and ignores stale revisions while acknowledgement is pending",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B13",
+      "title": "conversation 本地 ID 迁移为 thread ID",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B13 preserves a pending Steer claim when the local conversation id migrates to a thread id",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B14",
+      "title": "引导中收到旧 revision 队列订阅事件",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/hooks/useConversationFollowUps.test.tsx",
+          "testName": "B12/B14 collapses rapid duplicate Steer actions and ignores stale revisions while acknowledgement is pending",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B15",
+      "title": "同一对话第二普通发送不能替换 active run",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B15 rejects a duplicate active turn without replacing the original run",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B16",
+      "title": "steer session 与 active run 不匹配时拒绝",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "claim、接受与队列结算至多一次",
+        "正确的恢复、暂停或拒绝状态",
+        "terminal 和 active run 不被竞态覆盖"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B16 rejects a provider session bound to another active run without steering either session",
+          "layer": "desktop-unit",
+          "assertions": [
+            "claim、接受与队列结算至多一次",
+            "正确的恢复、暂停或拒绝状态",
+            "terminal 和 active run 不被竞态覆盖"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C01",
+      "title": "请求发送前连接失败",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C01 emits one error and sends no JSON-RPC request when transport connection fails",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "title": "响应头前断开",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C02 @terminal-failure shows an error when the model closes before response headers",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "title": "HTTP 401、403、404、429",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C03 @terminal-failure shows one recoverable error for HTTP 401 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C03 @terminal-failure shows one recoverable error for HTTP 403 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C03 @terminal-failure shows one recoverable error for HTTP 404 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C03 @terminal-failure shows one recoverable error for HTTP 429 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "title": "HTTP 500、502、503、504",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C04 @terminal-failure shows one recoverable error for HTTP 500 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C04 @terminal-failure shows one recoverable error for HTTP 502 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C04 @terminal-failure shows one recoverable error for HTTP 503 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C04 @terminal-failure shows one recoverable error for HTTP 504 without retrying automatically",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "title": "response.created 后立即断流",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C05 @terminal-failure shows an error when the stream disconnects after response.created",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "title": "reasoning 过程中断流",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C06 preserves reasoning output and emits one error when transport fails during reasoning",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C07",
+      "title": "第一段助手文本部分输出后断流",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M03/C07/C12/F02 @terminal-failure preserves assistant text when the stream disconnects before completion",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C08",
+      "title": "第一段助手文本完整但流未完成时断流",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C08 @terminal-failure keeps a completed assistant item when the stream closes before response.completed",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C09",
+      "title": "工具调用后、执行前断流",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C09/C11 preserves completed tool state and emits one error when transport fails mid-tool sequence",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C10",
+      "title": "工具结果成功后最终采样请求断流",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M02/C10/D16/E08/E15/F16 @terminal-failure keeps a completed tool after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C11",
+      "title": "多个工具部分完成后断流",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C09/C11 preserves completed tool state and emits one error when transport fails mid-tool sequence",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "title": "最终回答部分输出后断流",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M03/C07/C12/F02 @terminal-failure preserves assistant text when the stream disconnects before completion",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C13",
+      "title": "HTTP 200 空 SSE 流",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/C13 @terminal-failure treats an empty HTTP 200 SSE stream as a failed turn",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C14",
+      "title": "SSE JSON 非法",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/C14 @terminal-failure treats malformed SSE JSON as a failed turn without a renderer crash",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C15",
+      "title": "非法事件顺序（done 先于 created）",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "C15/D10 emits a result completing before the tool request within the same step",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C16",
+      "title": "相同事件重复发送",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/B10/C16/C17 @terminal-failure ignores an unknown event and duplicate completion without duplicating the answer",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C17",
+      "title": "插入未知事件类型",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/B10/C16/C17 @terminal-failure ignores an unknown event and duplicate completion without duplicating the answer",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C18",
+      "title": "turn.status=failed 且有错误文本",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/event-mapper.test.ts",
+          "testName": "C18 emits an error stream part when a completed turn carries an error",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C19",
+      "title": "turn.status=failed 但无错误文本",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/event-mapper.test.ts",
+          "testName": "C19 emits a fallback error when a failed turn has no error message",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C20",
+      "title": "首 token 前永久挂起",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C20/F17 @terminal-failure marks a hanging request as cancelled after the user stops it",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C21",
+      "title": "工具结果后永久挂起",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C21/F19 @terminal-failure releases the UI when the next response hangs after a completed tool",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C22",
+      "title": "流期间 MessagePort 关闭",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/preload/chatStreamBridge.test.ts",
+          "testName": "C22/G11 uses the IPC terminal fallback exactly once after the MessagePort fails",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "src/preload/chatStreamBridge.test.ts",
+          "testName": "C22 waits for the canonical IPC terminal after a broken MessagePort",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "C22 keeps the canonical turn running when the MessagePort closes",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/fault-injection.e2e.ts",
+          "testName": "C22/G11 @terminal-failure keeps the canonical turn alive when a renderer reload closes its MessagePort",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C23",
+      "title": "app-server/provider transport 意外断开",
+      "priority": "P0",
+      "requiredLayer": ["provider-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C23 fails once and deactivates the session when transport closes before the first token",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C23 preserves partial output, emits one error, and rebuilds a crashed persistent worker",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/app-server-client.test.ts",
+          "testName": "C23 converts an active transport error and close into one fatal termination",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/model.stream.test.ts",
+          "testName": "C23 terminates once $phase and rebuilds the Desktop shared connection",
+          "fullTestName": "CodexLanguageModel.doStream > C23 terminates once 'before the first token' and rebuilds the Desktop shared connection",
+          "layer": "provider-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "tests/e2e/fault-injection.e2e.ts",
+          "testName": "C23 @terminal-failure crashes the active Desktop shared app-server transport and rebuilds it for retry",
+          "layer": "mock-e2e",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C24",
+      "title": "错误后又收到 chunk、finish 或 thread-bound",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "保留可见内容并显示单一终态",
+        "terminal 只结算一次且 Composer 恢复",
+        "无自动重试、额外请求或迟到事件应用"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/lib/ElectronIpcChatTransport.test.ts",
+          "testName": "C24 ignores bridge chunks after the readable stream has finished",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "src/renderer/src/lib/ElectronIpcChatTransport.test.ts",
+          "testName": "C24 ignores bridge finish events after the readable stream has errored",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        },
+        {
+          "file": "src/renderer/src/lib/ElectronIpcChatTransport.test.ts",
+          "testName": "C24 does not call onStreamFinished for a late finish after an error",
+          "layer": "desktop-unit",
+          "assertions": [
+            "保留可见内容并显示单一终态",
+            "terminal 只结算一次且 Composer 恢复",
+            "无自动重试、额外请求或迟到事件应用"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D01",
+      "title": "单个只读工具成功后正常回答",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "恢复工具结果后正常输出答案"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "D01 resumes a successful single read-only tool result and emits the normal final answer",
+          "layer": "provider-unit",
+          "assertions": [
+            "恢复工具结果后正常输出答案"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D02",
+      "title": "多个工具串行后回答",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "多个工具串行后输出汇总答案"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "D02 serializes multiple tool calls before emitting the final answer",
+          "layer": "provider-unit",
+          "assertions": [
+            "多个工具串行后输出汇总答案"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D03",
+      "title": "工具退出码非零",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "非零退出映射失败工具结果且保留回答"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/event-mapper.test.ts",
+          "testName": "D03 marks a non-zero command exit code as a failed tool result without masking the final answer",
+          "layer": "provider-unit",
+          "assertions": [
+            "非零退出映射失败工具结果且保留回答"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D04",
+      "title": "工具返回 output-error",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "失败动态工具映射为单个 output-error"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
+          "testName": "D04 forwards a failed dynamic tool response as an output-error record",
+          "layer": "provider-unit",
+          "assertions": [
+            "失败动态工具映射为单个 output-error"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D05",
+      "title": "工具执行超时",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "工具超时返回单个失败结果"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
+          "testName": "D05 returns a failed tool result when execution times out",
+          "layer": "provider-unit",
+          "assertions": [
+            "工具超时返回单个失败结果"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D06",
+      "title": "工具返回空输出",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "空输出作为成功结果保留"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
+          "testName": "D06 preserves an empty successful tool output as an available result",
+          "layer": "provider-unit",
+          "assertions": [
+            "空输出作为成功结果保留"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D07",
+      "title": "工具返回超大输出",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "超大输出完整保留并回传"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
+          "testName": "D07 preserves a large successful tool output without truncating the tool record",
+          "layer": "provider-unit",
+          "assertions": [
+            "超大输出完整保留并回传"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D08",
+      "title": "工具返回中文、emoji、替代字符或复杂 JSON",
+      "priority": "P2",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "复杂 JSON 工具输出完整且只回传一次"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "D08 preserves Chinese, emoji, replacement characters, and complex JSON tool output",
+          "layer": "provider-unit",
+          "assertions": [
+            "复杂 JSON 工具输出完整且只回传一次"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D09",
+      "title": "工具开始后没有完成事件",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "未完成工具由 turn/completed 以错误结果关闭"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "D09 closes an adopted call that never completes via the turn-completed safety net",
+          "layer": "provider-unit",
+          "assertions": [
+            "未完成工具由 turn/completed 以错误结果关闭"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D10",
+      "title": "completed 早于 started",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "提前完成结果保持正确事件顺序与单终态"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "C15/D10 emits a result completing before the tool request within the same step",
+          "layer": "provider-unit",
+          "assertions": [
+            "提前完成结果保持正确事件顺序与单终态"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D11",
+      "title": "相同工具结果重复到达",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "恢复步骤不重复工具生命周期结果"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
+          "testName": "D11 does not duplicate dynamic tool lifecycle parts on resumed steps",
+          "layer": "provider-unit",
+          "assertions": [
+            "恢复步骤不重复工具生命周期结果"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D12",
+      "title": "审批允许后继续",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "批准后执行一次并返回工具输出"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D12 @approval-retry approves a command request through the desktop approval panel",
+          "layer": "mock-e2e",
+          "assertions": [
+            "批准后执行一次并返回工具输出"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D13",
+      "title": "审批拒绝后不执行工具",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "拒绝后不执行命令并返回拒绝结果"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel",
+          "layer": "mock-e2e",
+          "assertions": [
+            "拒绝后不执行命令并返回拒绝结果"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D14",
+      "title": "审批等待期间用户停止",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "审批待处理时停止不执行工具"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "审批待处理时停止不执行工具"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D15",
+      "title": "审批等待期间模型断流",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": [
+        "终态后旧审批失效且不能再执行"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "D15 closes a pending approval when the model stream fails",
+          "layer": "desktop-unit",
+          "assertions": [
+            "终态后旧审批失效且不能再执行"
+          ]
+        },
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure",
+          "layer": "mock-e2e",
+          "assertions": [
+            "终态后旧审批失效且不能再执行"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D16",
+      "title": "工具有副作用后最终生成失败",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "工具、审批记录与执行次数正确",
+        "失败和拒绝不伪装成完成",
+        "旧 tool 结果保持且不随重试重复执行"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M02/C10/D16/E08/E15/F16 @terminal-failure keeps a completed tool after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "工具、审批记录与执行次数正确",
+            "失败和拒绝不伪装成完成",
+            "旧 tool 结果保持且不随重试重复执行"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D17",
+      "title": "工具失败不得自动重试或重复",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "拒绝不会自动重试或重复工具请求"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel",
+          "layer": "mock-e2e",
+          "assertions": [
+            "拒绝不会自动重试或重复工具请求"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D18",
+      "title": "手动重试再次请求副作用工具必须重新审批",
+      "priority": "P0",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "手动重试使用新的 turn、call ID、approval ID"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "D18 @approval-retry requires new turn, approval, and call ids before rerunning a side-effecting tool",
+          "layer": "mock-e2e",
+          "assertions": [
+            "手动重试使用新的 turn、call ID、approval ID"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D19",
+      "title": "steer 在工具三阶段到达",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "三阶段工具事件期间 steer 保持同一 active turn"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "A05/A06/A07/D19 keeps one active turn while staging Steers across all tool phases",
+          "layer": "desktop-unit",
+          "assertions": [
+            "三阶段工具事件期间 steer 保持同一 active turn"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D20",
+      "title": "工具失败与 steer RPC 失败并发",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "工具失败与 steer 拒绝并发时只结算一次"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/codexChatRuntimeService.test.ts",
+          "testName": "B06/D20 preserves an explicit $label steer rejection after terminal settlement",
+          "fullTestName": "CodexChatRuntimeService > B06/D20 preserves an explicit 'turn-race' steer rejection after terminal settlement",
+          "layer": "desktop-unit",
+          "assertions": [
+            "工具失败与 steer 拒绝并发时只结算一次"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E01",
+      "title": "活跃 turn 中加入一条和多条队列消息",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E02",
+      "title": "排序、删除、编辑、取消编辑和默认模式",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e", "desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E02 begins, commits, and cancels durable editing without changing item identity or order",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E03",
+      "title": "队首发送后按新顺序继续",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E04",
+      "title": "队首失败阻塞后续",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E04/E27 keeps a failed head blocking later items until retry",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E05",
+      "title": "选择非队首 steer 后顺序不变",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E06",
+      "title": "canonical 用户消息确认后才删除 claim",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E06/E14 durably records canonical acceptance before removing a claimed follow-up",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E07",
+      "title": "steer 明确拒绝后恢复原位置",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E07 restores a rejected non-head steer in its original position",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E08",
+      "title": "已接受 steer 后模型失败仍保持消费",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M06/E08 @terminal-failure keeps an accepted steer consumed after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E09",
+      "title": "发送前失败进入 paused-failed",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E09/E20 persists an attachment failure when preparing the next queued turn",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E10",
+      "title": "用户停止时未发送消息进入 paused-interrupted",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E11",
+      "title": "只恢复中断的消息",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E12",
+      "title": "纯 queued 状态退出重启",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e", "desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/conversation-state.e2e.ts",
+          "testName": "M09/E12/F16 @recovery restores app-server history and delivers a queued follow-up once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueStore.test.ts",
+          "testName": "E12 keeps an unclaimed queued follow-up sendable after an on-disk restart",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E13",
+      "title": "steering/canonical 前退出重启",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E13/E16/E17 pauses an unconfirmed persisted %s delivery after canonical history reconciliation",
+          "fullTestName": "ConversationFollowUpQueueService > E13/E16/E17 pauses an unconfirmed persisted sending delivery after canonical history reconciliation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E14",
+      "title": "canonical 后 commit 前退出重启",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E14 removes a persisted delivery only when canonical history confirms its client user message",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E15",
+      "title": "工具完成最终失败后退出重启",
+      "priority": "P0",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M02/C10/D16/E08/E15/F16 @terminal-failure keeps a completed tool after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E16",
+      "title": "重启后不保留失效 lease",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E13/E16/E17 pauses an unconfirmed persisted %s delivery after canonical history reconciliation",
+          "fullTestName": "ConversationFollowUpQueueService > E13/E16/E17 pauses an unconfirmed persisted sending delivery after canonical history reconciliation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E17",
+      "title": "重启后不确定发送进入 recovery-uncertain",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E13/E16/E17 pauses an unconfirmed persisted %s delivery after canonical history reconciliation",
+          "fullTestName": "ConversationFollowUpQueueService > E13/E16/E17 pauses an unconfirmed persisted sending delivery after canonical history reconciliation",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E18",
+      "title": "队列文件写入失败",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueStore.test.ts",
+          "testName": "E18 keeps the last durable in-memory state when a disk write fails",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E19",
+      "title": "资源清理失败不回滚已提交状态",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E19 keeps committed queue state when stale asset cleanup fails",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E20",
+      "title": "附件丢失、内容替换、校验和或 capability 过期",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/FollowUpAssetStore.test.ts",
+          "testName": "E20 persists immutable bytes behind a relative handle and validates the checksum",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/FollowUpAssetStore.test.ts",
+          "testName": "E20/G04 rejects a selected image whose path now resolves to a different file identity",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E09/E20 persists an attachment failure when preparing the next queued turn",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E21",
+      "title": "conversation key 迁移保持去重、顺序与所有权",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E21 migrates a local key atomically, de-duplicates ids, and preserves source order",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E22",
+      "title": "对话归档恢复后队列保持",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "E01/E02/E03/E10/E11/E22 queues, reorders, reloads, resumes, and drains follow-ups",
+          "layer": "mock-e2e",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E23",
+      "title": "两窗口并发修改 revision 单调",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E01/E23 serializes concurrent clients into one ordered, monotonically versioned queue",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueStore.test.ts",
+          "testName": "E23 serializes overlapping disk writes in invocation order",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E24",
+      "title": "20 条队列上限",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E24/G10 enforces the per-conversation item limit before mutating resources",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E25",
+      "title": "10MB/10MB/50MB 容量边界",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/FollowUpAssetStore.test.ts",
+          "testName": "E20/E25 checks local image size before authorizing or reading its bytes",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/main/followUps/FollowUpAssetStore.test.ts",
+          "testName": "E20/E25 checks total queue capacity before consuming a local image capability",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        },
+        {
+          "file": "src/shared/codexFollowUpApi.test.ts",
+          "testName": "E25 validates encoded attachment size at %s before crossing IPC",
+          "fullTestName": "codex follow-up API schemas > E25 validates encoded attachment size at limit - 1 before crossing IPC",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E26",
+      "title": "接近百万字符文本",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/shared/codexFollowUpApi.test.ts",
+          "testName": "E26 accepts text at %s and rejects overflow",
+          "fullTestName": "codex follow-up API schemas > E26 accepts text at limit - 1 and rejects overflow",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E27",
+      "title": "删除或重试 recovery-uncertain 后可继续",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E27 retries a failed non-head item in place",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E28",
+      "title": "lease 中失败项不能排序、移动或重复 claim",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "队列顺序、revision、lease 与消费状态正确",
+        "重启从持久化状态恢复",
+        "不能重复 claim 或自动重发"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E28 rejects head-changing actions while a delivery lease is active",
+          "layer": "desktop-unit",
+          "assertions": [
+            "队列顺序、revision、lease 与消费状态正确",
+            "重启从持久化状态恢复",
+            "不能重复 claim 或自动重发"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F01",
+      "title": "模型错误以内联卡显示",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "title": "保留回答、引导、工具过程和部分最终回答",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M03/C07/C12/F02 @terminal-failure preserves assistant text when the stream disconnects before completion",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "title": "空错误显示稳定中文兜底",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F03/F05/G05 uses a stable fallback and redacts credentials in headers and URLs",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F04",
+      "title": "超长错误换行并限制长度",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F04 limits long errors to 2,000 characters plus an ellipsis",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "title": "URL、header 或密钥形态错误必须脱敏",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F03/F05/G05 uses a stable fallback and redacts credentials in headers and URLs",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "title": "错误卡有 aria-live/alert",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F07",
+      "title": "错误不抢焦点",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F08",
+      "title": "键盘可触发重试",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M07/F01/F06/F08/F10/F11/F12/F20 @approval-retry succeeds exactly once after a keyboard retry",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F09",
+      "title": "新 turn 运行时重试禁用",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F09 disables retry while a new turn is running",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F10",
+      "title": "双击重试只创建一个 turn",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F10 starts only one retry when regenerate is triggered twice",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F11",
+      "title": "重试保留内容并移除失败助手尾段",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F11/F12 continues local assistant identities after restoring a failed local turn",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F12",
+      "title": "重试成功清除错误不重复引导",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M07/F01/F06/F08/F10/F11/F12/F20 @approval-retry succeeds exactly once after a keyboard retry",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F13",
+      "title": "重试再次失败更新同一位置",
+      "priority": "P2",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M08/F13 @terminal-failure keeps one error card when an explicit retry fails again",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F14",
+      "title": "失败后仍可发送普通消息",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F14 sends a new ordinary message after failure and preserves source and data parts",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F15",
+      "title": "切换对话后错误仍在",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationChatRegistry.test.ts",
+          "testName": "F15 tracks submitted, background unread, and entry-scoped errors independently",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F16",
+      "title": "重启历史加载后错误仍可见",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/conversation-state.e2e.ts",
+          "testName": "M09/E12/F16 @recovery restores app-server history and delivers a queued follow-up once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F17",
+      "title": "用户停止显示取消而非模型错误",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C20/F17 @terminal-failure marks a hanging request as cancelled after the user stops it",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F18",
+      "title": "普通错误和 paused-failed 正确分开",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        },
+        {
+          "file": "src/renderer/src/components/queued-follow-ups/QueuedFollowUpList.test.tsx",
+          "testName": "F18 presents a paused-failed queue message as recoverable queue state",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F19",
+      "title": "错误后 Queue、Composer、审批不残留 running",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "C21/F19 @terminal-failure releases the UI when the next response hangs after a completed tool",
+          "layer": "mock-e2e",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F20",
+      "title": "错误卡、重试、队列提示有稳定 data-slot",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "错误、取消与重试 UI 正确",
+        "历史与已显示内容保留",
+        "可访问性、脱敏和 Composer 状态正确"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/App.test.tsx",
+          "testName": "F01/F03/F06/F07/F18/F20 maps failed history to an accessible error card without stealing focus",
+          "layer": "desktop-unit",
+          "assertions": [
+            "错误、取消与重试 UI 正确",
+            "历史与已显示内容保留",
+            "可访问性、脱敏和 Composer 状态正确"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "G01",
+      "title": "Renderer 伪造 conversation/thread/cwd/project",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/lib/ElectronIpcChatTransport.test.ts",
+          "testName": "G01 strips forged renderer execution hints from the request body",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G02",
+      "title": "trusted context 与 conversation key 不匹配",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "G02 rejects a trusted snapshot whose routing identity does not match the queue",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G03",
+      "title": "文件 URL 与真实路径不一致",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/validateQueuedLocalAttachments.test.ts",
+          "testName": "E20/G03 rejects when the renderer path and file URL do not match",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G04",
+      "title": "路径穿越、符号链接和附件内容变化",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/localPathCapabilityStore.test.ts",
+          "testName": "G04 rejects path, kind, and changed file identity mismatches without consuming the token",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        },
+        {
+          "file": "src/shared/codexFollowUpApi.test.ts",
+          "testName": "G04 rejects absolute and traversing persisted asset handles",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        },
+        {
+          "file": "src/main/followUps/FollowUpAssetStore.test.ts",
+          "testName": "E20/G04 rejects a selected image whose path now resolves to a different file identity",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G05",
+      "title": "provider 错误体含密钥或授权头",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "F03/F05/G05 uses a stable fallback and redacts credentials in headers and URLs",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G06",
+      "title": "一对话失败不影响其他对话",
+      "priority": "P1",
+      "requiredLayer": ["mock-e2e"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M10/G06 @terminal-failure isolates a failed conversation from a concurrent successful conversation",
+          "layer": "mock-e2e",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G07",
+      "title": "一队列暂停不影响其他队列",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "G07 keeps a paused conversation queue from blocking an independent queue",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G08",
+      "title": "四并发占满 pool，第五等待取消恢复",
+      "priority": "P1",
+      "requiredLayer": ["provider-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "vendors/ai-sdk-provider-codex-asp/tests/persistent-transport.test.ts",
+          "testName": "G08 runs four transports concurrently and never assigns an aborted fifth waiter",
+          "layer": "provider-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G09",
+      "title": "100 次 queue/steer 循环无残留",
+      "priority": "P1",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "G09 leaves no queue item or lease after 100 sequential enqueue and steer settlements",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G10",
+      "title": "大文本、工具输出、最大队列不崩溃",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": [
+        "跨对话与信任边界隔离",
+        "资源、并发和终态无残留",
+        "诊断可关联而不泄露密钥"
+      ],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
+          "testName": "G10 settles a turn containing large text and tool output without losing either payload",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        },
+        {
+          "file": "src/main/followUps/ConversationFollowUpQueueService.test.ts",
+          "testName": "E24/G10 enforces the per-conversation item limit before mutating resources",
+          "layer": "desktop-unit",
+          "assertions": ["跨对话与信任边界隔离", "资源、并发和终态无残留", "诊断可关联而不泄露密钥"]
+        }
+      ]
+    },
+    {
+      "id": "G11",
+      "title": "错误、取消、完成竞态只进入单终态",
+      "priority": "P0",
+      "requiredLayer": ["desktop-unit", "mock-e2e"],
+      "requiredAssertions": ["错误、取消、完成竞态只进入单终态", "资源、并发和终态无残留"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "src/preload/chatStreamBridge.test.ts",
+          "testName": "G11 finish-first ignores late aborted, error, and duplicate finish terminals",
+          "layer": "desktop-unit",
+          "assertions": ["错误、取消、完成竞态只进入单终态", "资源、并发和终态无残留"]
+        },
+        {
+          "file": "src/preload/chatStreamBridge.test.ts",
+          "testName": "G11 aborted-first ignores late finish, error, and duplicate aborted terminals",
+          "layer": "desktop-unit",
+          "assertions": ["错误、取消、完成竞态只进入单终态", "资源、并发和终态无残留"]
+        },
+        {
+          "file": "src/preload/chatStreamBridge.test.ts",
+          "testName": "G11 error-first ignores late finish, aborted, and duplicate error terminals",
+          "layer": "desktop-unit",
+          "assertions": ["错误、取消、完成竞态只进入单终态", "资源、并发和终态无残留"]
+        },
+        {
+          "file": "tests/e2e/fault-injection.e2e.ts",
+          "testName": "C22/G11 @terminal-failure keeps the canonical turn alive when a renderer reload closes its MessagePort",
+          "layer": "mock-e2e",
+          "assertions": ["错误、取消、完成竞态只进入单终态", "资源、并发和终态无残留"]
+        }
+      ]
+    },
+    {
+      "id": "G12",
+      "title": "诊断可关联但日志不含密钥",
+      "priority": "P2",
+      "requiredLayer": ["desktop-unit"],
+      "requiredAssertions": ["诊断可关联而不泄露密钥"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/support/app.test.ts",
+          "testName": "G12 removes credential variants while preserving correlation identifiers",
+          "layer": "desktop-unit",
+          "assertions": ["诊断可关联而不泄露密钥"]
+        }
+      ]
+    }
+  ],
+  "mockE2E": [
+    {
+      "id": "M01",
+      "title": "已显示回答后 steer，随后正常继续",
+      "scenarioIds": ["A03", "A08", "A11", "A13"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M01/A03/A08/A11/A13/B11/E05 steers one of two identical non-head queue items, navigates away and back, without starting a second response",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M02",
+      "title": "steer 后工具成功、最终请求断流",
+      "scenarioIds": ["C10", "E08"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M02/C10/D16/E08/E15/F16 @terminal-failure keeps a completed tool after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M03",
+      "title": "部分最终回答后断流",
+      "scenarioIds": ["C12", "F02"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M03/C07/C12/F02 @terminal-failure preserves assistant text when the stream disconnects before completion",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M04",
+      "title": "steer 与 turn/completed 竞态",
+      "scenarioIds": ["B03"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M04/B03 @recovery settles a steer and turn-completed race without duplicating the queued message",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M05",
+      "title": "steer 明确拒绝后恢复原队列位置",
+      "scenarioIds": ["E07"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-queue-steer.e2e.ts",
+          "testName": "M05/E07 @recovery returns an explicitly rejected steer to its original queue position",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M06",
+      "title": "已接受 steer 后模型失败，队列不恢复",
+      "scenarioIds": ["E08"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M06/E08 @terminal-failure keeps an accepted steer consumed after final failure and restart",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M07",
+      "title": "错误显示与单次手动重试成功",
+      "scenarioIds": ["F11", "F12"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M07/F01/F06/F08/F10/F11/F12/F20 @approval-retry succeeds exactly once after a keyboard retry",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M08",
+      "title": "手动重试再次失败",
+      "scenarioIds": ["F13"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M08/F13 @terminal-failure keeps one error card when an explicit retry fails again",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M09",
+      "title": "app 重启后错误和队列恢复",
+      "scenarioIds": ["E12", "E13", "E14", "E15", "E16", "E17", "F16"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/conversation-state.e2e.ts",
+          "testName": "M09/E12/F16 @recovery restores app-server history and delivers a queued follow-up once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M10",
+      "title": "两个并发对话，一个失败、一个成功",
+      "scenarioIds": ["G06"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M10/G06 @terminal-failure isolates a failed conversation from a concurrent successful conversation",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M11",
+      "title": "审批等待期间 steer、拒绝和取消",
+      "scenarioIds": ["A09", "D12", "D13", "D14", "D15"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        },
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D12 @approval-retry approves a command request through the desktop approval panel",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        },
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        },
+        {
+          "file": "tests/e2e/approvals.e2e.ts",
+          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    },
+    {
+      "id": "M12",
+      "title": "空流、非法 SSE、重复 terminal 与迟到事件",
+      "scenarioIds": ["C13", "C14", "C16", "C17", "C24"],
+      "status": "covered",
+      "evidence": [
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/C13 @terminal-failure treats an empty HTTP 200 SSE stream as a failed turn",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/C14 @terminal-failure treats malformed SSE JSON as a failed turn without a renderer crash",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        },
+        {
+          "file": "tests/e2e/follow-up-failures.e2e.ts",
+          "testName": "M12/B10/C16/C17 @terminal-failure ignores an unknown event and duplicate completion without duplicating the answer",
+          "layer": "mock-e2e",
+          "assertions": [
+            "最终 UI 状态",
+            "terminal 类型和次数",
+            "队列状态、顺序与 revision",
+            "turn started 数量",
+            "provider 请求数量",
+            "tool/approval 执行数量",
+            "renderer/page 健康"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "最终 UI 状态",
+        "terminal 类型和次数",
+        "队列状态、顺序与 revision",
+        "turn started 数量",
+        "provider 请求数量",
+        "tool/approval 执行数量",
+        "renderer/page 健康"
+      ]
+    }
+  ],
+  "releaseE2E": [
+    {
+      "id": "R01",
+      "title": "普通文本",
+      "scenarioIds": ["A01"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R01 normal text reaches the real model through the desktop chain",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    },
+    {
+      "id": "R02",
+      "title": "可见输出后 steer",
+      "scenarioIds": ["A04"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R02 visible output then steer is accepted by the real-model turn",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    },
+    {
+      "id": "R03",
+      "title": "只读工具",
+      "scenarioIds": ["D01"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R03 reads a disposable workspace file through a real approved command",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    },
+    {
+      "id": "R04",
+      "title": "工具阶段 steer",
+      "scenarioIds": ["A05", "A06"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R04 steers while a real approved read-only command is running",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    },
+    {
+      "id": "R05",
+      "title": "用户停止得到 interrupted",
+      "scenarioIds": ["F17"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R05 user stop produces an interrupted terminal in the desktop app",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    },
+    {
+      "id": "R06",
+      "title": "历史重载保留回答、steer 和工具",
+      "scenarioIds": ["F16"],
+      "owner": "desktop-e2e",
+      "status": "partial",
+      "evidence": [
+        {
+          "file": "tests/e2e/release-llm.e2e.ts",
+          "testName": "R06 reload preserves real-model answer and steer history",
+          "layer": "release-e2e",
+          "assertions": [
+            "使用 packaged artifact",
+            "唯一 terminal",
+            "Composer 恢复",
+            "无错误卡",
+            "thread/turn/tool/history 结构断言"
+          ]
+        }
+      ],
+      "requiredAssertions": [
+        "使用 packaged artifact",
+        "唯一 terminal",
+        "Composer 恢复",
+        "无错误卡",
+        "thread/turn/tool/history 结构断言"
+      ]
+    }
+  ]
+}

@@ -16,7 +16,12 @@ describe("history mapper", () =>
     it("maps a full thread history to UI messages without dropping tool items", () =>
     {
         const commandActions = [
-            { type: "read" as const, command: "cat package.json", name: "cat", path: "/repo/package.json" },
+            {
+                type: "read" as const,
+                command: "cat package.json",
+                name: "cat",
+                path: "/repo/package.json",
+            },
         ];
         const commandItem = {
             type: "commandExecution",
@@ -72,6 +77,7 @@ describe("history mapper", () =>
             {
                 id: "assistant:turn_1:cmd_1",
                 role: "assistant",
+                metadata: { codexSource: { turnId: "turn_1" } },
                 parts: [
                     {
                         type: "dynamic-tool",
@@ -125,6 +131,7 @@ describe("history mapper", () =>
             {
                 id: "assistant:turn_1:file_1",
                 role: "assistant",
+                metadata: { codexSource: { turnId: "turn_1" } },
                 parts: [
                     {
                         type: "dynamic-tool",
@@ -189,37 +196,38 @@ describe("history mapper", () =>
             diff,
         });
 
-        expect(unifiedDiffForFileChangeBatches([
-            {
-                cwd: "/repo/a",
-                changes: [
-                    change("@@ -1 +1 @@\n-before\n+after\n"),
-                    change("@@ -3 +3 @@\n-old\n+new\n"),
-                ],
-            },
-            {
-                cwd: "/repo/b",
-                changes: [change("@@ -1 +1 @@\n-before-b\n+after-b\n")],
-            },
-        ])).toBe([
-            "diff --git a/src/app.ts b/src/app.ts",
-            "--- a/src/app.ts",
-            "+++ b/src/app.ts",
-            "@@ -1 +1 @@",
-            "-before",
-            "+after",
-            "@@ -3 +3 @@",
-            "-old",
-            "+new",
-            "",
-            "diff --git a/src/app.ts b/src/app.ts",
-            "--- a/src/app.ts",
-            "+++ b/src/app.ts",
-            "@@ -1 +1 @@",
-            "-before-b",
-            "+after-b",
-            "",
-        ].join("\n"));
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo/a",
+                    changes: [change("@@ -1 +1 @@\n-before\n+after\n"), change("@@ -3 +3 @@\n-old\n+new\n")],
+                },
+                {
+                    cwd: "/repo/b",
+                    changes: [change("@@ -1 +1 @@\n-before-b\n+after-b\n")],
+                },
+            ]),
+        ).toBe(
+            [
+                "diff --git a/src/app.ts b/src/app.ts",
+                "--- a/src/app.ts",
+                "+++ b/src/app.ts",
+                "@@ -1 +1 @@",
+                "-before",
+                "+after",
+                "@@ -3 +3 @@",
+                "-old",
+                "+new",
+                "",
+                "diff --git a/src/app.ts b/src/app.ts",
+                "--- a/src/app.ts",
+                "+++ b/src/app.ts",
+                "@@ -1 +1 @@",
+                "-before-b",
+                "+after-b",
+                "",
+            ].join("\n"),
+        );
     });
 
     it("uses the shared extractor output for history dynamic-tool parts", () =>
@@ -365,6 +373,167 @@ describe("history mapper", () =>
         ]);
     });
 
+    it("restores a failed turn on its final assistant message", () =>
+    {
+        const turnError = {
+            message: "The model stream disconnected.",
+            codexErrorInfo: null,
+            additionalDetails: "response.completed was not received",
+        };
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_failed",
+                    durationMs: 1250,
+                    status: "failed",
+                    error: turnError,
+                    items: [
+                        {
+                            type: "agentMessage",
+                            id: "agent_before_user",
+                            text: "Earlier assistant segment",
+                            phase: "commentary",
+                            memoryCitation: null,
+                        },
+                        {
+                            type: "userMessage",
+                            id: "user_1",
+                            clientId: "client_1",
+                            content: [{ type: "text", text: "Continue", text_elements: [] }],
+                        },
+                        {
+                            type: "agentMessage",
+                            id: "agent_partial",
+                            text: "Partial answer",
+                            phase: "final_answer",
+                            memoryCitation: null,
+                        },
+                    ],
+                },
+            ],
+        } as CodexThreadForUi;
+
+        const messages = mapCodexThreadToUiMessages(thread);
+        expect(messages).toMatchObject([
+            {
+                id: "assistant:turn_failed:agent_before_user",
+                role: "assistant",
+            },
+            {
+                id: "client_1",
+                role: "user",
+            },
+            {
+                id: "assistant:turn_failed:agent_partial",
+                role: "assistant",
+                parts: [{ type: "text", text: "Partial answer" }],
+                metadata: {
+                    codexSource: { turnId: "turn_failed" },
+                    codexTurn: {
+                        turnId: "turn_failed",
+                        status: "failed",
+                        error: turnError,
+                    },
+                },
+            },
+        ]);
+        expect(messages[0]).toMatchObject({ metadata: { codexSource: { turnId: "turn_failed" } } });
+    });
+
+    it("creates a terminal assistant message when a failed turn has no assistant output", () =>
+    {
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_failed_empty",
+                    durationMs: null,
+                    status: "failed",
+                    error: {
+                        message: "",
+                        codexErrorInfo: null,
+                        additionalDetails: null,
+                    },
+                    items: [
+                        {
+                            type: "userMessage",
+                            id: "user_1",
+                            clientId: null,
+                            content: [{ type: "text", text: "Start", text_elements: [] }],
+                        },
+                    ],
+                },
+            ],
+        } as CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toEqual([
+            {
+                id: "user_1",
+                role: "user",
+                parts: [{ type: "text", text: "Start", state: "done" }],
+            },
+            {
+                id: "assistant:turn_failed_empty:terminal",
+                role: "assistant",
+                parts: [],
+                metadata: {
+                    codexSource: { turnId: "turn_failed_empty" },
+                    codexTurn: {
+                        turnId: "turn_failed_empty",
+                        status: "failed",
+                        error: {
+                            message: "The model request failed before completion.",
+                            codexErrorInfo: null,
+                            additionalDetails: null,
+                        },
+                    },
+                },
+            },
+        ]);
+    });
+
+    it("restores interrupted turns without inventing a model error", () =>
+    {
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_interrupted",
+                    durationMs: null,
+                    status: "interrupted",
+                    error: {
+                        message: "This must not be displayed as a model error.",
+                        codexErrorInfo: null,
+                        additionalDetails: null,
+                    },
+                    items: [
+                        {
+                            type: "agentMessage",
+                            id: "agent_partial",
+                            text: "Stopped here",
+                            phase: null,
+                            memoryCitation: null,
+                        },
+                    ],
+                },
+            ],
+        } as CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)[0]).toEqual({
+            id: "assistant:turn_interrupted:agent_partial",
+            role: "assistant",
+            parts: [{ type: "text", text: "Stopped here", state: "done" }],
+            metadata: {
+                codexSource: { turnId: "turn_interrupted" },
+                codexTurn: {
+                    turnId: "turn_interrupted",
+                    status: "interrupted",
+                },
+            },
+        });
+    });
+
     it("maps sleep history items through the shared dynamic-tool contract", () =>
     {
         const item = {
@@ -438,43 +607,52 @@ describe("history mapper", () =>
     {
         const thread = {
             id: "thr",
-            turns: [{
-                id: "turn_context",
-                durationMs: null,
-                items: [{
-                    type: "userMessage",
-                    id: "user_context",
-                    clientId: null,
-                    content: [
-                        {
-                            type: "text",
-                            text: buildFilesMentionedContext([
-                                { type: "file", label: "report.pdf", path: "/tmp/report.pdf" },
-                                { type: "folder", label: "workspace", path: "/tmp/workspace" },
-                            ], "Use $github and @sample@local."),
-                            text_elements: [],
-                        },
-                        { type: "mention", name: "github", path: "app://github" },
-                        { type: "mention", name: "sample@local", path: "plugin://sample@local" },
-                    ],
-                }],
-            }],
-        } as unknown as CodexThreadForUi;
-
-        expect(mapCodexThreadToUiMessages(thread)).toEqual([{
-            id: "user_context",
-            role: "user",
-            parts: [
+            turns: [
                 {
-                    type: "text",
-                    text: [
-                        ":file[report.pdf]{name=%2Ftmp%2Freport.pdf}",
-                        ":file[workspace]{name=%2Ftmp%2Fworkspace}",
-                        "Use :app[github]{name=app%3A%2F%2Fgithub} and :plugin[sample%40local]{name=plugin%3A%2F%2Fsample%40local}.",
-                    ].join("\n"),
-                    state: "done",
+                    id: "turn_context",
+                    durationMs: null,
+                    items: [
+                        {
+                            type: "userMessage",
+                            id: "user_context",
+                            clientId: null,
+                            content: [
+                                {
+                                    type: "text",
+                                    text: buildFilesMentionedContext(
+                                        [
+                                            { type: "file", label: "report.pdf", path: "/tmp/report.pdf" },
+                                            { type: "folder", label: "workspace", path: "/tmp/workspace" },
+                                        ],
+                                        "Use $github and @sample@local.",
+                                    ),
+                                    text_elements: [],
+                                },
+                                { type: "mention", name: "github", path: "app://github" },
+                                { type: "mention", name: "sample@local", path: "plugin://sample@local" },
+                            ],
+                        },
+                    ],
                 },
             ],
-        }]);
+        } as unknown as CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toEqual([
+            {
+                id: "user_context",
+                role: "user",
+                parts: [
+                    {
+                        type: "text",
+                        text: [
+                            ":file[report.pdf]{name=%2Ftmp%2Freport.pdf}",
+                            ":file[workspace]{name=%2Ftmp%2Fworkspace}",
+                            "Use :app[github]{name=app%3A%2F%2Fgithub} and :plugin[sample%40local]{name=plugin%3A%2F%2Fsample%40local}.",
+                        ].join("\n"),
+                        state: "done",
+                    },
+                ],
+            },
+        ]);
     });
 });

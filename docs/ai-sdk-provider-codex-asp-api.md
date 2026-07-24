@@ -124,7 +124,7 @@ await codex.shutdown();
 - `languageModel(modelId)`：返回 `CodexLanguageModel`。
 - `listModels(params?)`：连接 app-server，执行 `initialize` / `initialized`，分页调用 `model/list`。
 - `startThread(options?)`：连接 app-server，执行 `initialize` / `initialized` / `thread/start`，返回 `CodexStartedThread`（`{ threadId, threadPath? }`）；适合显式创建空线程或由调用方自己管理后续 resume 生命周期。首轮聊天要在用户发送后立刻拿到会话 id 时，优先使用 `codexCallOptions({ onThreadStarted })`，让 `thread/start` 和首个 `turn/start` 保持在同一个 app-server 会话内。
-- `shutdown()`：关闭 persistent worker pool；非 persistent 模式下为空操作。
+- `shutdown()`：关闭 provider-owned persistent pool；当 desktop 注入 host-scoped connection 时，关闭其 broker 管理的单一物理连接。
 - `embeddingModel()` / `imageModel()`：显式抛 `NoSuchModelError`。
 
 ## 4. Provider 配置
@@ -380,7 +380,7 @@ notification turn/completed
 disconnect transport
 ```
 
-开启 persistent pool 时，同一个 worker 上后续调用会复用 `initialize` 结果，不再真实发送第二次 `initialize` / `initialized`。
+开启 provider-local persistent pool 时，同一个 worker 上后续调用会复用 `initialize` 结果，不再真实发送第二次 `initialize` / `initialized`。desktop host 则通过 `CodexAppServerConnection` 的 broker 在所有 logical channel 间共享一次 initialize 和一条物理连接。
 
 ### 6.2 `initialize`
 
@@ -522,7 +522,13 @@ provider 当前会构造：
 }
 ```
 
-provider 会先关闭 consumer-facing stream，让 UI 尽快收到 abort，再后台等待 `turn/interrupt` 或超时并释放 worker。
+`turn/interrupt` 的 RPC response 仅表示控制请求已结算，不表示 turn 已结束。桌面端把用户 stop 作为 intent：继续消费同一 App Server 连接上的 `turn/completed`，并只按匹配的 canonical status 决定 UI terminal：
+
+- `completed` -> finish；
+- `interrupted` -> aborted；
+- `failed` -> error。
+
+若 completion notification 在 deadline 前缺失，桌面端会经同一 host-scoped connection 执行严格的 `thread/read(includeTurns: true)` 对账。无法确认时返回脱敏 error，而不会伪造 `aborted`。用户 stop 不会关闭物理 App Server connection；history、catalog 和控制请求仍可复用其逻辑通道并发执行。
 
 ## 7. Prompt 映射
 
@@ -671,9 +677,9 @@ AI SDK `tools` 会被转换成 `dynamicTools` schema。若 app-server 请求 `it
 - provider 向 AI SDK stream 发 `tool-call`。
 - provider 用 `finishReason: "tool-calls"` 结束当前 step。
 - tool result 会在下一次 AI SDK step 的 prompt 里出现。
-- persistent transport 按 `threadId` 找回同一个 worker，把 tool result 回写给 app-server。
+- persistent transport 按 `threadId` 找回同一 continuation，把 tool result 回写给 app-server；desktop broker 将 continuation 保存在 host-scoped connection 中，而不是依赖 worker affinity。
 
-因此：标准 AI SDK tool 流程要求开启 persistent transport，否则无法可靠跨 step 续接同一个 app-server worker。
+因此：标准 AI SDK tool 流程要求开启 persistent transport；desktop 使用 host-scoped broker 来可靠跨 step 续接同一个 app-server connection。
 
 ### 9.3 Legacy `toolHandlers`
 
@@ -943,7 +949,7 @@ return streamText({
 3. official notes 中的 `thread/read`、`thread/list`、`thread/fork`、`review/start`、`command/exec`、`fs/*`、`account/*`、`skills/*`、`plugin/*` 等 API 不由 `CodexLanguageModel` 暴露；如 UI 需要这些能力，应直接用 `AppServerClient` 或新增 provider-facing helper。
 4. provider 使用 hand-maintained protocol subset + 部分 generated types。升级 app-server 后应运行 provider 的 `npm run codex:generate-types`，再检查 runtime mapper 和测试。
 5. `dynamicTools`、`process/*`、部分 provider capability 属于 experimental API；provider 会在有工具或显式配置时发送 `capabilities.experimentalApi = true`。
-6. standard AI SDK tools 的跨 step 工作流依赖 persistent transport；桌面当前已开启 poolSize 1。
+6. standard AI SDK tools 的跨 step 工作流依赖 persistent transport；桌面当前使用 host-scoped broker 的单一 physical connection，而不是 `poolSize: 1` 的串行 worker。
 7. `thread/start` 的 `runtimeWorkspaceRoots` 字段需要按目标 app-server schema 复核。
 8. app-server official response shape 常见为 `{ thread: { id } }`、`{ turn: { id } }`；provider 也兼容旧的 `{ threadId }`、`{ turnId }`。
 9. MCP elicitation 默认接受，dasCowork 已接入审批 broker；后续新增入口时不要遗漏 `onElicitation`。
@@ -982,7 +988,7 @@ npm --prefix desktop-app run test:e2e -- --reporter=line
 - transport contract：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/client/transport.ts`
 - stdio transport：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/client/transport-stdio.ts`
 - websocket transport：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/client/transport-websocket.ts`
-- persistent transport / worker pool：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/client/transport-persistent.ts`、`worker.ts`、`worker-pool.ts`
+- persistent transport / host broker：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/client/transport-persistent.ts`、`connection-broker.ts`、`app-server-connection.ts`；legacy provider-local pool 位于 `worker.ts`、`worker-pool.ts`
 - prompt 映射：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/utils/prompt-file-resolver.ts`
 - event mapper：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/protocol/event-mapper.ts`
 - provider metadata：`desktop-app/vendors/ai-sdk-provider-codex-asp/src/protocol/provider-metadata.ts`

@@ -43,6 +43,8 @@ export interface CodexTransport {
     disconnect(): Promise<void>;
     sendMessage(message: JsonRpcMessage): Promise<void>;
     sendNotification(method: string, params?: unknown): Promise<void>;
+    /** Releases local routing state for a request that will no longer consume a response. */
+    cancelRequest?(id: JsonRpcId): void;
     on<K extends keyof CodexTransportEventMap>(
         event: K,
         listener: CodexTransportEventMap[K],

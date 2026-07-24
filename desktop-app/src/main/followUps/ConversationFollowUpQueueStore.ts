@@ -79,7 +79,7 @@ export class ConversationFollowUpQueueStore {
     initialState = createDefaultConversationFollowUpQueueStoreState(),
     private readonly writeQueueState: QueueStateWriter = writeJsonAtomically
   ) {
-    this.state = recoverUncertainItems(parseState(initialState).state)
+    this.state = cloneState(parseState(initialState).state)
   }
 
   static inMemory(
@@ -105,7 +105,7 @@ export class ConversationFollowUpQueueStore {
       try {
         const contents = await readFile(this.filePath, 'utf8')
         const parsed = parseState(JSON.parse(contents))
-        this.state = recoverUncertainItems(parsed.state)
+        this.state = cloneState(parsed.state)
         if (parsed.migrated) {
           await this.writeQueueState(this.filePath, cloneState(this.state))
         }
@@ -161,34 +161,6 @@ function parseState(value: unknown): {
     } as ConversationFollowUpQueueStoreState,
     migrated: true
   }
-}
-
-function recoverUncertainItems(
-  state: ConversationFollowUpQueueStoreState
-): ConversationFollowUpQueueStoreState {
-  const recovered = cloneState(state)
-
-  for (const queue of Object.values(recovered.conversations)) {
-    queue.items = queue.items.map((item) => {
-      if (item.status !== 'sending' && item.status !== 'steering') {
-        return item
-      }
-
-      return {
-        ...item,
-        status: 'paused-recovery-uncertain',
-        updatedAt: new Date().toISOString(),
-        pause: {
-          kind: 'recovery-uncertain',
-          userMessage:
-            'The app closed before delivery could be confirmed. Retry or delete this item.'
-        },
-        lease: undefined
-      }
-    })
-  }
-
-  return recovered
 }
 
 function toDiskOptions(

@@ -99,6 +99,17 @@ describe("CodexHistoryClient", () =>
         ]);
     });
 
+    it("disconnects the logical client when connecting fails", async () =>
+    {
+        const mock = createMockClient([]);
+        mock.connectMock.mockRejectedValueOnce(new Error("connection failed"));
+        const client = createCodexHistoryClient({ createClient: () => mock });
+
+        await expect(client.listThreads()).rejects.toThrow("connection failed");
+
+        expect(mock.disconnectMock).toHaveBeenCalledTimes(1);
+    });
+
     it("reads threads and lists full turn items by default", async () =>
     {
         const item = thread({ id: "thread_1" });

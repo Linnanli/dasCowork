@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Chat } from '@ai-sdk/react'
 import type { UIMessage } from 'ai'
 
 import type {
   ConversationFollowUpState,
   DesktopCodexFollowUpApi,
+  FollowUpSteerPendingAck,
   MaterializedQueuedUserMessage,
   QueuedFollowUpItem,
   QueuedUserMessageSnapshot,
@@ -94,14 +94,16 @@ export function useConversationFollowUpCoordinator(
         continue
       }
 
-      if (!entry.loaded || entry.phase === 'loading') {
+      if (!entry.loaded || entry.status === 'loading') {
         requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
         continue
       }
-      if (entry.phase !== 'ready') {
-        if (entry.phase === 'submitted' || entry.phase === 'streaming') {
-          requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
-        }
+      const running = entry.status === 'submitted' || entry.status === 'streaming'
+      if (running) {
+        requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
+        continue
+      }
+      if (entry.status !== 'ready' && entry.status !== 'error') {
         continue
       }
 
@@ -112,23 +114,8 @@ export function useConversationFollowUpCoordinator(
         continue
       }
 
-      const chatStatus = entry.chat.status ?? entry.phase
-      const running = chatStatus === 'submitted' || chatStatus === 'streaming'
-      if (running) {
-        // Running-turn Steer is always an explicit renderer action now. The
-        // Composer and row action call steerItem(itemId), which also supports
-        // selecting a non-head item. Keeping automatic head Steer here would
-        // race that explicit call and can incorrectly steer an older Queue item.
-        requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
-        continue
-      }
-      if (chatStatus !== 'ready') {
-        if (chatStatus !== 'error') requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
-        continue
-      }
-
       dispatchingConversationKeys.current.add(conversationKey)
-      void dispatchFollowUpHead(api, entry, head, false)
+      void dispatchFollowUpHead(api, entry, head)
         .then((nextState) => {
           deliveryRetries.current.delete(retryKey)
           states.current.set(nextState.conversationKey, nextState)
@@ -191,18 +178,15 @@ function deliveryRetryKey(conversationKey: string, itemId: string): string {
 export async function dispatchFollowUpHead(
   api: DesktopCodexFollowUpApi,
   entry: ConversationChatEntry,
-  head: QueuedFollowUpItem,
-  running: boolean
+  head: QueuedFollowUpItem
 ): Promise<ConversationFollowUpState> {
-  if (running) {
-    return steerFollowUpItemWithOptimisticMessage(entry.chat, head.message, () =>
-      api.steerNext(head.conversationKey, head.id)
-    )
-  }
-
+  // A recovered failed turn is history, not an active request. Its queued
+  // successor must be allowed to start a new turn while retaining the failed
+  // transcript item itself.
+  if (entry.status === 'error') entry.controller.clearError()
   await waitForChatReady(entry)
   const delivery = await api.prepareNextTurn(head.conversationKey, head.id)
-  await entry.chat.sendMessage(
+  await entry.controller.sendMessage(
     {
       id: delivery.message.id,
       role: 'user',
@@ -213,39 +197,50 @@ export async function dispatchFollowUpHead(
   return api.getState(conversationKeyForEntry(entry))
 }
 
-export async function steerFollowUpItemWithOptimisticMessage<T>(
-  chat: Chat<UIMessage>,
+export async function steerFollowUpItemWithTranscript(
   message:
     | MaterializedQueuedUserMessage
     | QueuedUserMessageSnapshot
     | QueuedUserMessageSnapshotInput,
-  steer: () => Promise<T>
-): Promise<T> {
-  const currentMessages = chat.messages ?? []
-  const hadMessage = currentMessages.some((candidate) => candidate.id === message.id)
-  if (!hadMessage) {
-    chat.messages = [...currentMessages, optimisticSteerMessage(message)]
-  }
+  entry: ConversationChatEntry,
+  steer: () => Promise<FollowUpSteerPendingAck>
+): Promise<FollowUpSteerPendingAck> {
+  const activeTurnId = entry.controller.getActiveTurnId()
+  if (!activeTurnId) throw new Error('Conversation has no active turn to steer')
+
+  const steeringMessage = toSteeringUIMessage(message)
+  const stagedMessage = entry.controller.stageSteeringMessage(steeringMessage, {
+    clientUserMessageId: steeringMessage.id,
+    targetTurnId: activeTurnId
+  })
+  if (!stagedMessage) throw new Error('Conversation is not running and cannot be steered')
+
   try {
-    return await steer()
-  } catch (error) {
-    if (!hadMessage) {
-      chat.messages = (chat.messages ?? []).filter((candidate) => candidate.id !== message.id)
+    const result = await steer()
+    if (result.clientUserMessageId !== steeringMessage.id) {
+      throw new Error('Steer acknowledgement did not match the submitted user message')
     }
+    entry.controller.retargetSteeringMessage(steeringMessage.id, result.targetTurnId)
+    return result
+  } catch (error) {
+    entry.controller.rejectSteeringMessage(steeringMessage.id)
     throw error
   }
 }
 
 async function waitForChatReady(entry: ConversationChatEntry): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (entry.chat.status === 'ready' || entry.chat.status === undefined) return
-    if (entry.chat.status === 'error') throw new Error('Conversation is not ready for a follow-up')
+    if (entry.status === 'ready') return
+    if (entry.status === 'error') {
+      entry.controller.clearError()
+      continue
+    }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   throw new Error('Conversation did not become ready for the queued follow-up')
 }
 
-function optimisticSteerMessage(
+export function toSteeringUIMessage(
   message:
     | MaterializedQueuedUserMessage
     | QueuedUserMessageSnapshot

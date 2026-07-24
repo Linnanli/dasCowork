@@ -887,6 +887,35 @@ describe('buildAssistantRenderUnits', () => {
     ])
   })
 
+  it('renders the safe terminal-read dynamic tool as a standalone labeled activity', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'terminal-read-1',
+          toolName: 'read_thread_terminal',
+          state: 'output-available',
+          input: {},
+          output: { success: true, terminalAttached: false },
+          providerExecuted: true
+        }
+      ]
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'tool-group',
+        kind: 'dynamic',
+        partIndices: [0],
+        dynamicMetadata: {
+          standaloneInConversation: true,
+          displayLabels: [{ completedLabel: '已读取线程终端' }]
+        }
+      }
+    ])
+  })
+
   it('keeps dynamic tool fallback metadata explicit when registry metadata is absent', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'complete' },

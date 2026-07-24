@@ -329,6 +329,7 @@ const KNOWN_DYNAMIC_TOOL_METADATA: Record<
     activeLabel: string
     completedLabel: string
     completedSummaryKey?: string
+    standaloneInConversation?: boolean
   }
 > = {
   load_workspace_dependencies: {
@@ -336,7 +337,11 @@ const KNOWN_DYNAMIC_TOOL_METADATA: Record<
     completedLabel: '已加载工作区依赖'
   },
   pia_slackbot_dm: { activeLabel: 'Pia Slackbot DM', completedLabel: 'Pia Slackbot DM' },
-  read_thread_terminal: { activeLabel: '正在读取线程终端', completedLabel: '已读取线程终端' }
+  read_thread_terminal: {
+    activeLabel: '正在读取线程终端',
+    completedLabel: '已读取线程终端',
+    standaloneInConversation: true
+  }
 }
 
 export function buildAssistantRenderUnits(message: AssistantMessageLike): AssistantRenderModel {
@@ -2050,7 +2055,9 @@ function dynamicMetadataForPart(
 
   return {
     summaryOnlyInConversationGroup: booleanValue(registry?.summaryOnlyInConversationGroup),
-    standaloneInConversation: booleanValue(registry?.standaloneInConversation),
+    standaloneInConversation:
+      booleanValue(registry?.standaloneInConversation) ||
+      localMetadata?.standaloneInConversation === true,
     continuesLiveActivityBetweenCalls: booleanValue(registry?.continuesLiveActivityBetweenCalls),
     completedSummaryKey,
     repeatCount: numberValue(item?.repeatCount) ?? 1,

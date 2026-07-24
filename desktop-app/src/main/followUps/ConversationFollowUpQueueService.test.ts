@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import { createVitestPlanAssertionRecorder } from '../../../scripts/lib/test-plan-assertions.mjs'
 import {
   FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION,
   type QueuedUserMessageSnapshotInput
@@ -15,6 +16,32 @@ import {
   createDefaultConversationFollowUpQueueStoreState
 } from './ConversationFollowUpQueueStore'
 import { FollowUpAssetStore } from './FollowUpAssetStore'
+
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+const queueAssertionIds = [
+  '队列顺序、revision、lease 与消费状态正确',
+  '重启从持久化状态恢复',
+  '不能重复 claim 或自动重发'
+]
+
+const queueSecurityAssertionIds = [
+  '跨对话与信任边界隔离',
+  '资源、并发和终态无残留',
+  '诊断可关联而不泄露密钥'
+]
+
+async function assertQueuePlanEvidence(
+  scenarioIds: readonly string[],
+  assertionIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  for (const scenarioId of scenarioIds) {
+    for (const assertionId of assertionIds) {
+      await planAssert({ scenarioId, assertionId, assertion })
+    }
+  }
+}
 
 function snapshot(id: string, conversationId = 'conversation-1'): QueuedUserMessageSnapshotInput {
   return {
@@ -78,7 +105,7 @@ async function createService(): Promise<{
 }
 
 describe('ConversationFollowUpQueueService', () => {
-  it('serializes concurrent clients into one ordered, monotonically versioned queue', async () => {
+  it('E01/E23 serializes concurrent clients into one ordered, monotonically versioned queue', async () => {
     const fixture = await createService()
     const revisions: number[] = []
     const unsubscribe = fixture.service.subscribe((event) => revisions.push(event.revision))
@@ -93,42 +120,69 @@ describe('ConversationFollowUpQueueService', () => {
       expect(state.items.map((item) => item.id)).toEqual(['message-1', 'message-2'])
       expect(state.items.map((item) => item.preferredMode)).toEqual(['queue', 'steer'])
       expect(revisions).toEqual([1, 2])
+      await assertQueuePlanEvidence(['E01', 'E23'], queueAssertionIds, () => {
+        expect(state.items.map((item) => item.id)).toEqual(['message-1', 'message-2'])
+        expect(state.items.map((item) => item.preferredMode)).toEqual(['queue', 'steer'])
+        expect(revisions).toEqual([1, 2])
+      })
     } finally {
       unsubscribe()
       await fixture.dispose()
     }
   })
 
-  it('enforces the per-conversation item limit before mutating resources', async () => {
+  it('E24/G10 enforces the per-conversation item limit before mutating resources', async () => {
     const fixture = await createService()
 
     try {
-      for (let index = 0; index < FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION; index += 1) {
+      for (let index = 0; index < FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION - 1; index += 1) {
         await fixture.service.enqueue('conversation-1', snapshot(`message-${index}`), 'queue')
       }
+      expect((await fixture.service.getState('conversation-1')).items).toHaveLength(19)
+
+      await fixture.service.enqueue('conversation-1', snapshot('message-at-limit'), 'queue')
+      expect((await fixture.service.getState('conversation-1')).items).toHaveLength(20)
+
       await expect(
         fixture.service.enqueue('conversation-1', snapshot('message-overflow'), 'queue')
       ).rejects.toThrow('at most 20')
-      expect((await fixture.service.getState('conversation-1')).items).toHaveLength(20)
+      const limitedState = await fixture.service.getState('conversation-1')
+      expect(limitedState.items).toHaveLength(20)
+      await assertQueuePlanEvidence(['E24'], queueAssertionIds, () => {
+        expect(limitedState.items).toHaveLength(FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION)
+        expect(limitedState.items.at(-1)?.id).toBe('message-at-limit')
+        expect(limitedState.revision).toBe(FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION)
+      })
+      await assertQueuePlanEvidence(['G10'], queueSecurityAssertionIds, () => {
+        expect(limitedState.items).toHaveLength(FOLLOW_UP_QUEUE_MAX_ITEMS_PER_CONVERSATION)
+        expect(limitedState.items.at(-1)?.id).toBe('message-at-limit')
+        expect(limitedState.items.some((item) => item.id === 'message-overflow')).toBe(false)
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('rejects a snapshot whose routing identity does not match the queue', async () => {
+  it('G02 rejects a trusted snapshot whose routing identity does not match the queue', async () => {
     const fixture = await createService()
 
     try {
       await expect(
         fixture.service.enqueue('conversation-1', snapshot('message-1', 'conversation-2'), 'queue')
       ).rejects.toThrow('does not belong')
-      expect((await fixture.service.getState('conversation-1')).items).toEqual([])
+      const state = await fixture.service.getState('conversation-1')
+      expect(state.items).toEqual([])
+      await assertQueuePlanEvidence(['G02'], queueSecurityAssertionIds, () => {
+        expect(state.items).toEqual([])
+        expect(state.revision).toBe(0)
+        expect(state.defaultMode).toBe('queue')
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('keeps committed queue state when stale asset cleanup fails', async () => {
+  it('E19 keeps committed queue state when stale asset cleanup fails', async () => {
     const fixture = await createService()
     const prepare = fixture.assetStore.prepare.bind(fixture.assetStore)
     vi.spyOn(fixture.assetStore, 'prepare').mockImplementationOnce(async (...args) => {
@@ -145,13 +199,19 @@ describe('ConversationFollowUpQueueService', () => {
       ).resolves.toMatchObject({
         items: [{ id: 'message-1' }]
       })
-      expect((await fixture.service.getState('conversation-1')).items).toHaveLength(1)
+      const state = await fixture.service.getState('conversation-1')
+      expect(state.items).toHaveLength(1)
+      await assertQueuePlanEvidence(['E19'], queueAssertionIds, () => {
+        expect(state.items).toMatchObject([{ id: 'message-1', status: 'queued' }])
+        expect(state.revision).toBe(1)
+        expect(state.items[0]?.lease).toBeUndefined()
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('grants only one head lease and rejects a stale lease', async () => {
+  it('E28 grants only one head lease and rejects a stale lease', async () => {
     const fixture = await createService()
 
     try {
@@ -178,7 +238,37 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('rejects head-changing actions while a delivery lease is active', async () => {
+  it('E06/E14 durably records canonical acceptance before removing a claimed follow-up', async () => {
+    const fixture = await createService()
+
+    try {
+      await fixture.service.enqueue('conversation-1', snapshot('message-1'), 'queue')
+      const claim = await fixture.service.claimHead('conversation-1', 'turn-steer', 'message-1')
+
+      const acknowledged = await fixture.service.acknowledgeClaim(
+        'conversation-1',
+        'message-1',
+        claim.leaseToken
+      )
+      expect(acknowledged.items).toMatchObject([{ id: 'message-1', status: 'accepted' }])
+
+      const committed = await fixture.service.commitClaim(
+        'conversation-1',
+        'message-1',
+        claim.leaseToken
+      )
+      expect(committed.items).toEqual([])
+      await assertQueuePlanEvidence(['E06'], queueAssertionIds, () => {
+        expect(acknowledged.items).toMatchObject([{ id: 'message-1', status: 'accepted' }])
+        expect(acknowledged.items[0]?.lease).toBeDefined()
+        expect(committed.items).toEqual([])
+      })
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+  it('E28 rejects head-changing actions while a delivery lease is active', async () => {
     const fixture = await createService()
 
     try {
@@ -195,12 +285,18 @@ describe('ConversationFollowUpQueueService', () => {
       expect(
         (await fixture.service.getState('conversation-1')).items.map((item) => item.id)
       ).toEqual(['message-1', 'message-2'])
+      const state = await fixture.service.getState('conversation-1')
+      await assertQueuePlanEvidence(['E28'], queueAssertionIds, () => {
+        expect(state.items.map((item) => item.id)).toEqual(['message-1', 'message-2'])
+        expect(state.items[0]).toMatchObject({ id: 'message-1', status: 'steering' })
+        expect(state.items[0]?.lease).toMatchObject({ operation: 'turn-steer' })
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('prevents a second head claim while any queue item has a delivery lease', async () => {
+  it('E28 prevents a second head claim while any queue item has a delivery lease', async () => {
     const fixture = await createService()
 
     try {
@@ -216,7 +312,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('claims, materializes, and commits a non-head item without reordering the rest', async () => {
+  it('E05 claims, materializes, and commits a non-head item without reordering the rest', async () => {
     const fixture = await createService()
 
     try {
@@ -272,7 +368,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('does not steer past a paused or failed queue item', async () => {
+  it('E04 does not steer past a paused or failed queue item', async () => {
     const fixture = await createService()
 
     try {
@@ -293,7 +389,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('restores a rejected non-head steer in its original position', async () => {
+  it('E07 restores a rejected non-head steer in its original position', async () => {
     const fixture = await createService()
 
     try {
@@ -318,12 +414,21 @@ describe('ConversationFollowUpQueueService', () => {
         ['message-2', 'queued'],
         ['message-3', 'queued']
       ])
+      await assertQueuePlanEvidence(['E07'], queueAssertionIds, () => {
+        expect(failed.items.map((item) => [item.id, item.status])).toEqual([
+          ['message-1', 'queued'],
+          ['message-2', 'queued'],
+          ['message-3', 'queued']
+        ])
+        expect(failed.revision).toBeGreaterThan(3)
+        expect(failed.items[1]?.lease).toBeUndefined()
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('begins, commits, and cancels durable editing without changing item identity or order', async () => {
+  it('E02 begins, commits, and cancels durable editing without changing item identity or order', async () => {
     const fixture = await createService()
 
     try {
@@ -353,6 +458,15 @@ describe('ConversationFollowUpQueueService', () => {
         message: { text: 'updated follow up' }
       })
       expect(committed.items[1].edit).toBeUndefined()
+      await assertQueuePlanEvidence(['E02'], queueAssertionIds, () => {
+        expect(committed.items.map((item) => item.id)).toEqual(['message-1', 'message-2'])
+        expect(committed.items[1]).toMatchObject({
+          id: 'message-2',
+          status: 'queued',
+          message: { text: 'updated follow up' }
+        })
+        expect(committed.items[1]?.edit).toBeUndefined()
+      })
     } finally {
       await fixture.dispose()
     }
@@ -419,7 +533,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('retries a failed non-head item in place', async () => {
+  it('E27 retries a failed non-head item in place', async () => {
     const fixture = await createService()
 
     try {
@@ -438,12 +552,20 @@ describe('ConversationFollowUpQueueService', () => {
         ['message-1', 'queued'],
         ['message-2', 'queued']
       ])
+      await assertQueuePlanEvidence(['E27'], queueAssertionIds, () => {
+        expect(retried.items.map((item) => [item.id, item.status])).toEqual([
+          ['message-1', 'queued'],
+          ['message-2', 'queued']
+        ])
+        expect(retried.items[1]?.lease).toBeUndefined()
+        expect(retried.revision).toBeGreaterThan(3)
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('cancelEdit restores the exact paused status and pause metadata', async () => {
+  it('E02 cancelEdit restores the exact paused status and pause metadata', async () => {
     const fixture = await createService()
 
     try {
@@ -469,7 +591,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('keeps a failed head blocking later items until retry', async () => {
+  it('E04/E27 keeps a failed head blocking later items until retry', async () => {
     const fixture = await createService()
 
     try {
@@ -490,12 +612,17 @@ describe('ConversationFollowUpQueueService', () => {
 
       const retried = await fixture.service.retry('conversation-1', 'message-1')
       expect(retried.items[0].status).toBe('queued')
+      await assertQueuePlanEvidence(['E04'], queueAssertionIds, () => {
+        expect(retried.items[0]).toMatchObject({ id: 'message-1', status: 'queued' })
+        expect(retried.items[1]).toMatchObject({ id: 'message-2', status: 'queued' })
+        expect(retried.items[0]?.lease).toBeUndefined()
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('keeps a paused head fixed while allowing later items to reorder', async () => {
+  it('E28 keeps a paused head fixed while allowing later items to reorder', async () => {
     const fixture = await createService()
 
     try {
@@ -527,7 +654,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('pauses after interruption and resumes only interrupted items', async () => {
+  it('E10/E11 pauses after interruption and resumes only interrupted items', async () => {
     const fixture = await createService()
 
     try {
@@ -545,7 +672,53 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('keeps edited and newly enqueued items paused until explicit resume', async () => {
+  it('treats interruption of a conversation without a queue as a no-op', async () => {
+    const fixture = await createService()
+
+    try {
+      await expect(fixture.service.interrupt('missing-conversation')).resolves.toMatchObject({
+        conversationKey: 'missing-conversation',
+        items: []
+      })
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+  it('G07 keeps a paused conversation queue from blocking an independent queue', async () => {
+    const fixture = await createService()
+
+    try {
+      await fixture.service.enqueue(
+        'conversation-paused',
+        snapshot('paused', 'conversation-paused'),
+        'queue'
+      )
+      await fixture.service.interrupt('conversation-paused')
+
+      await fixture.service.enqueue(
+        'conversation-ready',
+        snapshot('ready', 'conversation-ready'),
+        'queue'
+      )
+      const readyClaim = await fixture.service.claimHead('conversation-ready', 'turn-start')
+      await fixture.service.commitClaim('conversation-ready', 'ready', readyClaim.leaseToken)
+
+      const pausedState = await fixture.service.getState('conversation-paused')
+      const readyState = await fixture.service.getState('conversation-ready')
+      expect(pausedState.items).toMatchObject([{ id: 'paused', status: 'paused-interrupted' }])
+      expect(readyState.items).toEqual([])
+      await assertQueuePlanEvidence(['G07'], queueSecurityAssertionIds, () => {
+        expect(pausedState.items).toMatchObject([{ id: 'paused', status: 'paused-interrupted' }])
+        expect(readyState.items).toEqual([])
+        expect(readyState.revision).toBeGreaterThan(1)
+      })
+    } finally {
+      await fixture.dispose()
+    }
+  })
+
+  it('E11 keeps edited and newly enqueued items paused until explicit resume', async () => {
     const fixture = await createService()
 
     try {
@@ -631,7 +804,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('migrates a local key atomically, de-duplicates ids, and preserves source order', async () => {
+  it('E21 migrates a local key atomically, de-duplicates ids, and preserves source order', async () => {
     const fixture = await createService()
 
     try {
@@ -653,12 +826,24 @@ describe('ConversationFollowUpQueueService', () => {
         migrated.items.find((item) => item.id === 'source-only')?.message.trustedContext.threadId
       ).toBe('thread-1')
       expect((await fixture.service.getState('local-1')).items).toEqual([])
+      await assertQueuePlanEvidence(['E21'], queueAssertionIds, () => {
+        expect(migrated.items.map((item) => item.id)).toEqual([
+          'shared',
+          'target-only',
+          'source-only'
+        ])
+        expect(migrated.items.find((item) => item.id === 'source-only')).toMatchObject({
+          conversationKey: 'thread-1',
+          message: { trustedContext: { threadId: 'thread-1' } }
+        })
+        expect(migrated.revision).toBeGreaterThan(1)
+      })
     } finally {
       await fixture.dispose()
     }
   })
 
-  it('keeps same-id assets isolated while migration discards only the duplicate source asset', async () => {
+  it('E21 keeps same-id assets isolated while migration discards only the duplicate source asset', async () => {
     const fixture = await createService()
 
     try {
@@ -693,7 +878,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('edits and cleans an attachment after its conversation key migrates', async () => {
+  it('E21 edits and cleans an attachment after its conversation key migrates', async () => {
     const fixture = await createService()
 
     try {
@@ -726,7 +911,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
-  it('preserves default mode, archived queues, and recovery state across restart', async () => {
+  it('E17/E22 preserves default mode, archived queues, and recovery state across restart', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'follow-up-restart-'))
     const statePath = join(directory, 'queue.json')
     const assetsPath = join(directory, 'assets')
@@ -757,8 +942,279 @@ describe('ConversationFollowUpQueueService', () => {
     }
   })
 
+  it.each(['sending', 'steering'] as const)(
+    'E13/E16/E17 pauses an unconfirmed persisted %s delivery after canonical history reconciliation',
+    async (status) => {
+      const directory = await mkdtemp(join(tmpdir(), 'follow-up-recovery-'))
+      const statePath = join(directory, 'queue.json')
+      const assetsPath = join(directory, 'assets')
+      const observedCandidates: string[][] = []
+
+      try {
+        const first = new ConversationFollowUpQueueService({
+          store: ConversationFollowUpQueueStore.onDisk(statePath),
+          assetStore: new FollowUpAssetStore(assetsPath),
+          createLeaseToken: () => 'lease-1'
+        })
+        await first.enqueue('conversation-1', snapshot('message-1'), 'queue')
+        await first.claimHead('conversation-1', status === 'sending' ? 'turn-start' : 'turn-steer')
+
+        const reloaded = new ConversationFollowUpQueueService({
+          store: ConversationFollowUpQueueStore.onDisk(statePath),
+          assetStore: new FollowUpAssetStore(assetsPath),
+          findAcceptedClientUserMessageIds: async (_conversationKey, candidateIds) => {
+            observedCandidates.push([...candidateIds])
+            return []
+          }
+        })
+        const recovered = await reloaded.getState('conversation-1')
+        const item = recovered.items[0]
+
+        expect(observedCandidates).toEqual([['message-1']])
+        expect(item).toMatchObject({
+          id: 'message-1',
+          status: 'paused-recovery-uncertain',
+          pause: { kind: 'recovery-uncertain' }
+        })
+        expect(item?.lease).toBeUndefined()
+        for (const scenarioId of ['E13', 'E16', 'E17']) {
+          await planAssert({
+            scenarioId,
+            assertionId: '队列顺序、revision、lease 与消费状态正确',
+            assertion: () => expect(item?.status).toBe('paused-recovery-uncertain')
+          })
+          await planAssert({
+            scenarioId,
+            assertionId: '重启从持久化状态恢复',
+            assertion: () => expect(observedCandidates).toEqual([['message-1']])
+          })
+          await planAssert({
+            scenarioId,
+            assertionId: '不能重复 claim 或自动重发',
+            assertion: () => expect(item?.lease).toBeUndefined()
+          })
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('E14 removes a persisted delivery only when canonical history confirms its client user message', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-recovery-'))
+    const statePath = join(directory, 'queue.json')
+    const assetsPath = join(directory, 'assets')
+
+    try {
+      const first = new ConversationFollowUpQueueService({
+        store: ConversationFollowUpQueueStore.onDisk(statePath),
+        assetStore: new FollowUpAssetStore(assetsPath),
+        createLeaseToken: () => 'lease-1'
+      })
+      await first.enqueue('conversation-1', snapshot('message-1'), 'queue')
+      await first.claimHead('conversation-1', 'turn-start')
+
+      const reloaded = new ConversationFollowUpQueueService({
+        store: ConversationFollowUpQueueStore.onDisk(statePath),
+        assetStore: new FollowUpAssetStore(assetsPath),
+        findAcceptedClientUserMessageIds: async (_conversationKey, candidateIds) => candidateIds
+      })
+      const recovered = await reloaded.getState('conversation-1')
+
+      expect(recovered.items).toEqual([])
+      await planAssert({
+        scenarioId: 'E14',
+        assertionId: '队列顺序、revision、lease 与消费状态正确',
+        assertion: () => expect(recovered.items).toEqual([])
+      })
+      await planAssert({
+        scenarioId: 'E14',
+        assertionId: '重启从持久化状态恢复',
+        assertion: () => expect(recovered.revision).toBeGreaterThan(1)
+      })
+      await planAssert({
+        scenarioId: 'E14',
+        assertionId: '不能重复 claim 或自动重发',
+        assertion: () => expect(recovered.items).toHaveLength(0)
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('reconciles accepted and in-flight items in one durable recovery write', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-recovery-'))
+    const statePath = join(directory, 'queue.json')
+    const assetsPath = join(directory, 'assets')
+    let recoveryWrites = 0
+
+    try {
+      const firstStore = ConversationFollowUpQueueStore.onDisk(statePath)
+      const first = new ConversationFollowUpQueueService({
+        store: firstStore,
+        assetStore: new FollowUpAssetStore(assetsPath)
+      })
+      for (const messageId of [
+        'accepted',
+        'confirmed',
+        'uncertain',
+        'queued',
+        'editing',
+        'paused'
+      ]) {
+        await first.enqueue('conversation-1', snapshot(messageId), 'queue')
+      }
+
+      const durable = await firstStore.getState()
+      const items = durable.conversations['conversation-1'].items
+      const [accepted, confirmed, uncertain, , editing, paused] = items
+      const claimedAt = '2026-07-18T00:00:00.000Z'
+
+      accepted.status = 'accepted'
+      confirmed.status = 'steering'
+      confirmed.lease = {
+        token: 'lease-confirmed',
+        operation: 'turn-steer',
+        claimedAt,
+        owner: 'main'
+      }
+      uncertain.status = 'sending'
+      uncertain.lease = {
+        token: 'lease-uncertain',
+        operation: 'turn-start',
+        claimedAt,
+        owner: 'main'
+      }
+      editing.status = 'editing'
+      editing.edit = { previousStatus: 'queued', begunAt: claimedAt }
+      paused.status = 'paused-failed'
+      paused.pause = { kind: 'send-failed', userMessage: 'Previous delivery failed.' }
+      await firstStore.setState(durable)
+      const revisionBeforeRecovery = durable.revision
+
+      const recoveryStore = ConversationFollowUpQueueStore.onDisk(statePath, {
+        writeJsonAtomically: async (target, state) => {
+          recoveryWrites += 1
+          await writeFile(target, JSON.stringify(state), 'utf8')
+        }
+      })
+      const observedCandidates: string[][] = []
+      const reloaded = new ConversationFollowUpQueueService({
+        store: recoveryStore,
+        assetStore: new FollowUpAssetStore(assetsPath),
+        now: () => '2026-07-18T00:00:01.000Z',
+        findAcceptedClientUserMessageIds: async (_conversationKey, candidateIds) => {
+          observedCandidates.push([...candidateIds])
+          return ['confirmed']
+        }
+      })
+
+      const recovered = await reloaded.getState('conversation-1')
+
+      expect(observedCandidates).toEqual([['confirmed', 'uncertain']])
+      expect(recoveryWrites).toBe(1)
+      expect(recovered.revision).toBe(revisionBeforeRecovery + 1)
+      expect(recovered.items).toMatchObject([
+        {
+          id: 'uncertain',
+          status: 'paused-recovery-uncertain',
+          pause: { kind: 'recovery-uncertain' }
+        },
+        { id: 'queued', status: 'queued' },
+        { id: 'editing', status: 'editing', edit: { previousStatus: 'queued' } },
+        { id: 'paused', status: 'paused-failed', pause: { kind: 'send-failed' } }
+      ])
+      expect(recovered.items[0].lease).toBeUndefined()
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({
+        revision: revisionBeforeRecovery + 1
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('does not write durable state when startup recovery has nothing to reconcile', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-recovery-'))
+    const statePath = join(directory, 'queue.json')
+    const assetsPath = join(directory, 'assets')
+    let recoveryWrites = 0
+
+    try {
+      const firstStore = ConversationFollowUpQueueStore.onDisk(statePath)
+      const first = new ConversationFollowUpQueueService({
+        store: firstStore,
+        assetStore: new FollowUpAssetStore(assetsPath)
+      })
+      await first.enqueue('conversation-1', snapshot('queued'), 'queue')
+      const revisionBeforeRecovery = (await firstStore.getState()).revision
+
+      const reloaded = new ConversationFollowUpQueueService({
+        store: ConversationFollowUpQueueStore.onDisk(statePath, {
+          writeJsonAtomically: async (target, state) => {
+            recoveryWrites += 1
+            await writeFile(target, JSON.stringify(state), 'utf8')
+          }
+        }),
+        assetStore: new FollowUpAssetStore(assetsPath),
+        findAcceptedClientUserMessageIds: vi.fn()
+      })
+
+      const recovered = await reloaded.getState('conversation-1')
+
+      expect(recoveryWrites).toBe(0)
+      expect(recovered.revision).toBe(revisionBeforeRecovery)
+      expect(recovered.items).toMatchObject([{ id: 'queued', status: 'queued' }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('pauses an in-flight delivery and redacts diagnostics when canonical history fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'follow-up-recovery-'))
+    const statePath = join(directory, 'queue.json')
+    const assetsPath = join(directory, 'assets')
+    const diagnostics: Array<{ event: string; details: Record<string, unknown> }> = []
+
+    try {
+      const first = new ConversationFollowUpQueueService({
+        store: ConversationFollowUpQueueStore.onDisk(statePath),
+        assetStore: new FollowUpAssetStore(assetsPath),
+        createLeaseToken: () => 'lease-1'
+      })
+      await first.enqueue('conversation-1', snapshot('message-1'), 'queue')
+      await first.claimHead('conversation-1', 'turn-start')
+
+      const reloaded = new ConversationFollowUpQueueService({
+        store: ConversationFollowUpQueueStore.onDisk(statePath),
+        assetStore: new FollowUpAssetStore(assetsPath),
+        findAcceptedClientUserMessageIds: async () => {
+          throw new Error('canonical history unavailable for follow up message-1')
+        },
+        logger: (event, details) => diagnostics.push({ event, details })
+      })
+
+      const recovered = await reloaded.getState('conversation-1')
+
+      expect(recovered.items).toMatchObject([
+        { id: 'message-1', status: 'paused-recovery-uncertain' }
+      ])
+      expect(diagnostics).toEqual([
+        {
+          event: 'recovery-history-read-failed',
+          details: {
+            conversationKey: 'conversation-1',
+            candidateCount: 1,
+            errorKind: 'Error'
+          }
+        }
+      ])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it.each(['turn-start', 'turn-steer'] as const)(
-    'keeps accepted %s image history durable after queue cleanup and restart reconciliation',
+    'E08/E15 keeps accepted %s image history durable after queue cleanup and restart reconciliation',
     async (operation) => {
       const fixture = await createService()
       const withAsset = snapshot('message-1')
@@ -813,7 +1269,7 @@ describe('ConversationFollowUpQueueService', () => {
     }
   )
 
-  it('persists an attachment failure when preparing the next queued turn', async () => {
+  it('E09/E20 persists an attachment failure when preparing the next queued turn', async () => {
     const fixture = await createService()
 
     try {
@@ -838,6 +1294,15 @@ describe('ConversationFollowUpQueueService', () => {
           kind: 'attachment-unavailable'
         }
       })
+      await assertQueuePlanEvidence(['E09', 'E20'], queueAssertionIds, () => {
+        expect(state.items[0]).toMatchObject({
+          id: 'message-1',
+          status: 'paused-failed',
+          pause: { kind: 'attachment-unavailable' }
+        })
+        expect(state.items[0]?.lease).toBeUndefined()
+        expect(state.revision).toBeGreaterThan(1)
+      })
     } finally {
       await fixture.dispose()
     }
@@ -849,5 +1314,63 @@ describe('ConversationFollowUpQueueService', () => {
     const state = await store.getState()
     state.defaultMode = 'steer'
     expect((await store.getState()).defaultMode).toBe('queue')
+  })
+
+  it.each(['retry', 'delete'] as const)(
+    'E27 lets the queue continue after a recovery-uncertain head is %s',
+    async (action) => {
+      const fixture = await createService()
+
+      try {
+        await fixture.service.enqueue('conversation-1', snapshot('message-1'), 'queue')
+        await fixture.service.enqueue('conversation-1', snapshot('message-2'), 'queue')
+        const durableState = await fixture.store.getState()
+        const uncertainHead = durableState.conversations['conversation-1'].items[0]
+        if (!uncertainHead) throw new Error('expected a queued head')
+        uncertainHead.status = 'paused-recovery-uncertain'
+        uncertainHead.pause = {
+          kind: 'recovery-uncertain',
+          userMessage: 'Delivery could not be confirmed after restart.'
+        }
+        await fixture.store.setState(durableState)
+
+        if (action === 'retry') {
+          await fixture.service.retry('conversation-1', 'message-1')
+          const firstClaim = await fixture.service.claimHead('conversation-1', 'turn-start')
+          await fixture.service.commitClaim('conversation-1', 'message-1', firstClaim.leaseToken)
+        } else {
+          await fixture.service.delete('conversation-1', 'message-1')
+        }
+
+        const nextClaim = await fixture.service.claimHead('conversation-1', 'turn-start')
+        expect(nextClaim.item).toMatchObject({ id: 'message-2', status: 'sending' })
+      } finally {
+        await fixture.dispose()
+      }
+    }
+  )
+
+  it('G09 leaves no queue item or lease after 100 sequential enqueue and steer settlements', async () => {
+    const fixture = await createService()
+
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        const id = `message-${index}`
+        await fixture.service.enqueue('conversation-1', snapshot(id), 'steer')
+        const claim = await fixture.service.claimHead('conversation-1', 'turn-steer')
+        await fixture.service.commitClaim('conversation-1', id, claim.leaseToken)
+      }
+
+      const state = await fixture.service.getState('conversation-1')
+      expect(state.items).toEqual([])
+      expect(state.revision).toBe(300)
+      await assertQueuePlanEvidence(['G09'], queueSecurityAssertionIds, () => {
+        expect(state.items).toEqual([])
+        expect(state.revision).toBe(300)
+        expect(state.archived).toBe(false)
+      })
+    } finally {
+      await fixture.dispose()
+    }
   })
 })

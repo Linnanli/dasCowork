@@ -2,9 +2,16 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
-import { appRoot, attachDiagnostics, closeApp, collectRendererLogs, launchApp } from './support/app'
+import {
+  appRoot,
+  attachDiagnostics,
+  closeApp,
+  collectRendererLogs,
+  expectAppReady,
+  launchApp
+} from './support/app'
 import {
   createLocalProject,
   ensureLocalProjectSelected,
@@ -17,6 +24,7 @@ import {
   providerResponseBodies,
   startMockBackend
 } from './support/mockBackend'
+import { expectTerminalScenario } from './support/terminalScenario'
 
 const onePixelPng = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -212,7 +220,7 @@ test('opens the Composer project card picker above the input and filters project
     const blankProjectName = `E2E Blank ${runId}`
     const dialog = page.locator('[data-slot="create-blank-project-dialog"]')
     await dialog.locator('[data-slot="blank-project-name-input"]').fill(blankProjectName)
-    await dialog.getByRole('button', { name: '创建', exact: true }).click()
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
     await expect(card).toContainText(blankProjectName)
 
     const blankProjectPath = await page.evaluate(() => {
@@ -304,7 +312,7 @@ test('discovers, overrides, and inserts custom agent roles from local TOML files
   }
 })
 
-test('sends a workspace reference, local file attachment and image through the provider', async ({
+test('preserves a workspace reference, local file, folder and image after conversation switch and reload', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -320,8 +328,10 @@ test('sends a workspace reference, local file attachment and image through the p
   })
   const localContextDir = await mkdtemp(join(tmpdir(), 'dascowork-e2e-local-context-'))
   const attachmentPath = join(localContextDir, 'e2e-notes.txt')
+  const folderPath = join(localContextDir, 'e2e-reference-folder')
   const imagePath = join(localContextDir, 'e2e-context.png')
   await writeFile(attachmentPath, 'Local attachment contents must not be uploaded.')
+  await mkdir(folderPath)
   await writeFile(imagePath, onePixelPng)
   const logs: string[] = []
   let app: ElectronApplication | undefined
@@ -335,7 +345,7 @@ test('sends a workspace reference, local file attachment and image through the p
           showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
         })
       },
-      [attachmentPath, imagePath]
+      [attachmentPath, folderPath, imagePath]
     )
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
@@ -354,13 +364,26 @@ test('sends a workspace reference, local file attachment and image through the p
 
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
     await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
-    await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toHaveCount(2)
     await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
 
     const sendButton = page.getByRole('button', { name: '发送消息', exact: true })
     await expect(sendButton).toBeEnabled()
     await sendButton.click()
     await expect(page.locator('[data-role="assistant"]')).toContainText(responseText)
+    await expectTerminalScenario({
+      page,
+      logs,
+      backend,
+      terminal: 'finish',
+      outcome: 'completed',
+      providerRequestCount: 1,
+      turnStartedCount: 1,
+      pendingApprovalCount: 0,
+      observedToolCount: 0,
+      toolResultCount: 0,
+      queue: { items: [] }
+    })
 
     const providerBody = await expectProviderResponseBody(backend)
     const contents = providerInputContents(providerBody)
@@ -369,7 +392,8 @@ test('sends a workspace reference, local file attachment and image through the p
       text:
         '# Files mentioned by the user:\n\n' +
         `## ${JSON.stringify(workspaceFileDisplayLabel)}: ${JSON.stringify(workspaceFilePath)}\n\n` +
-        `## ${JSON.stringify('e2e-notes.txt')}: ${JSON.stringify(attachmentPath)}` +
+        `## ${JSON.stringify('e2e-notes.txt')}: ${JSON.stringify(attachmentPath)}\n\n` +
+        `## ${JSON.stringify('e2e-reference-folder')}: ${JSON.stringify(folderPath)}` +
         `\n\n## My request for Codex:\n${prompt}`
     })
     expect(JSON.stringify(providerBody)).not.toContain(
@@ -389,6 +413,35 @@ test('sends a workspace reference, local file attachment and image through the p
           content.text.startsWith('<image name=[Image #1] path="')
       )
     ).toBe(true)
+
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    const originalConversation = sidebar.getByRole('button', {
+      name: new RegExp(`^${prompt}`)
+    })
+    await expect(originalConversation).toBeVisible()
+    await sidebar.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(page.locator('[data-role="user"]').filter({ hasText: prompt })).toHaveCount(0)
+
+    await originalConversation.click()
+    const restoredMessage = page.locator('[data-role="user"]').filter({ hasText: prompt })
+    await expect(restoredMessage).toHaveCount(1)
+    await expectAttachmentNames(page, restoredMessage, {
+      file: 'e2e-notes.txt',
+      folder: 'e2e-reference-folder',
+      image: 'e2e-context.png'
+    })
+
+    await page.reload()
+    await expectAppReady(page)
+    await sidebar.getByRole('button', { name: new RegExp(`^${prompt}`) }).click()
+    const reloadedMessage = page.locator('[data-role="user"]').filter({ hasText: prompt })
+    await expect(reloadedMessage).toHaveCount(1)
+    await expectAttachmentNames(page, reloadedMessage, {
+      file: 'e2e-notes.txt',
+      folder: 'e2e-reference-folder',
+      image: 'e2e-context.png'
+    })
+    expect(providerResponseBodies(backend)).toHaveLength(1)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -396,6 +449,37 @@ test('sends a workspace reference, local file attachment and image through the p
     await rm(localContextDir, { recursive: true, force: true })
   }
 })
+
+async function expectAttachmentNames(
+  page: Page,
+  message: Locator,
+  names: { file: string; folder: string; image: string }
+): Promise<void> {
+  const attachments = message.locator('.aui-attachment-root')
+  await expect(attachments).toHaveCount(3)
+  const fileAttachment = message.locator(`[data-attachment-name="${names.file}"]`)
+  const folderAttachment = message.locator(`[data-attachment-name="${names.folder}"]`)
+  await expect(fileAttachment).toHaveCount(1)
+  await expect(folderAttachment).toHaveCount(1)
+  await expectAttachmentTooltip(page, fileAttachment, names.file)
+  await expectAttachmentTooltip(page, folderAttachment, names.folder)
+
+  const imagePreview = attachments.locator('img')
+  await expect(imagePreview).toHaveCount(1)
+  const imagePreviewSource = await imagePreview.getAttribute('src')
+  expect(imagePreviewSource).toMatch(/^app:\/\/fs\//u)
+  expect(imagePreviewSource?.endsWith(`/${names.image}`)).toBe(true)
+  await expect(imagePreview).toHaveAttribute('alt', 'Attachment preview')
+}
+
+async function expectAttachmentTooltip(
+  page: Page,
+  attachment: Locator,
+  name: string
+): Promise<void> {
+  await attachment.hover()
+  await expect(page.getByRole('tooltip', { name, exact: true })).toHaveText(name)
+}
 
 async function expectProviderResponseBody(backend: {
   requests: Array<{ method: string; url: string; body: string }>

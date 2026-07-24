@@ -176,16 +176,16 @@ export class CodexHistoryClient
     ): Promise<T>
     {
         const client = this.createClient();
-        await client.connect();
         try
         {
+            await client.connect();
             await client.request<CodexInitializeResult>("initialize", this.initializeParams());
             await client.notification("initialized");
             return await callback(client);
         }
         finally
         {
-            await client.disconnect();
+            await client.disconnect().catch(() => undefined);
         }
     }
 

@@ -4,9 +4,12 @@ import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createVitestPlanAssertionRecorder } from '../../../../scripts/lib/test-plan-assertions.mjs'
+
 import type {
   ConversationFollowUpState,
   DesktopCodexFollowUpApi,
+  FollowUpSteerPendingAck,
   FollowUpQueueChangeEvent,
   QueuedFollowUpItem
 } from '../../../shared/codexFollowUpApi'
@@ -16,6 +19,25 @@ import {
 } from './useConversationFollowUps'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+const { planAssert } = createVitestPlanAssertionRecorder(expect)
+
+const raceAssertionIds = [
+  'claim、接受与队列结算至多一次',
+  '正确的恢复、暂停或拒绝状态',
+  'terminal 和 active run 不被竞态覆盖'
+]
+
+async function assertRacePlanEvidence(
+  scenarioIds: readonly string[],
+  assertion: () => void | Promise<void>
+): Promise<void> {
+  for (const scenarioId of scenarioIds) {
+    for (const assertionId of raceAssertionIds) {
+      await planAssert({ scenarioId, assertionId, assertion })
+    }
+  }
+}
 
 describe('useConversationFollowUps', () => {
   let container: HTMLDivElement
@@ -66,6 +88,67 @@ describe('useConversationFollowUps', () => {
     act(() => root.unmount())
     expect(unsubscribe).toHaveBeenCalledOnce()
     root = createRoot(container)
+  })
+
+  it('B12/B14 collapses rapid duplicate Steer actions and ignores stale revisions while acknowledgement is pending', async () => {
+    const item = createItem('one')
+    const initial = createState(1, [item])
+    const steering = createState(3, [{ ...item, status: 'steering' }])
+    const stale = createState(2, [item])
+    const acknowledgement = deferred<FollowUpSteerPendingAck>()
+    const steerItem = vi.fn(() => acknowledgement.promise)
+    const api = createApi({
+      getState: vi.fn().mockResolvedValue(initial),
+      steerItem,
+      subscribe: (nextListener) => {
+        listener = nextListener
+        return vi.fn()
+      }
+    })
+
+    await act(async () => {
+      root.render(
+        <Probe api={api} onController={(nextController) => (controller = nextController)} />
+      )
+    })
+
+    let firstSteer!: Promise<FollowUpSteerPendingAck>
+    let secondSteer!: Promise<FollowUpSteerPendingAck>
+    act(() => {
+      firstSteer = controller!.steerItem('one')
+      secondSteer = controller!.steerItem('one')
+    })
+
+    expect(steerItem).toHaveBeenCalledTimes(1)
+    expect(steerItem).toHaveBeenCalledWith('conversation-a', 'one')
+    expect(controller?.pendingItemIds).toEqual(new Set(['one']))
+
+    await act(async () => {
+      listener?.({ revision: 3, state: steering })
+      listener?.({ revision: 2, state: stale })
+    })
+    expect(controller?.state?.revision).toBe(3)
+    expect(controller?.items[0]?.status).toBe('steering')
+
+    acknowledgement.resolve({
+      delivery: 'pending-ack',
+      clientUserMessageId: 'one',
+      targetTurnId: 'turn-one',
+      state: steering
+    })
+    await act(async () => {
+      await Promise.all([firstSteer, secondSteer])
+    })
+
+    expect(steerItem).toHaveBeenCalledTimes(1)
+    expect(controller?.pendingItemIds.size).toBe(0)
+    await assertRacePlanEvidence(['B12', 'B14'], () => {
+      expect(steerItem).toHaveBeenCalledTimes(1)
+      expect(steerItem).toHaveBeenCalledWith('conversation-a', 'one')
+      expect(controller?.state?.revision).toBe(3)
+      expect(controller?.items[0]?.status).toBe('steering')
+      expect(controller?.pendingItemIds.size).toBe(0)
+    })
   })
 
   it('persists default mode optimistically and routes item actions through the API', async () => {
@@ -170,7 +253,12 @@ describe('useConversationFollowUps', () => {
     ])
     const api = createApi({
       getState: vi.fn().mockResolvedValue(initial),
-      steerItem: vi.fn().mockResolvedValue(uncertain)
+      steerItem: vi.fn().mockResolvedValue({
+        delivery: 'pending-ack',
+        clientUserMessageId: 'one',
+        targetTurnId: 'turn-one',
+        state: uncertain
+      })
     })
 
     await act(async () => {
@@ -241,8 +329,18 @@ function createApi(overrides: Partial<DesktopCodexFollowUpApi>): DesktopCodexFol
     setDefaultMode: vi.fn().mockResolvedValue(undefined),
     prepareNextTurn: vi.fn(),
     materializeItem: vi.fn(),
-    steerItem: vi.fn().mockResolvedValue(state),
-    steerNext: vi.fn().mockResolvedValue(state),
+    steerItem: vi.fn().mockImplementation(async (_conversationKey, itemId) => ({
+      delivery: 'pending-ack',
+      clientUserMessageId: itemId,
+      targetTurnId: 'turn-one',
+      state
+    })),
+    steerNext: vi.fn().mockImplementation(async (_conversationKey, itemId) => ({
+      delivery: 'pending-ack',
+      clientUserMessageId: itemId,
+      targetTurnId: 'turn-one',
+      state
+    })),
     subscribe: vi.fn(() => vi.fn()),
     ...overrides
   }
@@ -280,4 +378,15 @@ function createItem(id: string): QueuedFollowUpItem {
       }
     }
   }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }

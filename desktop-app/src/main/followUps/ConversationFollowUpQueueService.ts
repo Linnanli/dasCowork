@@ -67,6 +67,15 @@ export type ConversationFollowUpQueueServiceOptions = {
       | FollowUpLocalImageInput
     )[]
   ) => Promise<void>
+  /**
+   * Looks up the user-message identities that app-server has already stored
+   * for a persisted thread. It runs only during startup recovery, before an
+   * in-flight delivery is converted to an explicit uncertain state.
+   */
+  findAcceptedClientUserMessageIds?: (
+    conversationKey: string,
+    clientUserMessageIds: readonly string[]
+  ) => Promise<readonly string[]>
 }
 
 export class ConversationFollowUpQueueService {
@@ -586,6 +595,28 @@ export class ConversationFollowUpQueueService {
     })
   }
 
+  /**
+   * Records that app-server accepted the follow-up before best-effort queue
+   * cleanup removes it. This closes the crash window between canonical
+   * acceptance and `commitClaim`.
+   */
+  async acknowledgeClaim(
+    conversationKey: string,
+    itemId: string,
+    leaseToken: string
+  ): Promise<ConversationFollowUpState> {
+    return this.serialize(async () => {
+      const state = await this.options.store.getState()
+      const queue = requireQueue(state, conversationKey)
+      const item = requireItem(queue, itemId)
+      requireLease(item, leaseToken)
+      item.status = 'accepted'
+      item.pause = undefined
+      item.updatedAt = this.now()
+      return this.commitState(state, conversationKey, 'claim-acknowledged', item)
+    })
+  }
+
   async materializeClaimMessage(claim: FollowUpClaim): Promise<MaterializedQueuedUserMessage> {
     return this.serialize(async () => {
       const state = await this.options.store.getState()
@@ -727,7 +758,8 @@ export class ConversationFollowUpQueueService {
   async interrupt(conversationKey: string): Promise<ConversationFollowUpState> {
     return this.serialize(async () => {
       const state = await this.options.store.getState()
-      const queue = requireQueue(state, conversationKey)
+      const queue = state.conversations[conversationKey]
+      if (!queue) return toConversationState(state, conversationKey)
       if (queue.items.length === 0) {
         return toConversationState(state, conversationKey)
       }
@@ -918,6 +950,7 @@ export class ConversationFollowUpQueueService {
 
   private async reconcilePersistedAssets(): Promise<void> {
     const state = await this.options.store.getState()
+    const discardedItems = await this.reconcileInterruptedDeliveries(state)
     const relativePaths = Object.values(state.conversations).flatMap((queue) =>
       queue.items.flatMap((item) =>
         item.message.attachments.flatMap((attachment) =>
@@ -926,6 +959,97 @@ export class ConversationFollowUpQueueService {
       )
     )
     await this.options.assetStore.reconcileReferencedAssets(relativePaths)
+    await Promise.all(
+      discardedItems.map((item) =>
+        this.deleteSnapshotAssetsBestEffort(
+          item.message,
+          item.id,
+          'recovery-accepted-delivery-assets'
+        )
+      )
+    )
+  }
+
+  private async reconcileInterruptedDeliveries(
+    state: ConversationFollowUpQueueStoreState
+  ): Promise<QueuedFollowUpItem[]> {
+    const discardedItems: QueuedFollowUpItem[] = []
+    let changed = false
+    for (const queue of Object.values(state.conversations)) {
+      const acceptedItems = queue.items.filter((item) => item.status === 'accepted')
+      if (acceptedItems.length === 0) continue
+      changed = true
+      discardedItems.push(...acceptedItems)
+      queue.items = queue.items.filter((item) => item.status !== 'accepted')
+    }
+
+    const inFlightByConversation = new Map<string, QueuedFollowUpItem[]>()
+    for (const [conversationKey, queue] of Object.entries(state.conversations)) {
+      const inFlight = queue.items.filter(
+        (item) => item.status === 'sending' || item.status === 'steering'
+      )
+      if (inFlight.length > 0) inFlightByConversation.set(conversationKey, inFlight)
+    }
+    if (inFlightByConversation.size === 0) {
+      if (changed) {
+        state.revision += 1
+        await this.options.store.setState(state)
+      }
+      return discardedItems
+    }
+
+    const acceptedByConversation = new Map<string, Set<string>>()
+    for (const [conversationKey, items] of inFlightByConversation) {
+      const candidateIds = items.map((item) => item.id)
+      let acceptedIds: readonly string[] = []
+      try {
+        acceptedIds =
+          (await this.options.findAcceptedClientUserMessageIds?.(conversationKey, candidateIds)) ??
+          []
+      } catch (error) {
+        this.options.logger?.('recovery-history-read-failed', {
+          conversationKey,
+          candidateCount: items.length,
+          errorKind: error instanceof Error ? error.name : 'unknown'
+        })
+      }
+      const candidates = new Set(candidateIds)
+      acceptedByConversation.set(
+        conversationKey,
+        new Set(acceptedIds.filter((id) => candidates.has(id)))
+      )
+    }
+
+    for (const [conversationKey, queue] of Object.entries(state.conversations)) {
+      const acceptedIds = acceptedByConversation.get(conversationKey)
+      if (!acceptedIds) continue
+      queue.items = queue.items.flatMap((item) => {
+        if (item.status !== 'sending' && item.status !== 'steering') return [item]
+        changed = true
+        if (acceptedIds.has(item.id)) {
+          discardedItems.push(item)
+          return []
+        }
+        return [
+          {
+            ...item,
+            status: 'paused-recovery-uncertain',
+            updatedAt: this.now(),
+            pause: {
+              kind: 'recovery-uncertain',
+              userMessage:
+                'The app closed before delivery could be confirmed. Retry or delete this item.'
+            },
+            lease: undefined
+          }
+        ]
+      })
+    }
+    if (!changed) return discardedItems
+
+    state.revision += 1
+    await this.options.store.setState(state)
+    return discardedItems
   }
 }
 

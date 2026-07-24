@@ -1,25 +1,32 @@
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
 import { describe, expect, it, vi } from "vitest";
 
+import { CodexAppServerConnection } from "../src/client/app-server-connection";
 import type { JsonRpcMessage } from "../src/client/transport";
 import { CODEX_PROVIDER_ID, codexCallOptions } from "../src/protocol/provider-metadata";
 import { createCodexAppServer } from "../src/provider";
+import type { CodexTurnLifecycleEvent } from "../src/provider-settings";
+import type { CodexSession } from "../src/session";
 import { MockTransport } from "./helpers/mock-transport";
+import { planAssertionsForTest } from "./helpers/plan-assertion";
 
-class ScriptedTransport extends MockTransport 
+class ScriptedTransport extends MockTransport
 {
-    override async sendMessage(message: JsonRpcMessage): Promise<void> 
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
     {
         await super.sendMessage(message);
 
-        if (!("id" in message) || message.id === undefined || !("method" in message)) 
+        if (!("id" in message) || message.id === undefined || !("method" in message))
         {
             return;
         }
 
-        if (message.method === "initialize") 
+        if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -66,11 +73,11 @@ class ScriptedTransport extends MockTransport
             return;
         }
 
-        if (message.method === "turn/start") 
+        if (message.method === "turn/start")
         {
             this.emitMessage({ id: message.id, result: { turnId: "turn_1" } });
 
-            queueMicrotask(() => 
+            queueMicrotask(() =>
             {
                 this.emitMessage({
                     method: "turn/started",
@@ -113,16 +120,24 @@ class ScriptedTransport extends MockTransport
     }
 }
 
+class FailingConnectTransport extends MockTransport
+{
+    override connect(): Promise<void>
+    {
+        return Promise.reject(new Error("connection failed before request"));
+    }
+}
+
 class TaskReferenceTransport extends ScriptedTransport
 {
     override async sendMessage(message: JsonRpcMessage): Promise<void>
     {
         await super.sendMessage(message);
         if (
-            "id" in message
-            && message.id !== undefined
-            && "method" in message
-            && message.method === "thread/read"
+            "id" in message &&
+      message.id !== undefined &&
+      "method" in message &&
+      message.method === "thread/read"
         )
         {
             this.emitMessage({
@@ -168,7 +183,12 @@ class AgentLifecycleTransport extends ScriptedTransport
 {
     override async sendMessage(message: JsonRpcMessage): Promise<void>
     {
-        if (!("id" in message) || message.id === undefined || !("method" in message) || message.method !== "turn/start")
+        if (
+            !("id" in message) ||
+      message.id === undefined ||
+      !("method" in message) ||
+      message.method !== "turn/start"
+        )
         {
             await super.sendMessage(message);
             return;
@@ -208,6 +228,77 @@ class AgentLifecycleTransport extends ScriptedTransport
     }
 }
 
+class TurnLifecycleTransport extends ScriptedTransport
+{
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
+    {
+        if (
+            !("id" in message) ||
+      message.id === undefined ||
+      !("method" in message) ||
+      message.method !== "turn/start"
+        )
+        {
+            await super.sendMessage(message);
+            return;
+        }
+
+        await MockTransport.prototype.sendMessage.call(this, message);
+        this.emitMessage({ id: message.id, result: { turnId: "turn_lifecycle" } });
+        queueMicrotask(() =>
+        {
+            this.emitMessage({
+                method: "turn/started",
+                params: { threadId: "thr_1", turn: { id: "turn_lifecycle" } },
+            });
+            const userMessage = {
+                type: "userMessage" as const,
+                id: "user_item_1",
+                clientId: "client_user_1",
+                content: [
+                    { type: "text" as const, text: "  Hello lifecycle  ", text_elements: [] },
+                    {
+                        type: "image" as const,
+                        url: "https://example.test/image.png",
+                        detail: "high" as const,
+                    },
+                    { type: "localImage" as const, path: "/tmp/local.png" },
+                ],
+            };
+            this.emitMessage({
+                method: "item/started",
+                params: {
+                    threadId: "thr_1",
+                    turnId: "turn_lifecycle",
+                    startedAtMs: 100,
+                    item: userMessage,
+                },
+            });
+            this.emitMessage({
+                method: "item/completed",
+                params: {
+                    threadId: "thr_1",
+                    turnId: "turn_lifecycle",
+                    completedAtMs: 200,
+                    item: userMessage,
+                },
+            });
+            this.emitMessage({
+                method: "turn/completed",
+                params: {
+                    threadId: "thr_1",
+                    turn: {
+                        id: "turn_lifecycle",
+                        items: [userMessage],
+                        status: "completed",
+                        error: null,
+                    },
+                },
+            });
+        });
+    }
+}
+
 class InterruptAwareTransport extends MockTransport
 {
     override async sendMessage(message: JsonRpcMessage): Promise<void>
@@ -221,7 +312,10 @@ class InterruptAwareTransport extends MockTransport
 
         if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -240,20 +334,140 @@ class InterruptAwareTransport extends MockTransport
         if (message.method === "turn/interrupt")
         {
             this.emitMessage({ id: message.id, result: {} });
+            queueMicrotask(() =>
+            {
+                this.emitMessage({
+                    method: "turn/completed",
+                    params: {
+                        threadId: "thr_abort",
+                        turn: { id: "turn_abort", items: [], status: "interrupted", error: null },
+                    },
+                });
+            });
             return;
         }
     }
 }
 
-async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]> 
+class ActiveTransportCrashTransport extends ScriptedTransport
+{
+    readonly readyForFailure = deferred<void>();
+    disconnectCalls = 0;
+
+    constructor(private readonly emitPartialToken: boolean)
+    {
+        super();
+    }
+
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
+    {
+        if (
+            !("id" in message) ||
+      message.id === undefined ||
+      !("method" in message) ||
+      message.method !== "turn/start"
+        )
+        {
+            await super.sendMessage(message);
+            return;
+        }
+
+        await MockTransport.prototype.sendMessage.call(this, message);
+        this.emitMessage({ id: message.id, result: { turnId: "turn_transport_crash" } });
+        queueMicrotask(() =>
+        {
+            this.emitMessage({
+                method: "turn/started",
+                params: { threadId: "thr_1", turn: { id: "turn_transport_crash" } },
+            });
+
+            if (this.emitPartialToken)
+            {
+                this.emitMessage({
+                    method: "item/started",
+                    params: {
+                        item: { type: "agentMessage", id: "item_transport_crash", text: "" },
+                        threadId: "thr_1",
+                        turnId: "turn_transport_crash",
+                    },
+                });
+                this.emitMessage({
+                    method: "item/agentMessage/delta",
+                    params: {
+                        threadId: "thr_1",
+                        turnId: "turn_transport_crash",
+                        itemId: "item_transport_crash",
+                        delta: "Partial response",
+                    },
+                });
+            }
+
+            this.readyForFailure.resolve();
+        });
+    }
+
+    override async disconnect(): Promise<void>
+    {
+        this.disconnectCalls++;
+        await super.disconnect();
+    }
+}
+
+class ToolLifecycleCrashTransport extends ScriptedTransport
+{
+    readonly readyForFailure = deferred<void>();
+    disconnectCalls = 0;
+
+    constructor(private readonly lifecycleEvents: readonly JsonRpcMessage[])
+    {
+        super();
+    }
+
+    override async sendMessage(message: JsonRpcMessage): Promise<void>
+    {
+        if (
+            !("id" in message) ||
+      message.id === undefined ||
+      !("method" in message) ||
+      message.method !== "turn/start"
+        )
+        {
+            await super.sendMessage(message);
+            return;
+        }
+
+        await MockTransport.prototype.sendMessage.call(this, message);
+        this.emitMessage({ id: message.id, result: { turnId: "turn_tool_crash" } });
+        queueMicrotask(() =>
+        {
+            this.emitMessage({
+                method: "turn/started",
+                params: { threadId: "thr_1", turn: { id: "turn_tool_crash" } },
+            });
+            for (const event of this.lifecycleEvents)
+            {
+                this.emitMessage(event);
+            }
+            this.readyForFailure.resolve();
+        });
+    }
+
+    override async disconnect(): Promise<void>
+    {
+        this.disconnectCalls++;
+        await super.disconnect();
+    }
+}
+
+async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
 {
     const reader = stream.getReader();
     const parts: unknown[] = [];
 
-    while (true) 
+    while (true)
     {
         const { done, value } = await reader.read();
-        if (done) 
+        if (done)
         {
             break;
         }
@@ -263,10 +477,38 @@ async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
     return parts;
 }
 
+async function readAllWithin(
+    stream: ReadableStream<unknown>,
+    timeoutMs: number,
+): Promise<unknown[]>
+{
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try
+    {
+        return await Promise.race([
+            readAll(stream),
+            new Promise<never>((_resolve, reject) =>
+            {
+                timer = setTimeout(
+                    () => reject(new Error(`Stream did not terminate within ${timeoutMs}ms.`)),
+                    timeoutMs,
+                );
+            }),
+        ]);
+    }
+    finally
+    {
+        if (timer !== undefined)
+        {
+            clearTimeout(timer);
+        }
+    }
+}
+
 function deferred<T = void>(): {
-    promise: Promise<T>;
-    resolve: (value: T | PromiseLike<T>) => void;
-    reject: (reason?: unknown) => void;
+    promise: Promise<T>
+    resolve: (value: T | PromiseLike<T>) => void
+    reject: (reason?: unknown) => void
 }
 {
     let resolve!: (value: T | PromiseLike<T>) => void;
@@ -279,9 +521,36 @@ function deferred<T = void>(): {
     return { promise, resolve, reject };
 }
 
-describe("CodexLanguageModel.doStream", () => 
+describe("CodexLanguageModel.doStream", () =>
 {
-    it("runs initialize -> thread/start -> turn/start and maps notifications to stream parts", async () => 
+    it("C01 emits one error and sends no JSON-RPC request when transport connection fails", async () =>
+    {
+        const assertC01 = planAssertionsForTest("C01");
+        const transport = new FailingConnectTransport();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        });
+        const parts = (await readAll(stream)) as Array<{ type?: string; error?: Error }>;
+
+        await assertC01("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
+        await assertC01("保留可见内容并显示单一终态", () =>
+            expect(parts.find((part) => part.type === "error")?.error?.message).toBe(
+                "connection failed before request",
+            ),
+        );
+        await assertC01("无自动重试、额外请求或迟到事件应用", () =>
+            expect(transport.sentMessages).toHaveLength(0),
+        );
+    });
+
+    it("runs initialize -> thread/start -> turn/start and maps notifications to stream parts", async () =>
     {
         const transport = new ScriptedTransport();
 
@@ -301,22 +570,44 @@ describe("CodexLanguageModel.doStream", () =>
         const parts = await readAll(stream);
 
         expect(parts).toEqual([
-            { type: "stream-start", warnings: [], providerMetadata: { [CODEX_PROVIDER_ID]: { threadId: "thr_1", turnId: "turn_1" } } },
+            {
+                type: "stream-start",
+                warnings: [],
+                providerMetadata: { [CODEX_PROVIDER_ID]: { threadId: "thr_1", turnId: "turn_1" } },
+            },
             {
                 type: "text-start",
                 id: "item_1",
-                providerMetadata: { [CODEX_PROVIDER_ID]: { threadId: "thr_1", turnId: "turn_1" } },
+                providerMetadata: {
+                    [CODEX_PROVIDER_ID]: {
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                        sourceItemId: "item_1",
+                    },
+                },
             },
             {
                 type: "text-delta",
                 id: "item_1",
                 delta: "Hello",
-                providerMetadata: { [CODEX_PROVIDER_ID]: { threadId: "thr_1", turnId: "turn_1" } },
+                providerMetadata: {
+                    [CODEX_PROVIDER_ID]: {
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                        sourceItemId: "item_1",
+                    },
+                },
             },
             {
                 type: "text-end",
                 id: "item_1",
-                providerMetadata: { [CODEX_PROVIDER_ID]: { threadId: "thr_1", turnId: "turn_1" } },
+                providerMetadata: {
+                    [CODEX_PROVIDER_ID]: {
+                        threadId: "thr_1",
+                        turnId: "turn_1",
+                        sourceItemId: "item_1",
+                    },
+                },
             },
             {
                 type: "finish",
@@ -355,6 +646,342 @@ describe("CodexLanguageModel.doStream", () =>
         });
     });
 
+    it("C23 fails once and deactivates the session when transport closes before the first token", async () =>
+    {
+        const assertC23 = planAssertionsForTest("C23");
+        const transport = new ActiveTransportCrashTransport(false);
+        let session: CodexSession | undefined;
+        const sessionCreated = deferred<CodexSession>();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({
+                onSessionCreated: (createdSession) =>
+                {
+                    session = createdSession;
+                    sessionCreated.resolve(createdSession);
+                },
+            }),
+        });
+        await sessionCreated.promise;
+
+        expect(session?.isActive()).toBe(true);
+        transport.emitClose(1, null);
+
+        const parts = (await readAll(stream)) as Array<{ type?: string; error?: Error }>;
+        const errors = parts.filter((part) => part.type === "error");
+
+        await assertC23("terminal 只结算一次且 Composer 恢复", () => expect(errors).toHaveLength(1));
+        await assertC23("保留可见内容并显示单一终态", () =>
+            expect(errors[0]?.error?.message).toBe("App Server transport closed unexpectedly (code 1)."),
+        );
+        await assertC23("无自动重试、额外请求或迟到事件应用", () =>
+            expect(transport.disconnectCalls).toBe(1),
+        );
+        expect(parts.some((part) => part.type === "text-delta")).toBe(false);
+        expect(session?.isActive()).toBe(false);
+    });
+
+    it("C23 preserves partial output, emits one error, and rebuilds a crashed persistent worker", async () =>
+    {
+        const assertC23 = planAssertionsForTest("C23");
+        const firstTransport = new ActiveTransportCrashTransport(true);
+        const transports: MockTransport[] = [];
+        let factoryCalls = 0;
+        const provider = createCodexAppServer({
+            transportFactory: () =>
+            {
+                factoryCalls++;
+                const transport = factoryCalls === 1 ? firstTransport : new ScriptedTransport();
+                transports.push(transport);
+                return transport;
+            },
+            persistent: { poolSize: 1 },
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+        const model = provider.languageModel("gpt-5.5");
+
+        const { stream: failedStream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        });
+        await firstTransport.readyForFailure.promise;
+        firstTransport.emitError(new Error("connection reset"));
+        firstTransport.emitClose(null, "SIGTERM");
+
+        const failedParts = (await readAll(failedStream)) as Array<{
+            type?: string
+            delta?: string
+            error?: Error
+        }>;
+        await assertC23("terminal 只结算一次且 Composer 恢复", () =>
+            expect(failedParts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
+        await assertC23("保留可见内容并显示单一终态", () =>
+            expect(
+                failedParts.some((part) => part.type === "text-delta" && part.delta === "Partial response"),
+            ).toBe(true),
+        );
+        await assertC23("无自动重试、额外请求或迟到事件应用", () => expect(factoryCalls).toBe(1));
+
+        const { stream: recoveredStream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "retry" }] }],
+        });
+        const recoveredParts = (await readAll(recoveredStream)) as Array<{ type?: string }>;
+
+        expect(factoryCalls).toBe(2);
+        expect(recoveredParts.some((part) => part.type === "finish")).toBe(true);
+        expect(
+            transports[1]?.sentMessages.some(
+                (message) => "method" in message && message.method === "initialize",
+            ),
+        ).toBe(true);
+
+        await provider.shutdown();
+    });
+
+    it.each([
+        { phase: "before the first token", emitPartialToken: false },
+        { phase: "after partial output", emitPartialToken: true },
+    ])(
+        "C23 terminates once $phase and rebuilds the Desktop shared connection",
+        async ({ emitPartialToken }) =>
+        {
+            const assertC23 = planAssertionsForTest("C23");
+            const crashedTransport = new ActiveTransportCrashTransport(emitPartialToken);
+            const physicalTransports: MockTransport[] = [];
+            const connection = new CodexAppServerConnection({
+                transportFactory: () =>
+                {
+                    const transport =
+                        physicalTransports.length === 0 ? crashedTransport : new ScriptedTransport();
+                    physicalTransports.push(transport);
+                    return transport;
+                },
+            });
+            const provider = createCodexAppServer({
+                transportFactory: (context) => connection.createTransport(context),
+                clientInfo: { name: "desktop-test-client", version: "1.0.0" },
+            });
+            const model = provider.languageModel("gpt-5.5");
+
+            const { stream: failedStream } = await model.doStream({
+                prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            });
+            await crashedTransport.readyForFailure.promise;
+            crashedTransport.emitError(new Error("connection reset"));
+            crashedTransport.emitClose(null, "SIGTERM");
+
+            const failedParts = (await readAllWithin(failedStream, 1_000)) as Array<{
+                type?: string
+                delta?: string
+                error?: Error
+            }>;
+            await assertC23("terminal 只结算一次且 Composer 恢复", () =>
+                expect(failedParts.filter((part) => part.type === "error")).toHaveLength(1),
+            );
+            await assertC23("保留可见内容并显示单一终态", () =>
+                expect(failedParts.some((part) => part.type === "finish")).toBe(false),
+            );
+            await assertC23("无自动重试、额外请求或迟到事件应用", () =>
+                expect(physicalTransports).toHaveLength(1),
+            );
+            expect(
+                failedParts.some((part) => part.type === "text-delta" && part.delta === "Partial response"),
+            ).toBe(emitPartialToken);
+            expect(connection.getDiagnostics()).toEqual({
+                generation: 1,
+                physicalConnectionActive: false,
+                logicalChannelCount: 0,
+                pendingRequestCount: 0,
+                activeLeaseCount: 0,
+                threadOwnerCount: 0,
+                turnOwnerCount: 0,
+                continuationCount: 0,
+            });
+
+            const { stream: recoveredStream } = await model.doStream({
+                prompt: [{ role: "user", content: [{ type: "text", text: "retry" }] }],
+            });
+            const recoveredParts = (await readAll(recoveredStream)) as Array<{ type?: string }>;
+
+            expect(physicalTransports).toHaveLength(2);
+            expect(recoveredParts.some((part) => part.type === "finish")).toBe(true);
+            expect(connection.getDiagnostics()).toEqual({
+                generation: 1,
+                physicalConnectionActive: true,
+                logicalChannelCount: 0,
+                pendingRequestCount: 0,
+                activeLeaseCount: 0,
+                threadOwnerCount: 0,
+                turnOwnerCount: 0,
+                continuationCount: 0,
+            });
+
+            await provider.shutdown();
+            await connection.shutdown();
+            expect(connection.getDiagnostics()).toEqual({
+                generation: 2,
+                physicalConnectionActive: false,
+                logicalChannelCount: 0,
+                pendingRequestCount: 0,
+                activeLeaseCount: 0,
+                threadOwnerCount: 0,
+                turnOwnerCount: 0,
+                continuationCount: 0,
+            });
+        },
+    );
+
+    it("C09/C11 preserves completed tool state and emits one error when transport fails mid-tool sequence", async () =>
+    {
+        const assertC09 = planAssertionsForTest("C09");
+        const assertC11 = planAssertionsForTest("C11");
+        const commandActions = [
+            { type: "search" as const, command: "rg test", query: "test", path: null },
+        ];
+        const toolStarted = (id: string) =>
+            ({
+                method: "item/started",
+                params: {
+                    item: {
+                        type: "commandExecution",
+                        id,
+                        command: "rg test",
+                        cwd: "/repo",
+                        processId: null,
+                        status: "inProgress",
+                        commandActions,
+                        aggregatedOutput: null,
+                        exitCode: null,
+                        durationMs: null,
+                    },
+                    threadId: "thr_1",
+                    turnId: "turn_tool_crash",
+                },
+            }) as JsonRpcMessage;
+        const firstToolCompleted = {
+            method: "item/completed",
+            params: {
+                item: {
+                    type: "commandExecution",
+                    id: "tool-completed",
+                    command: "rg test",
+                    cwd: "/repo",
+                    processId: "123",
+                    status: "completed",
+                    commandActions,
+                    aggregatedOutput: "one completed result",
+                    exitCode: 0,
+                    durationMs: 1,
+                },
+                threadId: "thr_1",
+                turnId: "turn_tool_crash",
+            },
+        } as JsonRpcMessage;
+        const transport = new ToolLifecycleCrashTransport([
+            toolStarted("tool-completed"),
+            firstToolCompleted,
+            toolStarted("tool-pending"),
+        ]);
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "run tools" }] }],
+        });
+        await transport.readyForFailure.promise;
+        transport.emitError(new Error("connection reset while running tools"));
+        transport.emitClose(null, "SIGTERM");
+
+        const parts = (await readAll(stream)) as Array<{
+            type?: string
+            toolCallId?: string
+            result?: { item?: { id?: string } }
+        }>;
+        await assertC09("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
+        await assertC09("保留可见内容并显示单一终态", () =>
+            expect(parts.find((part) => part.type === "tool-result")?.result?.item?.id).toBe(
+                "tool-completed",
+            ),
+        );
+        await assertC09("无自动重试、额外请求或迟到事件应用", () =>
+            expect(transport.disconnectCalls).toBe(1),
+        );
+        await assertC11("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
+        await assertC11("保留可见内容并显示单一终态", () =>
+            expect(
+                parts.filter((part) => part.type === "tool-call").map((part) => part.toolCallId),
+            ).toEqual(["tool-completed", "tool-pending"]),
+        );
+        await assertC11("无自动重试、额外请求或迟到事件应用", () =>
+            expect(transport.disconnectCalls).toBe(1),
+        );
+    });
+
+    it("C06 preserves reasoning output and emits one error when transport fails during reasoning", async () =>
+    {
+        const assertC06 = planAssertionsForTest("C06");
+        const transport = new ToolLifecycleCrashTransport([
+            {
+                method: "item/started",
+                params: {
+                    item: { type: "reasoning", id: "reasoning-crash", summary: [], content: [] },
+                    threadId: "thr_1",
+                    turnId: "turn_tool_crash",
+                },
+            },
+            {
+                method: "item/reasoning/textDelta",
+                params: {
+                    threadId: "thr_1",
+                    turnId: "turn_tool_crash",
+                    itemId: "reasoning-crash",
+                    delta: "Thinking before the transport fails",
+                    contentIndex: 0,
+                },
+            },
+        ]);
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "reason before failing" }] }],
+        });
+        await transport.readyForFailure.promise;
+        transport.emitError(new Error("connection reset while reasoning"));
+        transport.emitClose(null, "SIGTERM");
+
+        const parts = (await readAll(stream)) as Array<{ type?: string; delta?: string }>;
+        await assertC06("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
+        await assertC06("保留可见内容并显示单一终态", () =>
+            expect(parts).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        type: "reasoning-delta",
+                        delta: "Thinking before the transport fails",
+                    }),
+                ]),
+            ),
+        );
+        await assertC06("无自动重试、额外请求或迟到事件应用", () =>
+            expect(transport.disconnectCalls).toBe(1),
+        );
+    });
+
     it("validates referenced tasks before creating a thread and injects untrusted context", async () =>
     {
         const transport = new TaskReferenceTransport();
@@ -364,13 +991,17 @@ describe("CodexLanguageModel.doStream", () =>
             experimentalApi: true,
         });
         const { stream } = await provider.languageModel("gpt-5.5").doStream({
-            prompt: [{
-                role: "user",
-                content: [{
-                    type: "text",
-                    text: ":chat[Referenced]{name=thread%3A%2F%2Freferenced} continue",
-                }],
-            }],
+            prompt: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: ":chat[Referenced]{name=thread%3A%2F%2Freferenced} continue",
+                        },
+                    ],
+                },
+            ],
         });
         await readAll(stream);
 
@@ -383,7 +1014,7 @@ describe("CodexLanguageModel.doStream", () =>
                 "method" in message && message.method === "turn/start",
         );
         const turnStartParams = turnStart?.params as {
-            input?: Array<{ type?: unknown; text?: unknown }>;
+            input?: Array<{ type?: unknown; text?: unknown }>
         };
         expect(turnStartParams.input?.[0]?.type).toBe("text");
         expect(turnStartParams.input?.[0]?.text).toEqual(
@@ -411,9 +1042,7 @@ describe("CodexLanguageModel.doStream", () =>
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
 
-        expect(parts).toEqual(expect.arrayContaining([
-            expect.objectContaining({ type: "error" }),
-        ]));
+        expect(parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "error" })]));
         expect(methods).toEqual(["initialize", "initialized"]);
     });
 
@@ -443,6 +1072,109 @@ describe("CodexLanguageModel.doStream", () =>
             toolCallId: "activity-1",
             timestampMs: 123,
         });
+    });
+
+    it("delivers ordered turn lifecycle events with stable user message identity", async () =>
+    {
+        const transport = new TurnLifecycleTransport();
+        const lifecycleEvents: CodexTurnLifecycleEvent[] = [];
+        const onTurnLifecycle = vi.fn((event: CodexTurnLifecycleEvent) =>
+        {
+            lifecycleEvents.push(event);
+        });
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ onTurnLifecycle }),
+        });
+        await readAll(stream);
+
+        expect(lifecycleEvents).toEqual([
+            {
+                type: "turn-started",
+                sequence: 1,
+                threadId: "thr_1",
+                turnId: "turn_lifecycle",
+            },
+            {
+                type: "item-started",
+                sequence: 2,
+                threadId: "thr_1",
+                turnId: "turn_lifecycle",
+                itemId: "user_item_1",
+                itemType: "userMessage",
+                item: {
+                    type: "userMessage",
+                    id: "user_item_1",
+                    clientId: "client_user_1",
+                    content: [
+                        { type: "text", text: "  Hello lifecycle  ", text_elements: [] },
+                        { type: "image", url: "https://example.test/image.png", detail: "high" },
+                        { type: "localImage", path: "/tmp/local.png" },
+                    ],
+                },
+                clientUserMessageId: "client_user_1",
+                compareKey: JSON.stringify({
+                    text: "Hello lifecycle",
+                    attachments: [
+                        {
+                            type: "image",
+                            url: "https://example.test/image.png",
+                            detail: "high",
+                        },
+                        {
+                            type: "localImage",
+                            path: "/tmp/local.png",
+                        },
+                    ],
+                }),
+            },
+            {
+                type: "item-completed",
+                sequence: 3,
+                threadId: "thr_1",
+                turnId: "turn_lifecycle",
+                itemId: "user_item_1",
+                itemType: "userMessage",
+                item: {
+                    type: "userMessage",
+                    id: "user_item_1",
+                    clientId: "client_user_1",
+                    content: [
+                        { type: "text", text: "  Hello lifecycle  ", text_elements: [] },
+                        { type: "image", url: "https://example.test/image.png", detail: "high" },
+                        { type: "localImage", path: "/tmp/local.png" },
+                    ],
+                },
+                clientUserMessageId: "client_user_1",
+                compareKey: JSON.stringify({
+                    text: "Hello lifecycle",
+                    attachments: [
+                        {
+                            type: "image",
+                            url: "https://example.test/image.png",
+                            detail: "high",
+                        },
+                        {
+                            type: "localImage",
+                            path: "/tmp/local.png",
+                        },
+                    ],
+                }),
+            },
+            {
+                type: "turn-completed",
+                sequence: 4,
+                threadId: "thr_1",
+                turnId: "turn_lifecycle",
+                outcome: "completed",
+            },
+        ]);
     });
 
     it("calls onThreadStarted after thread/start and before the first turn/start", async () =>
@@ -551,9 +1283,7 @@ describe("CodexLanguageModel.doStream", () =>
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
 
-        expect(parts).toEqual(expect.arrayContaining([
-            expect.objectContaining({ type: "error" }),
-        ]));
+        expect(parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "error" })]));
         expect(methods).toEqual(["initialize", "initialized", "thread/start"]);
     });
 
@@ -718,9 +1448,7 @@ describe("CodexLanguageModel.doStream", () =>
         const model = provider.languageModel("gpt-5.5");
 
         const { stream } = await model.doStream({
-            prompt: [
-                { role: "user", content: [{ type: "text", text: "continue" }] },
-            ],
+            prompt: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
             providerOptions: codexCallOptions({
                 resumeThreadId: "thr_explicit",
             }),
@@ -739,6 +1467,68 @@ describe("CodexLanguageModel.doStream", () =>
                 "method" in message && message.method === "thread/resume",
         );
         expect(resumeMessage?.params).toMatchObject({ threadId: "thr_explicit" });
+    });
+
+    it("starts a terminal retry in a fresh thread without replaying tool results", async () =>
+    {
+        const transport = new ScriptedTransport();
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const model = provider.languageModel("gpt-5.5");
+
+        const { stream } = await model.doStream({
+            prompt: [
+                { role: "user", content: [{ type: "text", text: "initial request" }] },
+                { role: "assistant", content: [{ type: "text", text: "initial response" }] },
+                {
+                    role: "tool",
+                    content: [
+                        {
+                            type: "tool-result",
+                            toolCallId: "call-old-tool",
+                            toolName: "old_tool",
+                            output: { type: "text", value: "old tool output must not be replayed" },
+                        },
+                    ],
+                },
+                { role: "user", content: [{ type: "text", text: "retry" }] },
+            ],
+            providerOptions: codexCallOptions({
+                resumeThreadId: "thr_explicit",
+                startFreshTerminalRetry: true,
+            }),
+        });
+
+        await readAll(stream);
+
+        const methods = transport.sentMessages
+            .filter((message): message is { method: string } => "method" in message)
+            .map((message) => message.method);
+
+        expect(methods).toEqual([
+            "initialize",
+            "initialized",
+            "thread/start",
+            "turn/start",
+        ]);
+        const threadStartMessage = transport.sentMessages.find(
+            (message): message is { method: string; params?: { developerInstructions?: string } } =>
+                "method" in message && message.method === "thread/start",
+        );
+        expect(threadStartMessage?.params?.developerInstructions).toContain("initial request");
+        expect(threadStartMessage?.params?.developerInstructions).toContain("initial response");
+        expect(threadStartMessage?.params?.developerInstructions).not.toContain("old tool output");
+        expect(
+            transport.sentMessages.find(
+                (message): message is { method: string; params?: { input?: unknown } } =>
+                    "method" in message && message.method === "turn/start",
+            )?.params?.input,
+        ).toEqual([{ type: "text", text: "retry", text_elements: [] }]);
     });
 
     it("passes runtime workspace roots through thread/resume and turn/start", async () =>
@@ -944,10 +1734,10 @@ describe("CodexLanguageModel.doStream", () =>
         const firstCall = shouldCompactOnResume.mock.calls[0];
         expect(firstCall).toBeDefined();
         const typedCallbackContext = firstCall![0] as {
-            threadId: string;
-            resumeThreadId: string;
-            resumeResult: { thread: { id: string } };
-            prompt: unknown[];
+            threadId: string
+            resumeThreadId: string
+            resumeResult: { thread: { id: string } }
+            prompt: unknown[]
         };
         expect(typedCallbackContext).toMatchObject({
             threadId: "thr_1",
@@ -999,12 +1789,7 @@ describe("CodexLanguageModel.doStream", () =>
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
 
-        expect(methods).toEqual([
-            "initialize",
-            "initialized",
-            "thread/resume",
-            "turn/start",
-        ]);
+        expect(methods).toEqual(["initialize", "initialized", "thread/resume", "turn/start"]);
     });
 
     it("continues when callback throws in non-strict mode", async () =>
@@ -1014,7 +1799,12 @@ describe("CodexLanguageModel.doStream", () =>
         const provider = createCodexAppServer({
             transportFactory: () => transport,
             clientInfo: { name: "test-client", version: "1.0.0" },
-            compaction: { shouldCompactOnResume: () => { throw new Error("decision failed"); } },
+            compaction: {
+                shouldCompactOnResume: () =>
+                {
+                    throw new Error("decision failed");
+                },
+            },
         });
 
         const model = provider.languageModel("gpt-5.5");
@@ -1037,12 +1827,7 @@ describe("CodexLanguageModel.doStream", () =>
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
 
-        expect(methods).toEqual([
-            "initialize",
-            "initialized",
-            "thread/resume",
-            "turn/start",
-        ]);
+        expect(methods).toEqual(["initialize", "initialized", "thread/resume", "turn/start"]);
     });
 
     it("fails before turn/start when callback throws in strict mode", async () =>
@@ -1053,7 +1838,10 @@ describe("CodexLanguageModel.doStream", () =>
             transportFactory: () => transport,
             clientInfo: { name: "test-client", version: "1.0.0" },
             compaction: {
-                shouldCompactOnResume: () => { throw new Error("decision failed"); },
+                shouldCompactOnResume: () =>
+                {
+                    throw new Error("decision failed");
+                },
                 strict: true,
             },
         });
@@ -1073,22 +1861,21 @@ describe("CodexLanguageModel.doStream", () =>
         });
 
         const parts = await readAll(stream);
-        expect(parts.some((part) => (
-            typeof part === "object"
-            && part !== null
-            && "type" in part
-            && (part as { type: string }).type === "error"
-        ))).toBe(true);
+        expect(
+            parts.some(
+                (part) =>
+                    typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          (part as { type: string }).type === "error",
+            ),
+        ).toBe(true);
 
         const methods = transport.sentMessages
             .filter((message): message is { method: string } => "method" in message)
             .map((message) => message.method);
 
-        expect(methods).toEqual([
-            "initialize",
-            "initialized",
-            "thread/resume",
-        ]);
+        expect(methods).toEqual(["initialize", "initialized", "thread/resume"]);
     });
 
     it("passes system messages as developerInstructions on thread/start", async () =>
@@ -1398,24 +2185,19 @@ describe("CodexLanguageModel.doStream", () =>
 
         const debugEvents = loggerSpy.mock.calls
             .map((call: unknown[]) => call[0] as { direction: string; message: unknown })
-            .filter((packet) =>
-                typeof packet.message === "object"
-                && packet.message !== null
-                && "debug" in packet.message,
+            .filter(
+                (packet) =>
+                    typeof packet.message === "object" && packet.message !== null && "debug" in packet.message,
             );
 
-        const debugLabels = debugEvents.map(
-            (e) => (e.message as { debug: string }).debug,
-        );
+        const debugLabels = debugEvents.map((e) => (e.message as { debug: string }).debug);
 
         expect(debugLabels).toContain("prompt");
         expect(debugLabels).toContain("extractResumeThreadId");
         expect(debugLabels).toContain("thread/start");
         expect(debugLabels).toContain("turn/start");
 
-        const promptEvent = debugEvents.find(
-            (e) => (e.message as { debug: string }).debug === "prompt",
-        );
+        const promptEvent = debugEvents.find((e) => (e.message as { debug: string }).debug === "prompt");
         expect(promptEvent?.direction).toBe("inbound");
 
         const extractEvent = debugEvents.find(
@@ -1469,15 +2251,12 @@ describe("CodexLanguageModel.doStream", () =>
 
         const debugEvents = loggerSpy.mock.calls
             .map((call: unknown[]) => call[0] as { direction: string; message: unknown })
-            .filter((packet) =>
-                typeof packet.message === "object"
-                && packet.message !== null
-                && "debug" in packet.message,
+            .filter(
+                (packet) =>
+                    typeof packet.message === "object" && packet.message !== null && "debug" in packet.message,
             );
 
-        const debugLabels = debugEvents.map(
-            (e) => (e.message as { debug: string }).debug,
-        );
+        const debugLabels = debugEvents.map((e) => (e.message as { debug: string }).debug);
 
         expect(debugLabels).toContain("extractResumeThreadId");
         expect(debugLabels).toContain("thread/resume");
@@ -1499,7 +2278,7 @@ describe("CodexLanguageModel.doStream", () =>
         });
     });
 
-    it("sends turn/interrupt when abortSignal is triggered after turn/start", async () =>
+    it("keeps the stream open until canonical interruption after abortSignal", async () =>
     {
         const transport = new InterruptAwareTransport();
         const provider = createCodexAppServer({
@@ -1514,13 +2293,10 @@ describe("CodexLanguageModel.doStream", () =>
             abortSignal: abortController.signal,
         });
 
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         abortController.abort();
 
         await readAll(stream);
-
-        // turn/interrupt now fires in the background AFTER the stream closes; let it run.
-        await new Promise(resolve => setTimeout(resolve, 0));
 
         const interruptMessage = transport.sentMessages.find(
             (message): message is { method: string; params?: unknown } =>
@@ -1533,12 +2309,43 @@ describe("CodexLanguageModel.doStream", () =>
         });
     });
 
-    it("closes the stream immediately on abort, without waiting for turn/interrupt to settle", async () =>
+    it("shares one interrupt RPC between a session stop and AbortSignal", async () =>
+    {
+        const transport = new InterruptAwareTransport();
+        const abortController = new AbortController();
+        let manualInterrupt: Promise<void> | undefined;
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            onSessionCreated: (session) =>
+            {
+                manualInterrupt = session.interrupt();
+                abortController.abort();
+            },
+        });
+        const model = provider.languageModel("gpt-5.5");
+
+        const { stream } = await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "interrupt me" }] }],
+            abortSignal: abortController.signal,
+        });
+
+        await readAll(stream);
+        await manualInterrupt;
+
+        expect(
+            transport.sentMessages.filter(
+                (message) => "method" in message && message.method === "turn/interrupt",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("does not synthesize an AbortError before canonical interruption settles", async () =>
     {
         let interruptResolved = false;
 
-        // Acks everything immediately EXCEPT turn/interrupt, whose response is delayed — so a
-        // stream that closed before the interrupt settled proves the close no longer blocks on it.
+        // Delay the interrupt acknowledgement and canonical terminal notification. The
+        // consumer must remain subscribed rather than receiving a locally inferred AbortError.
         class DelayedInterruptTransport extends InterruptAwareTransport
         {
             override async sendMessage(message: JsonRpcMessage): Promise<void>
@@ -1550,6 +2357,13 @@ describe("CodexLanguageModel.doStream", () =>
                     {
                         interruptResolved = true;
                         this.emitMessage({ id: (message as { id: string | number }).id, result: {} });
+                        this.emitMessage({
+                            method: "turn/completed",
+                            params: {
+                                threadId: "thr_abort",
+                                turn: { id: "turn_abort", items: [], status: "interrupted", error: null },
+                            },
+                        });
                     }, 200);
                     return;
                 }
@@ -1571,21 +2385,14 @@ describe("CodexLanguageModel.doStream", () =>
             abortSignal: abortController.signal,
         });
 
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         abortController.abort();
 
-        const parts = await readAll(stream) as Array<{ type?: string; error?: unknown }>;
+        const parts = (await readAll(stream)) as Array<{ type?: string; error?: unknown }>;
 
-        // The stream closed before the (delayed) interrupt resolved — the whole point of the fix.
-        expect(interruptResolved).toBe(false);
-
-        // …and it ended with an AbortError part rather than hanging.
-        const errorPart = parts.find(part => part.type === "error");
-        expect(errorPart).toBeDefined();
-        expect((errorPart?.error as Error)?.name).toBe("AbortError");
-
-        // The interrupt is still attempted in the background; let it settle so no timer leaks.
-        await new Promise(resolve => setTimeout(resolve, 250));
+        expect(interruptResolved).toBe(true);
+        expect(parts.find((part) => part.type === "error")).toBeUndefined();
+        expect(parts.find((part) => part.type === "finish")).toBeDefined();
         expect(interruptResolved).toBe(true);
 
         const interruptMessage = transport.sentMessages.find(

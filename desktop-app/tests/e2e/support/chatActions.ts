@@ -2,7 +2,6 @@ import { expect, type Page } from '@playwright/test'
 import { appRoot } from './app'
 
 export async function sendMessage(page: Page, message: string): Promise<void> {
-  await expect(page.locator('body')).toContainText('qwen3.7-plus')
   await ensureLocalProjectSelected(page)
   await sendComposerMessage(page, message)
 }

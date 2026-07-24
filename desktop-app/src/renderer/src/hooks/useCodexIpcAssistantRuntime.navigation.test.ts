@@ -63,7 +63,9 @@ describe('useCodexIpcAssistantRuntime conversation navigation', () => {
     })
 
     expect(runtimeState?.activeConversation?.conversationId).toBe('second')
-    expect(runtimeState?.activeEntry.chat.messages).toEqual(openResult('second').messages)
+    expect(runtimeState?.activeEntry.messages.map((message) => message.renderId)).toEqual([
+      'message:message-second'
+    ])
   })
 
   it('does not reopen a pending conversation after starting a new one', async () => {
@@ -94,24 +96,26 @@ describe('useCodexIpcAssistantRuntime conversation navigation', () => {
 
     await act(async () => {
       await backgroundEntry.transport.sendMessages({
-        chatId: backgroundEntry.chat.id,
+        chatId: backgroundEntry.controller.id,
         trigger: 'submit-message',
         messageId: undefined,
         messages: [],
         abortSignal: undefined
       })
     })
-    expect(backgroundEntry.phase).toBe('submitted')
+    expect(backgroundEntry.status).toBe('submitted')
 
     await act(async () => {
       await runtimeState!.openConversation({ conversationId: 'other' })
     })
     await act(async () => {
-      streamCallbacks.get(backgroundEntry.chat.id)?.onChunk({ type: 'text-start', id: 'text-a' })
+      streamCallbacks
+        .get(backgroundEntry.controller.id)
+        ?.onChunk({ type: 'text-start', id: 'text-a' })
     })
 
     expect(runtimeState?.activeConversation?.conversationId).toBe('other')
-    expect(backgroundEntry.phase).toBe('streaming')
+    expect(backgroundEntry.status).toBe('streaming')
     expect(backgroundEntry.unread).toBe(true)
   })
 
@@ -121,7 +125,7 @@ describe('useCodexIpcAssistantRuntime conversation navigation', () => {
     const backgroundEntry = runtimeState!.activeEntry
     await act(async () => {
       await backgroundEntry.transport.sendMessages({
-        chatId: backgroundEntry.chat.id,
+        chatId: backgroundEntry.controller.id,
         trigger: 'submit-message',
         messageId: undefined,
         messages: [],
@@ -131,23 +135,23 @@ describe('useCodexIpcAssistantRuntime conversation navigation', () => {
     })
 
     expect(runtimeState?.activeEntry).not.toBe(backgroundEntry)
-    expect(backgroundEntry.phase).toBe('submitted')
+    expect(backgroundEntry.status).toBe('submitted')
   })
 
-  it('reuses the local Chat when the bound thread is opened from the sidebar', async () => {
+  it('reuses the local transcript controller when the bound thread is opened from the sidebar', async () => {
     const openConversation = vi.fn(async () => openResult('thread-real'))
     installDesktopApp(openConversation)
     await renderProbe()
     const entry = runtimeState!.activeEntry
     await act(async () => {
       await entry.transport.sendMessages({
-        chatId: entry.chat.id,
+        chatId: entry.controller.id,
         trigger: 'submit-message',
         messageId: undefined,
         messages: [],
         abortSignal: undefined
       })
-      streamCallbacks.get(entry.chat.id)?.onThreadBound('thread-real')
+      streamCallbacks.get(entry.controller.id)?.onThreadBound('thread-real')
       await runtimeState!.openConversation({ conversationId: 'thread-real' })
     })
 

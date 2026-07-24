@@ -4,6 +4,7 @@ import type {
   ConversationFollowUpState,
   DesktopCodexFollowUpApi,
   FollowUpMode,
+  FollowUpSteerPendingAck,
   MaterializedQueuedUserMessage,
   PreparedFollowUpEdit,
   QueuedFollowUpItem,
@@ -29,7 +30,7 @@ export type ConversationFollowUpsController = {
   moveDown: (itemId: string) => Promise<void>
   reorder: (itemId: string, position: { beforeId: string } | { afterId: string }) => Promise<void>
   materializeItem: (itemId: string) => Promise<MaterializedQueuedUserMessage>
-  steerItem: (itemId: string) => Promise<void>
+  steerItem: (itemId: string) => Promise<FollowUpSteerPendingAck>
   retry: (itemId: string) => Promise<void>
   resume: () => Promise<void>
   clear: () => Promise<void>
@@ -54,6 +55,7 @@ export function useConversationFollowUps({
   } | null>(null)
   const [pendingItemKeys, setPendingItemKeys] = useState<ReadonlySet<string>>(new Set())
   const stateRef = useRef<ConversationFollowUpState | null>(null)
+  const pendingSteerRequests = useRef(new Map<string, Promise<FollowUpSteerPendingAck>>())
 
   const applyState = useCallback(
     (nextState: ConversationFollowUpState) => {
@@ -270,19 +272,57 @@ export function useConversationFollowUps({
   )
 
   const steerItem = useCallback(
-    async (itemId: string) => {
-      await runItemAction(
-        itemId,
-        (nextState) =>
-          nextState.items.some(
-            (item) => item.id === itemId && item.status === 'paused-recovery-uncertain'
-          )
-            ? '引导结果尚未确认，队列已安全暂停。'
-            : '正在用这条消息引导当前任务。',
-        () => api.steerItem(conversationKey, itemId)
-      )
+    (itemId: string): Promise<FollowUpSteerPendingAck> => {
+      const itemKey = pendingItemKey(conversationKey, itemId)
+      const pendingRequest = pendingSteerRequests.current.get(itemKey)
+      if (pendingRequest) return pendingRequest
+
+      setPendingItemKeys((current) => new Set(current).add(itemKey))
+      setFeedback((current) => ({
+        conversationKey,
+        error: null,
+        announcement: current?.conversationKey === conversationKey ? current.announcement : ''
+      }))
+
+      const request = (async (): Promise<FollowUpSteerPendingAck> => {
+        try {
+          const result = await api.steerItem(conversationKey, itemId)
+          if (result.state) applyState(result.state)
+          setFeedback({
+            conversationKey,
+            error: null,
+            announcement: result.state?.items.some(
+              (item) => item.id === itemId && item.status === 'paused-recovery-uncertain'
+            )
+              ? '引导结果尚未确认，队列已安全暂停。'
+              : '正在用这条消息引导当前任务。'
+          })
+          return result
+        } catch (actionError) {
+          const message = errorMessage(actionError)
+          setFeedback({
+            conversationKey,
+            error: message,
+            announcement: `Follow-up action failed: ${message}`
+          })
+          throw actionError
+        }
+      })()
+
+      pendingSteerRequests.current.set(itemKey, request)
+      const clearPendingRequest = (): void => {
+        if (pendingSteerRequests.current.get(itemKey) !== request) return
+        pendingSteerRequests.current.delete(itemKey)
+        setPendingItemKeys((current) => {
+          const next = new Set(current)
+          next.delete(itemKey)
+          return next
+        })
+      }
+      void request.then(clearPendingRequest, clearPendingRequest)
+      return request
     },
-    [api, conversationKey, runItemAction]
+    [api, applyState, conversationKey]
   )
 
   const retry = useCallback(

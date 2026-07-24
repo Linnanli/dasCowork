@@ -27,7 +27,7 @@ export class MockTransport implements CodexTransport
     disconnect(): Promise<void>
     {
         this.connected = false;
-        this.emit("close", null, null);
+        this.emitClose(null, null);
 
         return Promise.resolve();
     }
@@ -70,6 +70,11 @@ export class MockTransport implements CodexTransport
     emitError(error: unknown): void 
     {
         this.emit("error", error);
+    }
+
+    emitClose(code: number | null, signal: NodeJS.Signals | null): void
+    {
+        this.emit("close", code, signal);
     }
 
     private emit<K extends keyof CodexTransportEventMap>(

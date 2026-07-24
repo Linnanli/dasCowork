@@ -27,9 +27,14 @@ export type MockBackendOptions = {
   capabilities?: string[]
 }
 
+export type ResponsesStreamTermination = 'complete' | 'disconnect' | 'hang' | 'close-before-headers'
+
 export type ResponsesStreamStep = {
   events: ResponseEvent[]
   beforeResponse?: () => void | Promise<void>
+  beforeEvent?: (event: ResponseEvent, index: number) => void | Promise<void>
+  rawSse?: readonly string[]
+  termination?: ResponsesStreamTermination
 }
 
 export type ResponsesErrorStep = {
@@ -49,7 +54,10 @@ export async function startMockBackend(options: MockBackendOptions): Promise<Moc
   const requests: MockRequest[] = []
   const responses = [...options.responses]
   const searchResponses = [...(options.searchResponses ?? [])]
+  const activeResponses = new Set<ServerResponse>()
   const server = createServer(async (request, response) => {
+    activeResponses.add(response)
+    response.once('close', () => activeResponses.delete(response))
     const capturedRequest: MockRequest = {
       method: request.method ?? 'GET',
       url: request.url ?? '/',
@@ -108,7 +116,7 @@ export async function startMockBackend(options: MockBackendOptions): Promise<Moc
         response.end(JSON.stringify(nextResponse.body))
         return
       }
-      writeResponsesStream(response, nextResponse)
+      await writeResponsesStream(response, nextResponse)
       return
     }
 
@@ -124,6 +132,7 @@ export async function startMockBackend(options: MockBackendOptions): Promise<Moc
     requests,
     close: () =>
       new Promise((resolveClose, rejectClose) => {
+        for (const response of activeResponses) response.destroy()
         server.close((error) => (error ? rejectClose(error) : resolveClose()))
       })
   }
@@ -152,6 +161,13 @@ export function assistantMessageResponse(
       },
       responseCompleted(responseId)
     ]
+  }
+}
+
+export function disconnectingResponse(responseId: string): ResponsesStreamStep {
+  return {
+    events: [responseCreated(responseId)],
+    termination: 'disconnect'
   }
 }
 
@@ -262,6 +278,18 @@ export function functionCallOutputText(providerBody: unknown, callId: string): s
   return outputItem.output
 }
 
+export function functionCallOutputCount(providerBodies: unknown[], callId: string): number {
+  return providerBodies.reduce((count, providerBody) => {
+    if (!isRecord(providerBody) || !Array.isArray(providerBody.input)) return count
+    return (
+      count +
+      providerBody.input.filter(
+        (item) => isRecord(item) && item.type === 'function_call_output' && item.call_id === callId
+      ).length
+    )
+  }, 0)
+}
+
 export function deferred<T = void>(): {
   promise: Promise<T>
   resolve: (value: T | PromiseLike<T>) => void
@@ -290,24 +318,46 @@ function writeJson(response: ServerResponse, payload: unknown): void {
   response.end(JSON.stringify(payload))
 }
 
-function writeResponsesStream(response: ServerResponse, step: ResponsesStreamStep): void {
+async function writeResponsesStream(
+  response: ServerResponse,
+  step: ResponsesStreamStep
+): Promise<void> {
+  if (step.termination === 'close-before-headers') {
+    response.destroy()
+    return
+  }
+
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive'
   })
-  for (const event of step.events) writeSse(response, event)
-  response.end()
+  for (const [index, event] of step.events.entries()) {
+    await step.beforeEvent?.(event, index)
+    await writeSse(response, event)
+  }
+  for (const rawSse of step.rawSse ?? []) await writeResponseChunk(response, rawSse)
+
+  switch (step.termination ?? 'complete') {
+    case 'complete':
+      response.end()
+      return
+    case 'disconnect':
+      response.destroy()
+      return
+    case 'hang':
+      return
+  }
 }
 
-function responseCreated(responseId: string): ResponseEvent {
+export function responseCreated(responseId: string): ResponseEvent {
   return {
     type: 'response.created',
     response: { id: responseId }
   }
 }
 
-function responseCompleted(responseId: string): ResponseEvent {
+export function responseCompleted(responseId: string): ResponseEvent {
   return {
     type: 'response.completed',
     response: {
@@ -323,9 +373,25 @@ function responseCompleted(responseId: string): ResponseEvent {
   }
 }
 
-function writeSse(response: ServerResponse, payload: ResponseEvent): void {
-  response.write(`event: ${payload.type}\n`)
-  response.write(`data: ${JSON.stringify(payload)}\n\n`)
+function writeSse(response: ServerResponse, payload: ResponseEvent): Promise<void> {
+  return writeResponseChunk(
+    response,
+    `event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`
+  )
+}
+
+function writeResponseChunk(response: ServerResponse, chunk: string): Promise<void> {
+  if (response.destroyed || response.writableEnded) return Promise.resolve()
+
+  return new Promise((resolveWrite, rejectWrite) => {
+    response.write(chunk, (error) => {
+      if (!error || response.destroyed) {
+        resolveWrite()
+        return
+      }
+      rejectWrite(error)
+    })
+  })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

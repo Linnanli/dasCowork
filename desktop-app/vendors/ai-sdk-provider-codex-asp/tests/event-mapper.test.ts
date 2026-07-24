@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { CodexEventMapper } from "../src/protocol/event-mapper";
+import { planAssertionsForTest } from "./helpers/plan-assertion";
+
+const CODEX_PROVIDER_ID = "@janole/ai-sdk-provider-codex-asp";
 
 const EMPTY_USAGE = {
     inputTokens: {
@@ -15,6 +18,64 @@ const EMPTY_USAGE = {
         reasoning: undefined,
     },
 };
+
+function withoutSourceItemId(parts: readonly unknown[]): unknown[]
+{
+    return parts.map((part) =>
+    {
+        if (!part || typeof part !== "object")
+        {
+            return part;
+        }
+
+        const record = part as Record<string, unknown>;
+        const providerMetadata = record["providerMetadata"];
+        if (!providerMetadata || typeof providerMetadata !== "object")
+        {
+            return part;
+        }
+
+        const metadataByProvider = providerMetadata as Record<string, unknown>;
+        const codexMetadata = metadataByProvider[CODEX_PROVIDER_ID];
+        if (!codexMetadata || typeof codexMetadata !== "object" || !("sourceItemId" in codexMetadata))
+        {
+            return part;
+        }
+
+        const { sourceItemId: _sourceItemId, ...remainingCodexMetadata } = codexMetadata as Record<
+            string,
+            unknown
+        >;
+        const meaningfulKeys = Object.keys(remainingCodexMetadata).filter((key) => key !== "turnId");
+
+        if (meaningfulKeys.length === 0)
+        {
+            const { providerMetadata: _providerMetadata, ...partWithoutMetadata } = record;
+            return partWithoutMetadata;
+        }
+
+        return {
+            ...record,
+            providerMetadata: {
+                ...metadataByProvider,
+                [CODEX_PROVIDER_ID]: remainingCodexMetadata,
+            },
+        };
+    });
+}
+
+function isToolLifecyclePart(
+    part: unknown,
+): part is { type: "tool-call" | "tool-result"; toolCallId: string }
+{
+    return (
+        Boolean(part) &&
+    typeof part === "object" &&
+    ((part as { type?: unknown }).type === "tool-call" ||
+      (part as { type?: unknown }).type === "tool-result") &&
+    typeof (part as { toolCallId?: unknown }).toolCallId === "string"
+    );
+}
 
 describe("CodexEventMapper", () =>
 {
@@ -55,7 +116,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "item1" },
             { type: "text-delta", id: "item1", delta: "Hello" },
@@ -119,7 +180,7 @@ describe("CodexEventMapper", () =>
             },
         };
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "commentary_1", providerMetadata },
             {
@@ -154,7 +215,7 @@ describe("CodexEventMapper", () =>
             },
         ].flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             {
                 type: "stream-start",
                 warnings: [],
@@ -193,7 +254,13 @@ describe("CodexEventMapper", () =>
             },
             {
                 method: "item/reasoning/textDelta",
-                params: { threadId: "thr", turnId: "turn", itemId: "reason_1", delta: "Thinking", contentIndex: 0 },
+                params: {
+                    threadId: "thr",
+                    turnId: "turn",
+                    itemId: "reason_1",
+                    delta: "Thinking",
+                    contentIndex: 0,
+                },
             },
             {
                 method: "item/plan/delta",
@@ -218,7 +285,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             { type: "reasoning-start", id: "reason_1" },
             { type: "reasoning-delta", id: "reason_1", delta: "Thinking" },
@@ -277,7 +344,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -359,7 +426,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -394,6 +461,132 @@ describe("CodexEventMapper", () =>
                 usage: EMPTY_USAGE,
             },
         ]);
+    });
+
+    it("D03 marks a non-zero command exit code as a failed tool result without masking the final answer", async () =>
+    {
+        const assertD03 = planAssertionsForTest("D03");
+        const mapper = new CodexEventMapper();
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn" } } },
+            {
+                method: "item/started",
+                params: {
+                    item: {
+                        type: "commandExecution",
+                        id: "cmd_nonzero",
+                        command: "rg missing-file",
+                        cwd: "/project",
+                        processId: null,
+                        source: "agent",
+                        status: "inProgress",
+                        commandActions: [],
+                        aggregatedOutput: null,
+                        exitCode: null,
+                        durationMs: null,
+                    },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    item: {
+                        type: "commandExecution",
+                        id: "cmd_nonzero",
+                        command: "rg missing-file",
+                        cwd: "/project",
+                        processId: "pid-1",
+                        source: "agent",
+                        status: "completed",
+                        commandActions: [],
+                        aggregatedOutput: "No files matched.",
+                        exitCode: 1,
+                        durationMs: 18,
+                    },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    item: { type: "agentMessage", id: "answer", text: "" },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+            {
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn",
+                    itemId: "answer",
+                    delta: "The command found no matching files.",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    item: {
+                        type: "agentMessage",
+                        id: "answer",
+                        text: "The command found no matching files.",
+                    },
+                    threadId: "thr",
+                    turnId: "turn",
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        const failedToolResult = parts.find(
+            (part) => part.type === "tool-result" && part.toolCallId === "cmd_nonzero",
+        );
+        await assertD03("非零退出映射失败工具结果且保留回答", () =>
+        {
+            expect(failedToolResult).toMatchObject({
+                type: "tool-result",
+                toolName: "codex_command_execution",
+                isError: true,
+            });
+            const result = failedToolResult?.type === "tool-result" ? failedToolResult.result : undefined;
+            expect(result).toBeTypeOf("object");
+            const item =
+                result && typeof result === "object"
+                    ? (result as Record<string, unknown>)["item"]
+                    : undefined;
+            expect(item).toBeTypeOf("object");
+            expect(
+                item && typeof item === "object" ? (item as Record<string, unknown>)["exitCode"] : undefined,
+            ).toBe(1);
+            expect(
+                item && typeof item === "object"
+                    ? (item as Record<string, unknown>)["aggregatedOutput"]
+                    : undefined,
+            ).toBe("No files matched.");
+            expect(parts).toContainEqual(
+                expect.objectContaining({
+                    type: "text-delta",
+                    id: "answer",
+                    delta: "The command found no matching files.",
+                }),
+            );
+            expect(parts).toContainEqual(
+                expect.objectContaining({
+                    type: "finish",
+                    finishReason: { unified: "stop", raw: "completed" },
+                }),
+            );
+        });
     });
 
     it("cleans up orphaned command tool calls on turn/completed", () =>
@@ -432,7 +625,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -541,7 +734,7 @@ describe("CodexEventMapper", () =>
 
         // The empty webSearch placeholder at item/started is suppressed; the
         // tool-call carries the real query/action from item/completed.
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -668,7 +861,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             ...cases.flatMap(({ item, toolName, input }) => [
                 {
@@ -722,7 +915,7 @@ describe("CodexEventMapper", () =>
         // The placeholder is suppressed at item/started and never completes, so it
         // produces no tool-call and — crucially — no synthesized "did not complete"
         // error on turn/completed.
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -747,7 +940,11 @@ describe("CodexEventMapper", () =>
                 params: {
                     threadId: "thr",
                     turnId: "turn",
-                    msg: { call_id: "ws_dup", query: "vitest docs", action: { type: "search", query: "vitest docs" } },
+                    msg: {
+                        call_id: "ws_dup",
+                        query: "vitest docs",
+                        action: { type: "search", query: "vitest docs" },
+                    },
                 },
             },
             {
@@ -759,7 +956,7 @@ describe("CodexEventMapper", () =>
             },
         ].flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -820,7 +1017,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -853,6 +1050,54 @@ describe("CodexEventMapper", () =>
                 usage: EMPTY_USAGE,
             },
         ]);
+    });
+
+    it("does not reopen a completed dynamicToolCall when its lifecycle is replayed", () =>
+    {
+        const mapper = new CodexEventMapper();
+        const started = {
+            method: "item/started",
+            params: {
+                item: {
+                    type: "dynamicToolCall",
+                    id: "call-replayed",
+                    tool: "lookup",
+                    arguments: { id: "ABC-1" },
+                    status: "inProgress",
+                    contentItems: null,
+                    success: null,
+                    durationMs: null,
+                },
+                threadId: "thr",
+                turnId: "turn",
+            },
+        };
+        const completed = {
+            method: "item/completed",
+            params: {
+                item: {
+                    type: "dynamicToolCall",
+                    id: "call-replayed",
+                    tool: "lookup",
+                    arguments: { id: "ABC-1" },
+                    status: "completed",
+                    contentItems: [{ type: "inputText", text: "found" }],
+                    success: true,
+                    durationMs: 1,
+                },
+                threadId: "thr",
+                turnId: "turn",
+            },
+        };
+
+        const parts = [started, completed, started, completed].flatMap((event) => mapper.map(event));
+        const toolParts = withoutSourceItemId(parts).filter(
+            (part): part is { type: "tool-call" | "tool-result"; toolCallId: string } =>
+                isToolLifecyclePart(part) && part.toolCallId === "call-replayed",
+        );
+
+        expect(toolParts).toHaveLength(2);
+        expect(toolParts.map((part) => part.type)).toEqual(["tool-call", "tool-result"]);
     });
 
     it("mapper is silent for dynamicToolCall lifecycle in cross-call mode", () =>
@@ -921,7 +1166,7 @@ describe("CodexEventMapper", () =>
         // In cross-call mode the mapper is fully silent for dynamicToolCall items
         // (including the item/tool/call dedup). The cross-call handler in model.ts
         // emits the definitive tool-call (no providerExecuted) + finish.
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -946,7 +1191,7 @@ describe("CodexEventMapper", () =>
             },
         });
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -983,8 +1228,20 @@ describe("CodexEventMapper", () =>
                     threadId: "thr",
                     turnId: "turn",
                     tokenUsage: {
-                        total: { totalTokens: 2000, inputTokens: 1500, cachedInputTokens: 500, outputTokens: 500, reasoningOutputTokens: 100 },
-                        last: { totalTokens: 800, inputTokens: 600, cachedInputTokens: 200, outputTokens: 200, reasoningOutputTokens: 50 },
+                        total: {
+                            totalTokens: 2000,
+                            inputTokens: 1500,
+                            cachedInputTokens: 500,
+                            outputTokens: 500,
+                            reasoningOutputTokens: 100,
+                        },
+                        last: {
+                            totalTokens: 800,
+                            inputTokens: 600,
+                            cachedInputTokens: 200,
+                            outputTokens: 200,
+                            reasoningOutputTokens: 50,
+                        },
                         modelContextWindow: 128000,
                     },
                 },
@@ -1100,7 +1357,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -1177,7 +1434,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -1282,7 +1539,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -1343,7 +1600,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -1402,7 +1659,7 @@ describe("CodexEventMapper", () =>
         const parts = events.flatMap((event) => mapper.map(event));
 
         // Only one "\n\n" — the wrapper duplicate is skipped.
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             { type: "reasoning-start", id: "rs_1" },
             { type: "reasoning-delta", id: "rs_1", delta: "First section" },
@@ -1449,7 +1706,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -1477,7 +1734,12 @@ describe("CodexEventMapper", () =>
             {
                 method: "item/completed",
                 params: {
-                    item: { type: "agentMessage", id: "msg_fb", text: "Final answer text", phase: "final_answer" },
+                    item: {
+                        type: "agentMessage",
+                        id: "msg_fb",
+                        text: "Final answer text",
+                        phase: "final_answer",
+                    },
                     threadId: "thr",
                     turnId: "turn_fb",
                 },
@@ -1493,7 +1755,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "msg_fb" },
             // Fallback: full text emitted from item/completed since no deltas arrived.
@@ -1576,7 +1838,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             // First plan update: tool-call + tool-result
             {
@@ -1664,7 +1926,7 @@ describe("CodexEventMapper", () =>
             },
         ].flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -1741,7 +2003,7 @@ describe("CodexEventMapper", () =>
             },
         ].flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "tool-call",
@@ -1833,7 +2095,7 @@ describe("CodexEventMapper", () =>
         const parts = events.flatMap((event) => mapper.map(event));
 
         // No tool-call/tool-result parts — plan updates are suppressed.
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -1879,9 +2141,7 @@ describe("CodexEventMapper", () =>
                         },
                         result: {
                             Ok: {
-                                content: [
-                                    { type: "text", text: "# Test Repo" },
-                                ],
+                                content: [{ type: "text", text: "# Test Repo" }],
                             },
                         },
                     },
@@ -1899,7 +2159,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "finish",
@@ -1937,7 +2197,8 @@ describe("CodexEventMapper", () =>
                         id: "img_1",
                         status: "completed",
                         revisedPrompt: "a beautiful mountain landscape at sunrise",
-                        result: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                        result:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
                     },
                     threadId: "thr",
                     turnId: "turn",
@@ -1954,7 +2215,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "file",
@@ -2006,7 +2267,7 @@ describe("CodexEventMapper", () =>
 
         const parts = events.flatMap((event) => mapper.map(event));
 
-        expect(parts).toEqual([
+        expect(withoutSourceItemId(parts)).toEqual([
             { type: "stream-start", warnings: [] },
             {
                 type: "file",
@@ -2021,8 +2282,9 @@ describe("CodexEventMapper", () =>
         ]);
     });
 
-    it("emits an error stream part when a completed turn carries an error", () =>
+    it("C18 emits an error stream part when a completed turn carries an error", async () =>
     {
+        const assertC18 = planAssertionsForTest("C18");
         const mapper = new CodexEventMapper();
 
         const parts = mapper.map({
@@ -2046,9 +2308,52 @@ describe("CodexEventMapper", () =>
             },
         });
 
-        expect(parts.map((part) => part.type)).toEqual(["stream-start", "error", "finish"]);
+        await assertC18("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.map((part) => part.type)).toEqual(["stream-start", "error", "finish"]),
+        );
         const errorPart = parts.find((part) => part.type === "error");
+        await assertC18("保留可见内容并显示单一终态", () =>
+            expect(errorPart?.error).toMatchObject({ message: "The free quota has been exhausted." }),
+        );
+        await assertC18("无自动重试、额外请求或迟到事件应用", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
         expect(errorPart?.error).toBeInstanceOf(Error);
-        expect(errorPart?.error).toMatchObject({ message: "The free quota has been exhausted." });
+    });
+
+    it("C19 emits a fallback error when a failed turn has no error message", async () =>
+    {
+        const assertC19 = planAssertionsForTest("C19");
+        const mapper = new CodexEventMapper();
+
+        const parts = mapper.map({
+            method: "turn/completed",
+            params: {
+                threadId: "thread-1",
+                turn: {
+                    id: "turn-1",
+                    items: [],
+                    itemsView: "notLoaded",
+                    error: null,
+                    status: "failed",
+                    startedAt: 1,
+                    completedAt: 2,
+                    durationMs: 1,
+                },
+            },
+        });
+
+        await assertC19("terminal 只结算一次且 Composer 恢复", () =>
+            expect(parts.map((part) => part.type)).toEqual(["stream-start", "error", "finish"]),
+        );
+        const errorPart = parts.find((part) => part.type === "error");
+        await assertC19("保留可见内容并显示单一终态", () =>
+            expect(errorPart?.error).toMatchObject({
+                message: "The model request failed before completion.",
+            }),
+        );
+        await assertC19("无自动重试、额外请求或迟到事件应用", () =>
+            expect(parts.filter((part) => part.type === "error")).toHaveLength(1),
+        );
     });
 });

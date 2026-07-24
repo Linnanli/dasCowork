@@ -133,6 +133,8 @@ export class DynamicToolsDispatcher
             return toTextResult("Dynamic tool call is missing the tool name.", false);
         }
 
+        const args = params.arguments ?? params.input;
+
         const handler = this.handlers.get(toolName);
 
         if (!handler) 
@@ -156,7 +158,6 @@ export class DynamicToolsDispatcher
             callId: params.callId,
         });
 
-        const args = params.arguments ?? params.input;
         const startedAt = Date.now();
 
         this.onDebugEvent?.({
@@ -201,7 +202,8 @@ export class DynamicToolsDispatcher
                 },
             });
 
-            return toTextResult(message, false);
+            const result = toTextResult(message, false);
+            return result;
         }
     }
 }

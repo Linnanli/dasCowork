@@ -5,6 +5,7 @@ import type {
     LanguageModelV3Usage,
 } from "@ai-sdk/provider";
 
+import { turnErrorMessage } from "../turn-error";
 import { stripUndefined } from "../utils/object";
 import type { AgentMessageDeltaNotification } from "./app-server-protocol/v2/AgentMessageDeltaNotification";
 import type { ItemCompletedNotification } from "./app-server-protocol/v2/ItemCompletedNotification";
@@ -92,12 +93,6 @@ function toFinishReason(status: TurnStatus | undefined): LanguageModelV3FinishRe
     }
 }
 
-function turnErrorMessage(completed: TurnCompletedNotification): string | undefined
-{
-    const message = completed.turn?.error?.message?.trim();
-    return message || undefined;
-}
-
 function autoApprovalReviewItem(
     notification: AutoApprovalReviewNotification,
     status: AutoApprovalReviewItem["status"],
@@ -139,6 +134,29 @@ function autoApprovalReviewInvocation(item: AutoApprovalReviewItem): CodexThread
 function asToolResult(value: unknown): NonNullable<JSONValue>
 {
     return value as NonNullable<JSONValue>;
+}
+
+/**
+ * A completed command can still represent a failed tool invocation: shell
+ * processes use a non-zero exit code for that outcome while retaining the
+ * protocol status `completed`. Preserve that distinction for AI SDK consumers
+ * so a failed tool record is not rendered as a successful one.
+ */
+function toolInvocationFailed(item: CodexRenderableThreadItem): boolean
+{
+    switch (item.type)
+    {
+        case "commandExecution":
+            return item.status === "failed"
+                || item.status === "declined"
+                || (typeof item.exitCode === "number" && item.exitCode !== 0);
+        case "dynamicToolCall":
+            return item.status === "failed" || item.success === false;
+        case "mcpToolCall":
+            return item.status === "failed" || item.error !== null;
+        default:
+            return false;
+    }
 }
 
 function normalizePlanStatus(status: string): string
@@ -185,6 +203,28 @@ type TurnDiffState = {
     diff: string;
 };
 
+function sourceItemIdForPart(part: LanguageModelV3StreamPart): string | undefined
+{
+    switch (part.type)
+    {
+        case "text-start":
+        case "text-delta":
+        case "text-end":
+        case "reasoning-start":
+        case "reasoning-delta":
+        case "reasoning-end":
+        case "tool-input-start":
+        case "tool-input-delta":
+        case "tool-input-end":
+            return part.id;
+        case "tool-call":
+        case "tool-result":
+            return part.toolCallId;
+        default:
+            return undefined;
+    }
+}
+
 export interface CodexEventMapperOptions
 {
     /** Emit plan updates as tool-call/tool-result parts. Default: true. */
@@ -217,6 +257,13 @@ export class CodexEventMapper
     private readonly agentMessagePhaseByItemId = new Map<string, AgentMessagePhase>();
     private readonly openReasoningParts = new Set<string>();
     private readonly openToolCalls = new Map<string, { toolName: string; item?: Record<string, unknown> }>();
+    /**
+     * Completed provider items are terminal protocol state.  Keeping that state
+     * for this mapper instance prevents a replayed item/started or
+     * item/completed notification from reopening an already-rendered tool call.
+     * This is item lifecycle tracking, not a cross-owner UI deduplication layer.
+     */
+    private readonly completedProviderToolCallIds = new Set<string>();
     /**
      * Item IDs for dynamicToolCall items seen in cross-call mode — tracked so
      * item/tool/call dedup fires without adding them to openToolCalls (which
@@ -330,12 +377,18 @@ export class CodexEventMapper
 
     private withMeta<T extends LanguageModelV3StreamPart>(part: T, extra?: Record<string, unknown>): T
     {
+        const sourceItemId = sourceItemIdForPart(part);
+        const metadata = {
+            ...(sourceItemId ? { sourceItemId } : {}),
+            ...(extra ?? {}),
+        };
+
         if (part.type === "stream-start")
         {
-            return withProviderMetadata(part, this.threadId, this.turnId, this.threadPath, extra);
+            return withProviderMetadata(part, this.threadId, this.turnId, this.threadPath, metadata);
         }
 
-        return withProviderMetadata(part, this.threadId, this.turnId, undefined, extra);
+        return withProviderMetadata(part, this.threadId, this.turnId, undefined, metadata);
     }
 
     private ensureStreamStarted(parts: LanguageModelV3StreamPart[]): void
@@ -571,11 +624,17 @@ export class CodexEventMapper
                 toolCallId: item.id,
                 toolName: tracked.toolName,
                 result: invocation.result,
+                ...(toolInvocationFailed(item) ? { isError: true } : {}),
             }));
 
             this.openToolCalls.delete(item.id);
+            this.completedProviderToolCallIds.add(item.id);
         }
-        else if (item.type === "webSearch" && webSearchHasContent(item.query, item.action))
+        else if (
+            item.type === "webSearch"
+            && !this.completedProviderToolCallIds.has(item.id)
+            && webSearchHasContent(item.query, item.action)
+        )
         {
             // webSearch item/started was a contentless placeholder suppressed in
             // handleItemStarted; the real query/action arrive here. Emit the full
@@ -600,6 +659,7 @@ export class CodexEventMapper
                 toolName: invocation.toolName,
                 result: invocation.result,
             }));
+            this.completedProviderToolCallIds.add(item.id);
         }
         else if (this.openReasoningParts.has(item.id))
         {
@@ -617,7 +677,10 @@ export class CodexEventMapper
 
             parts.push(this.withMeta(
                 { type: "file" as const, mediaType: "image/png", data: item.result },
-                Object.keys(extra).length > 0 ? extra : undefined,
+                {
+                    sourceItemId: item.id,
+                    ...extra,
+                },
             ));
         }
 
@@ -895,7 +958,11 @@ export class CodexEventMapper
         const invocation = "toolCallId" in itemOrInvocation
             ? itemOrInvocation
             : toolInvocationForItem(itemOrInvocation);
-        if (!invocation || this.openToolCalls.has(invocation.toolCallId))
+        if (
+            !invocation
+            || this.openToolCalls.has(invocation.toolCallId)
+            || this.completedProviderToolCallIds.has(invocation.toolCallId)
+        )
         {
             return;
         }
@@ -980,6 +1047,7 @@ export class CodexEventMapper
                 result: { error: reason },
                 isError: true,
             }));
+            this.completedProviderToolCallIds.add(itemId);
         }
         this.openToolCalls.clear();
 
@@ -1037,7 +1105,7 @@ export class CodexEventMapper
             this.planSequenceByTurnId.delete(`diff:${completed.turn.id}`);
         }
         const usage = this.latestUsage ?? EMPTY_USAGE;
-        const errorMessage = turnErrorMessage(completed);
+        const errorMessage = turnErrorMessage(completed.turn?.status, completed.turn?.error);
         if (errorMessage)
         {
             parts.push(this.withMeta({ type: "error", error: new Error(errorMessage) }));

@@ -125,8 +125,7 @@ export class CodexWorkerPool
             if (idx >= 0)
             {
                 const [waiter] = this.waiters.splice(idx, 1);
-                this.clearWaiterAbortHandler(waiter!);
-                waiter!.resolve(worker);
+                this.handoff(worker, waiter!);
                 return;
             }
         }
@@ -135,8 +134,7 @@ export class CodexWorkerPool
         const waiter = this.waiters.shift();
         if (waiter)
         {
-            this.clearWaiterAbortHandler(waiter); // prevent stale abort handler from firing after resolve
-            waiter.resolve(worker);
+            this.handoff(worker, waiter);
         }
         else
         {
@@ -163,6 +161,13 @@ export class CodexWorkerPool
         {
             this.waiters.splice(index, 1);
         }
+    }
+
+    private handoff(worker: CodexWorker, waiter: AcquireWaiter): void
+    {
+        this.clearWaiterAbortHandler(waiter);
+        worker.acquire();
+        waiter.resolve(worker);
     }
 
     /** Remove the abort listener so it doesn't fire after the waiter is already served. */

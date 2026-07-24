@@ -16,13 +16,15 @@ import {
   unstable_defaultDirectiveFormatter,
   unstable_useSlashCommandAdapter,
   getExternalStoreMessages,
+  useExternalStoreRuntime,
   useAui,
   useAuiEvent,
   useAuiState,
-  type ThreadMessage
+  type AppendMessage,
+  type ThreadMessage,
+  type ThreadMessageLike
 } from '@assistant-ui/react'
-import { useChat } from '@ai-sdk/react'
-import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk'
+import { getToolName, isToolUIPart, type UIMessage, type UIMessagePart } from 'ai'
 import { type DirectiveChipProps } from '@assistant-ui/react-lexical'
 import { Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
@@ -128,7 +130,7 @@ import {
 } from './lib/toolActivityDisplay'
 import { scrollToRenderTarget } from './lib/renderUnitNavigation'
 import { useCodexIpcAssistantRuntime } from './hooks/useCodexIpcAssistantRuntime'
-import { steerFollowUpItemWithOptimisticMessage } from './hooks/useConversationFollowUpCoordinator'
+import { steerFollowUpItemWithTranscript } from './hooks/useConversationFollowUpCoordinator'
 import {
   useConversationFollowUps,
   type ConversationFollowUpsController
@@ -138,6 +140,12 @@ import type {
   ConversationChatEntry,
   ConversationScrollSnapshot
 } from './runtime/ConversationChatRegistry'
+import {
+  type ConversationTranscriptController,
+  safeTurnErrorMessage,
+  type CodexTurnMessageMetadata,
+  type ConversationTranscriptMessage
+} from './runtime/ConversationTranscriptController'
 import type { ConversationDraftAttachment } from './runtime/ConversationDraftStore'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import { createQueuedFollowUpSnapshot } from './runtime/queuedFollowUpSnapshot'
@@ -329,9 +337,49 @@ const nativeBackdropSurfaceClass =
 
 const sidebarGlassClass =
   'shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)] dark:shadow-[0_18px_60px_-48px_rgba(0,0,0,0.95)]'
+const activeConversationStorageKey = 'das-cowork.active-conversation.v1'
 
 function useNativeBackdrop(): boolean {
   return window.desktopApp.environment.platform === 'darwin'
+}
+
+function readActiveConversationId(): string | undefined {
+  try {
+    const value = window.sessionStorage.getItem(activeConversationStorageKey)
+    return value && value.length > 0 ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function writeActiveConversationId(conversationId: string): void {
+  try {
+    window.sessionStorage.setItem(activeConversationStorageKey, conversationId)
+  } catch {
+    // Session storage is a renderer convenience only; conversation history remains canonical.
+  }
+}
+
+function clearActiveConversationId(): void {
+  try {
+    window.sessionStorage.removeItem(activeConversationStorageKey)
+  } catch {
+    // Session storage is a renderer convenience only; conversation history remains canonical.
+  }
+}
+
+async function runTranscriptAction(
+  controller: ConversationTranscriptController,
+  action: () => Promise<void>
+): Promise<void> {
+  try {
+    await action()
+  } catch (error) {
+    // Model and transport failures are already represented in the transcript.
+    // assistant-ui does not observe these promises, so avoid a duplicate
+    // renderer error after the controller has settled the turn.
+    if (controller.getSnapshot().status !== 'error') throw error
+  }
 }
 
 function App(): React.JSX.Element {
@@ -387,8 +435,47 @@ function App(): React.JSX.Element {
     getConversationIndicator,
     syncConversationMetadata
   })
+  const restoredActiveConversation = useRef(false)
+  const restoringActiveConversation = useRef(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const nativeBackdrop = useNativeBackdrop()
+
+  useEffect(() => {
+    if (!conversationState.state.loaded || restoredActiveConversation.current) return
+    restoredActiveConversation.current = true
+    const conversationId = readActiveConversationId()
+    if (!conversationId) return
+    const conversation = conversationState.state.conversations.find(
+      (candidate) => candidate.id === conversationId || candidate.threadId === conversationId
+    )
+    if (!conversation) {
+      clearActiveConversationId()
+      return
+    }
+    restoringActiveConversation.current = true
+    void openConversation({ conversationId: conversation.id }).then(
+      () => {
+        restoringActiveConversation.current = false
+      },
+      () => {
+        restoringActiveConversation.current = false
+      }
+    )
+  }, [conversationState.state.conversations, conversationState.state.loaded, openConversation])
+
+  useEffect(() => {
+    if (!restoredActiveConversation.current || restoringActiveConversation.current) return
+    const activeConversationId = activeConversation?.threadId ?? activeConversation?.conversationId
+    if (activeConversationId) {
+      writeActiveConversationId(activeConversationId)
+      return
+    }
+    if (activeEntry.newConversation) clearActiveConversationId()
+  }, [
+    activeConversation?.conversationId,
+    activeConversation?.threadId,
+    activeEntry.newConversation
+  ])
 
   useEffect(() => {
     const handleRenderTargetScroll = (event: Event): void => {
@@ -518,9 +605,46 @@ function ActiveConversationPane({
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
 }): React.JSX.Element {
-  const chat = useChat({ chat: entry.chat })
-  const runtime = useAISDKRuntime(chat, {
+  const reloadInFlight = useRef<{ entryId: string; request: symbol } | null>(null)
+  const runtime = useExternalStoreRuntime<ConversationTranscriptMessage>({
+    messages: entry.messages,
+    isRunning: entry.status === 'submitted' || entry.status === 'streaming',
     isDisabled: !entry.loaded,
+    convertMessage: (message, index) =>
+      transcriptMessageToThreadMessageLike(
+        message,
+        index === entry.messages.length - 1 &&
+          (entry.status === 'submitted' || entry.status === 'streaming')
+      ),
+    onNew: async (message) => {
+      await runTranscriptAction(entry.controller, () =>
+        entry.controller.sendMessage(appendMessageToUIMessage(message), {
+          metadata: message.runConfig
+        })
+      )
+    },
+    onEdit: async (message) => {
+      await runTranscriptAction(entry.controller, () =>
+        entry.controller.editMessage(message.parentId, appendMessageToUIMessage(message), {
+          metadata: message.runConfig
+        })
+      )
+    },
+    onReload: async (parentId, config) => {
+      if (reloadInFlight.current?.entryId === entry.localId) return
+      const request = Symbol('conversation-reload')
+      reloadInFlight.current = { entryId: entry.localId, request }
+      try {
+        await entry.controller.regenerate(parentId, { metadata: config.runConfig })
+      } catch {
+        // The controller projects the failure back into the transcript. The
+        // assistant-ui reload action does not observe this promise, so do not
+        // leak a duplicate unhandled rejection into the renderer.
+      } finally {
+        if (reloadInFlight.current?.request === request) reloadInFlight.current = null
+      }
+    },
+    onCancel: () => entry.controller.stop(),
     adapters: { attachments: imageAttachmentAdapter }
   })
   const conversationKey = entry.context.threadId ?? entry.context.conversationId
@@ -536,11 +660,9 @@ function ActiveConversationPane({
         | QueuedUserMessageSnapshot
         | QueuedUserMessageSnapshotInput
     ): Promise<void> => {
-      await steerFollowUpItemWithOptimisticMessage(entry.chat, message, () =>
-        followUps.steerItem(itemId)
-      )
+      await steerFollowUpItemWithTranscript(message, entry, () => followUps.steerItem(itemId))
     },
-    [entry.chat, followUps]
+    [entry, followUps]
   )
 
   return (
@@ -548,7 +670,7 @@ function ActiveConversationPane({
       <ConversationDraftBridge
         draft={entry.draft}
         draftAttachments={entry.draftAttachments}
-        phase={entry.phase}
+        status={entry.status}
         onDraftChange={onDraftChange}
         onDraftAttachmentsChange={onDraftAttachmentsChange}
       />
@@ -564,7 +686,7 @@ function ActiveConversationPane({
           disabled={!entry.loaded}
           followUps={followUps}
           hasBlockingRequest={hasBlockingRequest}
-          loading={entry.phase === 'loading'}
+          loading={entry.status === 'loading'}
           loadError={!entry.loaded ? entry.error : undefined}
           models={models}
           selectedModelId={selectedModelId}
@@ -756,7 +878,9 @@ function ChatThread({
     })
     return buildComposerTurnStatus(renderModel.units)
   }, [activeConversation, hasBlockingRequest, runningAssistantMessage])
-  const visibleFollowUpItems = followUps.items.filter((item) => item.status !== 'editing')
+  const visibleFollowUpItems = followUps.items.filter(
+    (item) => item.status !== 'editing' && item.status !== 'steering'
+  )
   const reservedEditingItem = followUps.items.find((item) => item.status === 'editing')
   const beginEditingFollowUp = useCallback(
     async (itemId: string): Promise<void> => {
@@ -952,13 +1076,13 @@ function ChatThread({
 function ConversationDraftBridge({
   draft,
   draftAttachments,
-  phase,
+  status,
   onDraftChange,
   onDraftAttachmentsChange
 }: {
   draft: string
   draftAttachments: readonly ConversationDraftAttachment[]
-  phase: ConversationChatEntry['phase']
+  status: ConversationChatEntry['status']
   onDraftChange: (draft: string) => void
   onDraftAttachmentsChange: (attachments: readonly ConversationDraftAttachment[]) => void
 }): null {
@@ -1019,7 +1143,7 @@ function ConversationDraftBridge({
     if (!snapshot) return
 
     const storedDraftWasCleared = draft.length === 0 && draftAttachments.length === 0
-    if ((phase === 'streaming' || phase === 'ready') && storedDraftWasCleared) {
+    if ((status === 'streaming' || status === 'ready') && storedDraftWasCleared) {
       pendingSend.current = null
       const nextAttachments = localDraftAttachments(composerAttachments)
       latestDraft.current = { text: composerText, attachments: nextAttachments }
@@ -1027,7 +1151,7 @@ function ConversationDraftBridge({
       onDraftAttachmentsChange(nextAttachments)
       return
     }
-    if (phase !== 'error') return
+    if (status !== 'error') return
 
     const currentAttachments = localDraftAttachments(composerAttachments)
     if (composerText.length > 0 || composerAttachments.length > 0) {
@@ -1058,7 +1182,7 @@ function ConversationDraftBridge({
     draftAttachments,
     onDraftAttachmentsChange,
     onDraftChange,
-    phase
+    status
   ])
 
   return null
@@ -1229,6 +1353,7 @@ function AssistantMessage({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const message = useAuiState((state) => state.message)
+  const isThreadRunning = useAuiState((state) => state.thread.isRunning)
   const textPartMetadata = useMemo(() => codexTextPartMetadataFor(message), [message])
   const turnDurationMs = useMemo(() => codexTurnDurationFor(message), [message])
   const renderModel = useMemo(
@@ -1250,6 +1375,8 @@ function AssistantMessage({
   )
   const isThinkingOnly = renderModel.isThinkingOnly
   const visibleUnits = withoutComposerStatusRenderUnits(renderModel.units)
+  const wasCancelled =
+    message.status?.type === 'incomplete' && message.status.reason === 'cancelled'
 
   return (
     <MessagePrimitive.Root
@@ -1280,11 +1407,33 @@ function AssistantMessage({
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
             data-slot="aui_assistant-message-error"
-            className="border-destructive/20 bg-destructive/5 text-destructive mt-2 rounded-md border px-3 py-2 text-sm"
+            role="alert"
+            aria-live="polite"
+            className="border-destructive/20 bg-destructive/5 text-destructive mt-2 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
           >
-            <ErrorPrimitive.Message />
+            <ErrorPrimitive.Message className="min-w-0 flex-1 wrap-break-word" />
+            <ActionBarPrimitive.Reload asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={isThreadRunning}
+                data-slot="aui_assistant-message-retry"
+              >
+                重试
+              </Button>
+            </ActionBarPrimitive.Reload>
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
+        {wasCancelled ? (
+          <p
+            data-slot="aui_assistant-message-cancelled"
+            role="status"
+            className="mt-2 text-sm text-muted-foreground"
+          >
+            已取消
+          </p>
+        ) : null}
       </div>
       {isThinkingOnly ? null : (
         // Keep the autohidden action bar from changing the following message's position.
@@ -1302,6 +1451,236 @@ function AssistantMessage({
 type ExternalAISDKMessage = {
   parts?: readonly { type?: unknown; providerMetadata?: unknown }[]
   metadata?: unknown
+}
+
+function appendMessageToUIMessage(message: AppendMessage): UIMessage {
+  const inputParts = [
+    ...message.content.filter((part) => part.type !== 'file'),
+    ...(message.attachments?.flatMap((attachment) =>
+      attachment.content.map((part) => ({
+        ...part,
+        filename: attachment.name
+      }))
+    ) ?? [])
+  ]
+  const parts = inputParts.map((part): UIMessagePart<Record<string, unknown>, never> => {
+    switch (part.type) {
+      case 'text':
+        return { type: 'text', text: part.text }
+      case 'image':
+        return {
+          type: 'file',
+          url: part.image,
+          mediaType: 'image/png',
+          ...(part.filename ? { filename: part.filename } : {})
+        }
+      case 'file':
+        return {
+          type: 'file',
+          url: part.data,
+          mediaType: part.mimeType,
+          ...(part.filename ? { filename: part.filename } : {})
+        }
+      case 'data':
+        return {
+          type: `data-${part.name}`,
+          data: part.data
+        }
+      default:
+        throw new Error(`Unsupported composer message part: ${part.type}`)
+    }
+  })
+
+  return {
+    id: crypto.randomUUID(),
+    role: message.role,
+    parts,
+    ...(message.metadata === undefined ? {} : { metadata: message.metadata })
+  }
+}
+
+function transcriptMessageToThreadMessageLike(
+  message: ConversationTranscriptMessage,
+  running: boolean
+): ThreadMessageLike & {
+  readonly convertConfig?: { readonly joinStrategy: 'none' }
+} {
+  const content = message.parts.flatMap((part): unknown[] => {
+    if (part.type === 'step-start') return []
+    if (part.type === 'text') return [{ type: 'text', text: part.text }]
+    if (part.type === 'reasoning') return [{ type: 'reasoning', text: part.text }]
+    if (isToolUIPart(part)) {
+      const input =
+        part.input && typeof part.input === 'object' && !Array.isArray(part.input) ? part.input : {}
+      const result =
+        part.state === 'output-available'
+          ? part.output
+          : part.state === 'output-error'
+            ? { error: part.errorText }
+            : undefined
+      return [
+        {
+          type: 'tool-call',
+          toolCallId: part.toolCallId,
+          toolName: getToolName(part),
+          args: input,
+          argsText: JSON.stringify(input),
+          result,
+          isError: part.state === 'output-error' || part.state === 'output-denied',
+          ...('approval' in part && part.approval ? { approval: part.approval } : {})
+        }
+      ]
+    }
+    if (part.type === 'source-url') {
+      return [
+        {
+          type: 'source',
+          sourceType: 'url',
+          id: part.sourceId,
+          url: part.url,
+          ...(part.title ? { title: part.title } : {}),
+          ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {})
+        }
+      ]
+    }
+    if (part.type === 'source-document') {
+      return [
+        {
+          type: 'source',
+          sourceType: 'document',
+          id: part.sourceId,
+          title: part.title,
+          mediaType: part.mediaType,
+          ...(part.filename ? { filename: part.filename } : {}),
+          ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {})
+        }
+      ]
+    }
+    if (part.type === 'file') {
+      return message.role === 'user'
+        ? []
+        : [
+            {
+              type: 'file',
+              data: part.url,
+              mimeType: part.mediaType,
+              ...(part.filename ? { filename: part.filename } : {})
+            }
+          ]
+    }
+    if (part.type.startsWith('data-')) {
+      return [
+        {
+          type: 'data',
+          name: part.type.slice('data-'.length),
+          data: 'data' in part ? part.data : undefined
+        }
+      ]
+    }
+    return []
+  }) as Exclude<ThreadMessageLike['content'], string>
+  const attachments =
+    message.role === 'user'
+      ? message.parts.flatMap((part, index) => {
+          if (part.type !== 'file') return []
+          const image = part.mediaType.startsWith('image/')
+          return [
+            {
+              id: String(index),
+              type: image ? ('image' as const) : ('file' as const),
+              name: part.filename ?? 'file',
+              content: image
+                ? [
+                    {
+                      type: 'image' as const,
+                      image: part.url,
+                      filename: part.filename
+                    }
+                  ]
+                : [
+                    {
+                      type: 'file' as const,
+                      data: part.url,
+                      mimeType: part.mediaType,
+                      filename: part.filename
+                    }
+                  ],
+              contentType: part.mediaType,
+              status: { type: 'complete' as const }
+            }
+          ]
+        })
+      : undefined
+
+  return {
+    id: message.renderId,
+    role: message.role,
+    content,
+    ...(attachments ? { attachments } : {}),
+    ...(message.metadata === undefined
+      ? {}
+      : { metadata: message.metadata as ThreadMessageLike['metadata'] }),
+    ...(message.role === 'assistant'
+      ? {
+          status: assistantMessageStatus(message.metadata, running),
+          convertConfig: { joinStrategy: 'none' as const }
+        }
+      : {})
+  }
+}
+
+function assistantMessageStatus(
+  metadata: unknown,
+  running: boolean
+): NonNullable<ThreadMessageLike['status']> {
+  if (running) return { type: 'running' }
+
+  const codexTurn = codexTurnMetadataFor(metadata)
+  if (codexTurn?.status === 'failed') {
+    return {
+      type: 'incomplete',
+      reason: 'error',
+      error: safeTurnErrorMessage(codexTurn.error?.message)
+    }
+  }
+  if (codexTurn?.status === 'interrupted') {
+    return { type: 'incomplete', reason: 'cancelled' }
+  }
+  return { type: 'complete', reason: 'stop' }
+}
+
+function codexTurnMetadataFor(metadata: unknown): CodexTurnMessageMetadata | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined
+  const codexTurn = (metadata as Record<string, unknown>).codexTurn
+  if (!codexTurn || typeof codexTurn !== 'object' || Array.isArray(codexTurn)) return undefined
+  const candidate = codexTurn as Record<string, unknown>
+  if (
+    typeof candidate.turnId !== 'string' ||
+    (candidate.status !== 'failed' && candidate.status !== 'interrupted')
+  ) {
+    return undefined
+  }
+
+  const rawError = candidate.error
+  const error =
+    rawError && typeof rawError === 'object' && !Array.isArray(rawError)
+      ? (rawError as Record<string, unknown>)
+      : undefined
+  return {
+    turnId: candidate.turnId,
+    status: candidate.status,
+    ...(error && typeof error.message === 'string'
+      ? {
+          error: {
+            message: error.message,
+            ...(typeof error.additionalDetails === 'string' || error.additionalDetails === null
+              ? { additionalDetails: error.additionalDetails }
+              : {}),
+            ...('codexErrorInfo' in error ? { codexErrorInfo: error.codexErrorInfo } : {})
+          }
+        }
+      : {})
+  }
 }
 
 type CodexTextPartMetadata = {
