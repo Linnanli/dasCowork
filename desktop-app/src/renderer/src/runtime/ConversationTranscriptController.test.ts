@@ -22,9 +22,7 @@ async function recordPlanAssertions({
   assertion: () => unknown
 }): Promise<void> {
   await Promise.all(
-    scenarioIds.map((scenarioId) =>
-      planAssert({ scenarioId, assertionId, assertion })
-    )
+    scenarioIds.map((scenarioId) => planAssert({ scenarioId, assertionId, assertion }))
   )
 }
 
@@ -839,6 +837,53 @@ describe('ConversationTranscriptController', () => {
     })
   })
 
+  it('replaces a recovered terminal fallback with replayed interrupted output from the same turn', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    controller.replaceMessages([
+      { id: 'user-one', role: 'user', parts: [{ type: 'text', text: 'request' }] },
+      {
+        id: 'assistant:turn-one:terminal',
+        role: 'assistant',
+        parts: [],
+        metadata: { codexTurn: { turnId: 'turn-one', status: 'interrupted' } }
+      }
+    ])
+
+    const send = controller.sendMessage({
+      id: 'initial-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'start' }]
+    })
+
+    await vi.waitFor(() => expect(controller.getActiveTurnId()).toBeDefined())
+    beginCanonicalTurn(controller, 'turn-one')
+    transport.enqueue({ type: 'text-start', id: 'replayed-text' })
+    transport.enqueue({
+      type: 'text-delta',
+      id: 'replayed-text',
+      delta: 'Recovered partial output.'
+    })
+    completeCanonicalTurn(controller, 'turn-one', 'interrupted', 2)
+    transport.close()
+    await send
+
+    const interruptedMessages = controller
+      .getSnapshot()
+      .messages.filter(
+        (message) =>
+          message.kind === 'message' &&
+          message.role === 'assistant' &&
+          message.turnId === 'turn-one'
+      )
+    expect(interruptedMessages).toHaveLength(1)
+    expect(interruptedMessages[0]).toMatchObject({
+      sourceMessageId: 'assistant:turn-one:replayed-text',
+      parts: [expect.objectContaining({ type: 'text', text: 'Recovered partial output.' })],
+      metadata: { codexTurn: { turnId: 'turn-one', status: 'interrupted' } }
+    })
+  })
+
   it('keeps the pending assistant identity stable when canonical interruption arrives before output', async () => {
     const transport = new ControlledTransport()
     const controller = createController(transport)
@@ -1066,6 +1111,171 @@ describe('ConversationTranscriptController', () => {
     })
   })
 
+  it('settles a replayed abort as interrupted even when no lifecycle terminal is replayed', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+
+    const resume = controller.resumeStream()
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    controller.handleStreamAccepted()
+    transport.enqueue({ type: 'text-start', id: 'replayed-text' })
+    transport.enqueue({ type: 'text-delta', id: 'replayed-text', delta: 'Partial replay.' })
+    controller.handleStreamAborted()
+    transport.close()
+
+    await expect(resume).resolves.toBe(true)
+    expect(controller.getSnapshot().status).toBe('ready')
+    expect(controller.getSnapshot().error).toBeUndefined()
+    expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [expect.objectContaining({ type: 'text', text: 'Partial replay.' })],
+      metadata: { codexTurn: { status: 'interrupted' } }
+    })
+  })
+
+  it('leaves initial no-active-run recovery as a no-op', async () => {
+    const transport = new ControlledTransport()
+    transport.nextReconnectResult = 'null'
+    const controller = createController(transport)
+
+    await expect(controller.resumeStream()).resolves.toBe(false)
+
+    expect(controller.getSnapshot()).toMatchObject({ status: 'ready' })
+    expect(controller.getSnapshot().error).toBeUndefined()
+    expect(controller.getRecoveryError()).toBeUndefined()
+  })
+
+  it('treats an attached stream that silently closes without events as unknown recovery failure', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+
+    const resume = controller.resumeStream()
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    transport.close()
+
+    await expect(resume).resolves.toBe(false)
+    expect(controller.getSnapshot()).toMatchObject({
+      status: 'error',
+      error: { message: '无法确认后台任务状态，请重试。' }
+    })
+    expect(controller.getRecoveryError()).toMatchObject({
+      code: 'unknown-recovery',
+      message: '无法确认后台任务状态，请重试。'
+    })
+  })
+
+  it('keeps a replayed failed terminal after the draft acceptance has been consumed', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    controller.subscribe(() => {
+      controller.takeCurrentSendAcceptance()
+    })
+
+    const resume = controller.resumeStream()
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    controller.handleStreamAccepted()
+    transport.enqueue({ type: 'text-start', id: 'replayed-text' })
+    transport.enqueue({
+      type: 'text-delta',
+      id: 'replayed-text',
+      delta: 'Recovered partial output.'
+    })
+    controller.handleStreamError('stream disconnected before completion')
+    transport.close()
+
+    await expect(resume).resolves.toBe(false)
+    expect(controller.getSnapshot()).toMatchObject({
+      status: 'error',
+      error: { message: 'stream disconnected before completion' }
+    })
+    expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [expect.objectContaining({ type: 'text', text: 'Recovered partial output.' })],
+      metadata: {
+        codexTurn: {
+          status: 'failed',
+          error: { message: 'stream disconnected before completion' }
+        }
+      }
+    })
+  })
+
+  it('keeps replayed output and structured recovery code when attach is rejected after replay', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+
+    const resume = controller.resumeStream()
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    transport.enqueue({ type: 'text-start', id: 'replayed-text' })
+    transport.enqueue({ type: 'text-delta', id: 'replayed-text', delta: 'Recovered partial.' })
+    controller.handleStreamError({
+      code: 'run-mismatch',
+      message: 'The active run changed before recovery could attach.'
+    })
+    transport.close()
+
+    await expect(resume).resolves.toBe(false)
+    expect(controller.getRecoveryError()).toMatchObject({
+      code: 'run-mismatch',
+      message: 'The active run changed before recovery could attach.'
+    })
+    expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [expect.objectContaining({ type: 'text', text: 'Recovered partial.' })],
+      metadata: {
+        codexTurn: {
+          status: 'failed',
+          error: { message: 'The active run changed before recovery could attach.' }
+        }
+      }
+    })
+  })
+
+  it('keeps replayed partial output when canonical history already contains a failed assistant item', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    controller.replaceMessages([
+      { id: 'user-one', role: 'user', parts: [{ type: 'text', text: 'request' }] },
+      {
+        id: 'assistant-history-error',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'canonical failure detail' }],
+        metadata: {
+          codexTurn: {
+            turnId: 'turn-one',
+            status: 'failed',
+            error: { message: 'canonical failure detail' }
+          }
+        }
+      }
+    ])
+
+    const resume = controller.resumeStream()
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    controller.handleStreamAccepted()
+    transport.enqueue({ type: 'text-start', id: 'replayed-text' })
+    transport.enqueue({
+      type: 'text-delta',
+      id: 'replayed-text',
+      delta: 'Recovered partial output.'
+    })
+    controller.handleStreamError('stream disconnected before completion')
+    transport.close()
+
+    await expect(resume).resolves.toBe(false)
+    expect(
+      controller
+        .getSnapshot()
+        .messages.some(
+          (message) =>
+            message.role === 'assistant' &&
+            message.parts.some(
+              (part) => part.type === 'text' && part.text === 'Recovered partial output.'
+            )
+        )
+    ).toBe(true)
+  })
+
   it('F04 limits long errors to 2,000 characters plus an ellipsis', async () => {
     const message = `upstream failure: ${'x'.repeat(2_100)}`
     const safeMessage = safeTurnErrorMessage(message)
@@ -1130,13 +1340,19 @@ describe('ConversationTranscriptController', () => {
       assertionId: '错误、取消与重试 UI 正确',
       assertion: () =>
         expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
-          metadata: { codexTurn: { status: 'failed', error: { message: '模型响应未完成，请重试。' } } }
+          metadata: {
+            codexTurn: { status: 'failed', error: { message: '模型响应未完成，请重试。' } }
+          }
         })
     })
     await recordPlanAssertions({
       scenarioIds: ['F03', 'F05'],
       assertionId: '历史与已显示内容保留',
-      assertion: () => expect(controller.getSnapshot().messages.at(-1)).toMatchObject({ role: 'assistant', parts: [] })
+      assertion: () =>
+        expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+          role: 'assistant',
+          parts: []
+        })
     })
     await recordPlanAssertions({
       scenarioIds: ['F03', 'F05'],
@@ -1158,7 +1374,9 @@ describe('ConversationTranscriptController', () => {
       assertionId: '诊断可关联而不泄露密钥',
       assertion: () =>
         expect(
-          safeTurnErrorMessage('Authorization: Bearer secret-token\napi_key=super-secret sk-abcdefgh12345678')
+          safeTurnErrorMessage(
+            'Authorization: Bearer secret-token\napi_key=super-secret sk-abcdefgh12345678'
+          )
         ).toBe('Authorization: [REDACTED]\napi_key=[REDACTED] sk-[REDACTED]')
     })
   })
@@ -1263,6 +1481,7 @@ class ControlledTransport {
   private closed = false
   sendCount = 0
   lastBody: unknown
+  nextReconnectResult: 'stream' | 'null' = 'stream'
 
   async sendMessages(options?: {
     abortSignal?: AbortSignal
@@ -1277,6 +1496,14 @@ class ControlledTransport {
         options?.abortSignal?.addEventListener('abort', () => undefined, { once: true })
       }
     })
+  }
+
+  async reconnectToStream(): Promise<ReadableStream<UIMessageChunk> | null> {
+    if (this.nextReconnectResult === 'null') {
+      this.sendCount += 1
+      return null
+    }
+    return this.sendMessages()
   }
 
   enqueue(chunk: UIMessageChunk): void {

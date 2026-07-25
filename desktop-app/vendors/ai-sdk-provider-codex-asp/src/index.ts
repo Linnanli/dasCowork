@@ -55,9 +55,14 @@ export type {
     DynamicToolsDispatcherSettings,
 } from "./dynamic-tools";
 export { DynamicToolsDispatcher } from "./dynamic-tools";
+export type { CodedCodexProviderError, CodexProviderErrorCode, CodexProviderErrorOptions } from "./errors";
 export {
+    CODEX_PROVIDER_ERROR_CODES,
     CodexNotImplementedError,
     CodexProviderError,
+    isCodedCodexProviderError,
+    isCodexProviderError,
+    isCodexProviderErrorCode,
 } from "./errors";
 export type {
     CodexHistoryClientSettings,
@@ -89,8 +94,14 @@ export type {
 export { CodexLanguageModel } from "./model";
 export { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
 export type { CodexEventMapperInput, CodexEventMapperOptions } from "./protocol/event-mapper";
+export type { CodexExistingTurnRecoveryState } from "./protocol/event-mapper";
 export { CodexEventMapper } from "./protocol/event-mapper";
-export { CODEX_PROVIDER_ID, codexCallOptions, codexProviderMetadata, withProviderMetadata } from "./protocol/provider-metadata";
+export {
+    CODEX_PROVIDER_ID,
+    codexCallOptions,
+    codexProviderMetadata,
+    withProviderMetadata,
+} from "./protocol/provider-metadata";
 export type {
     CodexRenderableThreadItem,
     CodexThreadItemToolInvocation,
@@ -160,25 +171,15 @@ export type {
     CodexProviderSettings,
     McpServerConfig,
 } from "./provider";
-export {
-    codexAppServer,
-    createCodexAppServer,
-    createCodexProvider,
-} from "./provider";
+export { codexAppServer, createCodexAppServer, createCodexProvider } from "./provider";
 export type {
     CodexAgentLifecycleEvent,
     CodexAgentLifecycleKind,
     CodexCustomModelProviderSettings,
     TransportContext,
 } from "./provider-settings";
-export type {
-    CodexSession,
-    CodexSteerErrorCode,
-    CodexSteerResult,
-} from "./session";
-export {
-    CodexSteerError,
-} from "./session";
+export type { CodexSession, CodexSteerErrorCode, CodexSteerResult } from "./session";
+export { CodexSteerError } from "./session";
 export type { CodexStartedThread, CodexThreadStartOptions } from "./thread-client";
 export { CodexThreadClient, createCodexThreadClient } from "./thread-client";
 export type {

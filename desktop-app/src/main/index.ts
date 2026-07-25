@@ -61,9 +61,11 @@ import { steerQueuedFollowUp } from './followUps/steerQueuedFollowUp'
 import { validateQueuedLocalAttachments } from './followUps/validateQueuedLocalAttachments'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
+import type { WorkspaceRecoveryService } from './projects/WorkspaceRecoveryService'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
 import {
+  codexChatAttachPayloadSchema,
   codexChatPortDetachedPayloadSchema,
   codexChatStartPayloadSchema,
   isExternalHttpUrl,
@@ -73,8 +75,10 @@ import {
   projectCreateRemotePayloadSchema,
   projectRenamePayloadSchema,
   projectSelectPayloadSchema,
+  workspaceRecoveryPayloadSchema,
   codexRespondApprovalPayloadSchema,
   codexSetSelectedModelPayloadSchema,
+  type CodexChatAttachResult,
   type ComposerContextCatalogChangeEvent,
   type FollowUpQueueChangeEvent,
   followUpClaimNextPayloadSchema,
@@ -95,6 +99,7 @@ import type { ProjectState } from '../shared/projects/projectTypes'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
+let workspaceRecovery: WorkspaceRecoveryService | undefined
 let conversationApi: ConversationApiService | undefined
 let composerContextCatalog: ComposerContextCatalogService | undefined
 let composerContextSearch: ComposerContextSearchService | undefined
@@ -119,6 +124,7 @@ function createCodexRuntime(): CodexChatRuntimeService {
     pickWorkspaceRoot: pickWorkspaceRootPath
   })
   projectApi = projectRuntimeServices.projectApi
+  workspaceRecovery = projectRuntimeServices.workspaceRecovery
   const launch = resolveCodexAppServerLaunchOptions({
     env: process.env,
     isPackaged: app.isPackaged,
@@ -260,6 +266,11 @@ async function openExternalHttpUrl(url: string): Promise<void> {
 function requireProjectApi(): ProjectApiService {
   if (!projectApi) throw new Error('Project API is not initialized')
   return projectApi
+}
+
+function requireWorkspaceRecovery(): WorkspaceRecoveryService {
+  if (!workspaceRecovery) throw new Error('Workspace recovery is not initialized')
+  return workspaceRecovery
 }
 
 function requireConversationApi(): ConversationApiService {
@@ -466,6 +477,7 @@ app.whenReady().then(() => {
     const request = codexSetSelectedModelPayloadSchema.parse(payload)
     return runtime.setSelectedModel(request.modelId)
   })
+  ipcMain.handle('codex:list-pending-approvals', () => runtime.listPendingApprovals())
   ipcMain.handle('codex:respond-approval', (_, payload: unknown) => {
     const request = codexRespondApprovalPayloadSchema.parse(payload)
     runtime.respondApproval(request.requestId, request.response)
@@ -649,6 +661,16 @@ app.whenReady().then(() => {
     await broadcastProjectState()
     return state
   })
+  ipcMain.handle('codex:projects:get-workspace-recovery', (_, payload: unknown) => {
+    const request = workspaceRecoveryPayloadSchema.parse(payload)
+    return requireWorkspaceRecovery().inspect(request)
+  })
+  ipcMain.handle('codex:projects:restore-workspace', async (_, payload: unknown) => {
+    const request = workspaceRecoveryPayloadSchema.parse(payload)
+    const status = await requireWorkspaceRecovery().restore(request)
+    await broadcastProjectState()
+    return status
+  })
   ipcMain.handle('codex:conversations:get-list', () =>
     requireConversationApi().getConversationList()
   )
@@ -694,36 +716,41 @@ app.whenReady().then(() => {
   })
   ipcMain.on('codex-chat:port-detached', (_, payload: unknown) => {
     const request = codexChatPortDetachedPayloadSchema.parse(payload)
-    runtime.handleChatStreamPortClosed(request.chatId)
+    runtime.handleChatStreamPortClosed(request.chatId, request.streamId)
   })
   ipcMain.on('codex-chat:start', (event, payload: unknown) => {
     const port = event.ports[0]
     if (!port) return
     const { request, streamId } = codexChatStartPayloadSchema.parse(payload)
     port.once('close', () => {
-      runtime.handleChatStreamPortClosed(request.chatId)
+      runtime.handleChatStreamPortClosed(request.chatId, streamId)
     })
     void runtime
-      .startChatStream(request, port, {
-        onThreadIdAvailable: async (threadId, thread) => {
-          if (thread?.originConversationId) {
-            await requireFollowUpQueue().migrateConversationKey(
-              thread.originConversationId,
-              threadId
-            )
+      .startChatStream(
+        request,
+        port,
+        {
+          onThreadIdAvailable: async (threadId, thread) => {
+            if (thread?.originConversationId) {
+              await requireFollowUpQueue().migrateConversationKey(
+                thread.originConversationId,
+                threadId
+              )
+            }
+            if (thread) {
+              broadcastStartedConversation(threadId, thread)
+              return
+            }
+            void broadcastConversationState({ awaitThreadId: threadId })
+          },
+          onTerminal: (terminal) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('codex-chat:terminal', { streamId, terminal })
+            }
           }
-          if (thread) {
-            broadcastStartedConversation(threadId, thread)
-            return
-          }
-          void broadcastConversationState({ awaitThreadId: threadId })
         },
-        onTerminal: (terminal) => {
-          if (!event.sender.isDestroyed()) {
-            event.sender.send('codex-chat:terminal', { streamId, terminal })
-          }
-        }
-      })
+        streamId
+      )
       .then((result) =>
         broadcastConversationState({
           awaitThreadId: result.threadId,
@@ -738,6 +765,38 @@ app.whenReady().then(() => {
       })
     broadcastStatus()
   })
+  ipcMain.on('codex-chat:attach', (event, payload: unknown) => {
+    const port = event.ports[0]
+    if (!port) return
+    const { conversationId, streamId, runId, afterSequence } =
+      codexChatAttachPayloadSchema.parse(payload)
+    port.once('close', () => runtime.handleChatStreamPortClosed(conversationId, streamId))
+    const attachResult = runtime.attachChatStream(
+      conversationId,
+      streamId,
+      port,
+      runId,
+      afterSequence
+    )
+    if (attachResult.status !== 'attached') {
+      port.start()
+      port.postMessage({ type: 'error', error: chatAttachFailure(attachResult) })
+      port.close()
+    }
+  })
+  ipcMain.handle('codex-chat:has-active-run', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return runtime.hasActiveChatStream(request.conversationId)
+  })
+  ipcMain.handle('codex-chat:get-active-run', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return runtime.getActiveChatRun(request.conversationId) ?? null
+  })
+  ipcMain.handle('codex-chat:get-active-runs', () => runtime.getActiveChatRuns())
+  ipcMain.handle('codex-chat:get-active-snapshot', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return runtime.getActiveChatSnapshot(request.conversationId) ?? null
+  })
 
   createWindow(runtime)
   broadcastStatus()
@@ -746,6 +805,23 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow(runtime)
   })
 })
+
+function chatAttachFailure(result: Exclude<CodexChatAttachResult, { status: 'attached' }>): {
+  code: Exclude<CodexChatAttachResult['status'], 'attached'>
+  message: string
+} {
+  switch (result.status) {
+    case 'run-unavailable':
+      return { code: result.status, message: '任务运行已结束，无法恢复连接。' }
+    case 'run-mismatch':
+      return { code: result.status, message: '恢复的数据流不属于当前任务，请重新打开任务。' }
+    case 'journal-unavailable':
+      return {
+        code: result.status,
+        message: '恢复日志已超出可补发范围，请等待任务结束后重新打开任务。'
+      }
+  }
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

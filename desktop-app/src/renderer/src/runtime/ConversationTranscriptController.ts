@@ -8,10 +8,15 @@ import {
 
 import type { CodexTurnLifecycleEvent } from '../../../shared/codexIpcApi'
 import { selectUniqueLegacyCandidate } from '../../../shared/uniqueLegacyCandidate'
-import type { ElectronIpcChatTransport } from '../lib/ElectronIpcChatTransport'
+import type {
+  CodexChatStreamError,
+  ElectronIpcChatTransport
+} from '../lib/ElectronIpcChatTransport'
 
 const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const DEFAULT_TURN_ERROR_MESSAGE = '模型响应未完成，请重试。'
+const UNKNOWN_RECOVERY_ERROR_MESSAGE = '无法确认后台任务状态，请重试。'
+const UNKNOWN_RECOVERY_ERROR_CODE = 'unknown-recovery'
 const MAX_TURN_ERROR_MESSAGE_LENGTH = 2_000
 
 export type CodexTurnMessageMetadata = {
@@ -110,9 +115,11 @@ export class ConversationTranscriptController {
   private abortController: AbortController | undefined
   private status: ChatStatus = 'ready'
   private error: Error | undefined
+  private recoveryError: Error | undefined
   private version = 0
   private snapshot: ConversationTranscriptSnapshot
   private turnSequence = 0
+  private activeStreamAccepted = false
   private acceptedCurrentSend = false
 
   constructor(options: ConversationTranscriptControllerOptions) {
@@ -129,11 +136,16 @@ export class ConversationTranscriptController {
 
   getSnapshot = (): ConversationTranscriptSnapshot => this.snapshot
 
+  getRecoveryError(): Error | undefined {
+    return this.recoveryError
+  }
+
   replaceMessages(messages: readonly UIMessage[]): void {
     this.baseMessages = messages.map((message) => toRegularTranscriptMessage(message))
     this.turnSequence = Math.max(this.turnSequence, localTurnSequenceIn(this.baseMessages))
     this.activeTurn = undefined
     this.abortController = undefined
+    this.activeStreamAccepted = false
     this.status = 'ready'
     this.error = undefined
     this.emit()
@@ -183,17 +195,17 @@ export class ConversationTranscriptController {
     const target = current[parentIndex]
     const keepThrough = target.role === 'assistant' ? parentIndex : parentIndex + 1
     this.baseMessages = current.slice(0, keepThrough)
-    const terminalRetryTarget =
-      target.role === 'assistant' ? target : current[parentIndex + 1]
-    const retryOptions = terminalRetryTarget && hasTerminalFailure(terminalRetryTarget)
-      ? {
-          ...options,
-          body: {
-            ...(isRecord(options.body) ? options.body : {}),
-            retryTerminalTurn: true
+    const terminalRetryTarget = target.role === 'assistant' ? target : current[parentIndex + 1]
+    const retryOptions =
+      terminalRetryTarget && hasTerminalFailure(terminalRetryTarget)
+        ? {
+            ...options,
+            body: {
+              ...(isRecord(options.body) ? options.body : {}),
+              retryTerminalTurn: true
+            }
           }
-        }
-      : options
+        : options
     await this.startRequest(
       'regenerate-message',
       target.role === 'assistant' && target.kind === 'message' ? target.sourceMessageId : undefined,
@@ -209,6 +221,79 @@ export class ConversationTranscriptController {
     this.status = 'submitted'
     this.emit()
     this.abortController?.abort()
+  }
+
+  /** Rehydrate a main-process turn without creating another provider request. */
+  async resumeStream(): Promise<boolean> {
+    if (isRunningStatus(this.status)) return false
+    this.recoveryError = undefined
+    const localTurnId = `recovered-turn-${++this.turnSequence}`
+    this.activeTurn = {
+      turnId: localTurnId,
+      turnStartedAtMs: Date.now(),
+      retainedToolParts: new Map(),
+      assistantIdentityScope: localTurnId,
+      initialAssistantSourceMessageId: assistantSourceMessageId(localTurnId, 'initial'),
+      assistantSourceMessageIdsAfterSteer: new Map(),
+      sourceItemOrder: [],
+      sourceItemIds: new Set(),
+      sourceItemSequence: new Map(),
+      startedPartKeys: new Set(),
+      partSourceItemIds: [],
+      steeringMessages: [],
+      unmatchedSteeringItems: []
+    }
+    this.status = 'submitted'
+    this.error = undefined
+    this.activeStreamAccepted = false
+    this.acceptedCurrentSend = false
+    this.emit()
+    try {
+      const stream = await this.transport.reconnectToStream({ chatId: this.id })
+      if (!stream) {
+        this.settleActiveTurn('ready')
+        return false
+      }
+      await this.consumeStream(stream)
+      if (!this.activeTurn) return this.activeStreamAccepted && !this.recoveryError
+      if (this.recoveryError) {
+        this.settleActiveTurn('error', this.recoveryError, 'failed')
+        return false
+      }
+      if (!this.activeStreamAccepted) {
+        const unknownError = recoveryErrorFromStreamError({
+          code: UNKNOWN_RECOVERY_ERROR_CODE,
+          message: UNKNOWN_RECOVERY_ERROR_MESSAGE
+        })
+        this.recoveryError = unknownError
+        this.settleActiveTurn('error', unknownError, 'failed')
+        return false
+      }
+      if (this.activeTurn.outcome === 'interrupted') {
+        this.settleActiveTurn('ready', undefined, 'interrupted')
+        return true
+      } else if (this.activeTurn.outcome === 'failed') {
+        const terminalError = this.recoveryError ?? new Error(DEFAULT_TURN_ERROR_MESSAGE)
+        this.settleActiveTurn('error', terminalError, 'failed')
+        return false
+      } else if (this.activeTurn.outcome === 'completed') {
+        this.settleActiveTurn('ready')
+        return true
+      } else {
+        const unknownError = recoveryErrorFromStreamError({
+          code: UNKNOWN_RECOVERY_ERROR_CODE,
+          message: UNKNOWN_RECOVERY_ERROR_MESSAGE
+        })
+        this.recoveryError = unknownError
+        this.settleActiveTurn('error', unknownError, 'failed')
+        return false
+      }
+    } catch (error) {
+      const safeError = recoveryErrorFromStreamError(error)
+      this.recoveryError = safeError
+      if (this.activeTurn) this.settleActiveTurn('error', safeError, 'failed')
+      return false
+    }
   }
 
   stageSteeringMessage(
@@ -273,6 +358,7 @@ export class ConversationTranscriptController {
   }
 
   handleStreamStarted(): void {
+    this.activeStreamAccepted = false
     this.acceptedCurrentSend = false
     this.status = 'submitted'
     this.error = undefined
@@ -280,20 +366,34 @@ export class ConversationTranscriptController {
   }
 
   handleStreamAccepted(): void {
+    this.activeStreamAccepted = true
     this.acceptedCurrentSend = true
     this.status = 'streaming'
     this.emit()
   }
 
   handleStreamAborted(): void {
-    // A local transport abort only expresses renderer intent. The main process
-    // owns the app-server turn and will deliver its canonical lifecycle outcome.
+    // A terminal abort received from main is authoritative for a replay even
+    // if its lifecycle companion was trimmed from the terminal journal.
+    if (this.activeTurn) this.activeTurn.outcome = 'interrupted'
+    this.emit()
+  }
+
+  /**
+   * A replayed terminal error is delivered out-of-band so the stream can close
+   * without discarding chunks that were queued just before the error.
+   */
+  handleStreamError(error: CodexChatStreamError): void {
+    this.recoveryError = recoveryErrorFromStreamError(error)
+    if (this.activeTurn) this.activeTurn.outcome = 'failed'
+    this.emit()
   }
 
   handleTurnLifecycle(event: CodexTurnLifecycleEvent): void {
     const ledger = this.activeTurn
     if (!ledger) return
-    const isLocalTurn = ledger.turnId.startsWith('local-turn-')
+    const isLocalTurn =
+      ledger.turnId.startsWith('local-turn-') || ledger.turnId.startsWith('recovered-turn-')
     if (isLocalTurn) {
       if (event.type !== 'turn-started') return
       if (ledger.threadId && ledger.threadId !== event.threadId) return
@@ -372,6 +472,7 @@ export class ConversationTranscriptController {
     this.abortController = abortController
     this.status = 'submitted'
     this.error = undefined
+    this.activeStreamAccepted = false
     this.emit()
 
     try {
@@ -606,7 +707,7 @@ export class ConversationTranscriptController {
       )
       const currentMessages = this.currentMessages()
       const settledMessages = outcome
-        ? currentMessages
+        ? removeRedundantTerminalAssistantPlaceholders(currentMessages, turnId)
         : removeEmptyAssistantPlaceholders(currentMessages, turnId)
       this.baseMessages = markTurnOutcome(settledMessages, {
         turnId,
@@ -718,7 +819,7 @@ export class ConversationTranscriptController {
       const steering = steers[segmentIndex]
       if (steering) messages.push(steering)
     }
-    return messages
+    return removeSupersededTerminalFallback(messages, ledger.turnId)
   }
 
   private transportMessages(): UIMessage[] {
@@ -868,6 +969,49 @@ function removeEmptyAssistantPlaceholders(
   )
 }
 
+function removeRedundantTerminalAssistantPlaceholders(
+  messages: readonly ConversationTranscriptMessage[],
+  turnId: string
+): ConversationTranscriptMessage[] {
+  const hasVisibleAssistantContent = messages.some(
+    (message) =>
+      message.kind === 'message' &&
+      message.role === 'assistant' &&
+      message.turnId === turnId &&
+      message.parts.some((part) => part.type !== 'step-start')
+  )
+  if (!hasVisibleAssistantContent) return [...messages]
+  return messages.filter(
+    (message) =>
+      message.kind !== 'message' ||
+      message.role !== 'assistant' ||
+      message.turnId !== turnId ||
+      message.parts.some((part) => part.type !== 'step-start')
+  )
+}
+
+function removeSupersededTerminalFallback(
+  messages: readonly ConversationTranscriptMessage[],
+  turnId: string
+): ConversationTranscriptMessage[] {
+  const terminalFallbackId = assistantSourceMessageId(turnId, 'terminal')
+  const hasRecoveredAssistantContent = messages.some(
+    (message) =>
+      message.kind === 'message' &&
+      message.role === 'assistant' &&
+      message.turnId === turnId &&
+      message.sourceMessageId !== terminalFallbackId &&
+      message.parts.some((part) => part.type !== 'step-start')
+  )
+  if (!hasRecoveredAssistantContent) return [...messages]
+  return messages.filter(
+    (message) =>
+      message.kind !== 'message' ||
+      message.role !== 'assistant' ||
+      message.sourceMessageId !== terminalFallbackId
+  )
+}
+
 function markTurnOutcome(
   messages: readonly ConversationTranscriptMessage[],
   terminal: {
@@ -941,8 +1085,7 @@ function hasTerminalFailure(message: ConversationTranscriptMessage): boolean {
   }
   const codexTurn = message.metadata.codexTurn
   return (
-    isRecord(codexTurn) &&
-    (codexTurn.status === 'failed' || codexTurn.status === 'interrupted')
+    isRecord(codexTurn) && (codexTurn.status === 'failed' || codexTurn.status === 'interrupted')
   )
 }
 
@@ -1128,6 +1271,25 @@ export function safeTurnErrorMessage(message: string | undefined): string {
   return redacted.length <= MAX_TURN_ERROR_MESSAGE_LENGTH
     ? redacted
     : `${redacted.slice(0, MAX_TURN_ERROR_MESSAGE_LENGTH)}…`
+}
+
+function recoveryErrorFromStreamError(error: unknown): Error {
+  const message = safeTurnErrorMessage(recoveryErrorMessage(error))
+  const safeError = new Error(message) as Error & { code?: string }
+  const code = recoveryErrorCode(error)
+  if (code) safeError.code = code
+  return safeError
+}
+
+function recoveryErrorMessage(error: unknown): string | undefined {
+  if (typeof error === 'string') return error
+  if (isRecord(error) && typeof error.message === 'string') return error.message
+  return toError(error).message
+}
+
+function recoveryErrorCode(error: unknown): string | undefined {
+  if (isRecord(error) && typeof error.code === 'string') return error.code
+  return undefined
 }
 
 function toError(error: unknown): Error {

@@ -71,6 +71,26 @@ import {
 - `CODEX_PROVIDER_ID` 固定为 `@janole/ai-sdk-provider-codex-asp`，用于 AI SDK `providerOptions` 和 `providerMetadata`。
 - `src/types.ts` 与 `src/stream.ts` 是早期脚手架残留，不是当前主路径 API。
 
+### 2.1 恢复错误码
+
+`CodexProviderError` 可以携带稳定的 `code`。桌面 main 仅依据该 code 决定是否尝试恢复既有 turn；错误文案仅用于脱敏后的用户展示，不能参与控制流。
+
+```ts
+import {
+  CodexProviderError,
+  isCodedCodexProviderError,
+  type CodexProviderErrorCode
+} from '@janole/ai-sdk-provider-codex-asp'
+```
+
+当前恢复相关 code：
+
+- `app_server_transport_closed`：app-server transport 异常关闭；在同一 thread/turn 的恢复快照存在时，main 可尝试一次 existing-turn recovery。
+- `app_server_transport_terminated`：transport 被终止；恢复资格与关闭错误相同。
+- `active_turn_unavailable`：恢复时 app-server 已不再拥有原 active turn；main 保留已有内容并收敛为 interrupted，绝不发起第二个 `turn/start`。
+
+没有这些 code 的普通 `Error`，即使文案看起来像 transport 故障，也不会触发 existing-turn recovery。
+
 ## 3. Provider API
 
 ### 3.1 创建 provider
@@ -303,9 +323,9 @@ const result = streamText({
 2. provider `defaultThreadSettings` / `defaultTurnSettings`
 3. app-server 默认配置
 
-### 5.2 Thread continuation
+### 5.2 Thread continuation（创建新 turn）
 
-provider 支持两种恢复 thread 的方式：
+provider 支持两种恢复 thread 并提交**下一条用户输入**的方式：
 
 1. 显式传 `codexCallOptions({ resumeThreadId })`。
 2. 从前一次 assistant message 或 content part 的 `providerOptions[CODEX_PROVIDER_ID].threadId` 中反推。
@@ -322,7 +342,26 @@ stream 输出会在 `providerMetadata[CODEX_PROVIDER_ID]` 放入：
 
 dasCowork 主进程用这个 metadata 提取 `threadId` / `turnId`，同步 conversation 状态。
 
-### 5.3 首轮立即创建会话入口
+这条路径的语义是「继续同一 thread」，不是「接回同一运行中的 turn」：它会在 `thread/resume` 后发送新的 `turn/start`。因此不能用于 renderer 刷新、IPC 端口短断或 app-server transport 重建时的 active-turn 恢复；把旧输入重新传入这个路径会造成重复执行风险。
+
+### 5.3 Active-turn reattach（不创建新 turn）
+
+桌面端在已知 `resumeThreadId` 和仍在运行的 `turnId` 时，可额外传入：
+
+```ts
+codexCallOptions({
+  resumeThreadId,
+  resumeActiveTurn: true,
+  existingTurnRecoveryState,
+  onExistingTurnRecoveryState: (state) => persistRecoveryState(state),
+})
+```
+
+这是一条恢复专用路径：provider 只执行 `initialize`、`initialized`、`thread/resume`，从 response 的 active turn snapshot 还原 text/item 状态，再接收同一 turn 的后续通知。它**绝不发送 `turn/start`**，也不重放旧 prompt。若 response 不含仍在运行的目标 turn，provider 以可识别的“active turn unavailable”错误结束；desktop main 必须保留已收到的历史并收敛为 `interrupted`，而不是自动开始新 turn。
+
+`existingTurnRecoveryState` 是 provider 的内部快照，包含已映射的文本和 item 状态；host 只应为同一 active run 原样保存/回传，不能把它跨 thread、跨 turn 或跨用户重试复用。
+
+### 5.4 首轮立即创建会话入口
 
 当 UI 需要用户一发送消息就显示会话入口，而不是等到 LLM 首个 stream chunk 返回后再显示，应把回调挂在同一次 `streamText()` 的 provider options 上：
 
@@ -366,7 +405,7 @@ notification turn/completed
 disconnect transport
 ```
 
-恢复已有 thread 的 RPC 顺序：
+恢复已有 thread 并创建下一 turn 的 RPC 顺序：
 
 ```text
 connect transport
@@ -379,6 +418,20 @@ notifications turn/*, item/*, thread/*
 notification turn/completed
 disconnect transport
 ```
+
+重新附加仍在运行的 turn 的 RPC 顺序：
+
+```text
+connect transport
+request      initialize
+notification initialized
+request      thread/resume
+notifications existing turn snapshot, turn/*, item/*, thread/*
+notification turn/completed
+disconnect transport
+```
+
+该 reattach 分支没有 `turn/start`，也不会执行 resume 后的 compact。只有 app-server 返回的 active turn 与调用方持有的 `turnId` 相同，才允许继续消费 live event；不匹配或缺失时由 host 安全结算为 interrupted。
 
 开启 provider-local persistent pool 时，同一个 worker 上后续调用会复用 `initialize` 结果，不再真实发送第二次 `initialize` / `initialized`。desktop host 则通过 `CodexAppServerConnection` 的 broker 在所有 logical channel 间共享一次 initialize 和一条物理连接。
 
@@ -461,7 +514,7 @@ provider 当前会构造：
 }
 ```
 
-`thread/resume` response 中的 `thread.id` 是后续 `turn/start.threadId` 的来源。provider 也会读取 `thread.path`，写入 stream-start 的 `providerMetadata.threadPath`。
+常规 continuation 中，`thread/resume` response 的 `thread.id` 是后续 `turn/start.threadId` 的来源。provider 也会读取 `thread.path`，写入 stream-start 的 `providerMetadata.threadPath`。active-turn reattach 同样读取该 response，但只消费其中的 active turn snapshot 和后续事件，不发 `turn/start`。
 
 ### 6.5 `thread/compact/start`
 

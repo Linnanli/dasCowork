@@ -172,6 +172,8 @@ const runtimeState = vi.hoisted<{
   setActiveProjectSelection: ReturnType<typeof vi.fn>
   startNewConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
+  restoreActiveConversation: ReturnType<typeof vi.fn>
+  restoreSingleActiveConversation: ReturnType<typeof vi.fn>
   setActiveDraft: ReturnType<typeof vi.fn>
   setActiveDraftAttachments: ReturnType<typeof vi.fn>
   setActiveScroll: ReturnType<typeof vi.fn>
@@ -208,6 +210,8 @@ const runtimeState = vi.hoisted<{
   setActiveProjectSelection: vi.fn(),
   startNewConversation: vi.fn(),
   openConversation: vi.fn(),
+  restoreActiveConversation: vi.fn(async () => false),
+  restoreSingleActiveConversation: vi.fn(async () => false),
   setActiveDraft: vi.fn(),
   setActiveDraftAttachments: vi.fn(),
   setActiveScroll: vi.fn()
@@ -425,6 +429,8 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       selectProject: vi.fn(),
       removeProject: vi.fn(),
       renameProject: vi.fn(),
+      getWorkspaceRecovery: vi.fn(async () => ({ state: 'not-applicable' as const })),
+      restoreWorkspace: vi.fn(async () => ({ state: 'not-applicable' as const })),
       onStateChange: vi.fn(() => vi.fn()),
       ...projects
     } satisfies DesktopProjectsApi,
@@ -580,6 +586,8 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       activeConversation: runtimeState.activeConversation,
       startNewConversation: runtimeState.startNewConversation,
       openConversation: runtimeState.openConversation,
+      restoreActiveConversation: runtimeState.restoreActiveConversation,
+      restoreSingleActiveConversation: runtimeState.restoreSingleActiveConversation,
       setSelectedModelId: runtimeState.setSelectedModelId,
       setActiveProjectSelection: runtimeState.setActiveProjectSelection,
       setActiveDraft: runtimeState.setActiveDraft,

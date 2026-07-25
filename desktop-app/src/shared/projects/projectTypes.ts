@@ -1,5 +1,37 @@
 export type WorkspaceKind = 'project' | 'projectless'
 
+/**
+ * Persisted only for a worktree that this desktop app created and owns.  The
+ * renderer never supplies these values when asking main to inspect or restore
+ * a workspace.
+ */
+export type ManagedWorktreeMetadata = {
+  workspaceKind: 'managed-worktree'
+  managedByApp: true
+  repositoryRoot: string
+  worktreePath: string
+  branch: string
+  ref: string
+  createdFrom: 'conversation-fork' | 'new-task'
+  recoverable: true
+}
+
+export type WorkspaceRecoveryState =
+  | 'available'
+  | 'checking-failed'
+  | 'restorable'
+  | 'restoring'
+  | 'gone'
+  | 'init-failed'
+  | 'restore-failed'
+  | 'remote-unavailable'
+  | 'not-applicable'
+
+export type WorkspaceRecoveryStatus = {
+  state: WorkspaceRecoveryState
+  message?: string
+}
+
 export type ProjectSelection =
   | { projectKind: 'local'; projectId: string }
   | { projectKind: 'remote'; projectId: string; hostId: string }
@@ -13,6 +45,7 @@ export type ThreadProjectAssignment =
       cwd: string | null
       path?: string
       pendingCoreUpdate?: boolean
+      managedWorktree?: ManagedWorktreeMetadata
     }
   | {
       projectKind: 'remote'

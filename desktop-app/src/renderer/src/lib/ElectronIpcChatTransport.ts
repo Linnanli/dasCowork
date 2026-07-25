@@ -1,7 +1,13 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 
-import type { CodexTurnLifecycleEvent, DesktopCodexChatApi } from '../../../shared/codexIpcApi'
+import type {
+  CodexChatStreamError,
+  CodexTurnLifecycleEvent,
+  DesktopCodexChatApi
+} from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
+
+export type { CodexChatStreamError } from '../../../shared/codexIpcApi'
 
 export type ActiveConversationContext = {
   conversationId: string
@@ -22,7 +28,7 @@ export type ElectronIpcChatTransportOptions = {
   onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void
   onStreamAccepted?: () => void
   onStreamAborted?: () => void
-  onStreamError?: (error: string) => void
+  onStreamError?: (error: CodexChatStreamError) => void
   onStreamFinished?: (context: StreamFinishedContext) => void
 }
 
@@ -54,7 +60,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void) | undefined
   private readonly onStreamAccepted: (() => void) | undefined
   private readonly onStreamAborted: (() => void) | undefined
-  private readonly onStreamError: ((error: string) => void) | undefined
+  private readonly onStreamError: ((error: CodexChatStreamError) => void) | undefined
   private readonly onStreamFinished: ((context: StreamFinishedContext) => void) | undefined
 
   constructor(options: ElectronIpcChatTransportOptions) {
@@ -109,12 +115,12 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
           removeAbortListener()
           controller.close()
         }
-        const errorStream = (error: string): void => {
+        const errorStream = (error: CodexChatStreamError): void => {
           if (settled) return
           settled = true
           removeAbortListener()
           this.onStreamError?.(error)
-          controller.error(new Error(error))
+          controller.error(new Error(streamErrorMessage(error)))
         }
 
         this.onStreamStarted?.()
@@ -172,8 +178,95 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     })
   }
 
-  async reconnectToStream(): Promise<ReadableStream<UIMessageChunk> | null> {
-    return null
+  async reconnectToStream(
+    options: Parameters<ChatTransport<UIMessage>['reconnectToStream']>[0]
+  ): Promise<ReadableStream<UIMessageChunk> | null> {
+    const context = this.getActiveConversation()
+    const conversationId = context?.threadId ?? context?.conversationId ?? options.chatId
+    if (!this.chatBridge.attachChatStream) return null
+    let settled = false
+    let accepted = false
+    const streamContext = (threadId: string | undefined): StreamFinishedContext => ({
+      chatId: options.chatId,
+      threadId,
+      activeConversation: context,
+      projectSelection: context?.projectSelection ?? this.getProjectSelection(),
+      conversationRevision: this.getConversationRevision()
+    })
+    const markAccepted = (): void => {
+      if (accepted) return
+      accepted = true
+      this.onStreamAccepted?.()
+    }
+    let streamController: ReadableStreamDefaultController<UIMessageChunk> | undefined
+    const close = (): void => {
+      if (settled) return
+      settled = true
+      streamController?.close()
+    }
+    const fail = (error: CodexChatStreamError): void => {
+      if (settled) return
+      settled = true
+      this.onStreamError?.(error)
+      // Replay can enqueue historical chunks immediately before the terminal
+      // error. Erroring a ReadableStream discards those queued chunks, so close
+      // normally and let the transcript controller mark the recovered turn as
+      // failed after it has consumed the replay.
+      streamController?.close()
+    }
+    const stream = new ReadableStream<UIMessageChunk>({
+      start: (controller) => {
+        streamController = controller
+      },
+      cancel: () => {
+        settled = true
+        // Cancelling a resumed renderer stream only detaches its subscription.
+      }
+    })
+    const failBeforeReturn = (error: unknown): ReadableStream<UIMessageChunk> => {
+      const recoveryError = streamErrorFromUnknown(error)
+      fail(recoveryError)
+      return stream
+    }
+    try {
+      const attachedStreamId = await this.chatBridge.attachChatStream!(conversationId, {
+        onTurnLifecycle: (event) => {
+          if (settled) return
+          markAccepted()
+          this.onTurnLifecycle?.(event)
+        },
+        onThreadBound: (threadId) => {
+          if (settled) return
+          markAccepted()
+          this.onThreadBound?.({ ...streamContext(threadId), threadId })
+        },
+        onChunk: (chunk) => {
+          if (settled) return
+          markAccepted()
+          streamController?.enqueue(chunk)
+        },
+        onFinish: (threadId) => {
+          if (settled) return
+          markAccepted()
+          this.onStreamFinished?.(streamContext(threadId))
+          close()
+        },
+        onAbort: () => {
+          if (settled) return
+          markAccepted()
+          this.onStreamAborted?.()
+          close()
+        },
+        onError: fail
+      })
+      if (!attachedStreamId) {
+        close()
+        return null
+      }
+      return stream
+    } catch (error) {
+      return failBeforeReturn(error)
+    }
   }
 
   private createTrustedContext(body: unknown): TrustedRequestContext {
@@ -192,6 +285,38 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
       conversationRevision: this.getConversationRevision()
     }
   }
+}
+
+function streamErrorFromUnknown(error: unknown): CodexChatStreamError {
+  if (isRecoveryFailure(error)) return error
+  // Errors thrown while establishing an IPC recovery stream are not an
+  // app-server terminal and can include Electron's raw remote error text.
+  // Do not surface that untrusted detail to the renderer.
+  return {
+    code: 'unknown-recovery',
+    message: '任务连接已中断，无法自动恢复。'
+  }
+}
+
+function streamErrorMessage(error: CodexChatStreamError): string {
+  if (typeof error === 'string') return error
+  return typeof error.message === 'string' && error.message.length > 0
+    ? error.message
+    : '模型响应未完成，请重试。'
+}
+
+function isRecoveryFailure(error: unknown): error is Exclude<CodexChatStreamError, string> {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    'message' in error &&
+    (error as { code?: unknown }).code !== undefined &&
+    ['run-unavailable', 'run-mismatch', 'journal-unavailable', 'unknown-recovery'].includes(
+      (error as { code: string }).code
+    ) &&
+    typeof (error as { message?: unknown }).message === 'string'
+  )
 }
 
 function stripRendererExecutionHints(body: unknown): Record<string, unknown> {

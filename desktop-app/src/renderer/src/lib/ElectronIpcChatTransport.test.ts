@@ -6,7 +6,7 @@ import {
 } from '../../../../scripts/lib/test-plan-assertions.mjs'
 
 import { ElectronIpcChatTransport } from './ElectronIpcChatTransport'
-import type { DesktopCodexChatApi } from '../../../shared/codexIpcApi'
+import type { CodexChatStreamFailure, DesktopCodexChatApi } from '../../../shared/codexIpcApi'
 
 const terminalAssertionIds = [
   '保留可见内容并显示单一终态',
@@ -114,6 +114,149 @@ describe('ElectronIpcChatTransport', () => {
     await stream.cancel()
 
     expect(bridge.abortChatStream).not.toHaveBeenCalled()
+  })
+
+  it('replays queued chunks before closing an attached stream with a terminal error', async () => {
+    let callbacks: Parameters<NonNullable<DesktopCodexChatApi['attachChatStream']>>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      attachChatStream: vi.fn((_conversationId, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return Promise.resolve('stream-recovered')
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamError = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamError
+    })
+
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1' })
+    expect(stream).not.toBeNull()
+    callbacks?.onChunk({ type: 'text-start', id: 'text-replayed' })
+    callbacks?.onChunk({ type: 'text-delta', id: 'text-replayed', delta: 'Partial replay.' })
+    callbacks?.onError('stream disconnected before completion')
+
+    const reader = stream!.getReader()
+    const chunks: unknown[] = []
+    for (;;) {
+      const result = await reader.read()
+      if (result.done) break
+      chunks.push(result.value)
+    }
+
+    expect(chunks).toEqual([
+      { type: 'text-start', id: 'text-replayed' },
+      { type: 'text-delta', id: 'text-replayed', delta: 'Partial replay.' }
+    ])
+    expect(onStreamError).toHaveBeenCalledWith('stream disconnected before completion')
+  })
+
+  it('returns null when recovery finds no active run before attach', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      attachChatStream: vi.fn(() => Promise.resolve(null)),
+      abortChatStream: vi.fn()
+    }
+    const onStreamError = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamError
+    })
+
+    await expect(transport.reconnectToStream({ chatId: 'chat-1' })).resolves.toBeNull()
+    expect(onStreamError).not.toHaveBeenCalled()
+  })
+
+  it('does not expose raw IPC errors when attaching a recovery stream fails', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      attachChatStream: vi.fn(() =>
+        Promise.reject(new Error('provider configuration rejected secret-provider-token'))
+      ),
+      abortChatStream: vi.fn()
+    }
+    const onStreamError = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamError
+    })
+
+    await expect(transport.reconnectToStream({ chatId: 'chat-1' })).resolves.not.toBeNull()
+    expect(onStreamError).toHaveBeenCalledWith({
+      code: 'unknown-recovery',
+      message: '任务连接已中断，无法自动恢复。'
+    })
+    expect(JSON.stringify(onStreamError.mock.calls)).not.toContain('secret-provider-token')
+  })
+
+  it('preserves structured recovery failures after replayed chunks', async () => {
+    let callbacks: Parameters<NonNullable<DesktopCodexChatApi['attachChatStream']>>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      attachChatStream: vi.fn((_conversationId, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return Promise.resolve('stream-recovered')
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamError = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamError
+    })
+
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1' })
+    const failure = {
+      code: 'run-mismatch',
+      message: 'The active run changed before recovery could attach.'
+    } satisfies CodexChatStreamFailure
+    callbacks?.onChunk({ type: 'text-start', id: 'text-replayed' })
+    callbacks?.onChunk({ type: 'text-delta', id: 'text-replayed', delta: 'Partial replay.' })
+    callbacks?.onError(failure)
+
+    const reader = stream!.getReader()
+    const chunks: unknown[] = []
+    for (;;) {
+      const result = await reader.read()
+      if (result.done) break
+      chunks.push(result.value)
+    }
+
+    expect(chunks).toEqual([
+      { type: 'text-start', id: 'text-replayed' },
+      { type: 'text-delta', id: 'text-replayed', delta: 'Partial replay.' }
+    ])
+    expect(onStreamError).toHaveBeenCalledWith(failure)
+  })
+
+  it('forwards an attached abort as the canonical interrupted terminal', async () => {
+    let callbacks: Parameters<NonNullable<DesktopCodexChatApi['attachChatStream']>>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      attachChatStream: vi.fn((_conversationId, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return Promise.resolve('stream-recovered')
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onStreamAborted = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getSelectedModelId: () => 'gpt-test',
+      onStreamAborted
+    })
+
+    const stream = await transport.reconnectToStream({ chatId: 'chat-1' })
+    callbacks?.onAbort()
+
+    await expect(stream!.getReader().read()).resolves.toEqual({ done: true, value: undefined })
+    expect(onStreamAborted).toHaveBeenCalledOnce()
   })
 
   it('G01 strips forged renderer execution hints from the request body', async () => {

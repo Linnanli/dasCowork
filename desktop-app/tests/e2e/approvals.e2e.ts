@@ -16,10 +16,7 @@ import {
   launchApp
 } from './support/app'
 import { sendComposerMessage, sendMessage } from './support/chatActions'
-import {
-  conversationKeyForStartedTurn,
-  readFollowUpQueueState
-} from './support/followUpQueueState'
+import { conversationKeyForStartedTurn, readFollowUpQueueState } from './support/followUpQueueState'
 import {
   countProtocolNotifications,
   expectTerminalScenario,
@@ -33,6 +30,8 @@ import {
   functionCallOutputCount,
   functionCallOutputText,
   providerResponseBodies,
+  responseCompleted,
+  responseCreated,
   shellCommandResponse,
   startMockBackend
 } from './support/mockBackend'
@@ -173,6 +172,168 @@ test('M11/D12 @approval-retry approves a command request through the desktop app
         )
       }
     })
+  } finally {
+    releaseFinal.resolve()
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('P002-E2E-08 restores one pending approval after renderer reload', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const releaseFinal = deferred()
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageAndShellCommandResponse(
+        'resp-approval-reload-tool',
+        'msg-approval-reload-commentary',
+        '等待确认后继续。',
+        'call-approval-reload',
+        {
+          command: 'pwd && printf "\\nE2E_RELOADED_APPROVAL"',
+          timeout_ms: 5000,
+          sandbox_permissions: 'require_escalated',
+          justification: 'E2E verifies approval recovery after reload'
+        },
+        { phase: 'commentary' }
+      ),
+      {
+        ...assistantMessageResponse(
+          'resp-approval-reload-final',
+          'msg-approval-reload-final',
+          'Approval survived the renderer reload'
+        ),
+        beforeResponse: () => releaseFinal.promise
+      }
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await sendMessage(page, '运行 pwd，等待批准。')
+
+    const panel = page.locator('[data-slot="server-request-panel"]')
+    await expect(panel).toContainText('Command execution approval')
+    await page.reload()
+    collectRendererLogs(page, logs)
+
+    await expect(panel).toHaveCount(1)
+    await expect(panel).toContainText('Command execution approval')
+    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+    releaseFinal.resolve()
+
+    await expect(
+      page
+        .locator('[data-role="assistant"]')
+        .filter({ hasText: 'Approval survived the renderer reload' })
+    ).toHaveCount(1)
+    await expect(panel).toBeHidden()
+    expect(providerResponseBodies(backend)).toHaveLength(2)
+    expect(functionCallOutputCount(providerResponseBodies(backend), 'call-approval-reload')).toBe(1)
+  } finally {
+    releaseFinal.resolve()
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('P002-E2E-02 replays one active thread-bound stream with text and a tool after renderer reload', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const releaseFinal = deferred()
+  const commentaryText = 'The tool request is part of this active turn.'
+  const finalText = 'The active turn completed once after reload.'
+  const backend = await startMockBackend({
+    responses: [
+      {
+        events: [
+          responseCreated('resp-thread-bound-reload-tool'),
+          {
+            type: 'response.output_item.added',
+            output_index: 0,
+            item: {
+              type: 'message',
+              role: 'assistant',
+              id: 'msg-thread-bound-reload-commentary',
+              content: [{ type: 'output_text', text: '' }]
+            }
+          },
+          { type: 'response.output_text.delta', delta: commentaryText },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'message',
+              role: 'assistant',
+              id: 'msg-thread-bound-reload-commentary',
+              content: [{ type: 'output_text', text: commentaryText }],
+              phase: 'commentary'
+            }
+          },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              call_id: 'call-thread-bound-reload-tool',
+              name: 'shell_command',
+              arguments: JSON.stringify({
+                command: 'pwd && printf "\\nE2E_THREAD_BOUND_RELOAD_TOOL"',
+                timeout_ms: 5000,
+                sandbox_permissions: 'require_escalated',
+                justification: 'E2E verifies exactly-once active-turn recovery'
+              })
+            }
+          },
+          responseCompleted('resp-thread-bound-reload-tool')
+        ]
+      },
+      {
+        ...assistantMessageResponse(
+          'resp-thread-bound-reload-final',
+          'msg-thread-bound-reload-final',
+          finalText
+        ),
+        beforeResponse: () => releaseFinal.promise
+      }
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await sendMessage(page, 'Run one command, then continue after approval.')
+
+    const panel = page.locator('[data-slot="server-request-panel"]')
+    await expect(page.getByText(commentaryText, { exact: true })).toHaveCount(1)
+    await expect(panel).toContainText('Command execution approval')
+
+    await page.reload()
+    collectRendererLogs(page, logs)
+
+    await expect(page.getByText(commentaryText, { exact: true })).toHaveCount(1)
+    await expect(panel).toHaveCount(1)
+    await expect(panel).toContainText('Command execution approval')
+    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+    releaseFinal.resolve()
+
+    await expect(page.getByText(finalText, { exact: true })).toHaveCount(1)
+    await expect(panel).toBeHidden()
+    const providerBodies = providerResponseBodies(backend)
+    expect(providerBodies).toHaveLength(2)
+    expect(functionCallOutputCount(providerBodies, 'call-thread-bound-reload-tool')).toBe(1)
   } finally {
     releaseFinal.resolve()
     await attachDiagnostics(testInfo, logs, backend, app)
@@ -809,8 +970,8 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
         expect(secondApprovalId).not.toBe(firstApprovalId)
         expect(secondCallId).not.toBe(firstCallId)
         expect(providerBodies).toHaveLength(4)
-    expect(functionCallOutputCount([providerBodies[1]], firstCallId)).toBe(1)
-    expect(functionCallOutputCount([providerBodies[3]], secondCallId)).toBe(1)
+        expect(functionCallOutputCount([providerBodies[1]], firstCallId)).toBe(1)
+        expect(functionCallOutputCount([providerBodies[3]], secondCallId)).toBe(1)
         await expect.poll(() => readMarkerLines(firstMarkerPath)).toEqual([firstMarker])
         await expect.poll(() => readMarkerLines(secondMarkerPath)).toEqual([secondMarker])
         expect(countProtocolNotifications(logs, 'turn/started')).toBe(2)
@@ -842,8 +1003,7 @@ function withoutQueueStateEvidence(
   scenarioId: string
 ): PlanAssertionEvidence[] {
   return evidence.filter(
-    (entry) =>
-      entry.scenarioId !== scenarioId || entry.assertionId !== '队列状态、顺序与 revision'
+    (entry) => entry.scenarioId !== scenarioId || entry.assertionId !== '队列状态、顺序与 revision'
   )
 }
 

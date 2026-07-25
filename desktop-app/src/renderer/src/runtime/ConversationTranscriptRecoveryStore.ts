@@ -6,7 +6,7 @@ import {
 } from '../../../shared/composerContext'
 
 const recoveryStorageKey = 'das-cowork.transcript-recovery.v1'
-const recoveryStorageVersion = 7
+const recoveryStorageVersion = 8
 export const TRANSCRIPT_RECOVERY_MAX_CONVERSATIONS = 100
 export const TRANSCRIPT_RECOVERY_MAX_STORAGE_BYTES = 5 * 1024 * 1024
 export const TRANSCRIPT_RECOVERY_OVERLAY_TTL_MS = 7 * 24 * 60 * 60 * 1_000
@@ -24,11 +24,13 @@ type RecoveryRecord = {
   attachmentsByMessageId: Record<string, LocalAttachmentOverlay[]>
   terminalByMessageId: Record<string, RecoveredTurnTerminal>
   toolsByMessageId: Record<string, RecoveredToolPart[]>
+  activeTextByMessageId: Record<string, string>
 }
 
 type RecoveredTurnTerminal = {
   turnId: string
   status: 'failed' | 'interrupted'
+  partialText?: string
   error?: {
     message: string
   }
@@ -105,14 +107,22 @@ type V6RecoveryStoragePayload = {
   recoveries: Record<string, V6RecoveryRecord>
 }
 
+type V7RecoveryRecord = Omit<RecoveryRecord, 'activeTextByMessageId'>
+
+type V7RecoveryStoragePayload = {
+  version: 7
+  recoveries: Record<string, V7RecoveryRecord>
+}
+
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 type AttachmentOverlaySource = Pick<UIMessage, 'id' | 'parts'>
 type TerminalRecoverySource = Pick<UIMessage, 'id' | 'role' | 'parts' | 'metadata'>
 
 /**
- * Stores renderer-owned local attachment metadata and a short-lived, sanitized
- * terminal fallback. App-server history remains authoritative whenever it
- * includes the same message or tool identity.
+ * Stores renderer-owned local attachment metadata and a short-lived terminal
+ * fallback. The fallback keeps text already rendered to the user, but tool
+ * arguments and results remain sanitized. App-server history stays
+ * authoritative whenever it includes the same message or tool identity.
  */
 export class ConversationTranscriptRecoveryStore {
   private readonly storage: StorageLike | undefined
@@ -141,7 +151,8 @@ export class ConversationTranscriptRecoveryStore {
         baseRevision: baseRevision ?? existing?.baseRevision ?? null,
         attachmentsByMessageId,
         terminalByMessageId: existing?.terminalByMessageId ?? {},
-        toolsByMessageId: existing?.toolsByMessageId ?? {}
+        toolsByMessageId: existing?.toolsByMessageId ?? {},
+        activeTextByMessageId: existing?.activeTextByMessageId ?? {}
       }
     }
     this.persist()
@@ -153,9 +164,8 @@ export class ConversationTranscriptRecoveryStore {
     baseRevision?: string | null
   ): void {
     if (!identity) return
-    const supersededTerminalMessageIds = terminalMessageIdsSupersededByLaterAssistantMessage(
-      messages
-    )
+    const supersededTerminalMessageIds =
+      terminalMessageIdsSupersededByLaterAssistantMessage(messages)
     const terminalByMessageId = terminalByMessageIdFromMessages(
       messages,
       supersededTerminalMessageIds
@@ -178,11 +188,13 @@ export class ConversationTranscriptRecoveryStore {
       ...withoutRecoveryMessageIds(existing?.toolsByMessageId ?? {}, supersededTerminalMessageIds),
       ...toolsByMessageId
     }
+    const activeTextByMessageId = existing?.activeTextByMessageId ?? {}
     const next = { ...this.recoveries }
     if (
       Object.keys(attachmentsByMessageId).length === 0 &&
       Object.keys(remainingTerminals).length === 0 &&
-      Object.keys(remainingTools).length === 0
+      Object.keys(remainingTools).length === 0 &&
+      Object.keys(activeTextByMessageId).length === 0
     ) {
       delete next[identity]
     } else {
@@ -191,7 +203,8 @@ export class ConversationTranscriptRecoveryStore {
         baseRevision: baseRevision ?? existing?.baseRevision ?? null,
         attachmentsByMessageId,
         terminalByMessageId: remainingTerminals,
-        toolsByMessageId: remainingTools
+        toolsByMessageId: remainingTools,
+        activeTextByMessageId
       }
     }
     this.recoveries = next
@@ -220,6 +233,72 @@ export class ConversationTranscriptRecoveryStore {
     }
     this.recoveries = next
     this.persist()
+  }
+
+  /**
+   * Preserve only text that was already rendered for an in-progress turn. It
+   * is used solely if the replacement renderer cannot query main's journal;
+   * it never makes an active turn look terminal.
+   */
+  saveActiveTextFallback(
+    identity: string,
+    messages: readonly Pick<UIMessage, 'id' | 'role' | 'parts'>[],
+    baseRevision?: string | null
+  ): void {
+    if (!identity) return
+    const activeTextByMessageId = activeTextByMessageIdFromMessages(messages)
+    if (Object.keys(activeTextByMessageId).length === 0) return
+    const existing = this.recoveries[identity]
+    this.recoveries = {
+      ...this.recoveries,
+      [identity]: {
+        createdAt: this.now(),
+        baseRevision: baseRevision ?? existing?.baseRevision ?? null,
+        attachmentsByMessageId: existing?.attachmentsByMessageId ?? {},
+        terminalByMessageId: existing?.terminalByMessageId ?? {},
+        toolsByMessageId: existing?.toolsByMessageId ?? {},
+        activeTextByMessageId
+      }
+    }
+    this.persist()
+  }
+
+  clearActiveTextFallback(identity: string): void {
+    const recovery = this.recoveries[identity]
+    if (!recovery || Object.keys(recovery.activeTextByMessageId).length === 0) return
+    const next = { ...this.recoveries }
+    if (
+      Object.keys(recovery.attachmentsByMessageId).length === 0 &&
+      Object.keys(recovery.terminalByMessageId).length === 0 &&
+      Object.keys(recovery.toolsByMessageId).length === 0
+    ) {
+      delete next[identity]
+    } else {
+      next[identity] = { ...recovery, activeTextByMessageId: {} }
+    }
+    this.recoveries = next
+    this.persist()
+  }
+
+  mergeActiveTextFallback(identity: string, history: readonly UIMessage[]): UIMessage[] {
+    const recovery = this.recoveries[identity]
+    const clonedHistory = cloneMessages(history) ?? [...history]
+    if (!recovery || Object.keys(recovery.activeTextByMessageId).length === 0) {
+      return clonedHistory
+    }
+    const remaining = { ...recovery.activeTextByMessageId }
+    const merged = clonedHistory.map((message) => {
+      const text = remaining[message.id]
+      if (!text) return message
+      delete remaining[message.id]
+      return message.parts.some((part) => part.type === 'text' && part.text.includes(text))
+        ? message
+        : { ...message, parts: [...message.parts, { type: 'text' as const, text }] }
+    })
+    for (const [messageId, text] of Object.entries(remaining)) {
+      merged.push({ id: messageId, role: 'assistant', parts: [{ type: 'text', text }] })
+    }
+    return merged
   }
 
   mergeWithHistory(
@@ -266,21 +345,27 @@ export class ConversationTranscriptRecoveryStore {
     })
 
     const historyMessageIds = new Set(merged.map((message) => message.id))
-    for (const messageId of new Set([...Object.keys(remainingTerminals), ...Object.keys(remainingTools)])) {
+    for (const messageId of new Set([
+      ...Object.keys(remainingTerminals),
+      ...Object.keys(remainingTools)
+    ])) {
       const terminal = remainingTerminals[messageId]
       if (!terminal || historyMessageIds.has(messageId)) continue
-      merged.push(
-        recoveryFallbackMessage(messageId, terminal, remainingTools[messageId] ?? [])
-      )
+      merged.push(recoveryFallbackMessage(messageId, terminal, remainingTools[messageId] ?? []))
     }
 
     const revisionChanged = baseRevision !== undefined && recovery.baseRevision !== baseRevision
-    if (resolvedRecoveryOverlay || revisionChanged || !sameRecoveryKeys(recovery, remainingTerminals, remainingTools)) {
+    if (
+      resolvedRecoveryOverlay ||
+      revisionChanged ||
+      !sameRecoveryKeys(recovery, remainingTerminals, remainingTools)
+    ) {
       const next = { ...this.recoveries }
       if (
         Object.keys(remainingAttachments).length === 0 &&
         Object.keys(remainingTerminals).length === 0 &&
-        Object.keys(remainingTools).length === 0
+        Object.keys(remainingTools).length === 0 &&
+        Object.keys(recovery.activeTextByMessageId).length === 0
       ) {
         delete next[identity]
       } else {
@@ -289,7 +374,8 @@ export class ConversationTranscriptRecoveryStore {
           ...(baseRevision === undefined ? {} : { baseRevision }),
           attachmentsByMessageId: remainingAttachments,
           terminalByMessageId: remainingTerminals,
-          toolsByMessageId: remainingTools
+          toolsByMessageId: remainingTools,
+          activeTextByMessageId: recovery.activeTextByMessageId
         }
       }
       this.recoveries = next
@@ -332,6 +418,11 @@ function readRecoveries(
     if (!raw) return {}
     const parsed = JSON.parse(raw) as unknown
     if (isRecoveryPayload(parsed)) return pruneRecoveries(parsed.recoveries, now())
+    if (isV7RecoveryPayload(parsed)) {
+      const migrated = pruneRecoveries(migrateV7Recoveries(parsed.recoveries), now())
+      persistMigration(storage, migrated)
+      return migrated
+    }
     if (isV6RecoveryPayload(parsed)) {
       const migrated = pruneRecoveries(migrateV6Recoveries(parsed.recoveries, now()), now())
       persistMigration(storage, migrated)
@@ -411,6 +502,10 @@ function isV6RecoveryPayload(value: unknown): value is V6RecoveryStoragePayload 
   return isRecord(value) && value.version === 6 && isRecord(value.recoveries)
 }
 
+function isV7RecoveryPayload(value: unknown): value is V7RecoveryStoragePayload {
+  return isRecord(value) && value.version === 7 && isRecord(value.recoveries)
+}
+
 function isLegacyRecoveryPayload(value: unknown): value is LegacyRecoveryStoragePayload {
   return isRecord(value) && value.version === 1 && isRecord(value.recoveries)
 }
@@ -424,13 +519,15 @@ function isRecoveryRecord(value: unknown): value is RecoveryRecord {
     Boolean(record.attachmentsByMessageId) &&
     Boolean(record.terminalByMessageId) &&
     Boolean(record.toolsByMessageId) &&
+    Boolean(record.activeTextByMessageId) &&
     Object.values(record.attachmentsByMessageId ?? {}).every(
       (attachments) => Array.isArray(attachments) && attachments.every(isLocalAttachmentOverlay)
     ) &&
     Object.values(record.terminalByMessageId ?? {}).every(isRecoveredTurnTerminal) &&
     Object.values(record.toolsByMessageId ?? {}).every(
       (tools) => Array.isArray(tools) && tools.every(isRecoveredToolPart)
-    )
+    ) &&
+    Object.values(record.activeTextByMessageId ?? {}).every((text) => typeof text === 'string')
   )
 }
 
@@ -452,6 +549,7 @@ function isRecoveredTurnTerminal(value: unknown): value is RecoveredTurnTerminal
   return (
     typeof value.turnId === 'string' &&
     (value.status === 'failed' || value.status === 'interrupted') &&
+    (value.partialText === undefined || typeof value.partialText === 'string') &&
     (error === undefined || (isRecord(error) && typeof error.message === 'string'))
   )
 }
@@ -575,7 +673,9 @@ function migrateV6Recoveries(
 ): Record<string, RecoveryRecord> {
   return Object.fromEntries(
     Object.entries(recoveries).flatMap(([identity, record]) => {
-      const attachmentsByMessageId = attachmentsByMessageIdFromUnknown(record.attachmentsByMessageId)
+      const attachmentsByMessageId = attachmentsByMessageIdFromUnknown(
+        record.attachmentsByMessageId
+      )
       if (Object.keys(attachmentsByMessageId).length === 0) return []
       return [
         [
@@ -590,6 +690,34 @@ function migrateV6Recoveries(
         ]
       ]
     })
+  )
+}
+
+function migrateV7Recoveries(recoveries: Record<string, V7RecoveryRecord>): Record<string, RecoveryRecord> {
+  return Object.fromEntries(
+    Object.entries(recoveries).flatMap(([identity, record]) => {
+      if (!isRecoveryRecordV7(record)) return []
+      return [[identity, { ...record, activeTextByMessageId: {} }]]
+    })
+  )
+}
+
+function isRecoveryRecordV7(value: unknown): value is V7RecoveryRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Partial<V7RecoveryRecord>
+  return (
+    typeof record.createdAt === 'number' &&
+    (record.baseRevision === null || typeof record.baseRevision === 'string') &&
+    Boolean(record.attachmentsByMessageId) &&
+    Boolean(record.terminalByMessageId) &&
+    Boolean(record.toolsByMessageId) &&
+    Object.values(record.attachmentsByMessageId ?? {}).every(
+      (attachments) => Array.isArray(attachments) && attachments.every(isLocalAttachmentOverlay)
+    ) &&
+    Object.values(record.terminalByMessageId ?? {}).every(isRecoveredTurnTerminal) &&
+    Object.values(record.toolsByMessageId ?? {}).every(
+      (tools) => Array.isArray(tools) && tools.every(isRecoveredToolPart)
+    )
   )
 }
 
@@ -665,8 +793,23 @@ function emptyRecoveryRecord(
     baseRevision: null,
     attachmentsByMessageId,
     terminalByMessageId: {},
-    toolsByMessageId: {}
+    toolsByMessageId: {},
+    activeTextByMessageId: {}
   }
+}
+
+function activeTextByMessageIdFromMessages(
+  messages: readonly Pick<UIMessage, 'id' | 'role' | 'parts'>[]
+): Record<string, string> {
+  return Object.fromEntries(
+    messages.flatMap((message) => {
+      if (message.role !== 'assistant' || !message.id) return []
+      const text = message.parts
+        .flatMap((part) => (part.type === 'text' && part.text ? [part.text] : []))
+        .join('')
+      return text ? [[message.id, text]] : []
+    })
+  )
 }
 
 function terminalByMessageIdFromMessages(
@@ -678,10 +821,21 @@ function terminalByMessageIdFromMessages(
       if (message.role !== 'assistant' || !message.id || excludedMessageIds.has(message.id)) {
         return []
       }
-      const terminal = terminalFromMetadata(message.metadata)
+      const terminal = recoveredTerminalFromMessage(message)
       return terminal ? [[message.id, terminal]] : []
     })
   )
+}
+
+function recoveredTerminalFromMessage(
+  message: TerminalRecoverySource
+): RecoveredTurnTerminal | undefined {
+  const terminal = terminalFromMetadata(message.metadata)
+  if (!terminal) return undefined
+  const partialText = message.parts
+    .flatMap((part) => (part.type === 'text' && part.text ? [part.text] : []))
+    .join('')
+  return partialText ? { ...terminal, partialText } : terminal
 }
 
 /**
@@ -720,8 +874,7 @@ function terminalMessageIdsSupersededByCanonicalHistory(
   const superseded = new Set<string>()
   for (const [messageId, terminal] of Object.entries(terminalByMessageId)) {
     const terminalIndex = history.findLastIndex(
-      (message) =>
-        message.id === messageId || canonicalTurnId(message.metadata) === terminal.turnId
+      (message) => message.id === messageId || canonicalTurnId(message.metadata) === terminal.turnId
     )
     if (terminalIndex < 0) continue
     if (history.slice(terminalIndex + 1).some(isSuccessfulAssistantMessage)) {
@@ -769,9 +922,7 @@ function toolsByMessageIdFromMessages(
   )
 }
 
-function terminalByMessageIdFromLegacy(
-  value: unknown
-): Record<string, RecoveredTurnTerminal> {
+function terminalByMessageIdFromLegacy(value: unknown): Record<string, RecoveredTurnTerminal> {
   if (!isRecord(value)) return {}
   return Object.fromEntries(
     Object.entries(value).flatMap(([messageId, terminal]) => {
@@ -809,9 +960,11 @@ function recoveredTurnTerminal(
       : value.status === 'failed' && typeof value.error === 'string'
         ? safeRecoveryErrorMessage(value.error)
         : undefined
+  const partialText = typeof value.partialText === 'string' ? value.partialText : undefined
   return {
     turnId,
     status: value.status,
+    ...(partialText ? { partialText } : {}),
     ...(errorMessage ? { error: { message: errorMessage } } : {})
   }
 }
@@ -856,13 +1009,24 @@ function mergeTerminalFallbackIntoMessage(
   const missingTools = tools.filter((tool) => !existingToolCallIds.has(tool.toolCallId))
   if (missingTools.length === 0 && tools.length > 0) delete remainingTools[message.id]
 
+  const partialText = terminal?.partialText
+  const missingPartialText =
+    partialText !== undefined &&
+    !message.parts.some((part) => part.type === 'text' && part.text.includes(partialText))
+
   const canonicalTerminal = terminalFromMetadata(message.metadata)
   if (canonicalTerminal) delete remainingTerminals[message.id]
 
-  if (missingTools.length === 0 && (!terminal || canonicalTerminal)) return message
+  if (missingTools.length === 0 && !missingPartialText && (!terminal || canonicalTerminal)) {
+    return message
+  }
   return {
     ...message,
-    ...(missingTools.length === 0 ? {} : { parts: [...message.parts, ...missingTools] }),
+    parts: [
+      ...message.parts,
+      ...(missingPartialText ? [{ type: 'text' as const, text: partialText }] : []),
+      ...missingTools
+    ],
     ...(terminal && !canonicalTerminal
       ? {
           metadata: {
@@ -882,7 +1046,10 @@ function recoveryFallbackMessage(
   return {
     id: messageId,
     role: 'assistant',
-    parts: [...tools],
+    parts: [
+      ...(terminal.partialText ? [{ type: 'text' as const, text: terminal.partialText }] : []),
+      ...tools
+    ],
     metadata: { codexTurn: terminal }
   }
 }
@@ -901,7 +1068,9 @@ function sameRecoveryKeys(
 function sameKeys(left: object, right: object): boolean {
   const leftKeys = Object.keys(left).sort()
   const rightKeys = Object.keys(right).sort()
-  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index])
+  return (
+    leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index])
+  )
 }
 
 function safeRecoveryErrorMessage(message: string): string {

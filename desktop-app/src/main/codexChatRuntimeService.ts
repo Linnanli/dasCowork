@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type {
   LanguageModelV3FilePart,
@@ -9,6 +10,7 @@ import {
   convertToModelMessages,
   streamText as aiStreamText,
   type LanguageModel,
+  type UIMessage,
   type UIMessageChunk
 } from 'ai'
 import {
@@ -22,6 +24,7 @@ import {
   type CodexModelProviderInfo,
   type CodexProvider,
   type CodexHistoryClient,
+  type CodexExistingTurnRecoveryState,
   type CodexSession,
   type CodexSteerErrorCode,
   type CodexSteerResult,
@@ -48,6 +51,11 @@ import type {
   CodexApprovalRequest,
   CodexApprovalResponse,
   CodexChatRequest,
+  CodexChatAttachResult,
+  CodexChatRecoverySnapshot,
+  CodexChatRunDescriptor,
+  CodexChatStreamEnvelope,
+  CodexChatStreamError,
   CodexChatStreamEvent,
   CodexChatTerminalEvent,
   CodexTurnLifecycleEvent,
@@ -66,7 +74,7 @@ import {
 } from './followUps/ConversationFollowUpQueueService'
 
 export type CodexPortLike = {
-  postMessage(message: CodexChatStreamEvent): void
+  postMessage(message: CodexChatStreamEnvelope | CodexChatStreamEvent): void
   on(event: 'message', handler: (event: { data: unknown }) => void): void
   start(): void
   close(): void
@@ -90,24 +98,35 @@ type StreamTextLike = (input: {
   clientModel?: AdminBackendClientModel
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
+  resumeActiveTurn?: boolean
+  existingTurnRecoveryState?: CodexExistingTurnRecoveryState
   startFreshTerminalRetry?: boolean
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
+  onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
   onProviderToolCall?: (toolName: string) => void
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
 
 type ActiveConversationRun = {
+  runId: string
   conversationId: string
+  baseMessages: readonly UIMessage[]
   threadId?: string
   turnId?: string
+  existingTurnRecoveryState?: CodexExistingTurnRecoveryState
+  transportRecoveryAttempted: boolean
   turnOutcome?: Extract<CodexTurnLifecycleEvent, { type: 'turn-completed' }>['outcome']
   canonicalOutcomeSource?: 'notification' | 'history-reconciliation'
   session?: CodexSession
   abortController: AbortController
-  streamPortDetached: boolean
+  subscribers: Map<string, CodexPortLike>
+  eventJournal: CodexChatStreamEnvelope[]
+  eventJournalBytes: number
+  journalReplayUnavailable: boolean
+  lastEventSequence: number
   terminalDelivered: boolean
   stopRequested: boolean
   stopRequestedAt?: number
@@ -127,6 +146,8 @@ type ActiveConversationRun = {
   streamSettled: Promise<void>
   resolveStreamSettled: () => void
   settlementBlockedEvent?: CodexChatStreamEvent
+  handlePortControl?: (message: unknown) => void
+  terminalRetentionTimer?: ReturnType<typeof setTimeout>
 }
 
 type PendingSteerClaim = {
@@ -147,6 +168,9 @@ type PendingThreadBindingAcknowledgement = {
 }
 
 const threadBindingAcknowledgementTimeoutMs = 1_000
+const maxReplayJournalEvents = 20_000
+const maxReplayJournalBytes = 8 * 1024 * 1024
+const terminalReplayRetentionMs = 5 * 60 * 1_000
 const defaultSteerConfirmationTimeoutMs = 30_000
 const defaultCanonicalOutcomeTimeoutMs = 10_000
 const defaultShutdownTimeoutMs = 10_000
@@ -226,6 +250,7 @@ export class CodexChatRuntimeService {
     turnId: string
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
+  private readonly recentTerminalRuns = new Map<string, ActiveConversationRun>()
   private acceptingStartAdmissions = true
   private pendingStartAdmissions = 0
   private startAdmissionDrain: Promise<void> = Promise.resolve()
@@ -303,6 +328,10 @@ export class CodexChatRuntimeService {
     return this.approvalBroker.onSettled(listener)
   }
 
+  listPendingApprovals(): CodexApprovalRequest[] {
+    return this.approvalBroker.listPendingApprovals()
+  }
+
   respondApproval(requestId: string, response: CodexApprovalResponse): void {
     void this.approvalBroker.respond(requestId, response)
   }
@@ -357,7 +386,8 @@ export class CodexChatRuntimeService {
   async startChatStream(
     request: CodexChatRequest,
     port: CodexPortLike,
-    callbacks?: StartChatStreamCallbacks
+    callbacks?: StartChatStreamCallbacks,
+    streamId?: string
   ): Promise<CodexChatRunResult> {
     const releaseAdmission = this.acquireStartAdmission()
     if (!releaseAdmission) {
@@ -393,6 +423,7 @@ export class CodexChatRuntimeService {
     let terminalEvent: CodexChatTerminalEvent | undefined
     try {
       activeRun = this.registerActiveConversationRun(effectiveRequest, claimedFollowUp)
+      this.attachStreamPort(activeRun, streamId ?? `initial:${activeRun.conversationId}`, port)
     } catch (error) {
       await this.failPreparedFollowUp(claimedFollowUp, error)
       const terminalEvent: CodexChatTerminalEvent = { type: 'error', error: errorMessage(error) }
@@ -422,19 +453,23 @@ export class CodexChatRuntimeService {
           }
         }
       })
-    port.on('message', (event) => {
-      if (isAbortMessage(event.data)) {
+    activeRun.handlePortControl = (message) => {
+      if (isAbortMessage(message) && (!message.runId || message.runId === activeRun.runId)) {
         void this.requestConversationInterrupt(activeRun)
         pendingThreadBindingAcknowledgement?.resolve()
         return
       }
       if (
-        isThreadBoundAcknowledgement(event.data) &&
-        event.data.threadId === pendingThreadBindingAcknowledgement?.threadId
+        isThreadBoundAcknowledgement(message) &&
+        message.threadId === pendingThreadBindingAcknowledgement?.threadId
       ) {
         pendingThreadBindingAcknowledgement.resolve()
       }
-    })
+    }
+    const bindStreamPortControls = (streamPort: CodexPortLike): void => {
+      streamPort.on('message', (event) => activeRun.handlePortControl?.(event.data))
+    }
+    bindStreamPortControls(port)
     port.start()
 
     try {
@@ -507,39 +542,40 @@ export class CodexChatRuntimeService {
         )
       }
       const startsFreshTerminalRetry = shouldStartFreshTerminalRetry(effectiveRequest)
-      const onThreadStarted = effectiveRequest.body?.threadId && !startsFreshTerminalRetry
-        ? undefined
-        : async (thread: { threadId: string; threadPath?: string }) => {
-            const startedAt = new Date().toISOString()
-            const startedThread: StartedConversationThread = {
-              threadId: thread.threadId,
-              originConversationId: activeRun.conversationId,
-              title: conversationTitleFromRequest(effectiveRequest),
-              cwd: conversation.executionTarget?.cwd ?? null,
-              createdAt: startedAt,
-              updatedAt: startedAt,
-              projectAssignment: conversation.projectAssignment
-            }
-            const threadIdChanged = this.bindActiveConversationRunAlias(
-              activeRun,
-              thread.threadId,
-              startsFreshTerminalRetry
-            )
-            if (startsFreshTerminalRetry) persistOrNormalizeProjectAssignment(thread.threadId)
-            else await persistStartedProjectAssignment(thread.threadId)
-            await callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
-            this.migrateActiveFollowUpClaims(activeRun, thread.threadId)
-            if (threadIdChanged) {
-              if (
-                this.postStreamEvent(activeRun, port, {
-                  type: 'thread-bound',
-                  threadId: thread.threadId
-                })
-              ) {
-                await waitForThreadBindingAcknowledgement(thread.threadId)
+      const onThreadStarted =
+        effectiveRequest.body?.threadId && !startsFreshTerminalRetry
+          ? undefined
+          : async (thread: { threadId: string; threadPath?: string }) => {
+              const startedAt = new Date().toISOString()
+              const startedThread: StartedConversationThread = {
+                threadId: thread.threadId,
+                originConversationId: activeRun.conversationId,
+                title: conversationTitleFromRequest(effectiveRequest),
+                cwd: conversation.executionTarget?.cwd ?? null,
+                createdAt: startedAt,
+                updatedAt: startedAt,
+                projectAssignment: conversation.projectAssignment
+              }
+              const threadIdChanged = this.bindActiveConversationRunAlias(
+                activeRun,
+                thread.threadId,
+                startsFreshTerminalRetry
+              )
+              if (startsFreshTerminalRetry) persistOrNormalizeProjectAssignment(thread.threadId)
+              else await persistStartedProjectAssignment(thread.threadId)
+              await callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
+              this.migrateActiveFollowUpClaims(activeRun, thread.threadId)
+              if (threadIdChanged) {
+                if (
+                  this.postStreamEvent(activeRun, port, {
+                    type: 'thread-bound',
+                    threadId: thread.threadId
+                  })
+                ) {
+                  await waitForThreadBindingAcknowledgement(thread.threadId)
+                }
               }
             }
-          }
       const modelInputRequest = {
         ...effectiveRequest,
         messages: restoreLocalMediaFileUrlsForModel(effectiveRequest.messages)
@@ -548,41 +584,63 @@ export class CodexChatRuntimeService {
         if (activeRun.terminalDelivered) return Promise.resolve()
         activeRun.lifecycleSettlement = activeRun.lifecycleSettlement
           .then(async () => {
-            if (!this.acceptTurnLifecycle(activeRun, event)) return
+            // A resumed provider connection starts its local lifecycle counter
+            // from one again. Preserve main-process ordering across that
+            // boundary so the canonical terminal outcome is still accepted.
+            const lifecycleEvent =
+              activeRun.transportRecoveryAttempted &&
+              activeRun.lastLifecycleSequence !== undefined &&
+              event.sequence <= activeRun.lastLifecycleSequence
+                ? { ...event, sequence: activeRun.lastLifecycleSequence + 1 }
+                : event
+            if (!this.acceptTurnLifecycle(activeRun, lifecycleEvent)) return
             this.postStreamEvent(activeRun, port, {
               type: 'turn-lifecycle',
               // Failure details remain main-process-only until sanitized for the
               // terminal error; lifecycle notifications only carry state.
-              event: turnLifecycleEventForRenderer(event)
+              event: turnLifecycleEventForRenderer(lifecycleEvent)
             })
-            await this.observeAcceptedTurnLifecycle(activeRun, event)
+            await this.observeAcceptedTurnLifecycle(activeRun, lifecycleEvent)
           })
           .catch((error) => {
             console.warn('failed to settle turn lifecycle event', error)
           })
         return activeRun.lifecycleSettlement
       }
-      const result = await this.streamText({
-        request: modelInputRequest,
-        modelId: streamModelId,
-        provider: this.provider,
-        abortSignal: activeRun.abortController.signal,
-        clientModel,
-        executionTarget: conversation.executionTarget,
-        resumeThreadId: startsFreshTerminalRetry ? undefined : activeRun.threadId,
-        startFreshTerminalRetry: startsFreshTerminalRetry,
-        onThreadStarted,
-        onAgentLifecycle: this.onAgentLifecycle,
-        onTurnLifecycle,
-        approvals: this.createRunApprovalHandlers(activeRun),
-        onSessionCreated: (session) => {
-          if (activeRun.terminalDelivered) return
-          activeRun.session = session
-          activeRun.turnId = session.turnId ?? activeRun.turnId
-          this.bindActiveConversationRunAlias(activeRun, session.threadId)
-          if (activeRun.stopRequested) void this.requestConversationInterrupt(activeRun)
-        }
-      })
+      const startProviderStream = (
+        resumeActiveTurn = false
+      ): StreamTextLikeResult | Promise<StreamTextLikeResult> =>
+        this.streamText({
+          request: modelInputRequest,
+          modelId: streamModelId,
+          provider: this.provider,
+          abortSignal: activeRun.abortController.signal,
+          clientModel,
+          executionTarget: conversation.executionTarget,
+          resumeThreadId: startsFreshTerminalRetry ? undefined : activeRun.threadId,
+          ...(resumeActiveTurn
+            ? {
+                resumeActiveTurn: true,
+                existingTurnRecoveryState: activeRun.existingTurnRecoveryState
+              }
+            : {}),
+          startFreshTerminalRetry: startsFreshTerminalRetry,
+          onThreadStarted,
+          onAgentLifecycle: this.onAgentLifecycle,
+          onTurnLifecycle,
+          onExistingTurnRecoveryState: (state) => {
+            activeRun.existingTurnRecoveryState = state
+          },
+          approvals: this.createRunApprovalHandlers(activeRun),
+          onSessionCreated: (session) => {
+            if (activeRun.terminalDelivered) return
+            activeRun.session = session
+            activeRun.turnId = session.turnId ?? activeRun.turnId
+            this.bindActiveConversationRunAlias(activeRun, session.threadId)
+            if (activeRun.stopRequested) void this.requestConversationInterrupt(activeRun)
+          }
+        })
+      let result = await startProviderStream()
       if (this.status.state !== 'stopping') {
         this.status = {
           state: 'ready',
@@ -591,49 +649,81 @@ export class CodexChatRuntimeService {
         }
       }
       let streamFailed = false
-      for await (const chunk of result.toUIMessageStream({
-        originalMessages: effectiveRequest.messages,
-        sendReasoning: true,
-        sendSources: true,
-        messageMetadata: ({ part }) =>
-          codexTurnDurationMessageMetadata(isRecord(part) ? part['providerMetadata'] : undefined),
-        onError: errorMessage
-      })) {
-        if (chunk.type === 'error') {
-          streamFailed = true
-          terminalEvent = { type: 'error', error: chunk.errorText }
-          break
-        }
-        const threadId = extractCodexThreadId(chunk)
-        const turnId = extractCodexTurnId(chunk)
-        let threadIdChanged = false
-        if (threadId || turnId) {
-          if (activeRun.threadId && threadId && activeRun.threadId !== threadId) {
-            throw new Error(
-              `Active conversation thread changed from ${activeRun.threadId} to ${threadId}`
+      let shouldResumeActiveTurn = false
+      do {
+        shouldResumeActiveTurn = false
+        let providerErrorCode: CodexProviderRecoveryErrorCode | undefined
+        for await (const chunk of result.toUIMessageStream({
+          originalMessages: effectiveRequest.messages,
+          sendReasoning: true,
+          sendSources: true,
+          messageMetadata: ({ part }) =>
+            codexTurnDurationMessageMetadata(isRecord(part) ? part['providerMetadata'] : undefined),
+          onError: (error) => {
+            providerErrorCode = codexProviderRecoveryErrorCode(error)
+            return errorMessage(error)
+          }
+        })) {
+          if (chunk.type === 'error') {
+            if (
+              activeRun.transportRecoveryAttempted &&
+              providerErrorCode === 'active_turn_unavailable'
+            ) {
+              this.setCanonicalOutcome(activeRun, 'interrupted', 'history-reconciliation')
+              break
+            }
+            if (canResumeActiveTurnAfterTransportError(activeRun, providerErrorCode)) {
+              activeRun.transportRecoveryAttempted = true
+              shouldResumeActiveTurn = true
+              break
+            }
+            streamFailed = true
+            terminalEvent = { type: 'error', error: chunk.errorText }
+            break
+          }
+          const threadId = extractCodexThreadId(chunk)
+          const turnId = extractCodexTurnId(chunk)
+          let threadIdChanged = false
+          if (threadId || turnId) {
+            if (activeRun.threadId && threadId && activeRun.threadId !== threadId) {
+              throw new Error(
+                `Active conversation thread changed from ${activeRun.threadId} to ${threadId}`
+              )
+            }
+            if (activeRun.turnId && turnId && activeRun.turnId !== turnId) {
+              continue
+            }
+            threadIdChanged = Boolean(
+              threadId && this.bindActiveConversationRunAlias(activeRun, threadId)
             )
+            activeRun.turnId = turnId ?? activeRun.turnId
           }
-          if (activeRun.turnId && turnId && activeRun.turnId !== turnId) {
-            continue
+          if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
+            persistOrNormalizeProjectAssignment(threadId)
           }
-          threadIdChanged = Boolean(
-            threadId && this.bindActiveConversationRunAlias(activeRun, threadId)
-          )
-          activeRun.turnId = turnId ?? activeRun.turnId
-        }
-        if (threadId && normalizedProjectAssignmentThreadId !== threadId) {
-          persistOrNormalizeProjectAssignment(threadId)
-        }
-        if (threadIdChanged) {
-          await callbacks?.onThreadIdAvailable?.(threadId!)
-          if (
-            this.postStreamEvent(activeRun, port, { type: 'thread-bound', threadId: threadId! })
-          ) {
-            await waitForThreadBindingAcknowledgement(threadId!)
+          if (threadIdChanged) {
+            await callbacks?.onThreadIdAvailable?.(threadId!)
+            if (
+              this.postStreamEvent(activeRun, port, { type: 'thread-bound', threadId: threadId! })
+            ) {
+              await waitForThreadBindingAcknowledgement(threadId!)
+            }
           }
+          this.postStreamEvent(activeRun, port, { type: 'chunk', chunk })
         }
-        this.postStreamEvent(activeRun, port, { type: 'chunk', chunk })
-      }
+        if (!shouldResumeActiveTurn) break
+        try {
+          result = await startProviderStream(true)
+        } catch (error) {
+          if (codexProviderRecoveryErrorCode(error) === 'active_turn_unavailable') {
+            this.setCanonicalOutcome(activeRun, 'interrupted', 'history-reconciliation')
+          } else {
+            streamFailed = true
+            terminalEvent = { type: 'error', error: errorMessage(error) }
+          }
+          shouldResumeActiveTurn = false
+        }
+      } while (shouldResumeActiveTurn && !streamFailed)
       await projectAssignmentQueue
       await activeRun.lifecycleSettlement
       terminalEvent = this.canonicalTerminalForRun(
@@ -654,7 +744,6 @@ export class CodexChatRuntimeService {
       await activeRun.lifecycleSettlement
       try {
         await this.settleRunFollowUps(activeRun, terminalEvent)
-        this.clearActiveConversationRun(activeRun)
       } catch (error) {
         console.error('failed to durably settle follow-up state before terminal event', error)
         activeRun.settlementBlockedEvent = terminalEvent
@@ -675,6 +764,10 @@ export class CodexChatRuntimeService {
           port.close()
         } finally {
           activeRun.resolveStreamSettled()
+          if (!activeRun.settlementBlockedEvent) {
+            this.retainTerminalRun(activeRun)
+            this.clearActiveConversationRun(activeRun)
+          }
         }
       }
     }
@@ -714,37 +807,127 @@ export class CodexChatRuntimeService {
     void this.requestConversationInterrupt(run)
   }
 
-  /**
-   * The MessagePort is only a data channel. Its unexpected loss must not turn
-   * into a user cancellation. A reloaded renderer waits for this run to
-   * settle, then reopens the canonical app-server history.
-   */
-  handleChatStreamPortClosed(conversationId: string): void {
+  /** The MessagePort is a detachable subscription, not the authoritative turn. */
+  handleChatStreamPortClosed(conversationId: string, streamId?: string): void {
     const run = this.activeRunForConversation(conversationId)
     if (!run || run.terminalDelivered) return
-    this.detachStreamPort(run)
+    if (streamId) run.subscribers.delete(streamId)
+    else run.subscribers.clear()
   }
 
-  private detachStreamPort(run: ActiveConversationRun): void {
-    if (run.streamPortDetached) return
-    run.streamPortDetached = true
-    void this.declineRunApprovals(run, 'The chat UI disconnected before approval was completed.')
+  attachChatStream(
+    conversationId: string,
+    streamId: string,
+    port: CodexPortLike,
+    expectedRunId?: string,
+    afterSequence = 0
+  ): CodexChatAttachResult {
+    const run =
+      this.activeRunForConversation(conversationId) ??
+      this.recentTerminalRunForConversation(conversationId)
+    if (!run) return { status: 'run-unavailable' }
+    if (expectedRunId && expectedRunId !== run.runId) return { status: 'run-mismatch' }
+    if (run.journalReplayUnavailable) return { status: 'journal-unavailable' }
+    this.attachStreamPort(run, streamId, port, afterSequence)
+    return { status: 'attached' }
+  }
+
+  getActiveChatRun(conversationId: string): CodexChatRunDescriptor | undefined {
+    const run =
+      this.activeRunForConversation(conversationId) ??
+      this.recentTerminalRunForConversation(conversationId)
+    if (!run) return undefined
+    return {
+      runId: run.runId,
+      conversationId: run.conversationId,
+      ...(run.threadId ? { threadId: run.threadId } : {}),
+      lastSequence: run.lastEventSequence
+    }
+  }
+
+  getActiveChatRuns(): CodexChatRunDescriptor[] {
+    return [...new Set(this.activeConversationRuns.values())].map((run) => ({
+      runId: run.runId,
+      conversationId: run.conversationId,
+      ...(run.threadId ? { threadId: run.threadId } : {}),
+      lastSequence: run.lastEventSequence
+    }))
+  }
+
+  getActiveChatSnapshot(conversationId: string): CodexChatRecoverySnapshot | undefined {
+    const run =
+      this.activeRunForConversation(conversationId) ??
+      this.recentTerminalRunForConversation(conversationId)
+    if (!run) return undefined
+    return {
+      run: {
+        runId: run.runId,
+        conversationId: run.conversationId,
+        ...(run.threadId ? { threadId: run.threadId } : {}),
+        lastSequence: run.lastEventSequence
+      },
+      baseMessages: cloneRecoveryMessages(run.baseMessages)
+    }
+  }
+
+  private attachStreamPort(
+    run: ActiveConversationRun,
+    streamId: string,
+    port: CodexPortLike,
+    afterSequence = 0
+  ): void {
+    run.subscribers.set(streamId, port)
+    if (run.handlePortControl) {
+      port.on('message', (event) => run.handlePortControl?.(event.data))
+    }
+    port.start()
+    for (const envelope of run.eventJournal) {
+      if (envelope.sequence <= afterSequence) continue
+      try {
+        port.postMessage(envelope)
+      } catch (error) {
+        run.subscribers.delete(streamId)
+        console.warn('chat stream MessagePort detached during replay', error)
+        return
+      }
+    }
   }
 
   private postStreamEvent(
     run: ActiveConversationRun,
-    port: CodexPortLike,
+    _port: CodexPortLike,
     event: CodexChatStreamEvent
   ): boolean {
-    if (run.streamPortDetached) return false
-    try {
-      port.postMessage(event)
-      return true
-    } catch (error) {
-      this.detachStreamPort(run)
-      console.warn('chat stream MessagePort detached before event delivery', error)
-      return false
+    const sequence = ++run.lastEventSequence
+    const envelope: CodexChatStreamEnvelope = { runId: run.runId, sequence, event }
+    this.appendJournalEvent(run, envelope)
+    let delivered = false
+    for (const [streamId, port] of run.subscribers) {
+      try {
+        port.postMessage(envelope)
+        delivered = true
+      } catch (error) {
+        run.subscribers.delete(streamId)
+        console.warn('chat stream MessagePort detached before event delivery', error)
+      }
     }
+    return delivered
+  }
+
+  private appendJournalEvent(run: ActiveConversationRun, envelope: CodexChatStreamEnvelope): void {
+    if (run.journalReplayUnavailable) return
+    const size = JSON.stringify(envelope).length * 2
+    if (
+      run.eventJournal.length >= maxReplayJournalEvents ||
+      run.eventJournalBytes + size > maxReplayJournalBytes
+    ) {
+      run.eventJournal = []
+      run.eventJournalBytes = 0
+      run.journalReplayUnavailable = true
+      return
+    }
+    run.eventJournal.push(envelope)
+    run.eventJournalBytes += size
   }
 
   private requestConversationInterrupt(run: ActiveConversationRun): Promise<void> {
@@ -862,7 +1045,7 @@ export class CodexChatRuntimeService {
     clientUserMessageId: string
   ): Promise<CodexSteerResult> {
     const run = this.activeRunForConversation(conversationId)
-    if (!run?.session?.isActive()) {
+    if (!run?.session?.isActive() || run.terminalDelivered) {
       throw new CodexSteerError(
         'session_inactive',
         'Conversation does not have a steerable active turn'
@@ -880,7 +1063,7 @@ export class CodexChatRuntimeService {
     message: CodexChatRequest['messages'][number]
   ): Promise<CodexSteerResult> {
     const run = this.activeRunForConversation(claim.conversationKey)
-    if (!run?.session?.isActive() || !run.turnId) {
+    if (!run?.session?.isActive() || !run.turnId || run.terminalDelivered) {
       const error = new CodexSteerError(
         'session_inactive',
         'Conversation does not have a steerable active turn'
@@ -958,7 +1141,13 @@ export class CodexChatRuntimeService {
   }
 
   isConversationRunning(conversationId: string): boolean {
-    return Boolean(this.activeRunForConversation(conversationId))
+    const run = this.activeRunForConversation(conversationId)
+    return Boolean(run && (!run.terminalDelivered || run.settlementBlockedEvent))
+  }
+
+  hasActiveChatStream(conversationId: string): boolean {
+    const run = this.activeRunForConversation(conversationId)
+    return Boolean(run && !run.terminalDelivered)
   }
 
   /**
@@ -1035,7 +1224,7 @@ export class CodexChatRuntimeService {
             {
               status: 'paused-recovery-uncertain',
               kind: 'recovery-uncertain',
-              userMessage: terminalEvent.error
+              userMessage: chatStreamErrorMessage(terminalEvent.error)
             }
           )
         }
@@ -1093,6 +1282,33 @@ export class CodexChatRuntimeService {
     }
   }
 
+  private retainTerminalRun(run: ActiveConversationRun): void {
+    this.discardRetainedTerminalRun(run)
+    for (const alias of this.aliasesForRun(run)) this.recentTerminalRuns.set(alias, run)
+    run.terminalRetentionTimer = setTimeout(() => {
+      this.discardRetainedTerminalRun(run)
+    }, terminalReplayRetentionMs)
+    run.terminalRetentionTimer.unref?.()
+  }
+
+  private discardRetainedTerminalRun(run: ActiveConversationRun): void {
+    for (const [key, value] of this.recentTerminalRuns.entries()) {
+      if (value === run) this.recentTerminalRuns.delete(key)
+    }
+    if (run.terminalRetentionTimer !== undefined) {
+      clearTimeout(run.terminalRetentionTimer)
+      run.terminalRetentionTimer = undefined
+    }
+  }
+
+  private aliasesForRun(run: ActiveConversationRun): string[] {
+    return [
+      ...new Set(
+        [run.conversationId, run.threadId].filter((value): value is string => Boolean(value))
+      )
+    ]
+  }
+
   /**
    * Renderer reloads address a conversation by the thread id returned from
    * history. The alias map is an index, while the run itself owns the
@@ -1103,6 +1319,16 @@ export class CodexChatRuntimeService {
     if (indexed) return indexed
 
     return [...new Set(this.activeConversationRuns.values())].find(
+      (run) => run.conversationId === conversationId || run.threadId === conversationId
+    )
+  }
+
+  private recentTerminalRunForConversation(
+    conversationId: string
+  ): ActiveConversationRun | undefined {
+    const indexed = this.recentTerminalRuns.get(conversationId)
+    if (indexed) return indexed
+    return [...new Set(this.recentTerminalRuns.values())].find(
       (run) => run.conversationId === conversationId || run.threadId === conversationId
     )
   }
@@ -1142,6 +1368,16 @@ export class CodexChatRuntimeService {
         (value): value is string => Boolean(value)
       )
     )
+    for (const alias of aliases) {
+      const retainedTerminal = this.recentTerminalRuns.get(alias)
+      if (retainedTerminal) this.discardRetainedTerminalRun(retainedTerminal)
+    }
+    for (const alias of aliases) {
+      const existing = this.activeConversationRuns.get(alias)
+      if (existing?.terminalDelivered && !existing.settlementBlockedEvent) {
+        this.clearActiveConversationRun(existing)
+      }
+    }
     const duplicateAlias = [...aliases].find((alias) => this.activeConversationRuns.has(alias))
     if (duplicateAlias) {
       throw new Error(`Conversation already has an active turn: ${duplicateAlias}`)
@@ -1152,10 +1388,16 @@ export class CodexChatRuntimeService {
       resolveStreamSettled = resolve
     })
     const run: ActiveConversationRun = {
+      runId: randomUUID(),
       conversationId,
+      baseMessages: cloneRecoveryMessages(request.messages),
       threadId: request.body?.threadId,
       abortController: new AbortController(),
-      streamPortDetached: false,
+      subscribers: new Map(),
+      eventJournal: [],
+      eventJournalBytes: 0,
+      journalReplayUnavailable: false,
+      lastEventSequence: 0,
       terminalDelivered: false,
       stopRequested: false,
       followUpClaim,
@@ -1165,6 +1407,7 @@ export class CodexChatRuntimeService {
       followUpAccepted: false,
       pendingSteerClaims: new Map(),
       approvalRequestIds: new Set(),
+      transportRecoveryAttempted: false,
       lifecycleSettlement: Promise.resolve(),
       streamSettled,
       resolveStreamSettled
@@ -1558,7 +1801,7 @@ export class CodexChatRuntimeService {
       disposition = {
         status: 'paused-failed',
         kind: 'send-failed',
-        userMessage: terminalEvent.error
+        userMessage: chatStreamErrorMessage(terminalEvent.error)
       }
     }
     await this.followUpQueue.failClaim(
@@ -1620,10 +1863,14 @@ export class CodexChatRuntimeService {
       throw new Error(`Active conversation thread changed from ${run.threadId} to ${alias}`)
     }
     const existingRun = this.activeConversationRuns.get(alias)
-    if (existingRun && existingRun !== run) {
+    if (existingRun?.terminalDelivered && !existingRun.settlementBlockedEvent) {
+      this.clearActiveConversationRun(existingRun)
+    }
+    const currentRun = this.activeConversationRuns.get(alias)
+    if (currentRun && currentRun !== run) {
       throw new Error(`Conversation already has an active turn: ${alias}`)
     }
-    if (existingRun === run) {
+    if (currentRun === run) {
       const changed = run.threadId !== alias
       run.threadId = alias
       return changed
@@ -1675,15 +1922,18 @@ export class CodexChatRuntimeService {
     run: ActiveConversationRun
   ): NonNullable<CodexCallOptions['approvals']> {
     const request = (input: CodexApprovalRequestInput): Promise<CodexApprovalResponse> => {
-      if (run.streamPortDetached) {
-        return Promise.resolve({
-          action: 'decline',
-          reason: 'The chat UI disconnected before approval was completed.'
-        })
-      }
-      return this.approvalBroker.request(input, (requestId) => {
-        run.approvalRequestIds.add(requestId)
-      })
+      return this.approvalBroker.request(
+        {
+          ...input,
+          context: {
+            threadId: run.threadId,
+            turnId: run.turnId
+          }
+        },
+        (requestId) => {
+          run.approvalRequestIds.add(requestId)
+        }
+      )
     }
 
     return {
@@ -1830,11 +2080,14 @@ async function defaultStreamText({
   clientModel,
   executionTarget,
   resumeThreadId,
+  resumeActiveTurn,
+  existingTurnRecoveryState,
   startFreshTerminalRetry,
   onThreadStarted,
   onAgentLifecycle,
   onTurnLifecycle,
   onSessionCreated,
+  onExistingTurnRecoveryState,
   approvals,
   onProviderToolCall
 }: {
@@ -1845,11 +2098,14 @@ async function defaultStreamText({
   clientModel?: AdminBackendClientModel
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
+  resumeActiveTurn?: boolean
+  existingTurnRecoveryState?: CodexExistingTurnRecoveryState
   startFreshTerminalRetry?: boolean
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
+  onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
   onProviderToolCall?: (toolName: string) => void
 }): Promise<StreamTextLikeResult> {
@@ -1861,12 +2117,17 @@ async function defaultStreamText({
       modelId,
       requestMessageId: request.messageId,
       executionTarget,
-      resumeThreadId: startFreshTerminalRetry ? undefined : (resumeThreadId ?? request.body?.threadId),
+      resumeThreadId: startFreshTerminalRetry
+        ? undefined
+        : (resumeThreadId ?? request.body?.threadId),
+      resumeActiveTurn,
+      existingTurnRecoveryState,
       startFreshTerminalRetry,
       onThreadStarted,
       onAgentLifecycle,
       onTurnLifecycle,
       onSessionCreated,
+      onExistingTurnRecoveryState,
       approvals
     })
   )
@@ -1894,22 +2155,28 @@ function codexCallOptionsInput({
   requestMessageId,
   executionTarget,
   resumeThreadId,
+  resumeActiveTurn,
+  existingTurnRecoveryState,
   startFreshTerminalRetry,
   onThreadStarted,
   onAgentLifecycle,
   onTurnLifecycle,
   onSessionCreated,
+  onExistingTurnRecoveryState,
   approvals
 }: {
   modelId: string
   requestMessageId?: string
   executionTarget?: ConversationExecutionTarget
   resumeThreadId?: string
+  resumeActiveTurn?: boolean
+  existingTurnRecoveryState?: CodexExistingTurnRecoveryState
   startFreshTerminalRetry?: boolean
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
+  onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
 }): CodexCallOptions {
   return {
@@ -1917,11 +2184,14 @@ function codexCallOptionsInput({
     ...(requestMessageId ? { clientUserMessageId: requestMessageId } : {}),
     summary: 'auto' as const,
     ...(resumeThreadId ? { resumeThreadId } : {}),
+    ...(resumeActiveTurn ? { resumeActiveTurn: true } : {}),
+    ...(existingTurnRecoveryState ? { existingTurnRecoveryState } : {}),
     ...(startFreshTerminalRetry ? { startFreshTerminalRetry: true } : {}),
     ...(onThreadStarted ? { onThreadStarted } : {}),
     ...(onAgentLifecycle ? { onAgentLifecycle } : {}),
     ...(onTurnLifecycle ? { onTurnLifecycle } : {}),
     ...(onSessionCreated ? { onSessionCreated } : {}),
+    ...(onExistingTurnRecoveryState ? { onExistingTurnRecoveryState } : {}),
     ...(approvals ? { approvals } : {}),
     ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
     ...(executionTarget?.runtimeWorkspaceRoots
@@ -2124,9 +2394,14 @@ function toToolUserInputAnswers(
   )
 }
 
-function isAbortMessage(value: unknown): value is { type: 'abort' } {
+function isAbortMessage(value: unknown): value is { type: 'abort'; runId?: string } {
   return Boolean(
-    value && typeof value === 'object' && (value as { type?: unknown }).type === 'abort'
+    value &&
+    typeof value === 'object' &&
+    (value as { type?: unknown }).type === 'abort' &&
+    (!('runId' in value) ||
+      typeof (value as { runId?: unknown }).runId === 'undefined' ||
+      typeof (value as { runId?: unknown }).runId === 'string')
   )
 }
 
@@ -2165,6 +2440,8 @@ function turnLifecycleEventForRenderer(event: ProviderTurnLifecycleEvent): Codex
         turnId: event.turnId,
         outcome: event.outcome
       }
+    default:
+      throw new Error('Unsupported turn lifecycle event')
   }
 }
 
@@ -2183,6 +2460,49 @@ function errorMessage(error: unknown): string {
     return '无法加载引用的任务'
   }
   return sanitizeUserFacingError(message)
+}
+
+function canResumeActiveTurnAfterTransportError(
+  run: ActiveConversationRun,
+  code: CodexProviderRecoveryErrorCode | undefined
+): boolean {
+  if (
+    run.stopRequested ||
+    run.transportRecoveryAttempted ||
+    !run.threadId ||
+    !run.turnId ||
+    run.existingTurnRecoveryState?.turnId !== run.turnId
+  ) {
+    return false
+  }
+  return code === 'app_server_transport_closed' || code === 'app_server_transport_terminated'
+}
+
+type CodexProviderRecoveryErrorCode =
+  | 'app_server_transport_closed'
+  | 'app_server_transport_terminated'
+  | 'active_turn_unavailable'
+
+function codexProviderRecoveryErrorCode(
+  error: unknown
+): CodexProviderRecoveryErrorCode | undefined {
+  if (!isRecord(error)) return undefined
+  switch (error.code) {
+    case 'app_server_transport_closed':
+    case 'app_server_transport_terminated':
+    case 'active_turn_unavailable':
+      return error.code
+    default:
+      return undefined
+  }
+}
+
+function cloneRecoveryMessages(messages: readonly UIMessage[]): UIMessage[] {
+  return [...structuredClone(messages)]
+}
+
+function chatStreamErrorMessage(error: CodexChatStreamError): string {
+  return typeof error === 'string' ? error : error.message
 }
 
 function sanitizeUserFacingError(message: string): string {
@@ -2244,7 +2564,7 @@ function terminalSteerFailureDisposition(
     return {
       status: 'paused-failed',
       kind: 'steer-rejected',
-      userMessage: terminalEvent.error
+      userMessage: chatStreamErrorMessage(terminalEvent.error)
     }
   }
   return {

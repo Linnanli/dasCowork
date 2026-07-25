@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  CodexProviderError,
   CodexSteerError,
   type CodexCommandApprovalRequest,
   type CodexSession
@@ -54,7 +55,11 @@ import {
   type CodexChatRuntimeServiceOptions,
   type ModelCatalogLike
 } from './codexChatRuntimeService'
-import type { CodexTurnLifecycleEvent } from '../shared/codexIpcApi'
+import type {
+  CodexChatStreamEnvelope,
+  CodexChatStreamEvent,
+  CodexTurnLifecycleEvent
+} from '../shared/codexIpcApi'
 import type {
   ConversationFollowUpQueueService,
   FollowUpClaim
@@ -63,6 +68,7 @@ import { ProjectStore, createDefaultProjectState } from './projects/ProjectStore
 
 class FakePort implements CodexPortLike {
   readonly messages: unknown[] = []
+  readonly envelopes: CodexChatStreamEnvelope[] = []
   started = false
   closed = false
   private handler: ((event: { data: unknown }) => void) | undefined
@@ -72,19 +78,17 @@ class FakePort implements CodexPortLike {
     private readonly onPostMessage?: (message: unknown) => void
   ) {}
 
-  postMessage(message: unknown): void {
-    this.messages.push(message)
-    this.onPostMessage?.(message)
+  postMessage(message: CodexChatStreamEnvelope | CodexChatStreamEvent): void {
+    const event = isStreamEnvelope(message) ? message.event : message
+    if (isStreamEnvelope(message)) this.envelopes.push(message)
+    this.messages.push(event)
+    this.onPostMessage?.(event)
     if (
       this.acknowledgeThreadBinding &&
-      typeof message === 'object' &&
-      message !== null &&
-      'type' in message &&
-      message.type === 'thread-bound' &&
-      'threadId' in message &&
-      typeof message.threadId === 'string'
+      event.type === 'thread-bound' &&
+      typeof event.threadId === 'string'
     ) {
-      this.emit({ type: 'thread-bound-ack', threadId: message.threadId })
+      this.emit({ type: 'thread-bound-ack', threadId: event.threadId })
     }
   }
 
@@ -105,6 +109,12 @@ class FakePort implements CodexPortLike {
   }
 }
 
+function isStreamEnvelope(
+  message: CodexChatStreamEnvelope | CodexChatStreamEvent
+): message is CodexChatStreamEnvelope {
+  return 'runId' in message && 'sequence' in message && 'event' in message
+}
+
 async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
   if (process.env['NODE_ENV'] === '__unused_test_stream__') {
     yield undefined as never
@@ -113,10 +123,20 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 
 type RuntimeStreamTextInput = {
   resumeThreadId?: string
+  resumeActiveTurn?: boolean
+  existingTurnRecoveryState?: {
+    turnId?: string
+    textByItemId: Record<string, string>
+    emittedProviderToolCallIds: string[]
+    completedProviderToolCallIds: string[]
+  }
   startFreshTerminalRetry?: boolean
   onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
   onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void | Promise<void>
   onSessionCreated?: (session: CodexSession) => void
+  onExistingTurnRecoveryState?: (
+    state: NonNullable<RuntimeStreamTextInput['existingTurnRecoveryState']>
+  ) => void
   onProviderToolCall?: (toolName: string) => void
 }
 
@@ -247,6 +267,129 @@ describe('CodexChatRuntimeService', () => {
     providerState.startThread.mockResolvedValue({ threadId: 'thread-prestarted' })
   })
 
+  it('replays an active turn to a replacement renderer port without interrupting it', async () => {
+    const firstPort = new FakePort()
+    const replacementPort = new FakePort()
+    const releaseTurn = deferred()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-recoverable' })
+      await releaseTurn.promise
+      await completeCanonicalTurn(input, 'thread-recoverable', 'turn-recoverable')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'conversation-recoverable',
+        trigger: 'submit-message',
+        messages: [
+          {
+            id: 'user-recoverable',
+            role: 'user',
+            parts: [{ type: 'text', text: 'Preserve this local prompt.' }]
+          }
+        ],
+        modelId: 'gpt-test'
+      },
+      firstPort,
+      undefined,
+      'stream-initial'
+    )
+    await flushAsyncWork()
+    service.handleChatStreamPortClosed('conversation-recoverable', 'stream-initial')
+
+    const descriptor = service.getActiveChatRun('thread-recoverable')
+    expect(descriptor).toMatchObject({
+      conversationId: 'conversation-recoverable',
+      threadId: 'thread-recoverable'
+    })
+    expect(descriptor?.runId).toEqual(expect.any(String))
+    expect(descriptor?.lastSequence).toBeGreaterThan(0)
+    expect(service.getActiveChatSnapshot('conversation-recoverable')).toEqual({
+      run: descriptor,
+      baseMessages: [
+        {
+          id: 'user-recoverable',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Preserve this local prompt.' }]
+        }
+      ]
+    })
+    expect(
+      service.attachChatStream(
+        'thread-recoverable',
+        'stream-stale-run',
+        new FakePort(),
+        'stale-run-id'
+      )
+    ).toEqual({ status: 'run-mismatch' })
+    const caughtUpPort = new FakePort()
+    expect(
+      service.attachChatStream(
+        'thread-recoverable',
+        'stream-caught-up',
+        caughtUpPort,
+        descriptor?.runId,
+        descriptor?.lastSequence
+      )
+    ).toEqual({ status: 'attached' })
+    expect(caughtUpPort.messages).toEqual([])
+
+    expect(
+      service.attachChatStream(
+        'thread-recoverable',
+        'stream-replacement',
+        replacementPort,
+        descriptor?.runId
+      )
+    ).toEqual({ status: 'attached' })
+    expect(replacementPort.messages).toContainEqual({
+      type: 'thread-bound',
+      threadId: 'thread-recoverable'
+    })
+    expect(replacementPort.envelopes).toContainEqual(
+      expect.objectContaining({
+        runId: descriptor?.runId,
+        sequence: 1,
+        event: { type: 'thread-bound', threadId: 'thread-recoverable' }
+      })
+    )
+    expect(service.isConversationRunning('thread-recoverable')).toBe(true)
+
+    releaseTurn.resolve()
+    await running
+    expect(replacementPort.messages).toContainEqual({
+      type: 'finish',
+      threadId: 'thread-recoverable'
+    })
+  })
+
+  it('distinguishes a disappeared run from a stale run id without emitting a terminal', () => {
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      }
+    })
+    const port = new FakePort()
+
+    expect(
+      service.attachChatStream('conversation-gone', 'replacement-gone', port, 'run-disappeared')
+    ).toEqual({ status: 'run-unavailable' })
+    expect(port.messages).toEqual([])
+  })
+
   it('returns catalog unavailability instead of provider fallback when catalog is configured', async () => {
     providerState.listModels.mockResolvedValue([])
     const modelCatalog: ModelCatalogLike = {
@@ -272,6 +415,54 @@ describe('CodexChatRuntimeService', () => {
       unavailableReason: 'backend down'
     })
     expect(providerState.listModels).not.toHaveBeenCalled()
+  })
+
+  it('replays a recent failed terminal to a renderer that detached before it arrived', async () => {
+    const firstPort = new FakePort()
+    const replacementPort = new FakePort()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async () => ({
+        toUIMessageStream: () =>
+          (async function* () {
+            yield { type: 'text-start', id: 'retained-text' } as never
+            yield { type: 'text-delta', id: 'retained-text', delta: 'partial' } as never
+            yield { type: 'error', errorText: 'upstream disconnected' } as never
+          })()
+      })
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'conversation-retained-terminal',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      firstPort,
+      undefined,
+      'initial-retained-terminal'
+    )
+    const descriptor = service.getActiveChatRun('conversation-retained-terminal')
+    expect(descriptor?.runId).toEqual(expect.any(String))
+    expect(
+      service.attachChatStream(
+        'conversation-retained-terminal',
+        'replacement-retained-terminal',
+        replacementPort,
+        descriptor?.runId
+      )
+    ).toEqual({ status: 'attached' })
+    expect(replacementPort.messages).toEqual([
+      { type: 'chunk', chunk: { type: 'text-start', id: 'retained-text' } },
+      { type: 'chunk', chunk: { type: 'text-delta', id: 'retained-text', delta: 'partial' } },
+      { type: 'error', error: 'upstream disconnected' }
+    ])
   })
 
   it('keeps catalog validation required after an unavailable catalog list', async () => {
@@ -726,6 +917,252 @@ describe('CodexChatRuntimeService', () => {
     expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
   })
 
+  it('resumes the same active turn after an app-server transport disconnect', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      if (!input.resumeActiveTurn) {
+        input.onSessionCreated?.(
+          activeSession('thread-recover', 'turn-recover', async () => undefined)
+        )
+        input.onExistingTurnRecoveryState?.({
+          turnId: 'turn-recover',
+          textByItemId: { 'text-recover': 'Hel' },
+          emittedProviderToolCallIds: [],
+          completedProviderToolCallIds: []
+        })
+        await input.onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-recover',
+          turnId: 'turn-recover'
+        })
+        return {
+          toUIMessageStream: (options?: { onError?: (error: unknown) => string }) =>
+            (async function* () {
+              yield { type: 'text-start', id: 'text-recover' } as never
+              yield { type: 'text-delta', id: 'text-recover', delta: 'Hel' } as never
+              yield {
+                type: 'error',
+                errorText:
+                  options?.onError?.(
+                    new CodexProviderError('any transport message', {
+                      code: 'app_server_transport_closed'
+                    })
+                  ) ?? 'any transport message'
+              } as never
+            })()
+        }
+      }
+
+      expect(input.resumeThreadId).toBe('thread-recover')
+      expect(input.existingTurnRecoveryState).toMatchObject({
+        turnId: 'turn-recover',
+        textByItemId: { 'text-recover': 'Hel' }
+      })
+      input.onSessionCreated?.(
+        activeSession('thread-recover', 'turn-recover', async () => undefined)
+      )
+      await input.onTurnLifecycle?.({
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-recover',
+        turnId: 'turn-recover'
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-recover',
+        turnId: 'turn-recover',
+        outcome: 'completed'
+      })
+      return {
+        toUIMessageStream: () =>
+          (async function* () {
+            yield { type: 'text-delta', id: 'text-recover', delta: 'lo' } as never
+          })()
+      }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'conversation-recover-active-turn',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledTimes(2)
+    expect(streamText.mock.calls[0]?.[0]).not.toHaveProperty('resumeActiveTurn')
+    expect(streamText.mock.calls[0]?.[0]).toMatchObject({ resumeThreadId: undefined })
+    expect(streamText.mock.calls[1]?.[0]).toMatchObject({
+      resumeActiveTurn: true,
+      resumeThreadId: 'thread-recover'
+    })
+    expect(port.messages).toEqual(
+      expect.arrayContaining([
+        { type: 'chunk', chunk: { type: 'text-delta', id: 'text-recover', delta: 'Hel' } },
+        { type: 'chunk', chunk: { type: 'text-delta', id: 'text-recover', delta: 'lo' } },
+        { type: 'finish', threadId: 'thread-recover' }
+      ])
+    )
+    expect(port.messages).not.toContainEqual({
+      type: 'error',
+      error: 'App Server transport closed unexpectedly (code 1).'
+    })
+  })
+
+  it('settles as interrupted when the restarted app-server no longer has the active turn', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      if (input.resumeActiveTurn) {
+        expect(input.resumeThreadId).toBe('thread-restart')
+        return {
+          toUIMessageStream: (options?: { onError?: (error: unknown) => string }) =>
+            (async function* () {
+              yield {
+                type: 'error',
+                errorText:
+                  options?.onError?.(
+                    new CodexProviderError('any unavailable-turn message', {
+                      code: 'active_turn_unavailable'
+                    })
+                  ) ?? 'any unavailable-turn message'
+              } as never
+            })()
+        }
+      }
+      input.onSessionCreated?.(
+        activeSession('thread-restart', 'turn-restart', async () => undefined)
+      )
+      input.onExistingTurnRecoveryState?.({
+        turnId: 'turn-restart',
+        textByItemId: { 'text-restart': 'partial history' },
+        emittedProviderToolCallIds: [],
+        completedProviderToolCallIds: []
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-restart',
+        turnId: 'turn-restart'
+      })
+      return {
+        toUIMessageStream: (options?: { onError?: (error: unknown) => string }) =>
+          (async function* () {
+            yield { type: 'text-start', id: 'text-restart' } as never
+            yield { type: 'text-delta', id: 'text-restart', delta: 'partial history' } as never
+            yield {
+              type: 'error',
+              errorText:
+                options?.onError?.(
+                  new CodexProviderError('another arbitrary transport message', {
+                    code: 'app_server_transport_terminated'
+                  })
+                ) ?? 'another arbitrary transport message'
+            } as never
+          })()
+      }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'conversation-restart-no-active-turn',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledTimes(2)
+    expect(streamText.mock.calls[1]?.[0]).toMatchObject({
+      resumeActiveTurn: true,
+      resumeThreadId: 'thread-restart'
+    })
+    expect(port.messages).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'chunk',
+          chunk: { type: 'text-delta', id: 'text-restart', delta: 'partial history' }
+        },
+        { type: 'aborted' }
+      ])
+    )
+    expect(port.messages).not.toContainEqual(expect.objectContaining({ type: 'error' }))
+  })
+
+  it('does not resume an existing turn from a transport-looking message without a provider code', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      input.onSessionCreated?.(
+        activeSession('thread-uncoded-transport', 'turn-uncoded-transport', async () => undefined)
+      )
+      input.onExistingTurnRecoveryState?.({
+        turnId: 'turn-uncoded-transport',
+        textByItemId: {},
+        emittedProviderToolCallIds: [],
+        completedProviderToolCallIds: []
+      })
+      return {
+        toUIMessageStream: (options?: { onError?: (error: unknown) => string }) =>
+          (async function* () {
+            yield {
+              type: 'error',
+              errorText:
+                options?.onError?.(
+                  new Error('App Server transport closed unexpectedly, but this is uncoded.')
+                ) ?? 'uncoded transport failure'
+            } as never
+          })()
+      }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'conversation-uncoded-transport',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(port.messages).toContainEqual({
+      type: 'error',
+      error: 'App Server transport closed unexpectedly, but this is uncoded.'
+    })
+  })
+
   it('forwards completed turn duration to UI message metadata', async () => {
     const port = new FakePort()
     const service = new CodexChatRuntimeService({
@@ -1119,13 +1556,9 @@ describe('CodexChatRuntimeService', () => {
     const events: string[] = []
     const postMessage = port.postMessage.bind(port)
     vi.spyOn(port, 'postMessage').mockImplementation((message) => {
-      if (
-        typeof message === 'object' &&
-        message !== null &&
-        'type' in message &&
-        message.type === 'thread-bound'
-      ) {
-        events.push(`port:${(message as unknown as { threadId: string }).threadId}`)
+      const event = isStreamEnvelope(message) ? message.event : message
+      if (event.type === 'thread-bound') {
+        events.push(`port:${event.threadId}`)
       }
       postMessage(message)
     })
@@ -1665,6 +2098,85 @@ describe('CodexChatRuntimeService', () => {
     expect(service.isConversationRunning('conversation-1')).toBe(false)
     expect(service.isConversationRunning('thread-real')).toBe(false)
     expect(port.messages.at(-1)).toEqual({ type: 'aborted' })
+  })
+
+  it('only lets an attached stream stop the run whose runId it received', async () => {
+    const initialPort = new FakePort()
+    const replacementPort = new FakePort()
+    const metadataSeen = deferred()
+    const completed = deferred()
+    const interrupt = vi.fn(async () => {
+      await lifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-stop-identity',
+        turnId: 'turn-stop-identity',
+        outcome: 'interrupted'
+      })
+      completed.resolve()
+    })
+    let lifecycle: RuntimeStreamTextInput['onTurnLifecycle']
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async ({ onSessionCreated, onTurnLifecycle }) => {
+        lifecycle = onTurnLifecycle
+        onSessionCreated?.(activeSession('thread-stop-identity', 'turn-stop-identity', interrupt))
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield {
+                type: 'text-start',
+                id: 'text-stop-identity',
+                providerMetadata: {
+                  '@janole/ai-sdk-provider-codex-asp': {
+                    threadId: 'thread-stop-identity',
+                    turnId: 'turn-stop-identity'
+                  }
+                }
+              } as never
+              metadataSeen.resolve()
+              await completed.promise
+            })()
+        }
+      }
+    })
+
+    const running = service.startChatStream(
+      {
+        chatId: 'conversation-stop-identity',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      initialPort,
+      undefined,
+      'initial-stop-identity'
+    )
+    await metadataSeen.promise
+    const descriptor = service.getActiveChatRun('thread-stop-identity')
+    expect(descriptor).toBeDefined()
+    expect(
+      service.attachChatStream(
+        'thread-stop-identity',
+        'replacement-stop-identity',
+        replacementPort,
+        descriptor?.runId
+      )
+    ).toEqual({ status: 'attached' })
+
+    replacementPort.emit({ type: 'abort', runId: 'stale-run' })
+    await flushAsyncWork()
+    expect(interrupt).not.toHaveBeenCalled()
+
+    replacementPort.emit({ type: 'abort', runId: descriptor?.runId })
+    await vi.waitFor(() => expect(interrupt).toHaveBeenCalledOnce())
+    await running
+    expect(replacementPort.messages.at(-1)).toEqual({ type: 'aborted' })
   })
 
   it('does not deliver a terminal until the matching canonical completion arrives', async () => {

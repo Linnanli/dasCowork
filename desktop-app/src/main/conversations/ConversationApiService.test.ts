@@ -790,12 +790,8 @@ describe('ConversationApiService', () => {
     expect(JSON.stringify(opened.messages)).not.toContain('base64')
   })
 
-  it('waits for a live conversation turn before reading its canonical history', async () => {
+  it('reads history immediately while a renderer can reattach to the live turn', async () => {
     const threadClient = createClient()
-    let settle!: () => void
-    const settlement = new Promise<void>((resolve) => {
-      settle = resolve
-    })
     vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
       id: 'thread-local',
       title: 'Completed after reconnect',
@@ -807,23 +803,18 @@ describe('ConversationApiService', () => {
       cwd: '/repo/desktop-app',
       messages: []
     })
-    const waitForConversationSettlement = vi.fn(() => settlement)
+    const waitForConversationSettlement = vi.fn(() => Promise.resolve())
     const service = new ConversationApiService({
       threadClient,
       projectStore: { getState: async () => baseProjectState },
       waitForConversationSettlement
     })
 
-    const opened = service.openConversation({ conversationId: 'thread-local' })
-    await Promise.resolve()
+    const opened = await service.openConversation({ conversationId: 'thread-local' })
 
-    expect(waitForConversationSettlement).toHaveBeenCalledWith('thread-local')
-    expect(threadClient.readThreadWithFullTurns).not.toHaveBeenCalled()
-
-    settle()
-    await opened
-
+    expect(waitForConversationSettlement).not.toHaveBeenCalled()
     expect(threadClient.readThreadWithFullTurns).toHaveBeenCalledWith('thread-local')
+    expect(opened.title).toBe('Completed after reconnect')
   })
 
   it('uses only the full app-server history when opening a settled conversation', async () => {

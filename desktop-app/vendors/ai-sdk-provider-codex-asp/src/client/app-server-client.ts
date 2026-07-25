@@ -15,7 +15,7 @@ import type {
 
 export class JsonRpcError extends CodexProviderError 
 {
-    readonly code: number;
+    override readonly code: number;
     readonly data?: unknown;
 
     constructor(error: { code: number; message: string; data?: unknown }) 
@@ -128,7 +128,9 @@ export class AppServerClient
                     : ` (signal ${signal})`
                 : ` (code ${code})`;
             this.handleTransportTermination(
-                new CodexProviderError(`App Server transport closed unexpectedly${detail}.`),
+                new CodexProviderError(`App Server transport closed unexpectedly${detail}.`, {
+                    code: "app_server_transport_closed",
+                }),
             );
         });
     }
@@ -364,9 +366,12 @@ export class AppServerClient
         }
         this.transportTerminated = true;
 
-        const error = cause instanceof CodexProviderError
+        const error = cause instanceof CodexProviderError && typeof cause.code === "string"
             ? cause
-            : new CodexProviderError("App Server transport terminated unexpectedly.", { cause });
+            : new CodexProviderError("App Server transport terminated unexpectedly.", {
+                cause,
+                code: "app_server_transport_terminated",
+            });
 
         for (const pending of this.pendingRequests.values())
         {

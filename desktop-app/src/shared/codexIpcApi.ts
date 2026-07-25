@@ -11,6 +11,7 @@ import type {
   ProjectState,
   RemoteProject,
   ThreadProjectAssignment,
+  WorkspaceRecoveryStatus,
   WorkspaceRootOption
 } from './projects/projectTypes'
 import {
@@ -147,18 +148,83 @@ export type CodexTurnLifecycleEvent =
       outcome: 'completed' | 'interrupted' | 'failed'
     }
 
+/**
+ * Stable, renderer-safe reasons why an established recovery stream cannot be
+ * resumed.  These codes are a control-plane contract; `message` is only for
+ * display and must not be used to infer the recovery outcome.
+ */
+export type CodexChatStreamFailureCode =
+  | 'run-unavailable'
+  | 'run-mismatch'
+  | 'journal-unavailable'
+  | 'unknown-recovery'
+
+export type CodexChatStreamFailure = {
+  readonly code: CodexChatStreamFailureCode
+  readonly message: string
+}
+
+export type CodexChatStreamError = string | CodexChatStreamFailure
+
+const codexChatStreamFailureSchema = z.object({
+  code: z.enum(['run-unavailable', 'run-mismatch', 'journal-unavailable', 'unknown-recovery']),
+  message: z.string()
+}) satisfies z.ZodType<CodexChatStreamFailure>
+
+const codexChatStreamErrorSchema = z.union([
+  z.string(),
+  codexChatStreamFailureSchema
+]) satisfies z.ZodType<CodexChatStreamError>
+
 export type CodexChatStreamEvent =
   | { type: 'thread-bound'; threadId: string }
   | { type: 'turn-lifecycle'; event: CodexTurnLifecycleEvent }
   | { type: 'chunk'; chunk: UIMessageChunk }
+  | { type: 'resync-required'; reason: 'journal-overflow' }
   | { type: 'finish'; threadId?: string }
   | { type: 'aborted' }
-  | { type: 'error'; error: string }
+  | { type: 'error'; error: CodexChatStreamError }
+
+/**
+ * The MessagePort wire format for a run event. `sequence` is monotonic within
+ * one run so a renderer can discard replayed events and detect a lost range.
+ */
+export type CodexChatStreamEnvelope = {
+  readonly runId: string
+  readonly sequence: number
+  readonly event: CodexChatStreamEvent
+}
+
+export type CodexChatPortMessage = CodexChatStreamEnvelope | CodexChatStreamEvent
 
 export type CodexChatTerminalEvent = Extract<
   CodexChatStreamEvent,
   { type: 'finish' | 'aborted' | 'error' }
 >
+
+/** The outcome of attaching a replacement MessagePort to a known run. */
+export type CodexChatAttachResult =
+  | { readonly status: 'attached' }
+  | { readonly status: 'run-unavailable' }
+  | { readonly status: 'run-mismatch' }
+  | { readonly status: 'journal-unavailable' }
+
+export type CodexChatRunDescriptor = {
+  readonly runId: string
+  readonly conversationId: string
+  readonly threadId?: string
+  readonly lastSequence: number
+}
+
+/**
+ * A renderer-safe baseline for rebuilding a local conversation before a
+ * newly-created thread has durable history. Main owns this only for the
+ * active/terminal replay window; the app-server history remains authoritative.
+ */
+export type CodexChatRecoverySnapshot = {
+  readonly run: CodexChatRunDescriptor
+  readonly baseMessages: readonly UIMessage[]
+}
 
 /**
  * A terminal signal sent over regular Electron IPC when the stream MessagePort
@@ -170,7 +236,7 @@ export type CodexChatTerminalFallback = {
 }
 
 export type CodexChatControlMessage =
-  | { type: 'abort' }
+  | { type: 'abort'; runId?: string }
   | { type: 'thread-bound-ack'; threadId: string }
 
 export type CodexChatStreamCallbacks = {
@@ -179,7 +245,7 @@ export type CodexChatStreamCallbacks = {
   onChunk(chunk: UIMessageChunk): void
   onFinish(threadId?: string): void
   onAbort(): void
-  onError(error: string): void
+  onError(error: CodexChatStreamError): void
 }
 
 export const codexChatStreamEventSchema = z.discriminatedUnion('type', [
@@ -213,19 +279,26 @@ export const codexChatStreamEventSchema = z.discriminatedUnion('type', [
     ])
   }),
   z.object({ type: z.literal('chunk'), chunk: z.custom<UIMessageChunk>(isUiMessageChunk) }),
+  z.object({ type: z.literal('resync-required'), reason: z.literal('journal-overflow') }),
   z.object({ type: z.literal('finish'), threadId: z.string().min(1).optional() }),
   z.object({ type: z.literal('aborted') }),
-  z.object({ type: z.literal('error'), error: z.string() })
+  z.object({ type: z.literal('error'), error: codexChatStreamErrorSchema })
 ]) satisfies z.ZodType<CodexChatStreamEvent>
+
+export const codexChatStreamEnvelopeSchema = z.object({
+  runId: z.string().min(1),
+  sequence: z.number().int().positive(),
+  event: codexChatStreamEventSchema
+}) satisfies z.ZodType<CodexChatStreamEnvelope>
 
 export const codexChatTerminalEventSchema = z.union([
   z.object({ type: z.literal('finish'), threadId: z.string().min(1).optional() }),
   z.object({ type: z.literal('aborted') }),
-  z.object({ type: z.literal('error'), error: z.string() })
+  z.object({ type: z.literal('error'), error: codexChatStreamErrorSchema })
 ]) satisfies z.ZodType<CodexChatTerminalEvent>
 
 export const codexChatControlMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('abort') }),
+  z.object({ type: z.literal('abort'), runId: z.string().min(1).optional() }),
   z.object({ type: z.literal('thread-bound-ack'), threadId: z.string().min(1) })
 ]) satisfies z.ZodType<CodexChatControlMessage>
 
@@ -303,6 +376,14 @@ export type CodexChatPortDetachedPayload = {
   chatId: string
 }
 
+/** A renderer can attach to a still-running main-process turn after reload. */
+export type CodexChatAttachPayload = {
+  streamId: string
+  conversationId: string
+  runId?: string
+  afterSequence?: number
+}
+
 export const codexChatStartPayloadSchema = z.object({
   streamId: z.string().min(1),
   request: codexChatRequestSchema
@@ -312,6 +393,13 @@ export const codexChatPortDetachedPayloadSchema = z.object({
   streamId: z.string().min(1),
   chatId: z.string().min(1)
 }) satisfies z.ZodType<CodexChatPortDetachedPayload>
+
+export const codexChatAttachPayloadSchema = z.object({
+  streamId: z.string().min(1),
+  conversationId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  afterSequence: z.number().int().nonnegative().optional()
+}) satisfies z.ZodType<CodexChatAttachPayload>
 
 export const codexChatTerminalFallbackSchema = z.object({
   streamId: z.string().min(1),
@@ -436,6 +524,7 @@ export type DesktopCodexApi = {
   getStatus(): Promise<CodexStatus>
   listModels(): Promise<CodexModelList>
   setSelectedModel(modelId: string): Promise<{ selectedModelId: string }>
+  listPendingApprovals?(): Promise<CodexApprovalRequest[]>
   respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void>
   openExternalHttpUrl(url: string): Promise<void>
   openLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
@@ -447,6 +536,13 @@ export type DesktopCodexApi = {
 
 export type DesktopCodexChatApi = {
   startChatStream(request: CodexChatRequest, callbacks: CodexChatStreamCallbacks): string
+  getActiveRun?(conversationId: string): Promise<CodexChatRunDescriptor | null>
+  getActiveRuns?(): Promise<CodexChatRunDescriptor[]>
+  getActiveSnapshot?(conversationId: string): Promise<CodexChatRecoverySnapshot | null>
+  attachChatStream?(
+    conversationId: string,
+    callbacks: CodexChatStreamCallbacks
+  ): Promise<string | null>
   abortChatStream(streamId: string): void
 }
 
@@ -477,6 +573,16 @@ export type ProjectCreateBlankResult = {
   state: ProjectState
 }
 
+export type WorkspaceRecoveryPayload = {
+  conversationId: string
+  threadId?: string
+}
+
+export const workspaceRecoveryPayloadSchema = z.object({
+  conversationId: z.string().min(1),
+  threadId: z.string().min(1).optional()
+}) satisfies z.ZodType<WorkspaceRecoveryPayload>
+
 export type DesktopProjectsApi = {
   getState(): Promise<ProjectState>
   pickWorkspaceRoot(): Promise<WorkspaceRootOption | null>
@@ -486,6 +592,8 @@ export type DesktopProjectsApi = {
   selectProject(input: ProjectSelection): Promise<ProjectState>
   removeProject(input: ProjectSelection): Promise<ProjectState>
   renameProject(input: ProjectRenamePayload): Promise<ProjectState>
+  getWorkspaceRecovery(input: WorkspaceRecoveryPayload): Promise<WorkspaceRecoveryStatus>
+  restoreWorkspace(input: WorkspaceRecoveryPayload): Promise<WorkspaceRecoveryStatus>
   onStateChange(callback: (state: ProjectState) => void): () => void
 }
 

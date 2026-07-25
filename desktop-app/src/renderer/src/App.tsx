@@ -35,6 +35,9 @@ import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
 import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
+import { ConversationTurnErrorBoundary } from '@/components/conversation/ConversationTurnErrorBoundary'
+import { ConversationRecoveryStatus } from '@/components/conversation/ConversationRecoveryStatus'
+import { WorkspaceRecoveryBanner } from '@/components/conversation/WorkspaceRecoveryBanner'
 import { ContextLexicalInput } from '@/composer/contextLexicalInput'
 import { ComposerContextSuggestionProvider } from '@/composer/composerContextSuggestionController'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
@@ -222,6 +225,9 @@ type ChatThreadProps = ComposerProps & {
   onOpenConversation: OpenSubagentConversation
   scrollSnapshot?: ConversationScrollSnapshot
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
+  recoveryPhase: ConversationChatEntry['recoveryPhase']
+  recoveryError?: Error
+  onCreateNewTask: () => void
 }
 
 type ComposerComponentProps = ComposerProps & {
@@ -398,6 +404,8 @@ function App(): React.JSX.Element {
     setSelectedModelId,
     activeConversation,
     startNewConversation,
+    restoreActiveConversation,
+    restoreSingleActiveConversation,
     openConversation,
     setActiveProjectSelection,
     setActiveDraft,
@@ -442,39 +450,75 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!conversationState.state.loaded || restoredActiveConversation.current) return
-    restoredActiveConversation.current = true
     const conversationId = readActiveConversationId()
-    if (!conversationId) return
+    if (!conversationId) {
+      restoringActiveConversation.current = true
+      void restoreSingleActiveConversation().finally(() => {
+        restoredActiveConversation.current = true
+        restoringActiveConversation.current = false
+      })
+      return
+    }
     const conversation = conversationState.state.conversations.find(
       (candidate) => candidate.id === conversationId || candidate.threadId === conversationId
     )
-    if (!conversation) {
-      clearActiveConversationId()
+    if (conversation) {
+      restoredActiveConversation.current = true
+      restoringActiveConversation.current = true
+      void openConversation({ conversationId: conversation.id }).then(
+        () => {
+          restoringActiveConversation.current = false
+        },
+        () => {
+          restoringActiveConversation.current = false
+        }
+      )
       return
     }
+
     restoringActiveConversation.current = true
-    void openConversation({ conversationId: conversation.id }).then(
-      () => {
+    void restoreActiveConversation(conversationId).then(
+      (restored) => {
+        if (!restored) clearActiveConversationId()
+        restoredActiveConversation.current = true
         restoringActiveConversation.current = false
       },
       () => {
+        clearActiveConversationId()
+        restoredActiveConversation.current = true
         restoringActiveConversation.current = false
       }
     )
-  }, [conversationState.state.conversations, conversationState.state.loaded, openConversation])
+  }, [
+    conversationState.state.conversations,
+    conversationState.state.loaded,
+    openConversation,
+    restoreActiveConversation,
+    restoreSingleActiveConversation
+  ])
 
   useEffect(() => {
-    if (!restoredActiveConversation.current || restoringActiveConversation.current) return
     const activeConversationId = activeConversation?.threadId ?? activeConversation?.conversationId
     if (activeConversationId) {
       writeActiveConversationId(activeConversationId)
       return
     }
-    if (activeEntry.newConversation) clearActiveConversationId()
+    if (
+      activeEntry.status === 'submitted' ||
+      activeEntry.status === 'streaming' ||
+      (activeEntry.newConversation && activeEntry.messages.length > 0)
+    ) {
+      writeActiveConversationId(activeEntry.localId)
+      return
+    }
+    if (!restoredActiveConversation.current || restoringActiveConversation.current) return
   }, [
     activeConversation?.conversationId,
     activeConversation?.threadId,
-    activeEntry.newConversation
+    activeEntry.localId,
+    activeEntry.messages.length,
+    activeEntry.newConversation,
+    activeEntry.status
   ])
 
   useEffect(() => {
@@ -497,6 +541,10 @@ function App(): React.JSX.Element {
   }
   const handleSelectedModelChange = (modelId: string): void => {
     void setSelectedModelId(modelId).catch(() => undefined)
+  }
+  const handleStartNewConversation = (): void => {
+    clearActiveConversationId()
+    startNewConversation()
   }
   const handleOpenConversation = useCallback<OpenSubagentConversation>(
     (conversationId) => {
@@ -527,7 +575,7 @@ function App(): React.JSX.Element {
         nativeBackdrop={nativeBackdrop}
         projectState={projectState}
         conversationState={conversationState}
-        onNewChat={startNewConversation}
+        onNewChat={handleStartNewConversation}
       />
       <section
         data-slot="app-main-section"
@@ -554,6 +602,7 @@ function App(): React.JSX.Element {
             onOpenConversation={handleOpenConversation}
             onScrollSnapshotChange={setActiveScroll}
             onSelectedModelChange={handleSelectedModelChange}
+            onCreateNewTask={handleStartNewConversation}
             projectState={projectState}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
@@ -585,6 +634,7 @@ function ActiveConversationPane({
   onOpenConversation,
   onScrollSnapshotChange,
   onSelectedModelChange,
+  onCreateNewTask,
   projectState,
   sidebarCollapsed,
   onToggleSidebar
@@ -601,6 +651,7 @@ function ActiveConversationPane({
   onOpenConversation: OpenSubagentConversation
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
   onSelectedModelChange: (modelId: string) => void
+  onCreateNewTask: () => void
   projectState: ProjectStateController
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
@@ -696,8 +747,11 @@ function ActiveConversationPane({
           onOpenConversation={onOpenConversation}
           onScrollSnapshotChange={onScrollSnapshotChange}
           onSelectedModelChange={onSelectedModelChange}
+          onCreateNewTask={onCreateNewTask}
           projectState={projectState}
           scrollSnapshot={entry.scroll}
+          recoveryPhase={entry.recoveryPhase}
+          recoveryError={entry.recoveryError}
         />
       </div>
     </AssistantRuntimeProvider>
@@ -845,7 +899,10 @@ function ChatThread({
   onSteerFollowUp,
   projectState,
   scrollSnapshot,
-  onScrollSnapshotChange
+  onScrollSnapshotChange,
+  recoveryPhase,
+  recoveryError,
+  onCreateNewTask
 }: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
   const showNewConversationView = isEmpty && !loading && !loadError
@@ -975,6 +1032,12 @@ function ChatThread({
             )}
           >
             <ThreadScrollToBottom />
+            <ConversationRecoveryStatus phase={recoveryPhase} error={recoveryError} />
+            <WorkspaceRecoveryBanner
+              conversationId={activeConversation?.conversationId}
+              threadId={activeConversation?.threadId}
+              onCreateNewTask={onCreateNewTask}
+            />
             <ComposerTurnStatusCard status={composerTurnStatus} />
             <div data-slot="composer-project-stack" className="flex w-full flex-col">
               {reservedEditingItem && !editingFollowUp ? (
@@ -1396,11 +1459,13 @@ function AssistantMessage({
         ) : (
           <>
             {visibleUnits.map((unit) => (
-              <AssistantRenderUnitView
+              <ConversationTurnErrorBoundary
                 key={unit.key}
-                unit={unit}
-                onOpenConversation={onOpenConversation}
-              />
+                resetKey={`${message.id}:${unit.key}`}
+                renderUnitKind={unit.type}
+              >
+                <AssistantRenderUnitView unit={unit} onOpenConversation={onOpenConversation} />
+              </ConversationTurnErrorBoundary>
             ))}
           </>
         )}

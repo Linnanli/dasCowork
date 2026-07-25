@@ -17,6 +17,7 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
   let root: Root
   let state: CodexIpcAssistantRuntimeState | null
   let emitApproval: (request: CodexApprovalRequest) => void
+  let pendingApprovalSnapshot: CodexApprovalRequest[]
 
   beforeEach(() => {
     container = document.createElement('div')
@@ -24,6 +25,7 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
     root = createRoot(container)
     state = null
     emitApproval = () => undefined
+    pendingApprovalSnapshot = []
     window.localStorage.clear()
     installDesktopApp()
   })
@@ -55,6 +57,17 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
     expect(state?.activeServerRequests).toHaveLength(0)
   })
 
+  it('hydrates pending approvals after subscribing without duplicating live requests', async () => {
+    pendingApprovalSnapshot = [approval('request-snapshot', 'thread-a')]
+    await renderProbe()
+    await vi.waitFor(() =>
+      expect(state?.serverRequests.map((request) => request.id)).toEqual(['request-snapshot'])
+    )
+
+    act(() => emitApproval(approval('request-snapshot', 'thread-a')))
+    expect(state?.serverRequests.map((request) => request.id)).toEqual(['request-snapshot'])
+  })
+
   it('updates the unbound conversation project snapshot synchronously', async () => {
     await renderProbe()
     const entry = state!.activeEntry
@@ -79,6 +92,7 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
       codex: {
         listModels: vi.fn(async () => ({ models: [] })),
         setSelectedModel: vi.fn(async (modelId: string) => ({ selectedModelId: modelId })),
+        listPendingApprovals: vi.fn(async () => pendingApprovalSnapshot),
         respondApproval: vi.fn(async () => undefined),
         onApprovalRequest: vi.fn((listener: (request: CodexApprovalRequest) => void) => {
           emitApproval = listener

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
@@ -9,6 +9,8 @@ const appServerBinary = process.env.DASCOWORK_E2E_REAL_APP_SERVER_BIN
 const pidPath = process.env.DASCOWORK_E2E_APP_SERVER_PID_PATH
 const heldSteerRequestPath = process.env.DASCOWORK_E2E_HELD_STEER_REQUEST_PATH
 const originalTurnCompletedPath = process.env.DASCOWORK_E2E_ORIGINAL_TURN_COMPLETED_PATH
+const heldThreadStartPath = process.env.DASCOWORK_E2E_HELD_THREAD_START_PATH
+const releaseThreadStartPath = process.env.DASCOWORK_E2E_RELEASE_THREAD_START_PATH
 
 if (!appServerBinary || !pidPath) {
   throw new Error(
@@ -30,8 +32,27 @@ const child = spawn(appServerBinary, process.argv.slice(2), {
 writeFileSync(pidPath, `${child.pid}\n`, 'utf8')
 
 let heldSteerRequest
+let heldThreadStartRequest
+let releaseThreadStartTimer
 const clientInput = createInterface({ input: process.stdin, crlfDelay: Infinity })
 clientInput.on('line', (line) => {
+  if (
+    !heldThreadStartRequest &&
+    heldThreadStartPath &&
+    releaseThreadStartPath &&
+    isThreadStartRequest(line)
+  ) {
+    heldThreadStartRequest = line
+    writeFileSync(heldThreadStartPath, 'thread/start\n', 'utf8')
+    releaseThreadStartTimer = setInterval(() => {
+      if (!heldThreadStartRequest || !existsSync(releaseThreadStartPath)) return
+      child.stdin.write(`${heldThreadStartRequest}\n`)
+      heldThreadStartRequest = undefined
+      clearInterval(releaseThreadStartTimer)
+      releaseThreadStartTimer = undefined
+    }, 25)
+    return
+  }
   if (!heldSteerRequest && heldSteerRequestPath && isSteerRequest(line)) {
     heldSteerRequest = line
     writeFileSync(heldSteerRequestPath, 'turn/steer\n', 'utf8')
@@ -53,6 +74,14 @@ serverOutput.on('line', (line) => {
 function isSteerRequest(line) {
   try {
     return JSON.parse(line).method === 'turn/steer'
+  } catch {
+    return false
+  }
+}
+
+function isThreadStartRequest(line) {
+  try {
+    return JSON.parse(line).method === 'thread/start'
   } catch {
     return false
   }
@@ -82,6 +111,7 @@ child.once('error', (error) => {
 })
 
 child.once('exit', (code, signal) => {
+  if (releaseThreadStartTimer) clearInterval(releaseThreadStartTimer)
   if (signal) {
     process.kill(process.pid, signal)
     return

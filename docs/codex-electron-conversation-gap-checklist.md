@@ -89,21 +89,43 @@
 
 ### P0-02 活跃任务重连与局部恢复
 
-- [ ] Renderer 刷新或短暂断线后可以重新连接仍在运行的任务。
-- [ ] 无法恢复时明确显示原因，不把任务误报为已完成。
-- [ ] 单条回复渲染失败时可局部重试，不需要重新加载整个会话。
-- [ ] thread resume 失败时展示可操作的诊断信息。
-- [ ] worktree 丢失、被清理或初始化失败时提供恢复、重试或本地继续选项。
-- [ ] 页面销毁不会无条件终止仍应后台运行的任务。
-- [ ] 覆盖刷新、重连、app-server 重启、恢复失败和重复事件场景的测试。
+- [x] Renderer 刷新后可从 main-owned 基础消息快照恢复并重新连接仍在运行的任务；短暂断线的自动重连仍待补齐。
+- [x] 无法恢复时明确显示安全原因，不把任务误报为已完成；复杂快照恢复仍待补齐。
+- [x] 单条回复渲染失败时可局部重试，不需要重新加载整个会话。
+- [x] 重新连接失败时展示可操作的安全诊断；运行中 app-server 的 existing-turn resume 已通过 provider/main 专用恢复接入，child 重启缺失 active turn 时安全收敛为 interrupted。
+- [~] worktree 丢失、被清理或初始化失败时提供恢复、重试或本地继续选项：恢复契约、main-only 恢复和 UI 已完成；仍待 P0-03 生成 managed-worktree 元数据并执行浏览器 E2E。
+- [x] 页面销毁不会无条件终止仍应后台运行的任务。
+- [x] 覆盖刷新、重连、app-server 重启、恢复失败和重复事件场景的测试；已执行 21 项专项 Electron/Playwright 用例，并以 `--repeat-each=3` 完成稳定性回归。
 
-状态：**部分实现**
+状态：**部分实现（2026-07-25 更新；P0-02A 已验收，P0-02B 仍依赖 P0-03）**
 
-当前证据：
+本轮恢复审查已补上 attach/replay 的失败契约：run 消失、runId 不匹配、journal 无法补发和未确认的静默关闭都明确进入 `needs_resume`，不会再被转换成完成；provider/main 只读取稳定错误码恢复同一 active turn。P0-02B 仍为 partial，managed-worktree 的创建、元数据写入与真实恢复闭环由 P0-03 完成。
 
-- [仅有整个会话加载失败后的重试](../desktop-app/src/renderer/src/App.tsx#L712)
-- [`reconnectToStream()` 固定返回 `null`](../desktop-app/src/renderer/src/lib/ElectronIpcChatTransport.ts#L164)
-- [Registry 销毁时停止活跃任务](../desktop-app/src/renderer/src/runtime/ConversationChatRegistry.ts#L328)
+已实现边界：
+
+- [MessagePort 丢失只 detach，不再取消底层 turn](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [Stop 控制消息以 runId 精确校验，重新附加端口也可安全取消当前 run](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [Main 保留活跃 turn 的事件日志，并允许新 MessagePort 附加和回放](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [Main 在终态后保留五分钟只读 journal，供断线 renderer 重放](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [preload/transport 通过白名单 IPC 查询并重新附加活跃会话](../desktop-app/src/preload/chatStreamBridge.ts)
+- [Registry 销毁只清理 renderer 本地状态](../desktop-app/src/renderer/src/runtime/ConversationChatRegistry.ts)
+- [刷新后在同一 provider 请求内接收后续 live delta 的 E2E](../desktop-app/tests/e2e/fault-injection.e2e.ts)
+- [刷新后文本与同一工具调用各只恢复一次的 E2E](../desktop-app/tests/e2e/approvals.e2e.ts)
+- [会话打开立即读取历史，再附加仍在运行的任务](../desktop-app/src/main/conversations/ConversationApiService.ts)
+- [刷新后从 pending approval 快照恢复同一 requestId](../desktop-app/src/main/codexApprovalBroker.ts)
+- [单个 render unit 的本地错误边界与“重试渲染”](../desktop-app/src/renderer/src/components/conversation/ConversationTurnErrorBoundary.tsx)
+- [恢复失败分类、无障碍提示和一次短暂故障自动重试](../desktop-app/src/renderer/src/runtime/classifyConversationRecoveryError.ts)
+- [provider/main 的同一 active turn 专用恢复：`thread/resume` snapshot 合并且不新增 `turn/start`](../desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts)
+
+仍缺失：
+
+- [renderer 持久 sequence 游标](../desktop-app/src/renderer/src/lib/ElectronIpcChatTransport.ts)；端口现在携带 `runId + sequence`，preload 会在短断线后以最后确认的序号自动 attach 一次，并去重、拒绝缺序和在 journal 溢出时显式要求重新同步。
+- [managed-worktree 恢复元数据与状态](../desktop-app/src/shared/projects/projectTypes.ts) 已建立；P0-03 尚未在创建 worktree 时写入这份元数据。
+- P002-E2E-01 已证明在 `thread/start` 尚未返回时刷新仍能以 local conversation ID 从 main snapshot 恢复原始用户消息、附加同一 run，且不会新增 provider 请求；P002-E2E-02 已证明已绑定任务在文本和 pending tool 同时存在时刷新，文本、approval panel、最终回复和同一 tool output 都只恢复一次；P002-E2E-03 已在不刷新页面的条件下触发 MessagePort `messageerror` 并自动 attach；P002-E2E-04 已证明可补齐的 sequence gap 从 main journal 按序重放，且 transcript 不重复；C22 已证明绑定后的刷新可重新订阅同一活跃流并接收后续 delta；P002-E2E-05 已证明 detach 期间 completed、failed 与用户 Stop 产生的 aborted/interrupted 终态能正确恢复（失败保留部分内容并显示 error；interrupted 不重复渲染 assistant 终态卡），P002-E2E-08 已证明审批刷新恢复。P002-E2E-06A 已保持真实 app-server child 存活并重建 desktop-facing transport，确认同一 active turn 和无第二个 `turn/start`；P002-E2E-06B 已重启 child，确认保留历史、显示 interrupted，且不自动 replay；P002-E2E-09 已验证局部 Error Boundary 的浏览器降级与重试不重放 turn。P002-E2E-07 已验证未知 IPC 恢复错误不会泄露原始文本，且已显示文本会保留并进入不可自动恢复状态；稳定错误码的分类由分层单元测试覆盖。P002-E2E-10 已验证工作区状态矩阵的 UI 动作白名单。专项 13 项 Electron/Playwright 用例已单次通过，并以 `--repeat-each=3` 通过 39 项稳定性回归；后者仍需要 P0-03 实际生成 metadata 才能构成用户可达闭环。
+
+开发计划：
+
+- [P0-02 活跃任务重连与本地恢复开发计划](../.omx/plans/p0-02-active-task-reconnect-and-local-recovery.md)
 
 参考证据：
 
@@ -520,4 +542,4 @@
 - 本清单中的“参考项目具备”均来自可见菜单、状态文案和操作处理逻辑。
 - Voice、Computer Use、Cloud、PR 等能力可能受平台、账号或实验开关限制，因此放在相应的较低优先级或要求提供降级行为。
 - 参考目录边界说明见：
-  [reference-projects/codex-electron-26.707.72221-beautified/_analysis/README.md](../reference-projects/codex-electron-26.707.72221-beautified/_analysis/README.md)
+  [reference-projects/codex-electron-26.707.72221-beautified/\_analysis/README.md](../reference-projects/codex-electron-26.707.72221-beautified/_analysis/README.md)

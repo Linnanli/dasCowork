@@ -34,16 +34,20 @@ class FakePort implements CodexPortLike {
 
   postMessage(message: unknown): void {
     this.messages.push(message)
+    const event =
+      typeof message === 'object' && message !== null && 'event' in message
+        ? (message as { event: unknown }).event
+        : message
     if (
-      typeof message === 'object' &&
-      message !== null &&
-      'type' in message &&
-      message.type === 'thread-bound' &&
-      'threadId' in message &&
-      typeof message.threadId === 'string'
+      typeof event === 'object' &&
+      event !== null &&
+      'type' in event &&
+      event.type === 'thread-bound' &&
+      'threadId' in event &&
+      typeof event.threadId === 'string'
     ) {
       this.handler?.({
-        data: { type: 'thread-bound-ack', threadId: message.threadId }
+        data: { type: 'thread-bound-ack', threadId: event.threadId }
       })
     }
   }
@@ -59,6 +63,15 @@ class FakePort implements CodexPortLike {
   close(): void {
     return undefined
   }
+}
+
+function streamEvents(port: FakePort): unknown[] {
+  return port.messages.map((message) => {
+    if (typeof message === 'object' && message !== null && 'event' in message) {
+      return (message as { event: unknown }).event
+    }
+    return message
+  })
 }
 
 async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
@@ -153,7 +166,7 @@ describe('startConversation', () => {
     expect(streamTextInput?.executionTarget).not.toMatchObject({
       cwd: '/malicious'
     })
-    expect(port.messages).toEqual([
+    expect(streamEvents(port)).toEqual([
       { type: 'thread-bound', threadId: 'thread-prestarted' },
       {
         type: 'turn-lifecycle',
@@ -278,7 +291,7 @@ describe('startConversation', () => {
     )
 
     expect(streamText).not.toHaveBeenCalled()
-    expect(port.messages).toEqual([
+    expect(streamEvents(port)).toEqual([
       {
         type: 'error',
         error: 'Workspace root is not a registered project: /malicious'

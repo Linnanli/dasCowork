@@ -233,7 +233,7 @@ describe("AppServerClient", () =>
         const assertC23 = planAssertionsForTest("C23");
         const transport = new MockTransport();
         const client = new AppServerClient(transport, { requestTimeoutMs: 1000 });
-        const terminations: Error[] = [];
+        const terminations: Array<Error & { code?: unknown }> = [];
 
         await client.connect();
         client.onTransportTermination((error) => terminations.push(error));
@@ -251,6 +251,27 @@ describe("AppServerClient", () =>
         await assertC23("保留可见内容并显示单一终态", () =>
             expect(terminations[0]?.message).toBe("App Server transport terminated unexpectedly."),
         );
+        expect(terminations[0]?.code).toBe("app_server_transport_terminated");
+    });
+
+    it("C23 codes an unexpected transport close separately from generic termination", async () =>
+    {
+        const transport = new MockTransport();
+        const client = new AppServerClient(transport, { requestTimeoutMs: 1000 });
+        const terminations: Array<Error & { code?: unknown }> = [];
+
+        await client.connect();
+        client.onTransportTermination((error) => terminations.push(error));
+
+        const pendingRequest = client.request("turn/start", {});
+        transport.emitClose(1, null);
+
+        await expect(pendingRequest).rejects.toMatchObject({
+            code: "app_server_transport_closed",
+            message: "App Server transport closed unexpectedly (code 1).",
+        });
+        expect(terminations).toHaveLength(1);
+        expect(terminations[0]?.code).toBe("app_server_transport_closed");
     });
 
     it("does not report intentional disconnects as transport failures", async () =>

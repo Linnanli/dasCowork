@@ -5,11 +5,13 @@ import { join } from 'node:path'
 import { ProjectApiService } from './ProjectApiService'
 import { ProjectService, type ThreadReader } from './ProjectService'
 import { ProjectStore } from './ProjectStore'
+import { WorkspaceRecoveryService } from './WorkspaceRecoveryService'
 
 export type ProjectRuntimeServices = {
   projectStore: ProjectStore
   projectService: ProjectService
   projectApi: ProjectApiService
+  workspaceRecovery: WorkspaceRecoveryService
 }
 
 export function createProjectRuntimeServices({
@@ -57,7 +59,8 @@ export function createProjectRuntimeServices({
       return root
     }
   })
-  return { projectStore, projectService, projectApi }
+  const workspaceRecovery = new WorkspaceRecoveryService({ store: projectStore })
+  return { projectStore, projectService, projectApi, workspaceRecovery }
 }
 
 export async function createBlankProjectRoot({

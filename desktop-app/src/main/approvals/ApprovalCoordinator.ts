@@ -28,7 +28,7 @@ export class ApprovalCoordinator {
   }
 
   registerApproval(request: CodexApprovalRequest): CodexApprovalRequest {
-    const context = extractApprovalContext(request.params)
+    const context = request.context ?? extractApprovalContext(request.params)
     if (!context) return request
     this.contexts.set(request.id, context)
     return { ...request, context }

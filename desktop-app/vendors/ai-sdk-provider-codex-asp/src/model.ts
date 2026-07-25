@@ -64,23 +64,20 @@ export type {
     CodexTurnLifecycleEvent,
 } from "./provider-settings";
 
-export interface CodexModelConfig
-{
-    provider: string;
-    providerSettings: Readonly<CodexProviderSettings>;
+export interface CodexModelConfig {
+    provider: string
+    providerSettings: Readonly<CodexProviderSettings>
 }
 
-interface ThreadStartResultLike extends CodexThreadStartResult
-{
-    thread?: Partial<Thread>;
-    cwd?: string;
+interface ThreadStartResultLike extends CodexThreadStartResult {
+    thread?: Partial<Thread>
+    cwd?: string
 }
 
-interface TurnStartResultLike extends CodexTurnStartResult
-{
+interface TurnStartResultLike extends CodexTurnStartResult {
     turn?: {
-        id?: string;
-    };
+        id?: string
+    }
 }
 
 type PassThroughStreamContentPart = Extract<
@@ -90,18 +87,16 @@ type PassThroughStreamContentPart = Extract<
 
 type DebugLog = (direction: "inbound" | "outbound", label: string, data?: unknown) => void;
 
-type StartedThreadCallbackInput = Parameters<
-    NonNullable<CodexCallOptions["onThreadStarted"]>
->[0];
+type StartedThreadCallbackInput = Parameters<NonNullable<CodexCallOptions["onThreadStarted"]>>[0];
 
 async function notifyThreadStarted({
     callOptions,
     debugLog,
     thread,
 }: {
-    callOptions: CodexCallOptions | undefined;
-    debugLog: DebugLog | undefined;
-    thread: StartedThreadCallbackInput;
+    callOptions: CodexCallOptions | undefined
+    debugLog: DebugLog | undefined
+    thread: StartedThreadCallbackInput
 }): Promise<void>
 {
     const onThreadStarted = callOptions?.onThreadStarted;
@@ -129,10 +124,10 @@ function notifyAgentLifecycle({
     method,
     params,
 }: {
-    callOptions: CodexCallOptions | undefined;
-    debugLog: DebugLog | undefined;
-    method: string;
-    params: unknown;
+    callOptions: CodexCallOptions | undefined
+    debugLog: DebugLog | undefined
+    method: string
+    params: unknown
 }): void
 {
     const callback = callOptions?.onAgentLifecycle;
@@ -169,9 +164,9 @@ function notifyTurnLifecycle({
     debugLog,
     event,
 }: {
-    callOptions: CodexCallOptions | undefined;
-    debugLog: DebugLog | undefined;
-    event: CodexTurnLifecycleEvent | undefined;
+    callOptions: CodexCallOptions | undefined
+    debugLog: DebugLog | undefined
+    event: CodexTurnLifecycleEvent | undefined
 }): void
 {
     const callback = callOptions?.onTurnLifecycle;
@@ -205,7 +200,7 @@ function errorMessage(error: unknown): string
     return error instanceof Error ? error.message : String(error);
 }
 
-function createEmptyUsage(): LanguageModelV3Usage 
+function createEmptyUsage(): LanguageModelV3Usage
 {
     return {
         inputTokens: {
@@ -222,20 +217,20 @@ function createEmptyUsage(): LanguageModelV3Usage
     };
 }
 
-function extractThreadId(result: ThreadStartResultLike): string 
+function extractThreadId(result: ThreadStartResultLike): string
 {
     const threadId = result.threadId ?? result.thread?.id;
-    if (!threadId) 
+    if (!threadId)
     {
         throw new CodexProviderError("thread/start response does not include a thread id.");
     }
     return threadId;
 }
 
-function extractTurnId(result: TurnStartResultLike): string 
+function extractTurnId(result: TurnStartResultLike): string
 {
     const turnId = result.turnId ?? result.turn?.id;
-    if (!turnId) 
+    if (!turnId)
     {
         throw new CodexProviderError("turn/start response does not include a turn id.");
     }
@@ -247,7 +242,12 @@ function extractThreadIdFromProviderOptions(
 ): string | undefined
 {
     const meta = providerOptions?.[CODEX_PROVIDER_ID];
-    if (meta && typeof meta === "object" && "threadId" in meta && typeof (meta as Record<string, unknown>)["threadId"] === "string")
+    if (
+        meta &&
+    typeof meta === "object" &&
+    "threadId" in meta &&
+    typeof (meta as Record<string, unknown>)["threadId"] === "string"
+    )
     {
         return (meta as Record<string, unknown>)["threadId"] as string;
     }
@@ -262,9 +262,7 @@ function extractResumeThreadId(prompt: LanguageModelV3CallOptions["prompt"]): st
         if (message?.role === "assistant")
         {
             // Check message-level providerOptions
-            const messageThreadId = extractThreadIdFromProviderOptions(
-                message.providerOptions,
-            );
+            const messageThreadId = extractThreadIdFromProviderOptions(message.providerOptions);
             if (messageThreadId)
             {
                 return messageThreadId;
@@ -343,7 +341,9 @@ function mergeDeveloperInstructions(
     retryContext: string | undefined,
 ): string | undefined
 {
-    const sections = [systemPrompt, retryContext].filter((section): section is string => Boolean(section));
+    const sections = [systemPrompt, retryContext].filter((section): section is string =>
+        Boolean(section),
+    );
     return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
@@ -428,11 +428,13 @@ function sdkToolsToCodexDynamicTools(
 {
     return tools
         .filter((t): t is Extract<typeof t, { type: "function" }> => t.type === "function")
-        .map((t) => stripUndefined({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema as Record<string, unknown>,
-        }));
+        .map((t) =>
+            stripUndefined({
+                name: t.name,
+                description: t.description,
+                inputSchema: t.inputSchema as Record<string, unknown>,
+            }),
+        );
 }
 
 function resolveApprovalHandlers(
@@ -442,25 +444,22 @@ function resolveApprovalHandlers(
 {
     return stripUndefined({
         onCommandApproval:
-            callOptions?.approvals?.onCommandApproval
-            ?? providerSettings.approvals?.onCommandApproval,
+      callOptions?.approvals?.onCommandApproval ?? providerSettings.approvals?.onCommandApproval,
         onFileChangeApproval:
-            callOptions?.approvals?.onFileChangeApproval
-            ?? providerSettings.approvals?.onFileChangeApproval,
+      callOptions?.approvals?.onFileChangeApproval ??
+      providerSettings.approvals?.onFileChangeApproval,
         onToolUserInput:
-            callOptions?.approvals?.onToolUserInput
-            ?? providerSettings.approvals?.onToolUserInput,
+      callOptions?.approvals?.onToolUserInput ?? providerSettings.approvals?.onToolUserInput,
         onElicitation:
-            callOptions?.approvals?.onElicitation
-            ?? providerSettings.approvals?.onElicitation,
+      callOptions?.approvals?.onElicitation ?? providerSettings.approvals?.onElicitation,
     });
 }
 
 function isPassThroughContentPart(
     part: LanguageModelV3StreamPart,
-): part is PassThroughStreamContentPart 
+): part is PassThroughStreamContentPart
 {
-    switch (part.type) 
+    switch (part.type)
     {
         case "tool-call":
         case "tool-result":
@@ -473,7 +472,7 @@ function isPassThroughContentPart(
     }
 }
 
-export class CodexLanguageModel implements LanguageModelV3 
+export class CodexLanguageModel implements LanguageModelV3
 {
     readonly specificationVersion = "v3" as const;
     readonly provider: string;
@@ -488,11 +487,7 @@ export class CodexLanguageModel implements LanguageModelV3
     private readonly settings: CodexLanguageModelSettings;
     private readonly config: CodexModelConfig;
 
-    constructor(
-        modelId: string,
-        settings: CodexLanguageModelSettings,
-        config: CodexModelConfig,
-    ) 
+    constructor(modelId: string, settings: CodexLanguageModelSettings, config: CodexModelConfig)
     {
         this.modelId = modelId;
         this.settings = settings;
@@ -500,7 +495,7 @@ export class CodexLanguageModel implements LanguageModelV3
         this.provider = config.provider;
     }
 
-    async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> 
+    async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult>
     {
         void this.settings;
 
@@ -519,23 +514,23 @@ export class CodexLanguageModel implements LanguageModelV3
         let usage: LanguageModelV3Usage = createEmptyUsage();
         let providerMetadata: LanguageModelV3GenerateResult["providerMetadata"];
 
-        while (true) 
+        while (true)
         {
             const { value, done } = await reader.read();
-            if (done) 
+            if (done)
             {
                 break;
             }
 
-            if (value.type === "stream-start") 
+            if (value.type === "stream-start")
             {
                 warnings = value.warnings;
                 continue;
             }
 
-            if (value.type === "text-start") 
+            if (value.type === "text-start")
             {
-                if (!textById.has(value.id)) 
+                if (!textById.has(value.id))
                 {
                     textOrder.push(value.id);
                     textById.set(value.id, "");
@@ -543,14 +538,14 @@ export class CodexLanguageModel implements LanguageModelV3
                 continue;
             }
 
-            if (value.type === "text-delta") 
+            if (value.type === "text-delta")
             {
-                if (!textById.has(value.id)) 
+                if (!textById.has(value.id))
                 {
                     textOrder.push(value.id);
                     textById.set(value.id, value.delta);
                 }
-                else 
+                else
                 {
                     textById.set(value.id, `${textById.get(value.id) ?? ""}${value.delta}`);
                 }
@@ -565,9 +560,9 @@ export class CodexLanguageModel implements LanguageModelV3
                 continue;
             }
 
-            if (value.type === "error") 
+            if (value.type === "error")
             {
-                if (value.error instanceof Error) 
+                if (value.error instanceof Error)
                 {
                     throw value.error;
                 }
@@ -577,17 +572,17 @@ export class CodexLanguageModel implements LanguageModelV3
                 });
             }
 
-            if (isPassThroughContentPart(value)) 
+            if (isPassThroughContentPart(value))
             {
                 passThroughContent.push(value);
             }
         }
 
         const textContent: LanguageModelV3Content[] = textOrder
-            .map((id) => 
+            .map((id) =>
             {
                 const text = textById.get(id) ?? "";
-                if (text.length === 0) 
+                if (text.length === 0)
                 {
                     return null;
                 }
@@ -625,16 +620,14 @@ export class CodexLanguageModel implements LanguageModelV3
             const callId = params.callId ?? `call_${Date.now()}`;
             const args = params.arguments ?? params.input ?? {};
 
-            const withMeta = <T extends LanguageModelV3StreamPart>(
-                part: T,
-                sourceItemId?: string,
-            ): T => withProviderMetadata(
-                part,
-                threadId,
-                undefined,
-                undefined,
-                sourceItemId ? { sourceItemId } : undefined,
-            );
+            const withMeta = <T extends LanguageModelV3StreamPart>(part: T, sourceItemId?: string): T =>
+                withProviderMetadata(
+                    part,
+                    threadId,
+                    undefined,
+                    undefined,
+                    sourceItemId ? { sourceItemId } : undefined,
+                );
 
             // Park the tool call on the worker for cross-call resumption.
             // Provider-executed calls still awaiting item/completed (e.g. parallel
@@ -660,60 +653,78 @@ export class CodexLanguageModel implements LanguageModelV3
                 // app-server waits for a result. A replay therefore belongs to
                 // the already parked request; it must not create another UI
                 // call, overwrite its continuation, or close the stream again.
-                return new Promise<CodexToolCallResult>(() => { });
+                return new Promise<CodexToolCallResult>(() => {});
             }
 
-            controller.enqueue(withMeta({
-                type: "tool-call",
-                toolCallId: callId,
-                toolName,
-                input: typeof args === "string" ? args : JSON.stringify(args),
-            }, callId));
+            controller.enqueue(
+                withMeta(
+                    {
+                        type: "tool-call",
+                        toolCallId: callId,
+                        toolName,
+                        input: typeof args === "string" ? args : JSON.stringify(args),
+                    },
+                    callId,
+                ),
+            );
 
-            controller.enqueue(withMeta({
-                type: "finish",
-                finishReason: { unified: "tool-calls", raw: "tool-calls" },
-                usage: createEmptyUsage(),
-            }));
+            controller.enqueue(
+                withMeta({
+                    type: "finish",
+                    finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                    usage: createEmptyUsage(),
+                }),
+            );
 
             void closeSuccessfully();
 
             // Return a never-resolving promise to prevent auto-response
-            return new Promise<CodexToolCallResult>(() => { });
+            return new Promise<CodexToolCallResult>(() => {});
         });
     }
 
     doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult>
     {
         const callOptions = options.providerOptions?.[CODEX_PROVIDER_ID] as CodexCallOptions | undefined;
-        const requestedResumeThreadId = callOptions?.resumeThreadId ?? extractResumeThreadId(options.prompt);
+        const requestedResumeThreadId =
+            callOptions?.resumeThreadId ?? extractResumeThreadId(options.prompt);
         const startFreshTerminalRetry = callOptions?.startFreshTerminalRetry === true;
         const resumeThreadId = startFreshTerminalRetry ? undefined : requestedResumeThreadId;
+        const resumeActiveTurn = callOptions?.resumeActiveTurn === true;
+
+        if (resumeActiveTurn && !resumeThreadId)
+        {
+            return Promise.reject(new CodexProviderError("resumeActiveTurn requires resumeThreadId."));
+        }
 
         const transport = this.config.providerSettings.transportFactory
-            ? this.config.providerSettings.transportFactory(stripUndefined({ signal: options.abortSignal, threadId: resumeThreadId }))
+            ? this.config.providerSettings.transportFactory(
+                stripUndefined({ signal: options.abortSignal, threadId: resumeThreadId }),
+            )
             : this.config.providerSettings.transport?.type === "websocket"
                 ? new WebSocketTransport(this.config.providerSettings.transport.websocket)
                 : new StdioTransport(this.config.providerSettings.transport?.stdio);
 
-        const packetLogger = this.config.providerSettings.debug?.logPackets === true
-            ? this.config.providerSettings.debug.logger
-            ?? ((packet: { direction: "inbound" | "outbound"; message: unknown }) =>
-            {
-                if (packet.direction === "inbound")
-                {
-                    console.debug("[codex packet]", packet.message);
-                }
-            })
-            : undefined;
+        const packetLogger =
+            this.config.providerSettings.debug?.logPackets === true
+                ? (this.config.providerSettings.debug.logger ??
+          ((packet: { direction: "inbound" | "outbound"; message: unknown }) =>
+          {
+              if (packet.direction === "inbound")
+              {
+                  console.debug("[codex packet]", packet.message);
+              }
+          }))
+                : undefined;
 
-        const toolLogger = this.config.providerSettings.debug?.logToolCalls === true
-            ? this.config.providerSettings.debug.toolLogger
-            ?? ((event: { event: string; data?: unknown }) =>
-            {
-                console.debug("[codex tool]", event.event, event.data);
-            })
-            : undefined;
+        const toolLogger =
+            this.config.providerSettings.debug?.logToolCalls === true
+                ? (this.config.providerSettings.debug.toolLogger ??
+          ((event: { event: string; data?: unknown }) =>
+          {
+              console.debug("[codex tool]", event.event, event.data);
+          }))
+                : undefined;
 
         const debugLog = packetLogger
             ? (direction: "inbound" | "outbound", label: string, data?: unknown) =>
@@ -722,14 +733,24 @@ export class CodexLanguageModel implements LanguageModelV3
             }
             : undefined;
 
-        const client = new AppServerClient(transport, stripUndefined({
-            onPacket: packetLogger,
-        }));
+        const client = new AppServerClient(
+            transport,
+            stripUndefined({
+                onPacket: packetLogger,
+            }),
+        );
 
-        const mapper = new CodexEventMapper(stripUndefined({
-            emitPlanUpdates: this.config.providerSettings.emitPlanUpdates,
-        }));
+        const mapper = new CodexEventMapper(
+            stripUndefined({
+                emitPlanUpdates: this.config.providerSettings.emitPlanUpdates,
+            }),
+        );
+        mapper.restoreExistingTurnRecoveryState(callOptions?.existingTurnRecoveryState);
         const turnLifecycleNormalizer = new TurnLifecycleNormalizer();
+        const publishExistingTurnRecoveryState = (): void =>
+        {
+            callOptions?.onExistingTurnRecoveryState?.(mapper.snapshotExistingTurnRecoveryState());
+        };
 
         let activeThreadId: string | undefined;
         let activeTurnId: string | undefined;
@@ -748,6 +769,8 @@ export class CodexLanguageModel implements LanguageModelV3
         let teardownStarted = false;
         let stopRequested = false;
         let interruptPromise: Promise<void> | undefined;
+        let awaitingExistingTurnSnapshot = resumeActiveTurn;
+        const bufferedExistingTurnNotifications: Array<{ method: string; params: unknown }> = [];
 
         const requestTurnInterruptIfPossible = (): Promise<void> | undefined =>
         {
@@ -885,16 +908,17 @@ export class CodexLanguageModel implements LanguageModelV3
                     });
                 };
 
-                if (options.abortSignal) 
+                if (options.abortSignal)
                 {
-                    if (options.abortSignal.aborted) 
+                    if (options.abortSignal.aborted)
                     {
                         abortHandler();
                     }
                     else
                     {
                         options.abortSignal.addEventListener("abort", abortHandler, { once: true });
-                        detachAbortSignal = () => options.abortSignal?.removeEventListener("abort", abortHandler);
+                        detachAbortSignal = () =>
+                            options.abortSignal?.removeEventListener("abort", abortHandler);
                     }
                 }
 
@@ -907,9 +931,7 @@ export class CodexLanguageModel implements LanguageModelV3
                         // ── Tool-result continuation (cross-call) ──
                         // If the transport has a pending tool call from a previous
                         // doStream(), respond with the tool results and let Codex continue.
-                        const persistentTransport = transport instanceof PersistentTransport
-                            ? transport
-                            : null;
+                        const persistentTransport = transport instanceof PersistentTransport ? transport : null;
                         const pendingToolCall = persistentTransport?.getPendingToolCall() ?? null;
 
                         if (pendingToolCall && persistentTransport)
@@ -956,14 +978,19 @@ export class CodexLanguageModel implements LanguageModelV3
                                         void closeSuccessfully();
                                     }
                                 }
+                                publishExistingTurnRecoveryState();
                             });
 
                             mapper.enableCrossCallMode();
 
                             // Register cross-call handler again for chained tool calls
                             this.registerCrossCallToolHandler(
-                                client, controller, persistentTransport,
-                                pendingToolCall.threadId, closeSuccessfully, mapper,
+                                client,
+                                controller,
+                                persistentTransport,
+                                pendingToolCall.threadId,
+                                closeSuccessfully,
+                                mapper,
                             );
 
                             const approvalsDispatcher = new ApprovalsDispatcher(
@@ -983,10 +1010,12 @@ export class CodexLanguageModel implements LanguageModelV3
 
                             const result = toolResult ?? {
                                 success: false,
-                                contentItems: [{
-                                    type: "inputText",
-                                    text: `Missing tool result for pending callId "${pendingToolCall.callId}".`,
-                                }],
+                                contentItems: [
+                                    {
+                                        type: "inputText",
+                                        text: `Missing tool result for pending callId "${pendingToolCall.callId}".`,
+                                    },
+                                ],
                             };
 
                             // The SDK executes cross-call tools between doStream() steps.
@@ -994,15 +1023,23 @@ export class CodexLanguageModel implements LanguageModelV3
                             // stream so toUIMessageStream() can retain the corresponding
                             // tool record alongside the final answer. The app-server still
                             // receives the same result through respondToToolCall() below.
-                            controller.enqueue(withProviderMetadata({
-                                type: "tool-result",
-                                toolCallId: pendingToolCall.callId,
-                                toolName: pendingToolCall.toolName,
-                                result: result as unknown as NonNullable<JsonValue>,
-                                isError: result.success === false,
-                            }, pendingToolCall.threadId, undefined, undefined, {
-                                sourceItemId: pendingToolCall.callId,
-                            }));
+                            controller.enqueue(
+                                withProviderMetadata(
+                                    {
+                                        type: "tool-result",
+                                        toolCallId: pendingToolCall.callId,
+                                        toolName: pendingToolCall.toolName,
+                                        result: result as unknown as NonNullable<JsonValue>,
+                                        isError: result.success === false,
+                                    },
+                                    pendingToolCall.threadId,
+                                    undefined,
+                                    undefined,
+                                    {
+                                        sourceItemId: pendingToolCall.callId,
+                                    },
+                                ),
+                            );
 
                             await persistentTransport.respondToToolCall(result);
 
@@ -1020,16 +1057,17 @@ export class CodexLanguageModel implements LanguageModelV3
                         }
 
                         // ── Normal flow ──
-                        const dynamicToolsEnabled =
-                            this.config.providerSettings.experimentalApi === true;
+                        const dynamicToolsEnabled = this.config.providerSettings.experimentalApi === true;
                         if (dynamicToolsEnabled)
                         {
-                            const dispatcher = new DynamicToolsDispatcher(stripUndefined({
-                                tools: this.config.providerSettings.tools,
-                                handlers: this.config.providerSettings.toolHandlers,
-                                timeoutMs: this.config.providerSettings.toolTimeoutMs,
-                                onDebugEvent: toolLogger,
-                            }));
+                            const dispatcher = new DynamicToolsDispatcher(
+                                stripUndefined({
+                                    tools: this.config.providerSettings.tools,
+                                    handlers: this.config.providerSettings.toolHandlers,
+                                    timeoutMs: this.config.providerSettings.toolTimeoutMs,
+                                    onDebugEvent: toolLogger,
+                                }),
+                            );
                             detachDynamicTools = dispatcher.attach(client);
                         }
 
@@ -1044,6 +1082,15 @@ export class CodexLanguageModel implements LanguageModelV3
                             // so a late notification can still arrive after the controller closed.
                             if (closed)
                             {
+                                return;
+                            }
+
+                            // `thread/resume` attaches the listener before its response is
+                            // composed. Buffer this narrow window so a notification cannot
+                            // advance the mapper before the authoritative snapshot merges.
+                            if (awaitingExistingTurnSnapshot)
+                            {
+                                bufferedExistingTurnNotifications.push({ method, params });
                                 return;
                             }
 
@@ -1073,6 +1120,7 @@ export class CodexLanguageModel implements LanguageModelV3
                                     void closeSuccessfully();
                                 }
                             }
+                            publishExistingTurnRecoveryState();
                         });
 
                         // Merge provider-level tools with SDK tools from options
@@ -1085,9 +1133,7 @@ export class CodexLanguageModel implements LanguageModelV3
                             }))
                             : [];
 
-                        const sdkDynamicTools = options.tools
-                            ? sdkToolsToCodexDynamicTools(options.tools)
-                            : [];
+                        const sdkDynamicTools = options.tools ? sdkToolsToCodexDynamicTools(options.tools) : [];
 
                         const allDynamicTools = [...providerDynamicTools, ...sdkDynamicTools];
                         const dynamicTools = allDynamicTools.length > 0 ? allDynamicTools : undefined;
@@ -1117,6 +1163,114 @@ export class CodexLanguageModel implements LanguageModelV3
                         await client.request<CodexInitializeResult>("initialize", initializeParams);
                         await client.notification("initialized");
 
+                        if (resumeActiveTurn)
+                        {
+                            const customModelProviderSettings = resolveCustomModelProviderSettings(
+                                this.config.providerSettings,
+                                this.settings,
+                            );
+                            const resumeParams: CodexThreadResumeParams = stripUndefined({
+                                threadId: resumeThreadId!,
+                                modelProvider: customModelProviderSettings.modelProvider,
+                                config: customModelProviderSettings.config,
+                                cwd: callOptions?.cwd ?? this.config.providerSettings.defaultThreadSettings?.cwd,
+                                runtimeWorkspaceRoots:
+                  callOptions?.runtimeWorkspaceRoots ??
+                  this.config.providerSettings.defaultThreadSettings?.runtimeWorkspaceRoots,
+                                approvalPolicy:
+                  callOptions?.approvalPolicy ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalPolicy,
+                                approvalsReviewer:
+                  callOptions?.approvalsReviewer ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalsReviewer,
+                                sandbox:
+                  callOptions?.sandbox ??
+                  this.config.providerSettings.defaultThreadSettings?.sandbox,
+                                model:
+                  callOptions?.model || this.modelId || this.config.providerSettings.defaultModel,
+                                initialTurnsPage: {
+                                    limit: 5,
+                                    itemsView: "full" as const,
+                                    sortDirection: "desc" as const,
+                                },
+                            });
+                            debugLog?.("outbound", "thread/resume:active-turn", resumeParams);
+                            const resumeResult = await client.request<ThreadResumeResponse>(
+                                "thread/resume",
+                                resumeParams,
+                            );
+                            const expectedTurnId = callOptions?.existingTurnRecoveryState?.turnId;
+                            const activeTurns = resumeResult.thread.turns.filter(
+                                (turn) => turn.status === "inProgress",
+                            );
+                            const activeTurn = expectedTurnId
+                                ? activeTurns.find((turn) => turn.id === expectedTurnId)
+                                : activeTurns.length === 1
+                                    ? activeTurns[0]
+                                    : undefined;
+                            if (!activeTurn)
+                            {
+                                throw new CodexProviderError(
+                                    "The active turn is no longer available for recovery.",
+                                    { code: "active_turn_unavailable" },
+                                );
+                            }
+                            activeThreadId = resumeResult.thread.id;
+                            activeTurnId = activeTurn.id;
+                            activeThreadCwd = resumeResult.cwd ?? resumeResult.thread.cwd ?? undefined;
+                            mapper.setThreadId(activeThreadId);
+                            mapper.setThreadPath(resumeResult.thread.path);
+                            mapper.setThreadCwd(activeThreadCwd);
+                            mapper.setTurnId(activeTurnId);
+
+                            const snapshotParts = mapper.mapExistingTurnSnapshot(activeTurn);
+                            for (const part of snapshotParts)
+                            {
+                                controller.enqueue(part);
+                            }
+                            awaitingExistingTurnSnapshot = false;
+                            for (const notification of bufferedExistingTurnNotifications.splice(0))
+                            {
+                                notifyAgentLifecycle({
+                                    callOptions,
+                                    debugLog,
+                                    method: notification.method,
+                                    params: notification.params,
+                                });
+                                notifyTurnLifecycle({
+                                    callOptions,
+                                    debugLog,
+                                    event: turnLifecycleNormalizer.normalize(notification.method, notification.params),
+                                });
+                                const parts = mapper.map(notification);
+                                for (const part of parts)
+                                {
+                                    controller.enqueue(part);
+                                    if (part.type === "finish")
+                                    {
+                                        void closeSuccessfully();
+                                    }
+                                }
+                            }
+                            publishExistingTurnRecoveryState();
+
+                            session = new CodexSessionImpl({
+                                client,
+                                threadId: activeThreadId,
+                                turnId: activeTurnId,
+                                interruptTimeoutMs,
+                                fileResolver,
+                            });
+                            const onSessionCreated =
+                                callOptions?.onSessionCreated ?? this.config.providerSettings.onSessionCreated;
+                            onSessionCreated?.(session);
+                            void requestTurnInterruptIfPossible()?.catch((error) =>
+                            {
+                                void closeWithError(error);
+                            });
+                            return;
+                        }
+
                         debugLog?.("inbound", "prompt", options.prompt);
 
                         debugLog?.("inbound", "extractResumeThreadId", {
@@ -1133,18 +1287,14 @@ export class CodexLanguageModel implements LanguageModelV3
                             this.settings,
                         );
 
-                        const turnInput = await fileResolver.resolve(
-                            options.prompt,
-                            !!resumeThreadId,
-                            {
-                                ...(resumeThreadId ? { activeThreadId: resumeThreadId } : {}),
-                                loadTask: (referencedThreadId) =>
-                                    client.request<ThreadReadResponse>("thread/read", {
-                                        threadId: referencedThreadId,
-                                        includeTurns: true,
-                                    }),
-                            },
-                        );
+                        const turnInput = await fileResolver.resolve(options.prompt, !!resumeThreadId, {
+                            ...(resumeThreadId ? { activeThreadId: resumeThreadId } : {}),
+                            loadTask: (referencedThreadId) =>
+                                client.request<ThreadReadResponse>("thread/read", {
+                                    threadId: referencedThreadId,
+                                    includeTurns: true,
+                                }),
+                        });
 
                         let threadId: string;
 
@@ -1156,11 +1306,20 @@ export class CodexLanguageModel implements LanguageModelV3
                                 modelProvider: customModelProviderSettings.modelProvider,
                                 config: customModelProviderSettings.config,
                                 cwd: callOptions?.cwd ?? this.config.providerSettings.defaultThreadSettings?.cwd,
-                                runtimeWorkspaceRoots: callOptions?.runtimeWorkspaceRoots ?? this.config.providerSettings.defaultThreadSettings?.runtimeWorkspaceRoots,
-                                approvalPolicy: callOptions?.approvalPolicy ?? this.config.providerSettings.defaultThreadSettings?.approvalPolicy,
-                                approvalsReviewer: callOptions?.approvalsReviewer ?? this.config.providerSettings.defaultThreadSettings?.approvalsReviewer,
-                                sandbox: callOptions?.sandbox ?? this.config.providerSettings.defaultThreadSettings?.sandbox,
-                                model: callOptions?.model || this.modelId || this.config.providerSettings.defaultModel,
+                                runtimeWorkspaceRoots:
+                  callOptions?.runtimeWorkspaceRoots ??
+                  this.config.providerSettings.defaultThreadSettings?.runtimeWorkspaceRoots,
+                                approvalPolicy:
+                  callOptions?.approvalPolicy ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalPolicy,
+                                approvalsReviewer:
+                  callOptions?.approvalsReviewer ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalsReviewer,
+                                sandbox:
+                  callOptions?.sandbox ??
+                  this.config.providerSettings.defaultThreadSettings?.sandbox,
+                                model:
+                  callOptions?.model || this.modelId || this.config.providerSettings.defaultModel,
                                 initialTurnsPage: {
                                     limit: 5,
                                     itemsView: "full" as const,
@@ -1174,11 +1333,13 @@ export class CodexLanguageModel implements LanguageModelV3
                             );
                             threadId = resumeResult.thread.id;
                             mapper.setThreadPath(resumeResult.thread.path);
-                            activeThreadCwd = resumeResult.cwd ?? resumeResult.thread.cwd ?? resumeParams.cwd ?? undefined;
+                            activeThreadCwd =
+                                resumeResult.cwd ?? resumeResult.thread.cwd ?? resumeParams.cwd ?? undefined;
                             mapper.setThreadCwd(activeThreadCwd);
 
                             const strictCompaction = this.config.providerSettings.compaction?.strict === true;
-                            const shouldCompactOnResume = this.config.providerSettings.compaction?.shouldCompactOnResume;
+                            const shouldCompactOnResume =
+                                this.config.providerSettings.compaction?.shouldCompactOnResume;
                             let shouldCompact = false;
 
                             if (typeof shouldCompactOnResume === "boolean")
@@ -1239,18 +1400,14 @@ export class CodexLanguageModel implements LanguageModelV3
                                     }
                                 }
                             }
-
                         }
                         else
                         {
                             const mcpServers = this.config.providerSettings.mcpServers;
                             const mcpConfig = mcpServers
-                                ? { mcp_servers: mcpServers } as CodexThreadStartParams["config"]
+                                ? ({ mcp_servers: mcpServers } as CodexThreadStartParams["config"])
                                 : undefined;
-                            const config = mergeThreadConfig(
-                                mcpConfig,
-                                customModelProviderSettings.config,
-                            );
+                            const config = mergeThreadConfig(mcpConfig, customModelProviderSettings.config);
 
                             const threadStartParams: CodexThreadStartParams = stripUndefined({
                                 model: this.modelId || this.config.providerSettings.defaultModel,
@@ -1259,11 +1416,21 @@ export class CodexLanguageModel implements LanguageModelV3
                                 developerInstructions,
                                 config,
                                 cwd: callOptions?.cwd ?? this.config.providerSettings.defaultThreadSettings?.cwd,
-                                runtimeWorkspaceRoots: callOptions?.runtimeWorkspaceRoots ?? this.config.providerSettings.defaultThreadSettings?.runtimeWorkspaceRoots,
-                                approvalPolicy: callOptions?.approvalPolicy ?? this.config.providerSettings.defaultThreadSettings?.approvalPolicy,
-                                approvalsReviewer: callOptions?.approvalsReviewer ?? this.config.providerSettings.defaultThreadSettings?.approvalsReviewer,
-                                sandbox: callOptions?.sandbox ?? this.config.providerSettings.defaultThreadSettings?.sandbox,
-                                ephemeral: callOptions?.ephemeral ?? this.config.providerSettings.defaultThreadSettings?.ephemeral,
+                                runtimeWorkspaceRoots:
+                  callOptions?.runtimeWorkspaceRoots ??
+                  this.config.providerSettings.defaultThreadSettings?.runtimeWorkspaceRoots,
+                                approvalPolicy:
+                  callOptions?.approvalPolicy ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalPolicy,
+                                approvalsReviewer:
+                  callOptions?.approvalsReviewer ??
+                  this.config.providerSettings.defaultThreadSettings?.approvalsReviewer,
+                                sandbox:
+                  callOptions?.sandbox ??
+                  this.config.providerSettings.defaultThreadSettings?.sandbox,
+                                ephemeral:
+                  callOptions?.ephemeral ??
+                  this.config.providerSettings.defaultThreadSettings?.ephemeral,
                             });
                             debugLog?.("outbound", "thread/start", threadStartParams);
                             const threadStartResult = await client.request<ThreadStartResultLike>(
@@ -1272,19 +1439,21 @@ export class CodexLanguageModel implements LanguageModelV3
                             );
                             threadId = extractThreadId(threadStartResult);
                             mapper.setThreadPath(threadStartResult.thread?.path);
-                            activeThreadCwd = threadStartResult.cwd
-                                ?? threadStartResult.thread?.cwd
-                                ?? threadStartParams.cwd
-                                ?? undefined;
+                            activeThreadCwd =
+                                threadStartResult.cwd ??
+                threadStartResult.thread?.cwd ??
+                threadStartParams.cwd ??
+                undefined;
                             mapper.setThreadCwd(activeThreadCwd);
                             await notifyThreadStarted({
                                 callOptions,
                                 debugLog,
                                 thread: stripUndefined({
                                     threadId,
-                                    threadPath: typeof threadStartResult.thread?.path === "string"
-                                        ? threadStartResult.thread.path
-                                        : undefined,
+                                    threadPath:
+                    typeof threadStartResult.thread?.path === "string"
+                        ? threadStartResult.thread.path
+                        : undefined,
                                 }),
                             });
                         }
@@ -1297,8 +1466,12 @@ export class CodexLanguageModel implements LanguageModelV3
                         {
                             mapper.enableCrossCallMode();
                             this.registerCrossCallToolHandler(
-                                client, controller, persistentTransport,
-                                threadId, closeSuccessfully, mapper,
+                                client,
+                                controller,
+                                persistentTransport,
+                                threadId,
+                                closeSuccessfully,
+                                mapper,
                             );
                         }
 
@@ -1307,22 +1480,36 @@ export class CodexLanguageModel implements LanguageModelV3
                             clientUserMessageId: callOptions?.clientUserMessageId,
                             input: turnInput,
                             cwd: callOptions?.cwd ?? this.config.providerSettings.defaultTurnSettings?.cwd,
-                            runtimeWorkspaceRoots: callOptions?.runtimeWorkspaceRoots ?? this.config.providerSettings.defaultTurnSettings?.runtimeWorkspaceRoots,
-                            approvalPolicy: callOptions?.approvalPolicy ?? this.config.providerSettings.defaultTurnSettings?.approvalPolicy,
-                            approvalsReviewer: callOptions?.approvalsReviewer ?? this.config.providerSettings.defaultTurnSettings?.approvalsReviewer,
-                            sandboxPolicy: callOptions?.sandboxPolicy ?? this.config.providerSettings.defaultTurnSettings?.sandboxPolicy,
+                            runtimeWorkspaceRoots:
+                callOptions?.runtimeWorkspaceRoots ??
+                this.config.providerSettings.defaultTurnSettings?.runtimeWorkspaceRoots,
+                            approvalPolicy:
+                callOptions?.approvalPolicy ??
+                this.config.providerSettings.defaultTurnSettings?.approvalPolicy,
+                            approvalsReviewer:
+                callOptions?.approvalsReviewer ??
+                this.config.providerSettings.defaultTurnSettings?.approvalsReviewer,
+                            sandboxPolicy:
+                callOptions?.sandboxPolicy ??
+                this.config.providerSettings.defaultTurnSettings?.sandboxPolicy,
                             model: callOptions?.model ?? this.config.providerSettings.defaultTurnSettings?.model,
-                            effort: callOptions?.effort ?? this.config.providerSettings.defaultTurnSettings?.effort,
-                            summary: callOptions?.summary ?? this.config.providerSettings.defaultTurnSettings?.summary,
-                            outputSchema: options.responseFormat?.type === "json"
-                                ? options.responseFormat.schema as JsonValue | undefined
-                                : undefined,
+                            effort:
+                callOptions?.effort ?? this.config.providerSettings.defaultTurnSettings?.effort,
+                            summary:
+                callOptions?.summary ?? this.config.providerSettings.defaultTurnSettings?.summary,
+                            outputSchema:
+                options.responseFormat?.type === "json"
+                    ? (options.responseFormat.schema as JsonValue | undefined)
+                    : undefined,
                         });
                         mapper.setThreadCwd(turnStartParams.cwd ?? activeThreadCwd);
 
                         debugLog?.("outbound", "turn/start", turnStartParams);
 
-                        const turnStartResult = await client.request<TurnStartResultLike>("turn/start", turnStartParams);
+                        const turnStartResult = await client.request<TurnStartResultLike>(
+                            "turn/start",
+                            turnStartParams,
+                        );
 
                         activeTurnId = extractTurnId(turnStartResult);
 
@@ -1333,8 +1520,8 @@ export class CodexLanguageModel implements LanguageModelV3
                             interruptTimeoutMs,
                             fileResolver,
                         });
-                        const onSessionCreated = callOptions?.onSessionCreated
-                            ?? this.config.providerSettings.onSessionCreated;
+                        const onSessionCreated =
+                            callOptions?.onSessionCreated ?? this.config.providerSettings.onSessionCreated;
                         onSessionCreated?.(session);
 
                         void requestTurnInterruptIfPossible()?.catch((error) =>

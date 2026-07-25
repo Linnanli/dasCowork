@@ -20,6 +20,7 @@ import {
   type ConversationTranscriptMessage
 } from './ConversationTranscriptController'
 import { ConversationTranscriptRecoveryStore } from './ConversationTranscriptRecoveryStore'
+import { classifyConversationRecoveryError } from './classifyConversationRecoveryError'
 
 export type ConversationScrollSnapshot = {
   scrollTop: number
@@ -27,6 +28,7 @@ export type ConversationScrollSnapshot = {
 }
 
 export type ConversationEntryStatus = 'loading' | ChatStatus
+export type ConversationRecoveryPhase = 'attached' | 'needs_resume' | 'resuming' | 'resumed'
 
 export type ConversationChatEntry = {
   readonly localId: string
@@ -37,6 +39,7 @@ export type ConversationChatEntry = {
   context: ActiveConversationContext
   status: ConversationEntryStatus
   error?: Error
+  recoveryError?: Error
   selectedModelId?: string
   modelSelectionError?: string
   unread: boolean
@@ -44,6 +47,7 @@ export type ConversationChatEntry = {
   draftAttachments: readonly ConversationDraftAttachment[]
   scroll?: ConversationScrollSnapshot
   loaded: boolean
+  recoveryPhase: ConversationRecoveryPhase
 }
 
 export type ConversationChatRegistrySnapshot = {
@@ -58,12 +62,15 @@ export type ConversationChatRegistryOptions = {
   draftStore?: ConversationDraftStore
   transcriptRecoveryStore?: ConversationTranscriptRecoveryStore
   createId?: () => string
+  onStreamStarted?: (conversationId: string) => void
 }
 
 type InternalConversationChatEntry = ConversationChatEntry & {
   messages: readonly ConversationTranscriptMessage[]
   unsubscribeController: () => void
   historyRevision?: string | null
+  recoveryAttempts: number
+  recoveryRetryTimer?: ReturnType<typeof setTimeout>
 }
 
 export class ConversationChatRegistry {
@@ -71,6 +78,7 @@ export class ConversationChatRegistry {
   private readonly draftStore: ConversationDraftStore
   private readonly transcriptRecoveryStore: ConversationTranscriptRecoveryStore
   private readonly createId: () => string
+  private readonly onStreamStarted: ((conversationId: string) => void) | undefined
   private readonly entriesByLocalId = new Map<string, InternalConversationChatEntry>()
   private readonly aliases = new Map<string, InternalConversationChatEntry>()
   private readonly conversationMetadata = new Map<string, SidebarConversation>()
@@ -91,6 +99,7 @@ export class ConversationChatRegistry {
     this.transcriptRecoveryStore =
       options.transcriptRecoveryStore ?? new ConversationTranscriptRecoveryStore()
     this.createId = options.createId ?? createLocalConversationId
+    this.onStreamStarted = options.onStreamStarted
     this.activeEntry = this.createEntry({
       localId: this.createId(),
       projectSelection: undefined,
@@ -118,6 +127,51 @@ export class ConversationChatRegistry {
     })
     this.activate(entry)
     return entry
+  }
+
+  /**
+   * Restores a renderer-local conversation before app-server has assigned its
+   * durable thread id. The main process owns that short-lived identity, so it
+   * is safe to use it to attach the replacement renderer without starting a
+   * second turn.
+   */
+  async restoreActiveConversation(conversationId: string): Promise<boolean> {
+    this.assertUsable()
+    const recoverySnapshot = await this.chatBridge.getActiveSnapshot?.(conversationId)
+    const activeRun =
+      recoverySnapshot?.run ?? (await this.chatBridge.getActiveRun?.(conversationId))
+    if (!activeRun) return false
+
+    let entry = this.resolveInternal(conversationId)
+    const createdEntry = !entry
+    if (!entry) {
+      entry = this.createEntry({
+        localId: conversationId,
+        projectSelection: undefined,
+        loaded: true,
+        newConversation: false
+      })
+    }
+    if (createdEntry && recoverySnapshot?.baseMessages.length) {
+      entry.controller.replaceMessages(recoverySnapshot.baseMessages)
+    }
+    if (activeRun.threadId)
+      entry = this.bindThread(entry, activeRun.threadId) as InternalConversationChatEntry
+    entry.context = {
+      ...entry.context,
+      conversationId,
+      threadId: activeRun.threadId ?? entry.context.threadId
+    }
+    entry.loaded = true
+    this.activate(entry)
+    this.resumeEntry(entry)
+    return true
+  }
+
+  async restoreSingleActiveConversation(): Promise<boolean> {
+    const activeRuns = await this.chatBridge.getActiveRuns?.()
+    if (!activeRuns || activeRuns.length !== 1) return false
+    return this.restoreActiveConversation(activeRuns[0].conversationId)
   }
 
   async openConversation(
@@ -323,6 +377,7 @@ export class ConversationChatRegistry {
     if (this.destroyed) return
     this.destroyed = true
     for (const entry of this.entriesByLocalId.values()) {
+      if (entry.recoveryRetryTimer !== undefined) clearTimeout(entry.recoveryRetryTimer)
       entry.unsubscribeController()
     }
     this.entriesByLocalId.clear()
@@ -386,6 +441,10 @@ export class ConversationChatRegistry {
       entry.loaded = true
       if (this.navigationEpoch === navigationEpoch) this.activate(entry)
       else this.emit()
+      // The history response is a point-in-time snapshot. A live run is
+      // reattached after hydration so replayed chunks merge into this entry.
+      entry.recoveryAttempts = 0
+      this.resumeEntry(entry)
       return entry
     } catch (error) {
       entry.status = 'error'
@@ -412,7 +471,10 @@ export class ConversationChatRegistry {
       getActiveConversation: () => entry.context,
       getProjectSelection: () => entry.context.projectSelection,
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
-      onStreamStarted: () => entry.controller.handleStreamStarted(),
+      onStreamStarted: () => {
+        this.onStreamStarted?.(entry.context.threadId ?? entry.localId)
+        entry.controller.handleStreamStarted()
+      },
       onThreadBound: ({ threadId }) => {
         const boundEntry = this.bindThread(entry, threadId)
         if (boundEntry !== entry) {
@@ -424,6 +486,7 @@ export class ConversationChatRegistry {
       onTurnLifecycle: (event) => entry.controller.handleTurnLifecycle(event),
       onStreamAccepted: () => entry.controller.handleStreamAccepted(),
       onStreamAborted: () => entry.controller.handleStreamAborted(),
+      onStreamError: (error) => entry.controller.handleStreamError(error),
       onStreamFinished: ({ threadId }) => {
         if (threadId) this.bindThread(entry, threadId)
       }
@@ -447,6 +510,8 @@ export class ConversationChatRegistry {
       draft: this.draftStore.get(stableDraftIdentity),
       draftAttachments: this.draftStore.getAttachments(stableDraftIdentity),
       loaded: input.loaded,
+      recoveryPhase: 'attached',
+      recoveryAttempts: 0,
       unsubscribeController: () => undefined
     } satisfies InternalConversationChatEntry)
     let previousControllerStatus = controller.getSnapshot().status
@@ -470,12 +535,20 @@ export class ConversationChatRegistry {
       if (!this.recoveryHydrations.has(entry)) {
         if (completedSuccessfulTurn) {
           this.transcriptRecoveryStore.clearTerminalFallback(recoveryIdentity)
+          this.transcriptRecoveryStore.clearActiveTextFallback(recoveryIdentity)
         } else {
           this.transcriptRecoveryStore.saveTerminalFallback(
             recoveryIdentity,
             terminalRecoverySourceFromTranscript(snapshot.messages),
             entry.historyRevision
           )
+          if (isRunningStatus(snapshot.status)) {
+            this.transcriptRecoveryStore.saveActiveTextFallback(
+              recoveryIdentity,
+              terminalRecoverySourceFromTranscript(snapshot.messages),
+              entry.historyRevision
+            )
+          }
         }
       }
       if (controller.takeCurrentSendAcceptance()) this.clearDraft(entry)
@@ -492,6 +565,62 @@ export class ConversationChatRegistry {
     entry.draft = ''
     entry.draftAttachments = []
     this.draftStore.clear(entry.context.threadId ?? entry.localId)
+  }
+
+  private resumeEntry(entry: InternalConversationChatEntry): void {
+    if (this.destroyed) return
+    entry.recoveryPhase = 'resuming'
+    entry.recoveryError = undefined
+    this.emit()
+    this.recoveryHydrations.add(entry)
+    void entry.controller
+      .resumeStream()
+      .then((resumed) => {
+        if (this.destroyed) return
+        entry.recoveryError = entry.controller.getRecoveryError()
+        if (
+          !resumed &&
+          entry.recoveryError &&
+          !hasVisibleAssistantContent(entry.controller.getSnapshot().messages)
+        ) {
+          this.restoreRenderedActiveText(entry)
+        }
+        entry.recoveryPhase = resumed
+          ? 'resumed'
+          : entry.recoveryError
+            ? 'needs_resume'
+            : 'attached'
+        this.emit()
+        const diagnostic = classifyConversationRecoveryError(entry.recoveryError)
+        if (
+          !resumed &&
+          diagnostic?.kind === 'transient-runtime' &&
+          entry.recoveryAttempts === 0 &&
+          entry === this.activeEntry
+        ) {
+          entry.recoveryAttempts = 1
+          entry.recoveryRetryTimer = setTimeout(() => {
+            entry.recoveryRetryTimer = undefined
+            if (!this.destroyed && entry === this.activeEntry) this.resumeEntry(entry)
+          }, 750)
+        }
+      })
+      .finally(() => this.recoveryHydrations.delete(entry))
+  }
+
+  private restoreRenderedActiveText(entry: InternalConversationChatEntry): void {
+    const recoveryIdentity = entry.context.threadId ?? entry.context.conversationId ?? entry.localId
+    const restored = this.transcriptRecoveryStore.mergeActiveTextFallback(
+      recoveryIdentity,
+      terminalRecoverySourceFromTranscript(entry.controller.getSnapshot().messages)
+    )
+    this.recoveryHydrations.add(entry)
+    try {
+      entry.controller.replaceMessages(restored)
+      entry.messages = entry.controller.getSnapshot().messages
+    } finally {
+      this.recoveryHydrations.delete(entry)
+    }
   }
 
   private activate(entry: InternalConversationChatEntry): void {
@@ -689,6 +818,13 @@ function hasLocalPathAttachments(messages: readonly ConversationTranscriptMessag
         (part.mediaType === LOCAL_FILE_ATTACHMENT_MEDIA_TYPE ||
           part.mediaType === LOCAL_FOLDER_ATTACHMENT_MEDIA_TYPE)
     )
+  )
+}
+
+function hasVisibleAssistantContent(messages: readonly ConversationTranscriptMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === 'assistant' && message.parts.some((part) => part.type !== 'step-start')
   )
 }
 

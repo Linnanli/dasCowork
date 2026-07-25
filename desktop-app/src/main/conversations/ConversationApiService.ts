@@ -190,10 +190,9 @@ export class ConversationApiService {
   async openConversation(
     input: SidebarConversationActionPayload
   ): Promise<SidebarConversationOpenResult> {
-    // A page reload can reconnect while the main process still owns a live
-    // turn.  Reading history before that turn settles produces a valid but
-    // incomplete snapshot that the renderer has no stream to complete.
-    await this.options.waitForConversationSettlement?.(input.conversationId)
+    // This is intentionally a point-in-time read. The renderer immediately
+    // attaches to any active main-process run and replays the missing events.
+    // Waiting here would turn a refresh into a silent full-turn delay.
     const [projectState, thread] = await Promise.all([
       this.options.projectStore.getState(),
       this.options.threadClient.readThreadWithFullTurns(input.conversationId)

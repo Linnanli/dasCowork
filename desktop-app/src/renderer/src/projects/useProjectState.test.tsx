@@ -244,6 +244,8 @@ function installDesktopProjects(overrides: Partial<DesktopProjectsApi>): void {
       selectProject: vi.fn(),
       removeProject: vi.fn(),
       renameProject: vi.fn(),
+      getWorkspaceRecovery: vi.fn(async () => ({ state: 'not-applicable' as const })),
+      restoreWorkspace: vi.fn(async () => ({ state: 'not-applicable' as const })),
       onStateChange: vi.fn(() => vi.fn()),
       ...overrides
     } satisfies DesktopProjectsApi

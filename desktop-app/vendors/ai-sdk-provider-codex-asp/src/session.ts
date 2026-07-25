@@ -29,7 +29,7 @@ export interface CodexSteerResult
 
 export class CodexSteerError extends CodexProviderError
 {
-    readonly code: CodexSteerErrorCode;
+    override readonly code: CodexSteerErrorCode;
 
     constructor(code: CodexSteerErrorCode, message: string, options?: { cause?: unknown })
     {

@@ -34,6 +34,8 @@ export type CodexIpcAssistantRuntimeState = {
   selectedModelId: string | undefined
   modelSelectionError: string | undefined
   startNewConversation: () => void
+  restoreActiveConversation: (conversationId: string) => Promise<boolean>
+  restoreSingleActiveConversation: () => Promise<boolean>
   openConversation: (input: SidebarConversationActionPayload) => Promise<void>
   setSelectedModelId: (modelId: string) => Promise<void>
   setActiveProjectSelection: (selection: ProjectSelection | undefined) => void
@@ -54,6 +56,16 @@ export type CodexIpcAssistantRuntimeOptions = {
   projectSelection?: ProjectSelection
 }
 
+const activeConversationStorageKey = 'das-cowork.active-conversation.v1'
+
+function persistActiveConversationId(conversationId: string): void {
+  try {
+    window.sessionStorage.setItem(activeConversationStorageKey, conversationId)
+  } catch {
+    // Session storage only improves renderer recovery; the main process owns the run.
+  }
+}
+
 export function useCodexIpcAssistantRuntime(
   options: CodexIpcAssistantRuntimeOptions = {}
 ): CodexIpcAssistantRuntimeState {
@@ -65,7 +77,8 @@ export function useCodexIpcAssistantRuntime(
     () =>
       new ConversationChatRegistry({
         chatBridge: window.desktopApp.chat,
-        selectedModelId
+        selectedModelId,
+        onStreamStarted: persistActiveConversationId
       })
   )
   const registrySnapshot = useSyncExternalStore(
@@ -108,12 +121,27 @@ export function useCodexIpcAssistantRuntime(
     const removeSettledApproval = window.desktopApp.codex.onApprovalSettled?.((requestId) => {
       setServerRequests((current) => current.filter((item) => item.id !== requestId))
     })
+    void window.desktopApp.codex.listPendingApprovals?.().then((requests) => {
+      if (cancelled) return
+      setServerRequests((current) => {
+        const known = new Set(current.map((request) => request.id))
+        return [...current, ...requests.filter((request) => !known.has(request.id))]
+      })
+    })
 
     return () => {
       cancelled = true
       removeApproval()
       removeSettledApproval?.()
     }
+  }, [registry])
+
+  useEffect(() => {
+    void registry.restoreSingleActiveConversation().catch(() => undefined)
+    const retryTimer = window.setTimeout(() => {
+      void registry.restoreSingleActiveConversation().catch(() => undefined)
+    }, 250)
+    return () => window.clearTimeout(retryTimer)
   }, [registry])
 
   useEffect(() => {
@@ -134,6 +162,15 @@ export function useCodexIpcAssistantRuntime(
   const startNewConversation = useCallback(() => {
     registry.startNewConversation(options.projectSelection)
   }, [options.projectSelection, registry])
+
+  const restoreActiveConversation = useCallback(
+    (conversationId: string) => registry.restoreActiveConversation(conversationId),
+    [registry]
+  )
+  const restoreSingleActiveConversation = useCallback(
+    () => registry.restoreSingleActiveConversation(),
+    [registry]
+  )
 
   const setSelectedModelId = useCallback(
     async (modelId: string) => {
@@ -235,6 +272,8 @@ export function useCodexIpcAssistantRuntime(
     selectedModelId: activeEntry.selectedModelId ?? selectedModelId,
     modelSelectionError: activeEntry.modelSelectionError,
     startNewConversation,
+    restoreActiveConversation,
+    restoreSingleActiveConversation,
     openConversation,
     setSelectedModelId,
     setActiveProjectSelection,

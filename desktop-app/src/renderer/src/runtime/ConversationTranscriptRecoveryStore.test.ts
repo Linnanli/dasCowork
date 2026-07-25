@@ -103,6 +103,33 @@ describe('ConversationTranscriptRecoveryStore', () => {
     expect(store.mergeWithHistory('thread-1', [sameTextDifferentId])).toEqual([sameTextDifferentId])
   })
 
+  it('restores already-rendered active text only when recovery cannot reattach the live journal', () => {
+    const storage = new MemoryStorage()
+    const store = new ConversationTranscriptRecoveryStore(storage)
+    store.saveActiveTextFallback('thread-1', [
+      {
+        id: 'assistant:local-turn-1:initial',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Visible partial response.' }]
+      }
+    ])
+
+    const restored = new ConversationTranscriptRecoveryStore(storage).mergeActiveTextFallback(
+      'thread-1',
+      [serverUser]
+    )
+
+    expect(restored).toEqual([
+      serverUser,
+      {
+        id: 'assistant:local-turn-1:initial',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Visible partial response.' }]
+      }
+    ])
+    expect(restored[1]?.metadata).toBeUndefined()
+  })
+
   it('migrates a legacy terminal fallback without overriding canonical history', () => {
     const storage = new MemoryStorage()
     storage.setItem(
@@ -148,7 +175,7 @@ describe('ConversationTranscriptRecoveryStore', () => {
         }
       }
     ])
-    expect(storage.getItem(storageKey)).toContain('"version":7')
+    expect(storage.getItem(storageKey)).toContain('"version":8')
   })
 
   it('restores completed tool identity without persisting its input or output', () => {
@@ -177,7 +204,9 @@ describe('ConversationTranscriptRecoveryStore', () => {
     const persisted = storage.getItem(storageKey) ?? ''
     expect(persisted).not.toContain('contains-private-input')
     expect(persisted).not.toContain('contains-private-output')
-    expect(new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [])).toEqual([
+    expect(
+      new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [])
+    ).toEqual([
       {
         id: 'assistant:turn-1:terminal',
         role: 'assistant',
@@ -227,9 +256,12 @@ describe('ConversationTranscriptRecoveryStore', () => {
 
     store.saveTerminalFallback('thread-1', [failedFallback])
 
-    expect(new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', canonicalHistory)).toEqual(
-      canonicalHistory
-    )
+    expect(
+      new ConversationTranscriptRecoveryStore(storage).mergeWithHistory(
+        'thread-1',
+        canonicalHistory
+      )
+    ).toEqual(canonicalHistory)
     expect(storage.getItem(storageKey)).toContain('"recoveries":{}')
   })
 
@@ -245,8 +277,50 @@ describe('ConversationTranscriptRecoveryStore', () => {
 
     store.saveTerminalFallback('thread-1', [failedFallback])
 
-    expect(new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [])).toEqual([
-      failedFallback
+    expect(
+      new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [])
+    ).toEqual([failedFallback])
+  })
+
+  it('restores rendered partial text into a canonical failed assistant item', () => {
+    const storage = new MemoryStorage()
+    const store = new ConversationTranscriptRecoveryStore(storage)
+    const renderedFailure: UIMessage = {
+      id: 'assistant:turn-1:item-1',
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'Partial output before the transport failed.' }],
+      metadata: {
+        codexTurn: {
+          turnId: 'turn-1',
+          status: 'failed',
+          error: { message: 'Transport failure' }
+        }
+      }
+    }
+
+    store.saveTerminalFallback('thread-1', [renderedFailure])
+
+    const canonicalFailure: UIMessage = {
+      ...renderedFailure,
+      parts: [],
+      metadata: {
+        codexTurn: {
+          turnId: 'turn-1',
+          status: 'failed',
+          error: { message: 'Canonical failure' }
+        }
+      }
+    }
+
+    expect(
+      new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [
+        canonicalFailure
+      ])
+    ).toEqual([
+      {
+        ...canonicalFailure,
+        parts: [{ type: 'text', text: 'Partial output before the transport failed.' }]
+      }
     ])
   })
 
@@ -419,7 +493,7 @@ describe('ConversationTranscriptRecoveryStore', () => {
 
     expect(merged[0]?.parts).toContainEqual(localAttachment)
     expect(JSON.stringify(storage.getItem(storageKey))).not.toContain('must not be cached')
-    expect(storage.getItem(storageKey)).toContain('"version":7')
+    expect(storage.getItem(storageKey)).toContain('"version":8')
   })
 
   it('migrates v3 attachments and terminal fallbacks', () => {
@@ -447,7 +521,7 @@ describe('ConversationTranscriptRecoveryStore', () => {
       id: 'assistant:turn-1:live-item',
       metadata: { codexTurn: { turnId: 'turn-1', status: 'failed' } }
     })
-    expect(storage.getItem(storageKey)).toContain('"version":7')
+    expect(storage.getItem(storageKey)).toContain('"version":8')
     expect(storage.getItem(storageKey)).not.toContain('terminalByTurnId')
   })
 
@@ -467,9 +541,11 @@ describe('ConversationTranscriptRecoveryStore', () => {
     )
 
     const store = new ConversationTranscriptRecoveryStore(storage, () => 1)
-    expect(store.mergeWithHistory('thread-1', [serverUser])[0]?.parts).toContainEqual(localAttachment)
+    expect(store.mergeWithHistory('thread-1', [serverUser])[0]?.parts).toContainEqual(
+      localAttachment
+    )
     expect(JSON.parse(storage.getItem(storageKey) ?? '{}')).toMatchObject({
-      version: 7,
+      version: 8,
       recoveries: { 'thread-1': { baseRevision: null } }
     })
   })

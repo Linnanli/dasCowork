@@ -364,7 +364,9 @@ export class CodexAppServerConnectionBroker
                 : ` (code ${code})`;
             this.handlePhysicalTermination(
                 transport,
-                new CodexProviderError(`App Server transport closed unexpectedly${suffix}.`),
+                new CodexProviderError(`App Server transport closed unexpectedly${suffix}.`, {
+                    code: "app_server_transport_closed",
+                }),
                 code,
                 signal,
             );
@@ -573,9 +575,12 @@ export class CodexAppServerConnectionBroker
             return;
         }
         this.terminated = true;
-        const error = cause instanceof CodexProviderError
+        const error = cause instanceof CodexProviderError && typeof cause.code === "string"
             ? cause
-            : new CodexProviderError("App Server transport terminated unexpectedly.", { cause });
+            : new CodexProviderError("App Server transport terminated unexpectedly.", {
+                cause,
+                code: "app_server_transport_terminated",
+            });
         const channels = [...this.channels];
         this.resetPhysicalState();
         for (const channel of channels)

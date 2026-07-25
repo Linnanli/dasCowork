@@ -54,6 +54,246 @@ function createRequest(chatId: string): CodexChatRequest {
 }
 
 describe('createChatStreamBridge', () => {
+  it('exposes the main-owned active-run descriptor for local recovery', async () => {
+    const descriptor = {
+      runId: 'run-local',
+      conversationId: 'local-conversation',
+      lastSequence: 2
+    }
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'stream-1',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: () => undefined,
+      getActiveRun: async (conversationId) =>
+        conversationId === descriptor.conversationId ? descriptor : null
+    })
+
+    await expect(bridge.getActiveRun?.('local-conversation')).resolves.toEqual(descriptor)
+    await expect(bridge.getActiveRun?.('unknown-conversation')).resolves.toBeNull()
+  })
+
+  it('attaches a replacement port only when the main process reports a live turn', async () => {
+    const attachedPorts: MessagePort[] = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'recovered-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: () => undefined,
+      hasActiveRun: async (conversationId) => conversationId === 'thread-live',
+      postAttach: (_conversationId, _streamId, port) => attachedPorts.push(port)
+    })
+
+    await expect(bridge.attachChatStream!('thread-missing', callbacks)).resolves.toBeNull()
+    await expect(bridge.attachChatStream!('thread-live', callbacks)).resolves.toBe(
+      'recovered-stream'
+    )
+    expect(attachedPorts).toHaveLength(1)
+
+    attachedPorts[0].postMessage({ type: 'thread-bound', threadId: 'thread-live' })
+    attachedPorts[0].postMessage({
+      type: 'chunk',
+      chunk: { type: 'text-start', id: 'replayed-text' }
+    } satisfies CodexChatStreamEvent)
+
+    expect(callbacks.onThreadBound).toHaveBeenCalledWith('thread-live')
+    expect(callbacks.onChunk).toHaveBeenCalledWith({ type: 'text-start', id: 'replayed-text' })
+  })
+
+  it('keeps an initial no-active-run attach as a normal null result', async () => {
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'recovered-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: () => undefined,
+      getActiveRun: async () => null,
+      postAttach: vi.fn()
+    })
+
+    await expect(bridge.attachChatStream!('thread-missing', callbacks)).resolves.toBeNull()
+
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    expect(callbacks.onFinish).not.toHaveBeenCalled()
+  })
+
+  it('uses the main-issued run identity when attaching a replacement port', async () => {
+    let attachedRunId: string | undefined
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'recovered-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: () => undefined,
+      getActiveRun: async () => ({
+        runId: 'run-current',
+        conversationId: 'thread-live',
+        threadId: 'thread-live',
+        lastSequence: 4
+      }),
+      postAttach: (_conversationId, _streamId, _port, runId) => {
+        attachedRunId = runId
+      }
+    })
+
+    await bridge.attachChatStream!('thread-live', createCallbacks())
+
+    expect(attachedRunId).toBe('run-current')
+  })
+
+  it('deduplicates replayed envelopes and reattaches from the last acknowledged sequence gap', async () => {
+    const startedPorts: MessagePort[] = []
+    const attachedPorts: MessagePort[] = []
+    const attached: Array<{ runId: string | undefined; afterSequence: number | undefined }> = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'sequenced-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => startedPorts.push(port),
+      getActiveRun: async () => ({
+        runId: 'run-1',
+        conversationId: 'chat-1',
+        lastSequence: 3
+      }),
+      postAttach: (_conversationId, _streamId, port, runId, afterSequence) => {
+        attachedPorts.push(port)
+        attached.push({ runId, afterSequence })
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    const port = startedPorts[0]
+    const first = {
+      runId: 'run-1',
+      sequence: 1,
+      event: { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } }
+    } as const
+    port.postMessage(first)
+    port.postMessage(first)
+    port.postMessage({
+      runId: 'run-1',
+      sequence: 3,
+      event: { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'lost' } }
+    })
+    await Promise.resolve()
+
+    expect(attached).toEqual([{ runId: 'run-1', afterSequence: 1 }])
+    attachedPorts[0].postMessage({
+      runId: 'run-1',
+      sequence: 2,
+      event: { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'replayed' } }
+    })
+    attachedPorts[0].postMessage({
+      runId: 'run-1',
+      sequence: 3,
+      event: { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'continued' } }
+    })
+
+    expect(callbacks.onChunk).toHaveBeenCalledTimes(3)
+    expect(callbacks.onChunk).toHaveBeenLastCalledWith({
+      type: 'text-delta',
+      id: 'text-1',
+      delta: 'continued'
+    })
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an explicit resync-required event instead of pretending the stream is contiguous', () => {
+    const startedPorts: MessagePort[] = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'overflowed-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => startedPorts.push(port)
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPorts[0].postMessage({
+      runId: 'run-1',
+      sequence: 24_001,
+      event: { type: 'resync-required', reason: 'journal-overflow' }
+    })
+
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      code: 'journal-unavailable',
+      message: '恢复日志已超出可补发范围，请等待任务结束后重新打开任务。'
+    })
+  })
+
+  it('reattaches a failed MessagePort once from the last acknowledged sequence', async () => {
+    const startedPorts: MessagePort[] = []
+    const attachedPorts: MessagePort[] = []
+    const attached: Array<{ runId: string | undefined; afterSequence: number | undefined }> = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'recovering-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => startedPorts.push(port),
+      getActiveRun: async () => ({
+        runId: 'run-current',
+        conversationId: 'chat-1',
+        lastSequence: 2
+      }),
+      postAttach: (_conversationId, _streamId, port, runId, afterSequence) => {
+        attachedPorts.push(port)
+        attached.push({ runId, afterSequence })
+      }
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPorts[0].postMessage({
+      runId: 'run-current',
+      sequence: 1,
+      event: { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } }
+    })
+    ;(startedPorts[0] as unknown as FakeMessagePort).peer?.onmessageerror?.({} as MessageEvent)
+    await Promise.resolve()
+
+    expect(attached).toEqual([{ runId: 'run-current', afterSequence: 1 }])
+
+    startedPorts[0].postMessage({
+      runId: 'run-current',
+      sequence: 2,
+      event: { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'late' } }
+    })
+    expect(callbacks.onChunk).toHaveBeenCalledTimes(1)
+
+    attachedPorts[0].postMessage({
+      runId: 'run-current',
+      sequence: 2,
+      event: { type: 'chunk', chunk: { type: 'text-delta', id: 'text-1', delta: 'replayed' } }
+    })
+    expect(callbacks.onChunk).toHaveBeenLastCalledWith({
+      type: 'text-delta',
+      id: 'text-1',
+      delta: 'replayed'
+    })
+  })
+
+  it('reports a typed recovery failure when a port-faulted active run has disappeared', async () => {
+    const startedPorts: MessagePort[] = []
+    const callbacks = createCallbacks()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'recovering-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => startedPorts.push(port),
+      getActiveRun: async () => null,
+      postAttach: vi.fn()
+    })
+
+    bridge.startChatStream(createRequest('chat-1'), callbacks)
+    startedPorts[0].postMessage({
+      runId: 'run-current',
+      sequence: 1,
+      event: { type: 'chunk', chunk: { type: 'text-start', id: 'text-1' } }
+    })
+    ;(startedPorts[0] as unknown as FakeMessagePort).peer?.onmessageerror?.({} as MessageEvent)
+    await Promise.resolve()
+
+    expect(callbacks.onChunk).toHaveBeenCalledWith({ type: 'text-start', id: 'text-1' })
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      code: 'run-unavailable',
+      message: '任务已不在运行，无法自动恢复。'
+    })
+    expect(callbacks.onFinish).not.toHaveBeenCalled()
+  })
+
   it('dispatches thread bindings and terminal events on their own message channels', () => {
     const startedPorts: MessagePort[] = []
     const controlMessages: unknown[] = []

@@ -17,6 +17,31 @@ P0-02 的目标不是增加一个“重试”按钮，而是让同一次 Codex �
 1. **P0-02A：运行续接与诚实恢复**——完成 run 身份、事件补发、renderer 重连、失败诊断、待审批恢复和单轮渲染恢复。
 2. **P0-02B：工作区恢复**——在 P0-03 提供 managed-worktree 元数据后，完成状态检查、恢复、失败降级和“新建本地任务继续”的入口。
 
+### 2026-07-25 现状复核
+
+结论：**P0-02A 已完成并验收：页面销毁不取消底层 turn、main-owned 基础消息快照与事件回放、待审批快照恢复、局部渲染重试，以及 thread 未绑定、已绑定含文本与工具、detach 期间 completed/failed/aborted/interrupted 的 E2E 回放均已通过。provider/main 现已接入专用 existing-turn recovery：仅 App Server transport 断开且 server 仍持有同一 active turn 时，`thread/resume` 读取权威快照、合并后续事件且不发送第二个 `turn/start`；若 child 重启且没有该 turn，保留历史并以 interrupted 收敛。P0-02B 已补齐 managed-worktree 契约、main-only 恢复服务、IPC、会话横幅和状态矩阵 E2E；但 P0-03 尚未产生可信的 managed-worktree 元数据，不能形成真实用户可达的 worktree 恢复闭环。因此 P0-02 总项仍保持 partial，不能验收 complete。**
+
+| 验收项                                              | 当前判断         | 证据与缺口                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer 刷新或短断线后重新连接仍在运行的任务       | 部分实现         | main 以 conversation/thread alias 保存活跃 run、有界事件日志和本轮开始的基础 UI messages；`codex-chat:get-active-snapshot` 让 thread 未绑定的新 renderer 先还原原始用户消息，再通过 `codex-chat:attach` 从 sequence 0 回放。`ElectronIpcChatTransport.reconnectToStream()` 和 C22 已接通刷新恢复。端口事件现使用 `runId + sequence + event` envelope，main 拒绝旧 runId 的 attach、按 `afterSequence` 回放；preload 会去重、拒绝序号缺口，并在 20,000 事件或 8 MiB journal 溢出时明确进入 resync-required。MessagePort 短断开会以最后已确认序号自动附加一次；旧 port 的迟到事件已由 preload 单测拦截，但尚未有真实浏览器断线夹具。                                                                                                                                    |
+| 无法恢复时显示原因且不误报完成                      | 部分实现         | reconnect 失败现在按 transient-runtime、configuration、conversation-missing、workspace、authorization、unknown 显示脱敏动作；当前可见会话对短暂失败自动重试一次。main 现保留 terminal journal 5 分钟并允许只读重放；failed terminal 会保留已回放内容并落到 error，aborted terminal 即使缺少 lifecycle companion 也会结算为 interrupted。P002-E2E-06B 已验证 child 重启后没有 active turn 时保留历史并显示 interrupted，且不 replay。                                                                                                                                                                                                                                                                                                                                            |
+| 单条回复渲染失败时局部重试                          | 已完成           | `ConversationTurnErrorBoundary` 仅重置发生异常的 render unit；其组件和 P002-E2E-09 浏览器测试确认重试不调用聊天 transport 或创建新 turn。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| thread resume 失败诊断                              | 部分实现         | renderer 已按 configuration、conversation-missing、transient-runtime、workspace、authorization、unknown 分类，并提供脱敏状态文案和一次短暂故障自动重试；provider 的 `resumeActiveTurn` 会在 snapshot 没有同一 active turn 时拒绝恢复，main 将其收敛为 interrupted，且不自动 replay 输入。P002-E2E-06B 已覆盖该路径。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| worktree 恢复、重试或本地继续                       | 部分实现         | `ManagedWorktreeMetadata` 保存应用管理标记、仓库根、worktree 路径、分支/ref、创建来源与恢复标志；`WorkspaceRecoveryService` 只以 main 保存的元数据检查和执行 `git worktree add`，并在恢复后重新校验仓库/分支。UI 严格区分 `checking-failed`、`restorable`、`gone`、`restore-failed`、remote/projectless；缺元数据绝不显示 Restore。P002-E2E-10 已执行状态矩阵；仍缺 P0-03 写入 metadata 的创建流程，故尚无用户可达的真实恢复闭环。 |
+| 页面销毁不无条件终止后台任务                        | 已完成           | preload beforeunload 只 detach；`desktop-app/src/main/codexChatRuntimeService.ts` 不 interrupt；`desktop-app/src/renderer/src/runtime/ConversationChatRegistry.ts` 销毁时不再 stop。Stop 控制消息携带 runId，main 仅接受匹配 run 的取消；重新附加端口也注册该校验。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 刷新、重连、app-server 重启、恢复失败、重复事件 E2E | 已完成（P0-02A） | P002-E2E-01 至 P002-E2E-09、C22/C23 均已执行通过；P002-E2E-10 的状态矩阵也已通过。专项 13 项 Electron/Playwright 用例单次通过，并以 `--repeat-each=3` 完成 39 项稳定性回归。P002-E2E-06A/B 以持久 child + 可重启 stdio proxy 分别验证同 turn reattach 与 child 重启 interrupted；P002-E2E-07 验证未知 IPC 恢复故障的安全脱敏、保留已渲染内容及明确的不可自动恢复状态。 |
+
+现有 `desktop-app/tests/e2e/fault-injection.e2e.ts` 的 C22/C23 必须保留为回归基线，但不能单独作为 P0-02 完成证据：
+
+- **C22**：reload 关闭 MessagePort 后，main 继续持有 canonical turn；新 renderer 读取历史并附加原 run，在终态 gate 仍关闭时收到后续 live delta，且 provider 请求保持为 1。它仍未覆盖乱序/缺序、重复 attach 或审批恢复。
+- **C23**：app-server 进程退出后显示失败，用户点击重试会创建新 turn。它没有恢复旧 active turn，且测试明确期待 provider 请求和 `turn/started` 从 1 增加到 2。
+
+### existing-turn recovery 能力核验（2026-07-25）
+
+- app-server 的公开 `thread/resume` 对仍在运行的 thread 会重入同一线程、自动建立 listener，并把内存中的 active turn 合并进 `ThreadResumeResponse.thread.turns`；同时也支持 `initialTurnsPage` 获取该快照。证据在 `codex/codex-rs/app-server/src/request_processors/thread_processor.rs:2603-3130`、`codex/codex-rs/app-server/src/request_processors/thread_lifecycle.rs:530-665` 和 `codex/codex-rs/app-server-protocol/src/protocol/v2/thread.rs:319-433`。
+- 普通 provider continuation 在 `thread/resume` 后仍会执行 `turn/start`，因此不能用于 existing-turn recovery；现在新增 `resumeActiveTurn` 专用分支，只发送 `thread/resume`，从 response 中定位同一 `inProgress` turn，并先合并 snapshot 再释放缓冲事件（`desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts`）。
+- 因此 P002-E2E-06 必须拆成两个结果：**仅 provider transport 失效、app-server 仍存活**时恢复同一 turn（`turn/start` 计数不增加）；**app-server 已重启且 active turn 不存在**时只读取权威持久历史并标记 interrupted，绝不重放 prompt、审批答案或工具调用。
+
 禁止修改 `codex/codex-rs/app-server/`，也不在桌面聊天链路中绕过 app-server。实现范围限定在 shared、main、preload、renderer 和 provider fork；provider 只增加“恢复既有 turn 的快照/事件”能力，不建立第二套模型客户端，也不能用普通 `streamText()` continuation 冒充 reattach。
 
 ## 2. 参考项目对齐范围
@@ -38,26 +63,26 @@ P0-02 的目标不是增加一个“重试”按钮，而是让同一次 Codex �
 
 以下内容应补入 P0-02，或明确挂到同批 P0 项上：
 
-| 遗漏 | 为什么必须补 | 归属 |
-| --- | --- | --- |
-| `runId`、单调递增 `sequence`、`afterSequence` 恢复游标 | 无法判断接回的是不是同一次运行，也无法去重或补发 | P0-02A |
-| thread 尚未绑定前的稳定身份 | 新会话可能在收到 `thread-bound` 前刷新；只靠 threadId 无法找回 | P0-02A |
-| detach 与 cancel 分离 | 页面销毁、会话切换不应停止任务；Stop 必须只取消目标 run | P0-02A，并与 P0-05 对齐 |
-| 重连期间的终态 | 断线时可能已经 finish、abort、error 或 interrupted；UI 不能一直显示 running | P0-02A |
-| 旧 port、重复 attach、乱序、缺序和缓冲溢出 | 否则会出现重复文本、重复工具卡片或漏事件 | P0-02A |
-| 新 renderer 的基础消息与“从本轮第一个事件开始”重放 | 新 `Chat` 没有旧 reducer 状态；只补 `text-delta` 而没有 `text-start` 会恢复失败 | P0-02A |
-| `needs_resume / resuming / resumed` 与失败回退 | “连接恢复”不等于“thread 已恢复”，混用会让 composer 过早可发送 | P0-02A |
-| 权威快照与恢复期间事件的语义合并 | 简单重放会重复文本、completed item、tool output 和审批请求 | P0-02A，provider fork 负责协议层合并 |
-| host/conversation 恢复 single-flight | app-server 重连与页面恢复同时发生时会重复 resume | P0-02A |
-| 当前会话立即恢复、后台会话懒恢复 | 一次 host 重连不能触发所有缓存会话同时 resume | P0-02A，并与 P0-05 对齐 |
-| app-server/provider 重启后的语义 | `thread/resume` 之后 provider 会继续发 `turn/start`，不能把它当作对旧 turn 的订阅，否则可能重复执行（`desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:993-1020`, `desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:1146-1167`） | P0-02A |
-| 审批、结构化提问等待时的恢复 | broker 目前只广播新请求，刷新后 pending 请求不会重新出现（`desktop-app/src/main/codexApprovalBroker.ts:19-55`） | P0-02A 与 P0-06 共同完成 |
-| 单轮重试的副作用边界 | “Try again” 必须只重渲染，不能调用 regenerate、send 或 start IPC | P0-02A |
-| 错误分类、脱敏和可访问性 | 原始错误可能含路径或 provider 细节；用户还需要知道能否自动恢复 | P0-02A |
-| managed worktree 的恢复元数据 | 当前项目数据无法判断 restorable，也无法安全重建 | P0-03 提供基础，P0-02B 消费 |
-| local、remote、projectless、managed-worktree 的不同降级路径 | 不同执行目标不能统一显示“本地继续” | P0-02B |
-| 运行恢复的可观测数据 | E2E 需要证明没有重复 turn/tool；日志需要关联 run 和 reconnect generation | P0-02A |
-| 草稿、滚动位置、未读状态的保留规则 | 恢复通信不应被误当成重新打开一条全新对话 | P0-02A |
+| 遗漏                                                        | 为什么必须补                                                                                                                                                                                                                                                                | 归属                                 |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `runId`、单调递增 `sequence`、`afterSequence` 恢复游标      | 无法判断接回的是不是同一次运行，也无法去重或补发                                                                                                                                                                                                                            | P0-02A                               |
+| thread 尚未绑定前的稳定身份                                 | 新会话可能在收到 `thread-bound` 前刷新；只靠 threadId 无法找回                                                                                                                                                                                                              | P0-02A                               |
+| detach 与 cancel 分离                                       | 页面销毁、会话切换不应停止任务；Stop 必须只取消目标 run                                                                                                                                                                                                                     | P0-02A，并与 P0-05 对齐              |
+| 重连期间的终态                                              | 断线时可能已经 finish、abort、error 或 interrupted；UI 不能一直显示 running                                                                                                                                                                                                 | P0-02A                               |
+| 旧 port、重复 attach、乱序、缺序和缓冲溢出                  | 否则会出现重复文本、重复工具卡片或漏事件                                                                                                                                                                                                                                    | P0-02A                               |
+| 新 renderer 的基础消息与“从本轮第一个事件开始”重放          | 新 `Chat` 没有旧 reducer 状态；只补 `text-delta` 而没有 `text-start` 会恢复失败                                                                                                                                                                                             | P0-02A                               |
+| `needs_resume / resuming / resumed` 与失败回退              | “连接恢复”不等于“thread 已恢复”，混用会让 composer 过早可发送                                                                                                                                                                                                               | P0-02A                               |
+| 权威快照与恢复期间事件的语义合并                            | 简单重放会重复文本、completed item、tool output 和审批请求                                                                                                                                                                                                                  | P0-02A，provider fork 负责协议层合并 |
+| host/conversation 恢复 single-flight                        | app-server 重连与页面恢复同时发生时会重复 resume                                                                                                                                                                                                                            | P0-02A                               |
+| 当前会话立即恢复、后台会话懒恢复                            | 一次 host 重连不能触发所有缓存会话同时 resume                                                                                                                                                                                                                               | P0-02A，并与 P0-05 对齐              |
+| app-server/provider 重启后的语义                            | 运行中的 app-server 支持 `thread/resume` 重入并返回 active turn；但 provider 当前仍会继续发 `turn/start`。必须新增专用 reattach 路径，且进程重启后 active turn 消失时收敛为 interrupted，不能重放（`desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:1151-1327`） | P0-02A                               |
+| 审批、结构化提问等待时的恢复                                | broker 目前只广播新请求，刷新后 pending 请求不会重新出现（`desktop-app/src/main/codexApprovalBroker.ts:19-55`）                                                                                                                                                             | P0-02A 与 P0-06 共同完成             |
+| 单轮重试的副作用边界                                        | “Try again” 必须只重渲染，不能调用 regenerate、send 或 start IPC                                                                                                                                                                                                            | P0-02A                               |
+| 错误分类、脱敏和可访问性                                    | 原始错误可能含路径或 provider 细节；用户还需要知道能否自动恢复                                                                                                                                                                                                              | P0-02A                               |
+| managed worktree 的恢复元数据                               | 当前项目数据无法判断 restorable，也无法安全重建                                                                                                                                                                                                                             | P0-03 提供基础，P0-02B 消费          |
+| local、remote、projectless、managed-worktree 的不同降级路径 | 不同执行目标不能统一显示“本地继续”                                                                                                                                                                                                                                          | P0-02B                               |
+| 运行恢复的可观测数据                                        | E2E 需要证明没有重复 turn/tool；日志需要关联 run 和 reconnect generation                                                                                                                                                                                                    | P0-02A                               |
+| 草稿、滚动位置、未读状态的保留规则                          | 恢复通信不应被误当成重新打开一条全新对话                                                                                                                                                                                                                                    | P0-02A                               |
 
 ### 对原清单第 83 项的修订建议
 
@@ -79,27 +104,34 @@ P0-02 的目标不是增加一个“重试”按钮，而是让同一次 Codex �
 
 ```ts
 type CodexChatRunDescriptor = {
-  runId: string
-  conversationId: string
-  threadId?: string
-  phase: 'starting' | 'active' | 'waiting-user' | 'completed' | 'aborted' | 'interrupted' | 'failed'
-  lastSequence: number
-  createdAt: string
-  terminalAt?: string
-}
+  runId: string;
+  conversationId: string;
+  threadId?: string;
+  phase:
+    | "starting"
+    | "active"
+    | "waiting-user"
+    | "completed"
+    | "aborted"
+    | "interrupted"
+    | "failed";
+  lastSequence: number;
+  createdAt: string;
+  terminalAt?: string;
+};
 
 type CodexChatStreamEnvelope = {
-  runId: string
-  sequence: number
-  event: CodexChatStreamEvent
-}
+  runId: string;
+  sequence: number;
+  event: CodexChatStreamEvent;
+};
 
 type CodexChatAttachRequest = {
-  conversationId: string
-  threadId?: string
-  runId?: string
-  afterSequence: number
-}
+  conversationId: string;
+  threadId?: string;
+  runId?: string;
+  afterSequence: number;
+};
 ```
 
 - main 为每次 `turn/start` 分配唯一 `runId`；conversationId 在 thread 尚未绑定时仍可定位运行。
@@ -116,7 +148,7 @@ type CodexChatAttachRequest = {
 恢复分为两级，不能混为一次普通重试：
 
 1. **Renderer reattach**：main 和 provider run 仍存活时，直接使用 `runId + sequence journal` 补发当前 turn 的 UI chunks，不发送任何 app-server `thread/resume` 或 `turn/start`。
-2. **Provider/app-server reconnect recovery**：原 provider transport 已失效时，在 provider fork 内先建立新 transport 和事件缓冲，再调用“不创建新 turn”的 thread snapshot/recovery API；只有 snapshot 仍报告同一 active turn 时才继续释放事件。当前 `model.ts` 的普通续聊路径在 `thread/resume` 后必然调用 `turn/start`，因此明确禁止复用该路径做 reattach（`desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:993-1020`, `desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:1146-1167`）。
+2. **Provider/app-server reconnect recovery**：原 provider transport 已失效、但 app-server 仍存活时，在 provider fork 内先建立新 transport 和事件缓冲，再以 `thread/resume` 重入同一 running thread，读取其 active-turn snapshot；只有 snapshot 仍报告同一 active turn 时才继续释放事件。当前 `model.ts` 的普通续聊路径在 `thread/resume` 后必然调用 `turn/start`，因此明确禁止复用该路径做 reattach（`desktop-app/vendors/ai-sdk-provider-codex-asp/src/model.ts:1151-1327`）。app-server 进程重启后没有 active turn 时，只能恢复权威持久历史并标记 interrupted。
 
 恢复协调器必须满足：
 
@@ -129,15 +161,15 @@ type CodexChatAttachRequest = {
 
 ### 4.3 生命周期语义
 
-| 动作 | 订阅 | 底层 run |
-| --- | --- | --- |
-| 切换会话、renderer unmount、刷新、窗口 renderer 崩溃 | detach | 继续 |
-| 用户点击 Stop | detach 当前流，并调用 `cancelRun(runId)` | 取消准确的 run |
-| main 窗口隐藏 | detach 或保持 | 继续 |
-| 应用真正退出 | 关闭订阅 | 按现有 shutdown 流程取消并记录 interrupted |
-| provider transport 短断开、app-server 进程仍持有 active turn | needs_resume，恢复后重订阅 | 继续；恢复失败仍保持 needs_resume |
-| app-server 进程重启且 active turn 已消失 | 关闭订阅 | 标记 interrupted，不重放旧 prompt |
-| run 在无订阅时结束 | 保留 terminal journal 5 分钟 | completed/aborted/failed |
+| 动作                                                         | 订阅                                     | 底层 run                                   |
+| ------------------------------------------------------------ | ---------------------------------------- | ------------------------------------------ |
+| 切换会话、renderer unmount、刷新、窗口 renderer 崩溃         | detach                                   | 继续                                       |
+| 用户点击 Stop                                                | detach 当前流，并调用 `cancelRun(runId)` | 取消准确的 run                             |
+| main 窗口隐藏                                                | detach 或保持                            | 继续                                       |
+| 应用真正退出                                                 | 关闭订阅                                 | 按现有 shutdown 流程取消并记录 interrupted |
+| provider transport 短断开、app-server 进程仍持有 active turn | needs_resume，恢复后重订阅               | 继续；恢复失败仍保持 needs_resume          |
+| app-server 进程重启且 active turn 已消失                     | 关闭订阅                                 | 标记 interrupted，不重放旧 prompt          |
+| run 在无订阅时结束                                           | 保留 terminal journal 5 分钟             | completed/aborted/failed                   |
 
 ### 4.4 renderer 状态
 
@@ -399,24 +431,56 @@ type CodexChatAttachRequest = {
 
 完成标准：每种状态都有 main 单测和 renderer 组件测试；缺少元数据时 Restore worktree 按钮不可见。
 
+2026-07-25 实施记录：已新增 `ManagedWorktreeMetadata`、`WorkspaceRecoveryService`、`WorkspaceRecoveryBanner` 与 `codex:projects:get-workspace-recovery` / `restore-workspace` IPC。main 单测覆盖 ordinary missing、remote/projectless、metadata 校验、已有 worktree、恢复成功和恢复失败；renderer 测试覆盖动作白名单。P0-03 仍需在创建分叉 worktree 时写入该 metadata，随后才能形成真实用户可达的恢复闭环。
+
 ### 步骤 10：补齐 E2E、故障注入和清单文档
 
 涉及文件：
 
-- `desktop-app/tests/e2e/chat.e2e.ts`
-- `desktop-app/tests/e2e/sidebar.e2e.ts:133-211`
+- 新建 `desktop-app/tests/e2e/active-task-reconnect.e2e.ts`
+- `desktop-app/tests/e2e/fault-injection.e2e.ts:26-276`
+- `desktop-app/tests/e2e/support/mockBackend.ts`
+- `desktop-app/tests/e2e/support/app-server-process-wrapper.mjs`
+- `docs/test-plan.md`
+- `desktop-app/tests/test-plan-coverage.json`
 - `docs/codex-electron-conversation-gap-checklist.md:77-99`
 - `docs/ai-sdk-provider-codex-asp-api.md:343-372`
 
 工作内容：
 
-1. 在 E2E mock app-server/provider 中加入可控的 pause、disconnect、restart、duplicate、out-of-order、snapshot-prefix overlap、pending approval、terminal while detached 和 worktree 状态。
-2. 覆盖 thread-bound 前刷新、流中刷新、会话切走再返回、窗口重载、app-server 重启、恢复失败、重复事件、Stop 旧 run。
-3. 记录并断言每个场景的 `turn/start` 次数和 tool call id 次数均为 1；snapshot 已包含部分文本时只追加缺少后缀。
-4. 更新 P0-02 清单，补上本计划“遗漏分析”中的协议和状态要求；把 managed-worktree 前置项链接到 P0-03，把 pending 交互链接到 P0-06。
-5. 在 provider API 文档中明确区分“thread continuation（会创建新 turn）”和“renderer reattach（不会创建新 turn）”。
+1. 保留 C22/C23 作为“detach 不取消”和“崩溃后诚实失败”的回归用例；新增独立 P0-02 场景 ID，避免 `desktop-app/tests/test-plan-coverage.json` 把 C22/C23 的 `covered` 误读为 active reattach 已覆盖。
+2. 在 E2E mock app-server/provider 中加入可控的 pause、MessagePort disconnect、process restart、duplicate、out-of-order、sequence gap、snapshot-prefix overlap、pending approval、terminal while detached 和 worktree 状态；测试设施只能从测试目录注入，不得在生产 main/renderer 添加 test-only 分支。
+3. 新增以下 P0-02A E2E 矩阵：
 
-完成标准：E2E 证明逻辑链路仍为 renderer → IPC → main → provider → app-server，并能用计数器证明没有重复执行。
+| 场景                                           | 必须证明                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `P002-E2E-01` thread-bound 前刷新              | **已完成**：只凭 conversationId 从 main snapshot 还原原始用户消息并 attach 原 run；终态 gate 保持关闭时，新 renderer 已能收到后续 delta；provider 请求、`turn/start` 均为 1。                                                                                                     |
+| `P002-E2E-02` 已绑定流中刷新                   | **已完成**：刷新前后文本、pending approval 和最终 assistant message 各为 1；同一 tool call 的 provider output 恰为 1。                                                                                                                                                            |
+| `P002-E2E-03` 短暂 MessagePort 断线            | **已完成**：不刷新页面时向当前 port 注入 `messageerror`，bridge 自动 attach；最终只有一条 assistant 回复，provider 请求和 `turn/start` 均为 1。                                                                                                                                    |
+| `P002-E2E-04` 乱序、缺序和 journal gap         | **已完成（可补齐路径）**：renderer 发现 sequence gap 后从最后确认序号重新 attach；main journal 重放缺失事件，最终 transcript 不重复且不创建新 turn。journal 不可补齐仍返回既有 `resync-required` 安全终态。                                                                    |
+| `P002-E2E-05` detach 期间终态                  | completed、aborted、failed、interrupted 各只落一个终态；failed/interrupted 不得显示 completed。                                                                                                                                                                                   |
+| `P002-E2E-06` transport 断线与 app-server 重启 | **已完成**：A 仅关闭 desktop-facing proxy，真实 child 保持存活；`thread/resume` 恢复同一 active turn、provider 请求和 `turn/start` 均为 1。B 重启 child；provider 以恢复配置读取权威 thread，但没有 active turn 时 main 显示 interrupted、保留部分历史，且 provider 请求和 `turn/start` 均不增加。 |
+| `P002-E2E-07` 恢复失败诊断                     | **已完成**：主进程 `get-active-run` IPC 故障注入模拟未知恢复错误；已断言不会泄露原始 IPC 文本、会保留部分内容并进入安全的不可自动恢复状态。稳定错误码的分类与动作由 main/preload/renderer 单元测试覆盖。 |
+| `P002-E2E-08` pending 审批/提问刷新            | 原 requestId 只出现一次并仍可响应；响应后 pending snapshot 清除；不得因 detach 自动 decline。                                                                                                                                                                                     |
+| `P002-E2E-09` 单轮渲染异常                     | **已完成**：单元测试强制子 render throw；浏览器测试驱动同一条回复的局部 Error Boundary 进入失败状态，确认其他会话内容和 composer 可用，点击“重试渲染”不新增 provider 请求或 `turn/start`。                                                                                           |
+
+4. P0-03 提供可信 managed-worktree 元数据后新增 P0-02B E2E：
+
+| 场景                            | 必须证明                                                                                                                                                             |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `P002-E2E-10` worktree 状态矩阵 | **已完成（状态矩阵）**：测试目录 IPC 注入 `checking-failed`、`restorable`、`gone`、`restore-failed`、`remote-unavailable`、`not-applicable`；已断言严格的按钮白名单、无第二次 provider 请求和无 pageerror。main 单测单独验证真实 git 恢复决策；仍待 P0-03 生成 metadata 后执行真实用户路径闭环。 |
+
+5. 所有新 E2E 统一断言：provider 请求数、`turn/start` 数、稳定 turnId、tool call id 次数、assistant message 数、terminal 次数、页面 `pageerror/unhandledrejection`、恢复状态 ARIA 文案以及敏感信息缺失。任何同一 run 出现第二次 `turn/start` 或同一 tool call 执行两次都直接失败。
+6. `P002-E2E-06` 已由 `persistent-app-server-relay.mjs` 与 `persistent-app-server-proxy.mjs` 覆盖：A 只关闭 proxy 的 desktop-facing stdio，再由第二个 proxy 连接原 child；B 终止 child 并启动空的新 child，证明没有 active turn 时 main 只结算 interrupted。现有 `app-server-process-wrapper.mjs` 仍用于 C23 基线。
+7. 更新 P0-02 清单，补上本计划“遗漏分析”中的协议和状态要求；把 managed-worktree 前置项链接到 P0-03，把 pending 交互链接到 P0-06。
+8. 在 provider API 文档中明确区分“thread continuation（会创建新 turn）”和“renderer reattach（不会创建新 turn）”。
+
+完成标准：
+
+- `P002-E2E-01` 至 `P002-E2E-09` 全部通过后，P0-02A 才可验收；C22/C23 单独通过不能替代。
+- `P002-E2E-10` 通过且 P0-03 managed-worktree 元数据契约落地后，P0-02B 才可验收。
+- 专用套件至少执行一次 `--repeat-each=3`，证明 attach/terminal 竞态没有明显不稳定；全量 E2E 再执行一次作为发布门禁。
+- E2E 证明逻辑链路仍为 renderer → IPC → main → provider → app-server，并能用计数器证明没有重复执行。
 
 ## 7. 验证步骤
 
@@ -451,19 +515,19 @@ npm --prefix desktop-app run test:e2e -- --reporter=line
 
 ## 8. 风险与缓解
 
-| 风险 | 缓解 |
-| --- | --- |
-| attach 补发与 live 事件交错导致重复或漏消息 | main 单一临界区、sequence 去重、generation 丢弃旧订阅；用乱序和旧 port 测试证明 |
-| 页面 Stop 错杀新 run | cancel 必须带 runId，并与当前 conversation/thread 全部匹配 |
-| 事件 journal 占用过多内存 | 20,000 事件/8 MiB 双上限、5 分钟 terminal TTL；超限进入诚实 resync，不无限缓存 |
-| app-server 重启后重复执行工具 | 将 restart 标记 interrupted；严禁把 provider 的 thread continuation 当作旧 turn reattach |
-| 当前 app-server/provider 无法在 transport 重建后继续同一 active turn | 先用能力门测试判定；不支持时收敛到 interrupted + 权威历史，不扩大为自动重放 |
-| 历史读取和 live replay 产生重复 assistant 内容 | 顺序固定为先订阅缓冲 → 权威 snapshot → completed/prefix/id 语义合并 → 释放 live；gap 时不盲目混合两套来源 |
-| pending 审批在刷新后丢失或重复 | 先订阅后 snapshot，按 requestId 去重，broker 保留安全 request |
-| 原始异常泄露路径或凭据 | main 分类与脱敏，renderer 只接收 code、用户文案和安全 detail |
-| worktree 恢复误删或覆盖用户目录 | 只恢复 `managedByApp` 且元数据完整的 worktree；目标路径非空或 repo/ref 不匹配时拒绝并提示 |
-| P0-02 与 P0-03/P0-05/P0-06 重复造状态 | shared 只定义一个 run descriptor、一个 workspace recovery descriptor、一个 pending approval snapshot；各 P0 消费同一数据源 |
-| 当前未提交测试改动发生冲突 | 实施前记录 dirty files；只做增量 patch，不 reset/checkout 用户改动；冲突时拆分新测试文件 |
+| 风险                                                                 | 缓解                                                                                                                       |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| attach 补发与 live 事件交错导致重复或漏消息                          | main 单一临界区、sequence 去重、generation 丢弃旧订阅；用乱序和旧 port 测试证明                                            |
+| 页面 Stop 错杀新 run                                                 | cancel 必须带 runId，并与当前 conversation/thread 全部匹配                                                                 |
+| 事件 journal 占用过多内存                                            | 20,000 事件/8 MiB 双上限、5 分钟 terminal TTL；超限进入诚实 resync，不无限缓存                                             |
+| app-server 重启后重复执行工具                                        | 将 restart 标记 interrupted；严禁把 provider 的 thread continuation 当作旧 turn reattach                                   |
+| 当前 app-server/provider 无法在 transport 重建后继续同一 active turn | 先用能力门测试判定；不支持时收敛到 interrupted + 权威历史，不扩大为自动重放                                                |
+| 历史读取和 live replay 产生重复 assistant 内容                       | 顺序固定为先订阅缓冲 → 权威 snapshot → completed/prefix/id 语义合并 → 释放 live；gap 时不盲目混合两套来源                  |
+| pending 审批在刷新后丢失或重复                                       | 先订阅后 snapshot，按 requestId 去重，broker 保留安全 request                                                              |
+| 原始异常泄露路径或凭据                                               | main 分类与脱敏，renderer 只接收 code、用户文案和安全 detail                                                               |
+| worktree 恢复误删或覆盖用户目录                                      | 只恢复 `managedByApp` 且元数据完整的 worktree；目标路径非空或 repo/ref 不匹配时拒绝并提示                                  |
+| P0-02 与 P0-03/P0-05/P0-06 重复造状态                                | shared 只定义一个 run descriptor、一个 workspace recovery descriptor、一个 pending approval snapshot；各 P0 消费同一数据源 |
+| 当前未提交测试改动发生冲突                                           | 实施前记录 dirty files；只做增量 patch，不 reset/checkout 用户改动；冲突时拆分新测试文件                                   |
 
 ## 9. 交付顺序与停止条件
 

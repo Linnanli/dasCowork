@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { UIMessage } from 'ai'
 
 import {
   createVitestPlanAssertionRecorder,
@@ -99,6 +100,31 @@ describe('ConversationChatRegistry', () => {
     expect(entry.controller.id).toBe('local-0')
   })
 
+  it('persists the local identity as soon as a new stream starts', async () => {
+    const startedConversationIds: string[] = []
+    const { bridge, callbacks, transcriptRecoveryStore } = registryFixture()
+    const registry = new ConversationChatRegistry({
+      chatBridge: bridge,
+      selectedModelId: 'gpt-test',
+      draftStore: new ConversationDraftStore(new MemoryStorage()),
+      transcriptRecoveryStore,
+      createId: () => 'local-persisted',
+      onStreamStarted: (conversationId) => startedConversationIds.push(conversationId)
+    })
+    const entry = registry.getSnapshot().activeEntry
+
+    const send = entry.controller.sendMessage({
+      id: 'persist-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'persist before thread binding' }]
+    })
+    await vi.waitFor(() => expect(callbacks.get(entry.controller.id)).toBeDefined())
+
+    expect(startedConversationIds).toEqual(['local-persisted'])
+    callbacks.get(entry.controller.id)?.onAbort()
+    await send
+  })
+
   it('reuses an alias without loading history or creating a second entry', async () => {
     const { registry } = registryFixture()
     const entry = registry.getSnapshot().activeEntry
@@ -108,6 +134,59 @@ describe('ConversationChatRegistry', () => {
     await expect(registry.openConversation('thread-real', load)).resolves.toBe(entry)
     expect(load).not.toHaveBeenCalled()
     expect(registry.getSnapshot().entries).toHaveLength(1)
+  })
+
+  it('restores a local conversation from a main-owned run before thread binding', async () => {
+    const { bridge, registry } = registryFixture()
+    const callbacks = new Map<string, CodexChatStreamCallbacks>()
+    bridge.getActiveSnapshot = vi.fn(async (conversationId: string) =>
+      conversationId === 'local-recovery'
+        ? {
+            run: {
+              runId: 'run-local-recovery',
+              conversationId,
+              lastSequence: 0
+            },
+            baseMessages: [
+              {
+                id: 'user-recovered',
+                role: 'user',
+                parts: [{ type: 'text', text: 'Restore this local prompt.' }]
+              }
+            ] satisfies readonly UIMessage[]
+          }
+        : null
+    )
+    bridge.attachChatStream = vi.fn(async (conversationId, streamCallbacks) => {
+      callbacks.set(conversationId, streamCallbacks)
+      return 'attached-local-recovery'
+    })
+
+    await expect(registry.restoreActiveConversation('local-recovery')).resolves.toBe(true)
+    await vi.waitFor(() => expect(callbacks.get('local-recovery')).toBeDefined())
+
+    callbacks.get('local-recovery')?.onThreadBound('thread-recovered')
+    callbacks.get('local-recovery')?.onChunk({ type: 'text-start', id: 'text' })
+    callbacks.get('local-recovery')?.onChunk({ type: 'text-delta', id: 'text', delta: 'Recovered' })
+    callbacks.get('local-recovery')?.onFinish('thread-recovered')
+    await flushRecoveryWork()
+
+    const entry = registry.getSnapshot().activeEntry
+    expect(entry.localId).toBe('local-recovery')
+    expect(entry.context.threadId).toBe('thread-recovered')
+    expect(entry.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          parts: [expect.objectContaining({ type: 'text', text: 'Restore this local prompt.' })]
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          parts: [expect.objectContaining({ type: 'text', text: 'Recovered' })]
+        })
+      ])
+    )
+    expect(vi.mocked(bridge.startChatStream)).not.toHaveBeenCalled()
   })
 
   it('F16 treats app-server history as canonical after a failed turn', async () => {
@@ -132,6 +211,64 @@ describe('ConversationChatRegistry', () => {
     })
   })
 
+  it('does not retry an unknown active-conversation recovery after 750ms', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bridge, registry } = registryFixture()
+      bridge.attachChatStream = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('transport disconnected'))
+        .mockResolvedValue(null)
+
+      const entry = await registry.openConversation('recover-retry', async () =>
+        openResult('recover-retry')
+      )
+      await flushRecoveryWork()
+
+      expect(entry.recoveryPhase).toBe('needs_resume')
+      expect(entry.recoveryError?.message).toBe('任务连接已中断，无法自动恢复。')
+      await vi.advanceTimersByTimeAsync(750)
+      await flushRecoveryWork()
+
+      expect(bridge.attachChatStream).toHaveBeenCalledTimes(1)
+      expect(entry.recoveryPhase).toBe('needs_resume')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps replayed recovery text visible and marks attach rejection as needs_resume', async () => {
+    const { bridge, registry } = registryFixture()
+    bridge.attachChatStream = vi.fn(async (_conversationId, streamCallbacks) => {
+      streamCallbacks.onChunk({ type: 'text-start', id: 'replayed-text' })
+      streamCallbacks.onChunk({
+        type: 'text-delta',
+        id: 'replayed-text',
+        delta: 'Recovered partial answer.'
+      })
+      streamCallbacks.onError({
+        code: 'run-mismatch',
+        message: 'The active run changed before recovery could attach.'
+      })
+      return 'stream-recovered'
+    })
+
+    const entry = await registry.openConversation('recover-rejected', async () =>
+      openResult('recover-rejected')
+    )
+    await flushRecoveryWork()
+
+    expect(entry.recoveryPhase).toBe('needs_resume')
+    expect(entry.recoveryError).toMatchObject({
+      code: 'run-mismatch',
+      message: 'The active run changed before recovery could attach.'
+    })
+    expect(entry.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [expect.objectContaining({ type: 'text', text: 'Recovered partial answer.' })]
+    })
+  })
+
   it('drops a persisted failed fallback after a later assistant response succeeds', () => {
     const { registry, recoveryStorage } = registryFixture()
     const entry = registry.getSnapshot().activeEntry
@@ -153,7 +290,9 @@ describe('ConversationChatRegistry', () => {
 
     entry.controller.replaceMessages([failedMessage, recoveredMessage])
 
-    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('"recoveries":{}')
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain(
+      '"recoveries":{}'
+    )
   })
 
   it('clears a failed fallback only after a later turn settles successfully', async () => {
@@ -205,7 +344,9 @@ describe('ConversationChatRegistry', () => {
     await recoveredSend
 
     expect(entry.status).toBe('ready')
-    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain('"recoveries":{}')
+    expect(recoveryStorage.getItem('das-cowork.transcript-recovery.v1')).toContain(
+      '"recoveries":{}'
+    )
   })
 
   it('B08 restores only a stable-id local attachment overlay', async () => {
@@ -286,7 +427,9 @@ describe('ConversationChatRegistry', () => {
       messages: [user]
     }))
 
-    expect(JSON.parse(recoveryStorage.getItem('das-cowork.transcript-recovery.v1') ?? '{}')).toMatchObject({
+    expect(
+      JSON.parse(recoveryStorage.getItem('das-cowork.transcript-recovery.v1') ?? '{}')
+    ).toMatchObject({
       recoveries: {}
     })
 
@@ -677,7 +820,9 @@ describe('ConversationChatRegistry', () => {
       expect(vi.mocked(bridge.startChatStream)).toHaveBeenCalledTimes(1)
       expect(registry.getSnapshot().activeEntry).toBe(entryA)
       expect(entryA.messages).toEqual(
-        expect.arrayContaining([expect.objectContaining({ renderId: 'steer:a13-steer', status: 'pending' })])
+        expect.arrayContaining([
+          expect.objectContaining({ renderId: 'steer:a13-steer', status: 'pending' })
+        ])
       )
     })
 
@@ -1054,6 +1199,13 @@ function deferred<T>(): {
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function flushRecoveryWork(): Promise<void> {
+  // Attaching has two asynchronous boundaries: the bridge result and the
+  // controller's readable-stream consumer. Give both their completion
+  // handlers a deterministic microtask turn before inspecting recovery state.
+  for (let index = 0; index < 12; index += 1) await flushMicrotasks()
 }
 
 function codexMetadata(

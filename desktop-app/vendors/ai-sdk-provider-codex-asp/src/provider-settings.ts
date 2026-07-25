@@ -10,6 +10,7 @@ import type { CodexTransport } from "./client/transport";
 import type { StdioTransportSettings } from "./client/transport-stdio";
 import type { WebSocketTransportSettings } from "./client/transport-websocket";
 import type { DynamicToolDefinition, DynamicToolHandler } from "./dynamic-tools";
+import type { CodexExistingTurnRecoveryState } from "./protocol/event-mapper";
 import type { CodexRenderableThreadItem } from "./protocol/shared-item-extractors";
 import type {
     ApprovalsReviewer,
@@ -158,6 +159,16 @@ export interface CodexCallOptions {
 
     /** Existing app-server thread id to resume before starting this turn. */
     resumeThreadId?: string
+    /**
+   * Reattach to an already-running turn after the provider transport failed.
+   * This is not a normal continuation: it performs `thread/resume` only and
+   * must never issue `turn/start`.
+   */
+    resumeActiveTurn?: boolean
+    /** State already emitted before a transport boundary, used to merge the app-server snapshot. */
+    existingTurnRecoveryState?: CodexExistingTurnRecoveryState
+    /** Receives the latest item-based recovery cursor while the stream is live. */
+    onExistingTurnRecoveryState?: (state: CodexExistingTurnRecoveryState) => void
     /**
    * Start a replacement app-server thread for a failed terminal retry. The
    * provider replays only prior user/assistant text as context, never tool

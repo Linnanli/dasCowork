@@ -6,6 +6,7 @@ import type {
 import { ApprovalCoordinator } from './approvals/ApprovalCoordinator'
 
 type PendingApproval = {
+  request: CodexApprovalRequest
   resolve: (response: CodexApprovalResponse) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
@@ -14,6 +15,7 @@ type PendingApproval = {
 export type CodexApprovalRequestInput = {
   kind: CodexApprovalKind
   params: unknown
+  context?: CodexApprovalRequest['context']
 }
 
 export class CodexApprovalBroker {
@@ -47,6 +49,10 @@ export class CodexApprovalBroker {
     return [...this.pending.keys()]
   }
 
+  listPendingApprovals(): CodexApprovalRequest[] {
+    return [...this.pending.values()].map(({ request }) => structuredClone(request))
+  }
+
   request(
     input: CodexApprovalRequestInput,
     onCreated?: (requestId: string) => void
@@ -55,7 +61,8 @@ export class CodexApprovalBroker {
       id: crypto.randomUUID(),
       kind: input.kind,
       params: input.params,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(input.context ? { context: input.context } : {})
     }
     const registeredRequest = this.coordinator.registerApproval(request)
 
@@ -66,7 +73,7 @@ export class CodexApprovalBroker {
         this.notifySettled(request.id)
         resolve({ action: 'decline', reason: 'Approval timed out' })
       }, this.timeoutMs)
-      this.pending.set(request.id, { resolve, reject, timeout })
+      this.pending.set(request.id, { request: registeredRequest, resolve, reject, timeout })
     })
 
     onCreated?.(request.id)

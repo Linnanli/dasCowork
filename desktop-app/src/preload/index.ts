@@ -15,6 +15,7 @@ import type {
   LocalContextReference,
   FollowUpQueueChangeEvent,
   ProjectCreateBlankResult,
+  WorkspaceRecoveryPayload,
   SidebarConversationListState,
   SidebarConversationOpenResult,
   SidebarPreferences
@@ -41,6 +42,8 @@ const desktopCodex: DesktopCodexApi = {
     ipcRenderer.invoke('codex:set-selected-model', { modelId }) as Promise<{
       selectedModelId: string
     }>,
+  listPendingApprovals: () =>
+    ipcRenderer.invoke('codex:list-pending-approvals') as Promise<CodexApprovalRequest[]>,
   respondApproval: (requestId: string, response: CodexApprovalResponse) =>
     ipcRenderer.invoke('codex:respond-approval', { requestId, response }) as Promise<void>,
   openExternalHttpUrl: (url: string) =>
@@ -72,8 +75,22 @@ const desktopCodex: DesktopCodexApi = {
 const desktopCodexChat = createChatStreamBridge({
   createStreamId: () => crypto.randomUUID(),
   createMessageChannel: () => new MessageChannel(),
+  hasActiveRun: (conversationId) =>
+    ipcRenderer.invoke('codex-chat:has-active-run', { conversationId }),
+  getActiveRun: (conversationId) =>
+    ipcRenderer.invoke('codex-chat:get-active-run', { conversationId }),
+  getActiveRuns: () => ipcRenderer.invoke('codex-chat:get-active-runs'),
+  getActiveSnapshot: (conversationId) =>
+    ipcRenderer.invoke('codex-chat:get-active-snapshot', { conversationId }),
   postStart: (request: CodexChatRequest, streamId: string, port: MessagePort) => {
     ipcRenderer.postMessage('codex-chat:start', { streamId, request }, [port])
+  },
+  postAttach: (conversationId, streamId, port, runId, afterSequence) => {
+    ipcRenderer.postMessage(
+      'codex-chat:attach',
+      { conversationId, streamId, ...(runId ? { runId } : {}), afterSequence },
+      [port]
+    )
   },
   postDetached: (streamId, request) => {
     ipcRenderer.send('codex-chat:port-detached', { streamId, chatId: request.chatId })
@@ -118,6 +135,10 @@ const desktopProjects: DesktopProjectsApi = {
     ipcRenderer.invoke('codex:projects:remove', input) as Promise<ProjectState>,
   renameProject: (input) =>
     ipcRenderer.invoke('codex:projects:rename', input) as Promise<ProjectState>,
+  getWorkspaceRecovery: (input: WorkspaceRecoveryPayload) =>
+    ipcRenderer.invoke('codex:projects:get-workspace-recovery', input),
+  restoreWorkspace: (input: WorkspaceRecoveryPayload) =>
+    ipcRenderer.invoke('codex:projects:restore-workspace', input),
   onStateChange: (callback: (state: ProjectState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: ProjectState): void =>
       callback(state)

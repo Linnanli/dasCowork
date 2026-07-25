@@ -20,6 +20,27 @@ describe('CodexApprovalBroker', () => {
     expect(broker.getPendingRequestIds()).toEqual([])
   })
 
+  it('returns an immutable snapshot of requests that are still pending', async () => {
+    const broker = new CodexApprovalBroker({ timeoutMs: 30_000 })
+    const pending = broker.request({
+      kind: 'command',
+      params: { command: 'pwd' },
+      context: { threadId: 'thread-pending', turnId: 'turn-pending' }
+    })
+
+    const [snapshot] = broker.listPendingApprovals()
+    expect(snapshot).toMatchObject({
+      kind: 'command',
+      context: { threadId: 'thread-pending', turnId: 'turn-pending' }
+    })
+    ;(snapshot!.context as { threadId?: string }).threadId = 'mutated-locally'
+    expect(broker.listPendingApprovals()[0]?.context?.threadId).toBe('thread-pending')
+
+    broker.respond(snapshot!.id, { action: 'decline' })
+    await expect(pending).resolves.toEqual({ action: 'decline' })
+    expect(broker.listPendingApprovals()).toEqual([])
+  })
+
   it('publishes approval context from request params', async () => {
     const broker = new CodexApprovalBroker({ timeoutMs: 30_000 })
     const listener = vi.fn()

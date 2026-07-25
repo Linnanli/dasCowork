@@ -502,7 +502,10 @@ describe("CodexAppServerConnection", () =>
             const pending = first.request("thread/read", { threadId: "thread-fatal" });
             await flushMessages();
             transports[0]!.emitError(new Error("simulated transport failure"));
-            await expect(pending).rejects.toThrow("App Server transport terminated unexpectedly");
+            await expect(pending).rejects.toMatchObject({
+                code: "app_server_transport_terminated",
+                message: "App Server transport terminated unexpectedly.",
+            });
             await first.disconnect();
 
             const recovered = new AppServerClient(connection.createTransport());
