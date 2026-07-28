@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 
 import { planAssert } from '../../scripts/lib/test-plan-assertions.mjs'
@@ -53,6 +53,10 @@ const conversationAssertions = [
 const planAssertionsByScenario: Record<string, readonly string[]> = {
   A09: conversationAssertions,
   M11: mockAssertions
+}
+
+function approvalCards(panel: Locator): Locator {
+  return panel.locator('[data-codex-approval-surface="true"]')
 }
 
 function planEvidence(_testName: string, scenarioIds: readonly string[]): PlanAssertionEvidence[] {
@@ -108,14 +112,16 @@ test('M11/D12 @approval-retry approves a command request through the desktop app
     await sendMessage(page, '运行 pwd，然后告诉我当前目录。')
 
     const panel = page.locator('[data-slot="server-request-panel"]')
-    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('是否允许执行以下命令？')
     await expect(panel).toContainText('pwd')
+    await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(0)
+    await attachApprovalScreenshots(page, testInfo, 'command')
     await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('等待确认')
     await expect(page.locator('[data-slot="message-thinking-unit"]')).toHaveCount(0)
     await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
     await expect(page.locator('[data-slot="tool-group-trigger-icon"]')).toBeVisible()
 
-    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
 
     await expect(page.locator('[data-slot="reasoning-group-trigger"]')).toContainText('已处理')
     await expect(page.locator('[data-slot="tool-group-trigger"]')).not.toContainText('正在思考')
@@ -128,6 +134,7 @@ test('M11/D12 @approval-retry approves a command request through the desktop app
       'Approved command completed'
     )
     await expect(panel).toBeHidden()
+    await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1)
     const completedReasoningTrigger = page.locator('[data-slot="reasoning-group-trigger"]')
     await expect(completedReasoningTrigger).toContainText('已处理')
     await completedReasoningTrigger.click()
@@ -221,13 +228,13 @@ test('P002-E2E-08 restores one pending approval after renderer reload', async ({
     await sendMessage(page, '运行 pwd，等待批准。')
 
     const panel = page.locator('[data-slot="server-request-panel"]')
-    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('是否允许执行以下命令？')
     await page.reload()
     collectRendererLogs(page, logs)
 
     await expect(panel).toHaveCount(1)
-    await expect(panel).toContainText('Command execution approval')
-    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(panel).toContainText('是否允许执行以下命令？')
+    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
     releaseFinal.resolve()
 
     await expect(
@@ -318,15 +325,15 @@ test('P002-E2E-02 replays one active thread-bound stream with text and a tool af
 
     const panel = page.locator('[data-slot="server-request-panel"]')
     await expect(page.getByText(commentaryText, { exact: true })).toHaveCount(1)
-    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('是否允许执行以下命令？')
 
     await page.reload()
     collectRendererLogs(page, logs)
 
     await expect(page.getByText(commentaryText, { exact: true })).toHaveCount(1)
     await expect(panel).toHaveCount(1)
-    await expect(panel).toContainText('Command execution approval')
-    await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(panel).toContainText('是否允许执行以下命令？')
+    await panel.getByRole('button', { name: '允许一次', exact: true }).click()
     releaseFinal.resolve()
 
     await expect(page.getByText(finalText, { exact: true })).toHaveCount(1)
@@ -373,10 +380,10 @@ test('M11/D13/D17 @approval-retry rejects a command request through the desktop 
     await sendMessage(page, '运行 pwd，然后拒绝授权。')
 
     const panel = page.locator('[data-slot="server-request-panel"]')
-    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('是否允许执行以下命令？')
     await expect(panel).toContainText('pwd')
 
-    await panel.getByRole('button', { name: 'Reject' }).click()
+    await panel.getByRole('button', { name: '拒绝' }).click()
 
     await expect(page.locator('[data-role="assistant"]')).toContainText(
       'Command was rejected by the user'
@@ -481,19 +488,19 @@ test('D12 @approval-retry keeps simultaneous conversation approvals independentl
     const sidebar = page.locator('[data-slot="codex-sidebar"]')
     await sidebar.getByRole('button', { name: '新对话', exact: true }).click()
     await sendComposerMessage(page, secondPrompt)
-    await expect(panel.locator('article')).toHaveCount(2)
-
-    const firstCard = panel.locator('article').filter({ hasText: firstMarker })
-    const secondCard = panel.locator('article').filter({ hasText: secondMarker })
-    await expect(firstCard).toContainText(firstPrompt)
-    await expect(secondCard).toContainText(secondPrompt)
-
-    await firstCard.getByRole('button', { name: 'Approve', exact: true }).click()
-    await expect(firstCard).toHaveCount(0)
+    const secondCard = approvalCards(panel).filter({ hasText: secondMarker })
     await expect(secondCard).toBeVisible()
+
+    await sidebar.getByRole('button', { name: new RegExp(`^${firstPrompt}`) }).click()
+    const firstCard = approvalCards(panel).filter({ hasText: firstMarker })
+    await expect(firstCard).toBeVisible()
+    await firstCard.getByRole('button', { name: '允许一次', exact: true }).click()
+    await expect(firstCard).toHaveCount(0)
     await expect.poll(() => providerResponseBodies(backend)).toHaveLength(3)
 
-    await secondCard.getByRole('button', { name: 'Approve', exact: true }).click()
+    await sidebar.getByRole('button', { name: new RegExp(`^${secondPrompt}`) }).click()
+    await expect(secondCard).toBeVisible()
+    await secondCard.getByRole('button', { name: '允许一次', exact: true }).click()
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: secondFinal })
     ).toBeVisible()
@@ -522,7 +529,7 @@ test('D12 @approval-retry keeps simultaneous conversation approvals independentl
   }
 })
 
-test('M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once', async ({
+test('M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -539,9 +546,14 @@ test('M11/A09/D14 @approval-retry steers while approval is pending, then user st
           command: 'pwd',
           timeout_ms: 5_000,
           sandbox_permissions: 'require_escalated',
-          justification: 'E2E verifies approval, steer, and stop ordering'
+          justification: 'E2E verifies approval replacement and rejection ordering'
         },
         { phase: 'commentary' }
+      ),
+      assistantMessageResponse(
+        'resp-approval-reject-final',
+        'msg-approval-reject-final',
+        'The command was rejected and the composer is available again.'
       )
     ]
   })
@@ -555,53 +567,13 @@ test('M11/A09/D14 @approval-retry steers while approval is pending, then user st
 
     await sendMessage(page, 'Start a command that waits for approval.')
     const panel = page.locator('[data-slot="server-request-panel"]')
-    await expect(panel).toContainText('Command execution approval')
+    await expect(panel).toContainText('是否允许执行以下命令？')
     const visibleAssistant = page
       .locator('[data-role="assistant"]')
       .filter({ hasText: visibleAssistantText })
     await expect(visibleAssistant).toHaveCount(1)
-
-    const steerText = 'This steer is issued while approval is pending.'
-    const input = page.locator('.aui-lexical-input[contenteditable="true"]').last()
-    await input.fill(steerText)
-    await page.getByRole('button', { name: '将追问加入队列' }).click()
-    const queuedSteer = page
-      .locator('[data-slot="queued-follow-up-row"]')
-      .filter({ hasText: steerText })
-    await expect(queuedSteer).toHaveCount(1)
-    const queuedConversationKey = await page
-      .locator('[data-slot="queued-follow-up-list"]')
-      .getAttribute('data-conversation-key')
-    expect(queuedConversationKey).toBeTruthy()
-    const queuedState = await readFollowUpQueueState(page, queuedConversationKey!)
-    const queuedItemId = queuedState.items[0]?.id
-    expect(queuedState).toEqual({
-      conversationKey: queuedConversationKey,
-      revision: 1,
-      items: [
-        {
-          id: queuedItemId,
-          status: 'queued',
-          text: steerText,
-          lease: null
-        }
-      ]
-    })
-    await queuedSteer.getByRole('button', { name: /引导第 \d+ 条排队消息/u }).click()
-    await expect(queuedSteer).toHaveCount(0)
-    const claimedQueueState = await readFollowUpQueueState(page, queuedConversationKey!)
-    expect(claimedQueueState).toEqual({
-      conversationKey: queuedConversationKey,
-      revision: 2,
-      items: [
-        {
-          id: queuedItemId,
-          status: 'steering',
-          text: steerText,
-          lease: { operation: 'turn-steer', owner: 'main' }
-        }
-      ]
-    })
+    await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(0)
+    await expect(panel.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
     await planAssert({
       scenarioId: 'A09',
       assertionId: '已显示回答保持不变',
@@ -610,107 +582,48 @@ test('M11/A09/D14 @approval-retry steers while approval is pending, then user st
     await planAssert({
       scenarioId: 'A09',
       assertionId: '队列顺序与对话隔离正确',
-      assertion: () => expect(queuedSteer).toHaveCount(0)
+      assertion: () => expect(page.locator('[data-slot="queued-follow-up-list"]')).toHaveCount(0)
     })
-    await expect
-      .poll(() => logs.filter((line) => line.includes('"method":"turn/steer"')).length)
-      .toBe(1)
 
-    await page.getByRole('button', { name: '停止生成', exact: true }).click()
+    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
     const evidence = planEvidence(
-      'M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once',
+      'M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection',
       ['M11']
     )
     await expectTerminalScenario({
       page,
       logs,
       backend,
-      terminal: 'aborted',
-      outcome: 'interrupted',
-      requireCanonicalOutcomeSource: true,
-      providerRequestCount: 1,
+      terminal: 'finish',
+      providerRequestCount: 2,
       turnStartedCount: 1,
       pendingApprovalCount: 0,
       observedToolCount: 1,
-      toolResultCount: 0,
+      toolResultCount: 1,
       planEvidence: withoutQueueStateEvidence(evidence, 'M11')
     })
-    const settledQueueState = await page.evaluate(async (conversationKey) => {
-      const state = await window.desktopApp.followUps.getState(conversationKey)
-      return {
-        conversationKey: state.conversationKey,
-        revision: state.revision,
-        items: state.items.map((item) => ({
-          id: item.id,
-          status: item.status,
-          text: item.message.text,
-          lease: item.lease ? { operation: item.lease.operation, owner: item.lease.owner } : null,
-          pauseKind: item.pause?.kind ?? null
-        }))
-      }
-    }, queuedConversationKey!)
-    const queueEvidence = evidence.find(
-      (entry) => entry.scenarioId === 'M11' && entry.assertionId === '队列状态、顺序与 revision'
-    )
-    if (!queueEvidence) throw new Error('M11 queue evidence is missing.')
-    await planAssert({
-      ...queueEvidence,
-      assertion: () => {
-        expect(queuedState).toEqual({
-          conversationKey: queuedConversationKey,
-          revision: 1,
-          items: [
-            {
-              id: queuedItemId,
-              status: 'queued',
-              text: steerText,
-              lease: null
-            }
-          ]
-        })
-        expect(claimedQueueState).toEqual({
-          conversationKey: queuedConversationKey,
-          revision: queuedState.revision + 1,
-          items: [
-            {
-              id: queuedItemId,
-              status: 'steering',
-              text: steerText,
-              lease: { operation: 'turn-steer', owner: 'main' }
-            }
-          ]
-        })
-        expect(settledQueueState).toEqual({
-          conversationKey: queuedConversationKey,
-          revision: queuedState.revision + 3,
-          items: [
-            {
-              id: queuedItemId,
-              status: 'paused-recovery-uncertain',
-              text: steerText,
-              lease: null,
-              pauseKind: 'recovery-uncertain'
-            }
-          ]
-        })
-      }
-    })
+    await assertEmptyQueueStateEvidence(evidence, page, logs)
     await expect(panel).toHaveCount(0)
+    await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1)
     await planAssert({
       scenarioId: 'D14',
-      assertionId: '审批待处理时停止不执行工具',
+      assertionId: '审批待处理时不显示独立停止按钮，拒绝后恢复 composer',
       assertion: async () => {
-        expect(providerResponseBodies(backend)).toHaveLength(1)
+        expect(providerResponseBodies(backend)).toHaveLength(2)
         expect(
           functionCallOutputCount(providerResponseBodies(backend), 'call-approval-steer-stop')
-        ).toBe(0)
+        ).toBe(1)
+        expect(
+          functionCallOutputText(providerResponseBodies(backend)[1], 'call-approval-steer-stop')
+        ).toBe('exec command rejected by user')
         await expect(panel).toHaveCount(0)
+        await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1)
       }
     })
     await planAssert({
       scenarioId: 'A09',
-      assertionId: '复用原 turn，不能额外启动 turn',
-      assertion: () => expect(providerResponseBodies(backend)).toHaveLength(1)
+      assertionId: '拒绝后复用原 turn，不额外启动 turn',
+      assertion: () => expect(providerResponseBodies(backend)).toHaveLength(2)
     })
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
@@ -763,11 +676,11 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
 
     await sendMessage(page, firstPrompt)
     const panel = page.locator('[data-slot="server-request-panel"]')
-    const firstCard = panel.locator('article').filter({ hasText: firstMarker })
+    const firstCard = approvalCards(panel).filter({ hasText: firstMarker })
     await expect(firstCard).toBeVisible()
     const firstApprovalId = await firstCard.getAttribute('data-request-id')
     expect(firstApprovalId).toBeTruthy()
-    await expect(panel.locator('article')).toHaveCount(1)
+    await expect(approvalCards(panel)).toHaveCount(1)
     expect(functionCallOutputText(providerResponseBodies(backend)[0], firstCallId)).toBeUndefined()
 
     await crashApp(app)
@@ -781,21 +694,21 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
         await window.desktopApp.codex.respondApproval(requestId, { action: 'approve' })
       }, firstApprovalId!)
     ).rejects.toThrow(/Unknown approval request/u)
-    await expect(page.locator('[data-slot="server-request-panel"] article')).toHaveCount(0)
+    await expect(approvalCards(page.locator('[data-slot="server-request-panel"]'))).toHaveCount(0)
     expect(providerResponseBodies(backend)).toHaveLength(1)
     expect(functionCallOutputText(providerResponseBodies(backend)[0], firstCallId)).toBeUndefined()
 
     await sendMessage(page, secondPrompt)
     const restartedPanel = page.locator('[data-slot="server-request-panel"]')
-    const secondCard = restartedPanel.locator('article').filter({ hasText: secondMarker })
+    const secondCard = approvalCards(restartedPanel).filter({ hasText: secondMarker })
     await expect(secondCard).toBeVisible()
     const secondApprovalId = await secondCard.getAttribute('data-request-id')
     expect(secondApprovalId).toBeTruthy()
     expect(secondApprovalId).not.toBe(firstApprovalId)
-    await expect(restartedPanel.locator('article')).toHaveCount(1)
+    await expect(approvalCards(restartedPanel)).toHaveCount(1)
     expect(functionCallOutputText(providerResponseBodies(backend)[1], secondCallId)).toBeUndefined()
 
-    await secondCard.getByRole('button', { name: 'Reject' }).click()
+    await secondCard.getByRole('button', { name: '拒绝' }).click()
     const evidence = planEvidence(
       'M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure',
       ['M11']
@@ -821,7 +734,7 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
     expect(functionCallOutputText(providerResponseBodies(backend)[2], secondCallId)).not.toContain(
       secondMarker
     )
-    await expect(restartedPanel.locator('article')).toHaveCount(0)
+    await expect(approvalCards(restartedPanel)).toHaveCount(0)
     await planAssert({
       scenarioId: 'D15',
       assertionId: '终态后旧审批失效且不能再执行',
@@ -833,7 +746,7 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
         expect(functionCallOutputText(providerResponseBodies(backend)[2], secondCallId)).toBe(
           'exec command rejected by user'
         )
-        await expect(restartedPanel.locator('article')).toHaveCount(0)
+        await expect(approvalCards(restartedPanel)).toHaveCount(0)
       }
     })
   } finally {
@@ -887,13 +800,13 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
     await sendMessage(page, 'Run a side-effecting command, fail, then retry it.')
     const panel = page.locator('[data-slot="server-request-panel"]')
     await expect(panel).toContainText(firstMarker)
-    const firstApprovalCard = panel.locator('article').filter({ hasText: firstMarker })
+    const firstApprovalCard = approvalCards(panel).filter({ hasText: firstMarker })
     const firstApprovalId = await firstApprovalCard.getAttribute('data-request-id')
     expect(firstApprovalId).toBeTruthy()
     expect(providerResponseBodies(backend)).toHaveLength(1)
     expect(functionCallOutputText(providerResponseBodies(backend)[0], firstCallId)).toBeUndefined()
     await expect.poll(() => readMarkerLines(firstMarkerPath)).toEqual([])
-    await firstApprovalCard.getByRole('button', { name: 'Approve', exact: true }).click()
+    await firstApprovalCard.getByRole('button', { name: '允许一次', exact: true }).click()
 
     await expectTerminalScenario({
       page,
@@ -911,8 +824,14 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
     expect(functionCallOutputText(firstAttemptBodies[1], firstCallId)).toContain(firstMarker)
     await expect.poll(() => readMarkerLines(firstMarkerPath)).toEqual([firstMarker])
     await page.locator('[data-slot="aui_assistant-message-retry"]').click()
+    const sidebar = page.locator('[data-slot="codex-sidebar"]')
+    const retriedConversation = sidebar
+      .getByRole('button', { name: /^Run a side-effecting command/u })
+      .last()
+    await expect(retriedConversation).toBeVisible()
+    await retriedConversation.click()
     await expect(panel).toContainText(secondMarker)
-    const secondApprovalCard = panel.locator('article').filter({ hasText: secondMarker })
+    const secondApprovalCard = approvalCards(panel).filter({ hasText: secondMarker })
     const secondApprovalId = await secondApprovalCard.getAttribute('data-request-id')
     expect(secondApprovalId).toBeTruthy()
     expect(secondApprovalId).not.toBe(firstApprovalId)
@@ -923,20 +842,20 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
     expect(functionCallOutputCount(secondApprovalBodies, secondCallId)).toBe(0)
     expect(await readMarkerLines(firstMarkerPath)).toEqual([firstMarker])
     expect(await readMarkerLines(secondMarkerPath)).toEqual([])
-    await expect(page.locator('[data-slot="server-request-panel"] article')).toHaveCount(1)
+    await expect(approvalCards(panel)).toHaveCount(1)
     await expect(
       page.evaluate(async (requestId) => {
         await window.desktopApp.codex.respondApproval(requestId, { action: 'approve' })
       }, firstApprovalId!)
     ).rejects.toThrow(/Unknown approval request/u)
-    await expect(page.locator('[data-slot="server-request-panel"] article')).toHaveCount(1)
+    await expect(approvalCards(panel)).toHaveCount(1)
     const staleApprovalBodies = providerResponseBodies(backend)
     expect(functionCallOutputText(staleApprovalBodies[2], secondCallId)).toBeUndefined()
     expect(functionCallOutputCount(staleApprovalBodies, secondCallId)).toBe(0)
     expect(await readMarkerLines(firstMarkerPath)).toEqual([firstMarker])
     expect(await readMarkerLines(secondMarkerPath)).toEqual([])
 
-    await secondApprovalCard.getByRole('button', { name: 'Approve', exact: true }).click()
+    await secondApprovalCard.getByRole('button', { name: '允许一次', exact: true }).click()
     await expect(
       page.locator('[data-role="assistant"]').filter({
         hasText: 'The retried command completed after its new approval.'
@@ -984,6 +903,35 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
     await cleanupTempDirs([sideEffectDir])
   }
 })
+
+async function attachApprovalScreenshots(
+  page: Awaited<ReturnType<ElectronApplication['firstWindow']>>,
+  testInfo: Parameters<typeof attachDiagnostics>[0],
+  name: string
+): Promise<void> {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const desktopPath = testInfo.outputPath(`approval-${name}-desktop.png`)
+  await page.screenshot({ path: desktopPath })
+  await testInfo.attach(`approval-${name}-desktop.png`, {
+    contentType: 'image/png',
+    path: desktopPath
+  })
+
+  await page.setViewportSize({ width: 420, height: 900 })
+  const narrowPath = testInfo.outputPath(`approval-${name}-narrow.png`)
+  await page.screenshot({ path: narrowPath })
+  await testInfo.attach(`approval-${name}-narrow.png`, {
+    contentType: 'image/png',
+    path: narrowPath
+  })
+  const width = await page.locator('body').evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }))
+  expect(width.scrollWidth).toBeLessThanOrEqual(width.clientWidth + 1)
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+}
 
 async function readMarkerLines(markerPath: string): Promise<string[]> {
   try {

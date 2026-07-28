@@ -3791,7 +3791,7 @@ describe('App composer', () => {
     expect(document.body.textContent).toContain('New active')
   })
 
-  it('keeps the composer status card visible while a server request is blocking', () => {
+  it('replaces the composer with the approval card while a server request is blocking', () => {
     runtimeState.serverRequests = [fileChangeApprovalRequest('blocking-request')]
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
@@ -3814,7 +3814,11 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.querySelector('[data-slot="server-request-panel"]')).not.toBeNull()
+    const panel = container.querySelector('[data-slot="server-request-panel"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.closest('[data-slot="aui_thread-viewport"]')).not.toBeNull()
+    expect(panel?.querySelector('[data-codex-approval-surface="true"]')).not.toBeNull()
+    expect(container.querySelector('[data-slot="aui_composer-shell"]')).toBeNull()
     expect(container.querySelector('[data-slot="composer-turn-status-card"]')).not.toBeNull()
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
     expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
@@ -4669,6 +4673,7 @@ describe('App composer', () => {
     })
 
     expect(container.querySelector('[data-slot="server-request-panel"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_composer-shell"]')).not.toBeNull()
   })
 
   it('responds to a file-change request when approving', async () => {
@@ -4679,7 +4684,7 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    const approve = buttonWithText('Approve')
+    const approve = buttonWithText('允许一次')
     expect(approve).not.toBeUndefined()
 
     await act(async () => {
@@ -4691,7 +4696,7 @@ describe('App composer', () => {
     })
   })
 
-  it('shows approval project context', () => {
+  it('does not leak approval project context into the panel', () => {
     const request = fileChangeApprovalRequest('file-request-context')
     runtimeState.serverRequests = [request]
 
@@ -4699,29 +4704,29 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
-    expect(container.textContent).toContain('local')
-    expect(container.textContent).toContain('/workspace')
-    expect(container.textContent).toContain('thread_1')
-    expect(container.textContent).toContain('turn_1')
+    expect(container.querySelector('[data-slot="server-request-panel"]')).not.toBeNull()
+    expect(container.textContent).toContain('是否允许 ChatGPT 编辑以下文件？')
+    expect(container.textContent).not.toContain('local')
+    expect(container.textContent).not.toContain('/workspace')
   })
 
-  it('responds to an MCP request when approving for the session', async () => {
-    const request = mcpApprovalRequest('mcp-request-1')
+  it('responds to a permission request when approving for the turn', async () => {
+    const request = permissionApprovalRequest('permission-request-1')
     runtimeState.serverRequests = [request]
 
     act(() => {
       root.render(<App />)
     })
 
-    const approveSession = buttonWithText('Approve session')
-    expect(approveSession).not.toBeUndefined()
-
+    const approveTurn = elementWithText('允许本轮')
+    expect(approveTurn).not.toBeUndefined()
     await act(async () => {
-      approveSession?.click()
+      approveTurn?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, {
-      action: 'approveForSession'
+      action: 'approvePermissions',
+      scope: 'turn'
     })
   })
 
@@ -4733,13 +4738,19 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
+    const input = container.querySelector<HTMLInputElement>('input[type="text"]')
+    expect(input).not.toBeNull()
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
     await act(async () => {
-      buttonWithText('Submit answers')?.click()
+      setter?.call(input, 'yes')
+      input?.dispatchEvent(new Event('input', { bubbles: true }))
+      input?.dispatchEvent(new Event('change', { bubbles: true }))
     })
+    await act(async () => buttonWithText('提交回答')?.click())
 
     expect(runtimeState.respondToServerRequest).toHaveBeenCalledWith(request, {
       action: 'answer',
-      answers: { confirmation: [''] }
+      answers: { confirmation: ['yes'] }
     })
   })
 })
@@ -4756,6 +4767,12 @@ function requireProjectHookState(): ProjectState {
 function buttonWithText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(
     (button) => button.textContent?.trim() === text
+  )
+}
+
+function elementWithText(text: string): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>('*')).find(
+    (element) => element.textContent?.trim() === text
   )
 }
 
@@ -4872,20 +4889,30 @@ function fileChangeApprovalRequest(requestId: string): CodexApprovalRequest {
       turnId: 'turn_1',
       itemId: 'file_1',
       reason: 'modify src/App.tsx',
-      grantRoot: '/workspace'
+      changes: [],
+      stats: { files: 0 },
+      availableIntents: ['approve', 'decline', 'approveForSession']
     }
   }
 }
 
-function mcpApprovalRequest(requestId: string): CodexApprovalRequest {
+function permissionApprovalRequest(requestId: string): CodexApprovalRequest {
   return {
     id: requestId,
-    kind: 'mcp-elicitation',
+    kind: 'permission-request',
     createdAt: '2026-06-27T00:00:00.000Z',
     params: {
-      server: 'github',
-      tool: 'create_issue',
-      prompt: 'Create issue?'
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      itemId: 'permission_1',
+      environmentId: null,
+      cwd: '/workspace',
+      reason: 'Request access to the workspace',
+      details: {
+        supported: true,
+        details: [{ resource: 'network', access: 'connect', value: '网络访问' }]
+      },
+      availableScopes: ['turn', 'session']
     }
   }
 }
@@ -4896,12 +4923,15 @@ function toolUserInputRequest(requestId: string): CodexApprovalRequest {
     kind: 'tool-user-input',
     createdAt: '2026-06-27T00:00:00.000Z',
     params: {
+      autoResolutionMs: null,
       questions: [
         {
           id: 'confirmation',
           header: 'Confirm',
           question: 'Continue?',
-          isSecret: false
+          isOther: false,
+          isSecret: false,
+          options: null
         }
       ]
     }

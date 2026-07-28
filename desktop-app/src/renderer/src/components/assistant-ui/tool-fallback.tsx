@@ -14,7 +14,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { FilePath } from '@/components/ui/file-path'
-import { DiffViewer } from './diff-viewer'
+import { FileChangeDiffList } from './file-change-diff'
 import { toolGroupIconMap } from './tool-group'
 import {
   shellMetadata,
@@ -310,97 +310,14 @@ function ToolFallbackFileChange({
 }: React.ComponentProps<'div'> & {
   details: ToolItemFileChangeDetails
 }) {
-  const files = details.files.filter(fileChangeHasRenderableDiff)
-
-  if (files.length === 0) {
-    return (
-      <p
-        data-slot="tool-file-change-diff"
-        className={cn(
-          'rounded-md bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground',
-          className
-        )}
-        {...props}
-      >
-        {details.files.length === 0 ? '正在等待文件差异' : '文件变更未提供可展示的差异'}
-      </p>
-    )
-  }
-
   return (
-    <div
+    <FileChangeDiffList
       data-slot="tool-file-change-diff"
-      className={cn('max-h-96 space-y-2 overflow-y-auto pe-1', className)}
+      files={details.files}
+      className={className}
       {...props}
-    >
-      {files.map((file, index) => (
-        <FileChangeDiffViewer
-          key={`${file.path}:${index}`}
-          path={file.path}
-          kind={file.kind}
-          patch={file.patch}
-        />
-      ))}
-    </div>
+    />
   )
-}
-
-function FileChangeDiffViewer({
-  path,
-  kind,
-  patch
-}: ToolItemFileChangeDetails['files'][number]): React.JSX.Element {
-  if (kind === 'add') {
-    return (
-      <DiffViewer
-        oldFile={{ content: '', name: path }}
-        newFile={{ content: patch ?? '', name: path }}
-        size="sm"
-      />
-    )
-  }
-  if (kind === 'delete') {
-    return (
-      <DiffViewer
-        oldFile={{ content: patch ?? '', name: path }}
-        newFile={{ content: '', name: path }}
-        size="sm"
-      />
-    )
-  }
-
-  return <DiffViewer patch={fileChangePatch(path, patch)} size="sm" />
-}
-
-function fileChangeHasRenderableDiff(file: ToolItemFileChangeDetails['files'][number]): boolean {
-  return (
-    file.kind === 'add' || file.kind === 'delete' || Boolean(fileChangePatch(file.path, file.patch))
-  )
-}
-
-function fileChangePatch(path: string, patch: string | undefined): string | undefined {
-  if (!patch?.trim()) return undefined
-
-  const normalizedPath = path.replace(/^[/\\]+/, '') || 'file'
-  const hasFileHeaders = /^(?:diff --git |--- )/m.test(patch)
-  const diff = hasFileHeaders ? patch : `--- a/${normalizedPath}\n+++ b/${normalizedPath}\n${patch}`
-  if (/^@@/m.test(diff)) return diff
-
-  const lines = diff.split('\n')
-  const additions = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++'))
-  const deletions = lines.filter((line) => line.startsWith('-') && !line.startsWith('---'))
-  if (additions.length === 0 && deletions.length === 0) return diff
-
-  const oldStart = deletions.length > 0 ? 1 : 0
-  const newStart = additions.length > 0 ? 1 : 0
-  const newHeaderIndex = lines.findIndex((line) => line.startsWith('+++'))
-  if (newHeaderIndex < 0) return diff
-
-  return [
-    ...lines.slice(0, newHeaderIndex + 1),
-    `@@ -${oldStart},${deletions.length} +${newStart},${additions.length} @@`,
-    ...lines.slice(newHeaderIndex + 1)
-  ].join('\n')
 }
 
 function ToolFallbackShell({

@@ -201,9 +201,9 @@ test('renders a turn diff status card during a real file change through the desk
       .then(() => true)
       .catch(() => false)
     if (approvalAppeared) {
-      await expect(panel).toContainText('File change approval')
+      await expect(panel).toContainText('是否允许 ChatGPT 编辑以下文件？')
       await expect(panel).toContainText('notes.txt')
-      await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+      await panel.getByRole('button', { name: '允许一次', exact: true }).click()
       await expect(panel).toBeHidden()
     }
 

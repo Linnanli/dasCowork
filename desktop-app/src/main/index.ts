@@ -77,6 +77,7 @@ import {
   projectSelectPayloadSchema,
   workspaceRecoveryPayloadSchema,
   codexRespondApprovalPayloadSchema,
+  codexSnoozeApprovalAutoResolutionPayloadSchema,
   codexSetSelectedModelPayloadSchema,
   type CodexChatAttachResult,
   type ComposerContextCatalogChangeEvent,
@@ -480,7 +481,11 @@ app.whenReady().then(() => {
   ipcMain.handle('codex:list-pending-approvals', () => runtime.listPendingApprovals())
   ipcMain.handle('codex:respond-approval', (_, payload: unknown) => {
     const request = codexRespondApprovalPayloadSchema.parse(payload)
-    runtime.respondApproval(request.requestId, request.response)
+    return runtime.respondApproval(request.requestId, request.response)
+  })
+  ipcMain.handle('codex:snooze-approval-auto-resolution', (_, payload: unknown) => {
+    const request = codexSnoozeApprovalAutoResolutionPayloadSchema.parse(payload)
+    return runtime.snoozeApprovalAutoResolution(request.requestId)
   })
   ipcMain.handle('codex:open-external-http-url', (_, payload: unknown) => {
     const request = codexOpenExternalHttpUrlPayloadSchema.parse(payload)

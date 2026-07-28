@@ -68,6 +68,34 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
     expect(state?.serverRequests.map((request) => request.id)).toEqual(['request-snapshot'])
   })
 
+  it('updates the local tool request after Main confirms an auto-resolution snooze', async () => {
+    await renderProbe()
+    const request: CodexApprovalRequest = {
+      id: 'tool-timer',
+      kind: 'tool-user-input',
+      createdAt: '2026-07-10T00:00:00.000Z',
+      context: { threadId: 'thread-active' },
+      params: {
+        autoResolutionMs: 3_000,
+        deadlineAtMs: Date.now() + 3_000,
+        autoResolutionSnoozed: false,
+        questions: []
+      }
+    }
+    const entry = state!.activeEntry
+    act(() => {
+      entry.context = { ...entry.context, threadId: 'thread-active' }
+      emitApproval(request)
+    })
+
+    await act(async () => state!.snoozeServerRequest(request))
+
+    expect(window.desktopApp.codex.snoozeApprovalAutoResolution).toHaveBeenCalledWith('tool-timer')
+    expect(state!.serverRequests).toMatchObject([
+      { id: 'tool-timer', params: { autoResolutionSnoozed: true } }
+    ])
+  })
+
   it('updates the unbound conversation project snapshot synchronously', async () => {
     await renderProbe()
     const entry = state!.activeEntry
@@ -94,6 +122,7 @@ describe('useCodexIpcAssistantRuntime approvals', () => {
         setSelectedModel: vi.fn(async (modelId: string) => ({ selectedModelId: modelId })),
         listPendingApprovals: vi.fn(async () => pendingApprovalSnapshot),
         respondApproval: vi.fn(async () => undefined),
+        snoozeApprovalAutoResolution: vi.fn(async () => true),
         onApprovalRequest: vi.fn((listener: (request: CodexApprovalRequest) => void) => {
           emitApproval = listener
           return vi.fn()
@@ -119,7 +148,7 @@ function approval(id: string, threadId: string): CodexApprovalRequest {
   return {
     id,
     kind: 'command',
-    params: {},
+    params: { networkPolicyScopes: [], availableIntents: ['approve', 'decline'] },
     createdAt: '2026-07-10T00:00:00.000Z',
     context: { threadId }
   }

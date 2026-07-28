@@ -20,6 +20,13 @@ describe('ApprovalCoordinator', () => {
       params: {
         threadId: 'thread_1',
         turnId: 'turn_1',
+        cwd: '/repo',
+        networkPolicyScopes: [],
+        availableIntents: ['approve', 'decline']
+      },
+      context: {
+        threadId: 'thread_1',
+        turnId: 'turn_1',
         hostId: 'local',
         cwd: '/repo'
       }
@@ -52,8 +59,15 @@ describe('ApprovalCoordinator', () => {
       params: {
         threadId: 'thread_2',
         turnId: 'turn_2',
+        changes: [],
+        stats: { files: 0 },
+        availableIntents: ['approve', 'decline']
+      },
+      context: {
+        threadId: 'thread_2',
+        turnId: 'turn_2',
         hostId: 'local',
-        grantRoot: '/workspace'
+        cwd: '/workspace'
       }
     })
     await coordinator.respond('approval_2', response)

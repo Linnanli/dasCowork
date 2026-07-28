@@ -22,7 +22,7 @@ export type LaunchAppOptions = {
 }
 
 const appTempDirs = new WeakMap<ElectronApplication, string[]>()
-const e2eLaunchCooldownMs = 500
+const e2eLaunchCooldownMs = 1_500
 let nextE2eLaunchAt = 0
 
 export type AppReadinessSnapshot = {

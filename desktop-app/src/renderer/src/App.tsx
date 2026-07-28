@@ -153,7 +153,11 @@ import type { ConversationDraftAttachment } from './runtime/ConversationDraftSto
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
 import { createQueuedFollowUpSnapshot } from './runtime/queuedFollowUpSnapshot'
 import { restoreQueuedFollowUpToComposerDraft } from './runtime/restoreQueuedFollowUpToComposer'
-import type { LocalContextPickerKind } from '../../shared/codexIpcApi'
+import type {
+  CodexApprovalRequest,
+  CodexApprovalResponse,
+  LocalContextPickerKind
+} from '../../shared/codexIpcApi'
 import type {
   FollowUpMode,
   MaterializedQueuedUserMessage,
@@ -218,6 +222,13 @@ type ComposerProps = {
 }
 
 type ChatThreadProps = ComposerProps & {
+  approvalRequests: readonly CodexApprovalRequest[]
+  onRespondApproval: (
+    request: CodexApprovalRequest,
+    response: CodexApprovalResponse
+  ) => Promise<void>
+  onRejectApproval: (request: CodexApprovalRequest) => Promise<void>
+  onSnoozeApproval: (request: CodexApprovalRequest) => Promise<void>
   hasBlockingRequest: boolean
   loading: boolean
   loadError?: Error
@@ -398,6 +409,7 @@ function App(): React.JSX.Element {
     activeServerRequests,
     respondToServerRequest,
     rejectServerRequest,
+    snoozeServerRequest,
     models,
     selectedModelId,
     modelSelectionError,
@@ -412,8 +424,7 @@ function App(): React.JSX.Element {
     setActiveDraftAttachments,
     setActiveScroll,
     syncConversationMetadata,
-    getConversationIndicator,
-    getConversationTitle
+    getConversationIndicator
   } = useCodexIpcAssistantRuntime({
     projectSelection: storedProjectSelection
   })
@@ -438,6 +449,13 @@ function App(): React.JSX.Element {
     ...storedProjectState,
     selectProject
   }
+  const visibleApprovalRequests = useMemo(() => {
+    const activeRequestIds = new Set(activeServerRequests.map((request) => request.id))
+    const contextlessRequests = serverRequests.filter(
+      (request) => !request.context?.threadId && !activeRequestIds.has(request.id)
+    )
+    return [...activeServerRequests, ...contextlessRequests]
+  }, [activeServerRequests, serverRequests])
   const conversationState = useConversationState({
     openConversation,
     getConversationIndicator,
@@ -553,16 +571,6 @@ function App(): React.JSX.Element {
     [openConversation]
   )
 
-  const resolveApprovalConversationTitle = (threadId: string | undefined): string => {
-    const registryTitle = getConversationTitle(threadId)
-    if (registryTitle) return registryTitle
-    if (!threadId) return 'Unknown conversation'
-    const conversation = conversationState.state.conversations.find(
-      (item) => item.threadId === threadId || item.id === threadId
-    )
-    return conversation?.title ?? 'Unknown conversation'
-  }
-
   return (
     <main
       className={cn(
@@ -590,7 +598,8 @@ function App(): React.JSX.Element {
             key={activeEntry.localId}
             activeConversation={activeConversation}
             entry={activeEntry}
-            hasBlockingRequest={activeServerRequests.length > 0}
+            approvalRequests={visibleApprovalRequests}
+            hasBlockingRequest={visibleApprovalRequests.length > 0}
             models={models}
             selectedModelId={selectedModelId}
             modelSelectionError={modelSelectionError}
@@ -603,17 +612,12 @@ function App(): React.JSX.Element {
             onScrollSnapshotChange={setActiveScroll}
             onSelectedModelChange={handleSelectedModelChange}
             onCreateNewTask={handleStartNewConversation}
+            onRejectApproval={rejectServerRequest}
+            onSnoozeApproval={snoozeServerRequest}
+            onRespondApproval={respondToServerRequest}
             projectState={projectState}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
-          />
-          <ServerRequestPanel
-            getConversationTitle={(request) =>
-              resolveApprovalConversationTitle(request.context?.threadId)
-            }
-            onReject={rejectServerRequest}
-            onRespond={respondToServerRequest}
-            requests={serverRequests}
           />
         </div>
       </section>
@@ -624,6 +628,7 @@ function App(): React.JSX.Element {
 function ActiveConversationPane({
   activeConversation,
   entry,
+  approvalRequests,
   hasBlockingRequest,
   models,
   selectedModelId,
@@ -635,12 +640,16 @@ function ActiveConversationPane({
   onScrollSnapshotChange,
   onSelectedModelChange,
   onCreateNewTask,
+  onRejectApproval,
+  onSnoozeApproval,
+  onRespondApproval,
   projectState,
   sidebarCollapsed,
   onToggleSidebar
 }: {
   activeConversation: ActiveConversationContext | undefined
   entry: ConversationChatEntry
+  approvalRequests: readonly CodexApprovalRequest[]
   hasBlockingRequest: boolean
   models: readonly ModelOption[]
   selectedModelId: string | undefined
@@ -652,6 +661,12 @@ function ActiveConversationPane({
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
   onSelectedModelChange: (modelId: string) => void
   onCreateNewTask: () => void
+  onRejectApproval: (request: CodexApprovalRequest) => Promise<void>
+  onSnoozeApproval: (request: CodexApprovalRequest) => Promise<void>
+  onRespondApproval: (
+    request: CodexApprovalRequest,
+    response: CodexApprovalResponse
+  ) => Promise<void>
   projectState: ProjectStateController
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
@@ -734,6 +749,7 @@ function ActiveConversationPane({
       <div className="min-h-0 flex-1 overflow-hidden">
         <ChatThread
           activeConversation={activeConversation}
+          approvalRequests={approvalRequests}
           disabled={!entry.loaded}
           followUps={followUps}
           hasBlockingRequest={hasBlockingRequest}
@@ -748,6 +764,9 @@ function ActiveConversationPane({
           onScrollSnapshotChange={onScrollSnapshotChange}
           onSelectedModelChange={onSelectedModelChange}
           onCreateNewTask={onCreateNewTask}
+          onRejectApproval={onRejectApproval}
+          onSnoozeApproval={onSnoozeApproval}
+          onRespondApproval={onRespondApproval}
           projectState={projectState}
           scrollSnapshot={entry.scroll}
           recoveryPhase={entry.recoveryPhase}
@@ -885,6 +904,7 @@ function latestRunningAssistantMessage(
 
 function ChatThread({
   activeConversation,
+  approvalRequests,
   disabled,
   followUps,
   hasBlockingRequest,
@@ -902,7 +922,10 @@ function ChatThread({
   onScrollSnapshotChange,
   recoveryPhase,
   recoveryError,
-  onCreateNewTask
+  onCreateNewTask,
+  onRejectApproval,
+  onSnoozeApproval,
+  onRespondApproval
 }: ChatThreadProps): React.JSX.Element {
   const isEmpty = useAuiState(isNewChatView)
   const showNewConversationView = isEmpty && !loading && !loadError
@@ -979,7 +1002,7 @@ function ChatThread({
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container flex h-full min-h-0 flex-1 flex-col bg-background"
         style={{
-          ['--thread-max-width' as string]: '44rem',
+          ['--thread-max-width' as string]: '48rem',
           ['--composer-padding' as string]: '8px'
         }}
       >
@@ -1105,22 +1128,31 @@ function ChatThread({
                   projectState={projectState}
                 />
               )}
-              <Composer
-                activeConversation={activeConversation}
-                composerContextCatalog={composerContextCatalog}
-                disabled={disabled}
-                followUps={followUps}
-                models={models}
-                selectedModelId={selectedModelId}
-                modelSelectionError={modelSelectionError}
-                onSelectedModelChange={onSelectedModelChange}
-                onSteerFollowUp={onSteerFollowUp}
-                projectState={projectState}
-                editingFollowUp={editingFollowUp}
-                onEditingFollowUpChange={setEditingFollowUp}
-                queueAttached={visibleFollowUpItems.length > 0}
-                reservedEditingItemId={reservedEditingItem?.id}
-              />
+              {approvalRequests.length > 0 ? (
+                <ServerRequestPanel
+                  onInteraction={onSnoozeApproval}
+                  onReject={onRejectApproval}
+                  onRespond={onRespondApproval}
+                  requests={approvalRequests}
+                />
+              ) : (
+                <Composer
+                  activeConversation={activeConversation}
+                  composerContextCatalog={composerContextCatalog}
+                  disabled={disabled}
+                  followUps={followUps}
+                  models={models}
+                  selectedModelId={selectedModelId}
+                  modelSelectionError={modelSelectionError}
+                  onSelectedModelChange={onSelectedModelChange}
+                  onSteerFollowUp={onSteerFollowUp}
+                  projectState={projectState}
+                  editingFollowUp={editingFollowUp}
+                  onEditingFollowUpChange={setEditingFollowUp}
+                  queueAttached={visibleFollowUpItems.length > 0}
+                  reservedEditingItemId={reservedEditingItem?.id}
+                />
+              )}
             </div>
             {showNewConversationView ? (
               <div className="aui-thread-welcome-suggestions-shell min-h-19">

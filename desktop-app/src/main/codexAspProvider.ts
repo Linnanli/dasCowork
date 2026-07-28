@@ -6,6 +6,7 @@ import {
   type CodexProviderSettings,
   type CommandApprovalHandler,
   type FileChangeApprovalHandler,
+  type PermissionsApprovalHandler,
   StdioTransport
 } from '@janole/ai-sdk-provider-codex-asp'
 
@@ -27,6 +28,7 @@ export type CodexAspProviderSettingsInput = {
   defaultModel?: string
   onCommandApproval: CommandApprovalHandler
   onFileChangeApproval: FileChangeApprovalHandler
+  onPermissionsApproval?: PermissionsApprovalHandler
   onToolUserInput: ToolUserInputHandler
   onElicitation: ElicitationHandler
   connection?: CodexAspSharedConnection
@@ -86,6 +88,9 @@ export function createCodexAspProviderSettings(
     approvals: {
       onCommandApproval: input.onCommandApproval,
       onFileChangeApproval: input.onFileChangeApproval,
+      ...(input.onPermissionsApproval
+        ? { onPermissionsApproval: input.onPermissionsApproval }
+        : {}),
       onToolUserInput: input.onToolUserInput,
       onElicitation: input.onElicitation
     },

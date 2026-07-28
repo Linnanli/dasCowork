@@ -4,6 +4,7 @@ import type {
     CommandApprovalHandler,
     ElicitationHandler,
     FileChangeApprovalHandler,
+    PermissionsApprovalHandler,
     ToolUserInputHandler,
 } from "./approvals";
 import type { CodexTransport } from "./client/transport";
@@ -228,6 +229,7 @@ export interface CodexCallOptions {
         onFileChangeApproval?: FileChangeApprovalHandler
         onToolUserInput?: ToolUserInputHandler
         onElicitation?: ElicitationHandler
+        onPermissionsApproval?: PermissionsApprovalHandler
     }
 }
 
@@ -299,6 +301,8 @@ export interface CodexProviderSettings extends CodexCustomModelProviderSettings 
     approvals?: {
         onCommandApproval?: CommandApprovalHandler
         onFileChangeApproval?: FileChangeApprovalHandler
+        /** Called when Codex requests elevated permissions. Defaults to no permissions for the current turn. */
+        onPermissionsApproval?: PermissionsApprovalHandler
         /** Called when a tool sends a `requestUserInput` prompt (legacy fallback path). Defaults to auto-selecting the first option per question. */
         onToolUserInput?: ToolUserInputHandler
         /** Called when an MCP server sends an elicitation request (the primary MCP tool approval path). Defaults to `accept`. */

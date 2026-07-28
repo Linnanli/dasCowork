@@ -346,7 +346,7 @@ async function expectReleaseNoToolActivity(page: Page): Promise<void> {
 
 async function approvePendingReadOnlyCommand(page: Page, filename: string): Promise<void> {
   const panel = page.locator('[data-slot="server-request-panel"]')
-  await expect(panel).toContainText('Command execution approval', {
+  await expect(panel).toContainText('是否允许执行以下命令？', {
     timeout: realModelAssertionTimeoutMs
   })
   const command = (await panel.textContent()) ?? ''
@@ -360,7 +360,7 @@ async function approvePendingReadOnlyCommand(page: Page, filename: string): Prom
   ).not.toMatch(
     /(?:\b(?:rm|mv|cp|touch|mkdir|chmod|chown|tee|dd|truncate|install)\b|>>?|\b(?:apply_patch|git\s+(?:add|commit|reset|checkout|restore|clean))\b)/u
   )
-  await panel.getByRole('button', { name: 'Approve', exact: true }).click()
+  await panel.getByRole('button', { name: '允许一次', exact: true }).click()
   await expect(panel).toHaveCount(0)
 }
 

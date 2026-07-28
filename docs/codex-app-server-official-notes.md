@@ -535,6 +535,22 @@ turn 失败时，server 会发送 error 事件，并让 turn 以 `failed` 状态
 
 当请求包含 `networkApprovalContext` 时，这是网络访问审批，不应简单当作 shell command 审批。客户端应按 host/protocol/port 渲染网络审批。
 
+桌面实现应只把 host、protocol、reason、cwd 和白名单化的 action 名称发送到 renderer。
+`acceptWithExecpolicyAmendment` 和 `applyNetworkPolicyAmendment` 的完整 policy 对象
+必须保留在 Main；renderer 只能提交对应 intent，Main 再从本次请求的
+`availableDecisions` 中取回并回传原对象。
+
+`availableDecisions` 具有三态语义，客户端不能先统一转成空数组：
+
+- 字段缺失或 `null`：按 App Server 的历史规则，从网络上下文、附加权限和 policy
+  amendment 推导默认 decision；
+- 显式非空数组：列表完全权威，只能展示和返回其中的 decision；
+- 显式空数组：表示没有可用 decision，不能生成批准动作。
+
+dasCowork 对显式空数组、未知 decision 或畸形 amendment 均 fail closed：不向 Renderer
+发布审批卡，直接返回 `cancel`。`decline` 表示拒绝后继续 turn，`cancel` 表示拒绝并立即
+中断 turn，两者不能合并为同一个响应。
+
 ### File Change Approval Flow
 
 1. `item/started`：出现 `fileChange` item。
@@ -543,9 +559,28 @@ turn 失败时，server 会发送 error 事件，并让 turn 以 `failed` 状态
 4. `serverRequest/resolved`。
 5. `item/completed`：最终 `fileChange` 状态为 completed、failed 或 declined。
 
+请求参数不带 patch；客户端如需展示 diff，应从同一个 `threadId`、`turnId`、`itemId`
+的 fileChange item 通知中获取 `changes`，并在 item/turn 完成后清理本地缓存。
+
 ### Tool User Input
 
 `tool/requestUserInput` 可让工具向用户提出 1 到 3 个短问题。`autoResolutionMs` 可指定自动解决超时；如果 pending request 在用户回答前被 turn 开始、完成或中断清理，server 也会发 `serverRequest/resolved`。
+
+每个答案以 question id 为 key，wire 形态为 `string[]`。有 option 时应回传协议提供的
+option label/value，不应以本地化后的描述文字替代。秘密答案只可保存在一次性 UI 表单状态
+和 response 中，不应写入 pending 恢复快照或日志。
+
+桌面端由 Main 保存自动处理的绝对 deadline：首次有效输入会 snooze 自动处理，刷新或切换会话不会重置倒计时；deadline 到期只返回空 answers 一次。
+
+### Permission Request
+
+`item/permissions/requestApproval` 请求的 response 为原始 permission profile 加 `turn` 或 `session` scope。renderer 只能显示安全编译后的网络、路径、glob、特殊目录和读/写/拒绝详情，并提交 scope intent；Main 必须从原始 request 重建 profile。空、未知或不能完整解释的 entry 必须 fail closed，不能显示批准动作。
+
+### MCP Elicitation
+
+`mcpServer/elicitation/request` 的 typed `form` 可安全映射为 string、number/integer、
+boolean、单选 enum 和多选 enum。多选必须保持 `string[]`，number/boolean 保持原类型。
+`mode: "url"` 仅允许 http/https 地址，客户端先通过外链策略打开，再由用户点击继续才可 accept。`mode: "openai/form"` 是任意 JSON：可安全完整编译时按普通表单处理；无法解释时必须 fail closed，并保留 decline 与 cancel 的不同语义。
 
 ### Dynamic Tools
 
@@ -698,4 +733,3 @@ renderer assistant-ui
 - 协议 common definitions：`codex/codex-rs/app-server-protocol/src/protocol/common.rs`
 - 生成 schema：`codex/codex-rs/app-server-protocol/schema/`
 - 本项目架构说明：`docs/dasCowork-architecture.md`
-

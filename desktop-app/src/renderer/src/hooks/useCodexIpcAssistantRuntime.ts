@@ -50,6 +50,7 @@ export type CodexIpcAssistantRuntimeState = {
     response: CodexApprovalResponse
   ) => Promise<void>
   rejectServerRequest: (request: CodexApprovalRequest) => Promise<void>
+  snoozeServerRequest: (request: CodexApprovalRequest) => Promise<void>
 }
 
 export type CodexIpcAssistantRuntimeOptions = {
@@ -258,6 +259,23 @@ export function useCodexIpcAssistantRuntime(
     setServerRequests((current) => current.filter((item) => item.id !== request.id))
   }, [])
 
+  const snoozeServerRequest = useCallback(async (request: CodexApprovalRequest) => {
+    if (request.kind !== 'tool-user-input') return
+    const snooze = window.desktopApp.codex.snoozeApprovalAutoResolution
+    if (!snooze) return
+    if (!(await snooze(request.id))) return
+    setServerRequests((current) =>
+      current.map((item) =>
+        item.id === request.id && item.kind === 'tool-user-input'
+          ? {
+              ...item,
+              params: { ...item.params, autoResolutionSnoozed: true }
+            }
+          : item
+      )
+    )
+  }, [])
+
   const activeThreadId = activeEntry.context.threadId
   const activeServerRequests = activeThreadId
     ? serverRequests.filter((request) => request.context?.threadId === activeThreadId)
@@ -284,7 +302,8 @@ export function useCodexIpcAssistantRuntime(
     getConversationIndicator,
     getConversationTitle,
     respondToServerRequest,
-    rejectServerRequest
+    rejectServerRequest,
+    snoozeServerRequest
   }
 }
 

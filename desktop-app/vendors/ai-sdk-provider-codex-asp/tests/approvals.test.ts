@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ApprovalsDispatcher } from "../src/approvals";
+import { AppServerClient } from "../src/client/app-server-client";
 import type { JsonRpcMessage } from "../src/client/transport";
+import type { FileUpdateChange } from "../src/protocol/app-server-protocol/v2/FileUpdateChange";
 import { codexCallOptions } from "../src/protocol/provider-metadata";
 import { createCodexAppServer } from "../src/provider";
 import { MockTransport } from "./helpers/mock-transport";
 
 class ScriptedTransport extends MockTransport
 {
-    private approvalScenario: "command" | "fileChange" | "toolUserInput" | "none" = "none";
+    private approvalScenario: "command" | "fileChange" | "toolUserInput" | "permissions" | "none" = "none";
     private approvalRequestId = 100;
 
-    setApprovalScenario(scenario: "command" | "fileChange" | "toolUserInput" | "none"): void
+    setApprovalScenario(scenario: "command" | "fileChange" | "toolUserInput" | "permissions" | "none"): void
     {
         this.approvalScenario = scenario;
     }
@@ -26,7 +29,10 @@ class ScriptedTransport extends MockTransport
 
         if (message.method === "initialize")
         {
-            this.emitMessage({ id: message.id, result: { serverInfo: { name: "codex", version: "test" } } });
+            this.emitMessage({
+                id: message.id,
+                result: { serverInfo: { name: "codex", version: "test" } },
+            });
             return;
         }
 
@@ -124,6 +130,34 @@ class ScriptedTransport extends MockTransport
                     });
                 });
             }
+            else if (this.approvalScenario === "permissions")
+            {
+                queueMicrotask(() =>
+                {
+                    this.emitMessage({
+                        method: "turn/started",
+                        params: { threadId: "thr_1", turn: { id: "turn_1" } },
+                    });
+
+                    this.emitMessage({
+                        id: this.approvalRequestId,
+                        method: "item/permissions/requestApproval",
+                        params: {
+                            threadId: "thr_1",
+                            turnId: "turn_1",
+                            itemId: "item_permissions_1",
+                            environmentId: "env_1",
+                            startedAtMs: 123,
+                            cwd: "/repo",
+                            reason: "Needs network access",
+                            permissions: {
+                                network: { enabled: true },
+                                fileSystem: null,
+                            },
+                        },
+                    });
+                });
+            }
             else
             {
                 queueMicrotask(() =>
@@ -173,11 +207,15 @@ class ScriptedTransport extends MockTransport
     }
 
     /**
-     * When we receive an approval response, continue the turn.
-     */
+   * When we receive an approval response, continue the turn.
+   */
     handleApprovalResponse(responseMessage: JsonRpcMessage): void
     {
-        if ("id" in responseMessage && responseMessage.id === this.approvalRequestId && "result" in responseMessage)
+        if (
+            "id" in responseMessage &&
+      responseMessage.id === this.approvalRequestId &&
+      "result" in responseMessage
+        )
         {
             // Approval was answered — continue the turn
             queueMicrotask(() =>
@@ -240,8 +278,272 @@ async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]>
     return parts;
 }
 
+async function flushAsyncHandlers(): Promise<void>
+{
+    await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+const initialFileChanges: FileUpdateChange[] = [
+    {
+        path: "src/config.ts",
+        kind: { type: "update", move_path: null },
+        diff: "@@ -1 +1 @@\n-old\n+new",
+    },
+];
+
+const updatedFileChanges: FileUpdateChange[] = [
+    {
+        path: "src/config.ts",
+        kind: { type: "update", move_path: null },
+        diff: "@@ -1 +1 @@\n-new\n+newer",
+    },
+];
+
 describe("ApprovalsDispatcher", () =>
 {
+    it("enriches file change approval requests from item/started changes", async () =>
+    {
+        const transport = new MockTransport();
+        const client = new AppServerClient(transport);
+        await client.connect();
+
+        const onFileChangeApproval = vi.fn().mockResolvedValue("accept");
+        const detach = new ApprovalsDispatcher({ onFileChangeApproval }).attach(client);
+
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                startedAtMs: 1,
+                item: {
+                    type: "fileChange",
+                    id: "item_fc_1",
+                    status: "inProgress",
+                    changes: initialFileChanges,
+                },
+            },
+        });
+        transport.emitMessage({
+            id: 100,
+            method: "item/fileChange/requestApproval",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                itemId: "item_fc_1",
+                startedAtMs: 2,
+                reason: "Write config",
+            },
+        });
+        await flushAsyncHandlers();
+
+        expect(onFileChangeApproval).toHaveBeenCalledWith({
+            threadId: "thr_1",
+            turnId: "turn_1",
+            itemId: "item_fc_1",
+            startedAtMs: 2,
+            reason: "Write config",
+            changes: initialFileChanges,
+        });
+        expect(transport.sentMessages).toContainEqual({ id: 100, result: { decision: "accept" } });
+
+        detach();
+        await client.disconnect();
+    });
+
+    it("uses latest patchUpdated changes and isolates by thread turn and item", async () =>
+    {
+        const transport = new MockTransport();
+        const client = new AppServerClient(transport);
+        await client.connect();
+
+        const onFileChangeApproval = vi.fn().mockResolvedValue("accept");
+        const detach = new ApprovalsDispatcher({ onFileChangeApproval }).attach(client);
+
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                startedAtMs: 1,
+                item: {
+                    type: "fileChange",
+                    id: "item_fc_1",
+                    status: "inProgress",
+                    changes: initialFileChanges,
+                },
+            },
+        });
+        transport.emitMessage({
+            method: "item/fileChange/patchUpdated",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                itemId: "item_fc_1",
+                changes: updatedFileChanges,
+            },
+        });
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_2",
+                startedAtMs: 3,
+                item: {
+                    type: "fileChange",
+                    id: "item_fc_1",
+                    status: "inProgress",
+                    changes: [{ path: "other.ts", kind: { type: "add" }, diff: "@@ -0,0 +1 @@\n+other" }],
+                },
+            },
+        });
+        transport.emitMessage({
+            id: 100,
+            method: "item/fileChange/requestApproval",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                itemId: "item_fc_1",
+                startedAtMs: 4,
+            },
+        });
+        await flushAsyncHandlers();
+
+        expect(onFileChangeApproval).toHaveBeenCalledOnce();
+        expect(onFileChangeApproval.mock.lastCall?.[0]).toMatchObject({
+            threadId: "thr_1",
+            turnId: "turn_1",
+            itemId: "item_fc_1",
+            changes: updatedFileChanges,
+        });
+
+        detach();
+        await client.disconnect();
+    });
+
+    it("cleans cached file changes on item completion turn completion and detach", async () =>
+    {
+        const transport = new MockTransport();
+        const client = new AppServerClient(transport);
+        await client.connect();
+
+        const onFileChangeApproval = vi.fn().mockResolvedValue("accept");
+        const detach = new ApprovalsDispatcher({ onFileChangeApproval }).attach(client);
+
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                startedAtMs: 1,
+                item: {
+                    type: "fileChange",
+                    id: "completed_item",
+                    status: "inProgress",
+                    changes: initialFileChanges,
+                },
+            },
+        });
+        transport.emitMessage({
+            method: "item/completed",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                completedAtMs: 2,
+                item: {
+                    type: "fileChange",
+                    id: "completed_item",
+                    status: "completed",
+                    changes: updatedFileChanges,
+                },
+            },
+        });
+        transport.emitMessage({
+            id: 100,
+            method: "item/fileChange/requestApproval",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_1",
+                itemId: "completed_item",
+                startedAtMs: 3,
+            },
+        });
+        await flushAsyncHandlers();
+        expect(onFileChangeApproval.mock.lastCall?.[0]).toMatchObject({
+            itemId: "completed_item",
+            changes: [],
+        });
+
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_2",
+                startedAtMs: 4,
+                item: {
+                    type: "fileChange",
+                    id: "turn_completed_item",
+                    status: "inProgress",
+                    changes: initialFileChanges,
+                },
+            },
+        });
+        transport.emitMessage({
+            method: "turn/completed",
+            params: {
+                threadId: "thr_1",
+                turn: { id: "turn_2", items: [], status: "completed", error: null },
+            },
+        });
+        transport.emitMessage({
+            id: 101,
+            method: "item/fileChange/requestApproval",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_2",
+                itemId: "turn_completed_item",
+                startedAtMs: 5,
+            },
+        });
+        await flushAsyncHandlers();
+        expect(onFileChangeApproval.mock.lastCall?.[0]).toMatchObject({
+            itemId: "turn_completed_item",
+            changes: [],
+        });
+
+        transport.emitMessage({
+            method: "item/started",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_3",
+                startedAtMs: 6,
+                item: {
+                    type: "fileChange",
+                    id: "detached_item",
+                    status: "inProgress",
+                    changes: initialFileChanges,
+                },
+            },
+        });
+        detach();
+        transport.emitMessage({
+            id: 102,
+            method: "item/fileChange/requestApproval",
+            params: {
+                threadId: "thr_1",
+                turnId: "turn_3",
+                itemId: "detached_item",
+                startedAtMs: 7,
+            },
+        });
+        await flushAsyncHandlers();
+
+        expect(onFileChangeApproval).toHaveBeenCalledTimes(2);
+        expect(transport.sentMessages).not.toContainEqual({ id: 102, result: { decision: "accept" } });
+
+        await client.disconnect();
+    });
+
     it("declines command execution by default", async () =>
     {
         const transport = new ScriptedTransport();
@@ -363,14 +665,18 @@ describe("ApprovalsDispatcher", () =>
 
         const model = provider.languageModel("gpt-5.5");
 
-        await readAll((await model.doStream({
-            prompt: [{ role: "user", content: [{ type: "text", text: "push it" }] }],
-            providerOptions: codexCallOptions({
-                approvals: {
-                    onCommandApproval: callOnCommandApproval,
-                },
-            }),
-        })).stream);
+        await readAll(
+            (
+                await model.doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "push it" }] }],
+                    providerOptions: codexCallOptions({
+                        approvals: {
+                            onCommandApproval: callOnCommandApproval,
+                        },
+                    }),
+                })
+            ).stream,
+        );
 
         expect(callOnCommandApproval).toHaveBeenCalledOnce();
         expect(providerOnCommandApproval).not.toHaveBeenCalled();
@@ -418,6 +724,7 @@ describe("ApprovalsDispatcher", () =>
             turnId: "turn_1",
             itemId: "item_fc_1",
             reason: "Write to /etc/config",
+            changes: [],
         });
 
         const approvalResponse = transport.sentMessages.find(
@@ -452,14 +759,18 @@ describe("ApprovalsDispatcher", () =>
 
         const model = provider.languageModel("gpt-5.5");
 
-        await readAll((await model.doStream({
-            prompt: [{ role: "user", content: [{ type: "text", text: "write config" }] }],
-            providerOptions: codexCallOptions({
-                approvals: {
-                    onCommandApproval: callOnCommandApproval,
-                },
-            }),
-        })).stream);
+        await readAll(
+            (
+                await model.doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "write config" }] }],
+                    providerOptions: codexCallOptions({
+                        approvals: {
+                            onCommandApproval: callOnCommandApproval,
+                        },
+                    }),
+                })
+            ).stream,
+        );
 
         expect(providerOnFileChangeApproval).toHaveBeenCalledOnce();
         expect(callOnCommandApproval).not.toHaveBeenCalled();
@@ -469,6 +780,149 @@ describe("ApprovalsDispatcher", () =>
         ) as { id: number; result: { decision: string } } | undefined;
 
         expect(approvalResponse?.result.decision).toBe("accept");
+    });
+
+    it("fails closed for permissions approval by default", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.setApprovalScenario("permissions");
+
+        const originalSendMessage = transport.sendMessage.bind(transport);
+        transport.sendMessage = async (message: JsonRpcMessage) =>
+        {
+            await originalSendMessage(message);
+            transport.handleApprovalResponse(message);
+        };
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+        });
+
+        await readAll(
+            (
+                await provider.languageModel("gpt-5.5").doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "fetch docs" }] }],
+                })
+            ).stream,
+        );
+
+        const approvalResponse = transport.sentMessages.find(
+            (msg) => "id" in msg && msg.id === 100 && "result" in msg,
+        ) as { id: number; result: { permissions: Record<string, never>; scope: string } } | undefined;
+
+        expect(approvalResponse?.result).toEqual({ permissions: {}, scope: "turn" });
+    });
+
+    it("calls provider-level permissions approval callback and sends the response", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.setApprovalScenario("permissions");
+
+        const originalSendMessage = transport.sendMessage.bind(transport);
+        transport.sendMessage = async (message: JsonRpcMessage) =>
+        {
+            await originalSendMessage(message);
+            transport.handleApprovalResponse(message);
+        };
+
+        const onPermissionsApproval = vi.fn().mockResolvedValue({
+            permissions: { network: { enabled: true } },
+            scope: "session",
+            strictAutoReview: true,
+        });
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            approvals: { onPermissionsApproval },
+        });
+
+        await readAll(
+            (
+                await provider.languageModel("gpt-5.5").doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "fetch docs" }] }],
+                })
+            ).stream,
+        );
+
+        expect(onPermissionsApproval).toHaveBeenCalledOnce();
+        expect(onPermissionsApproval).toHaveBeenCalledWith({
+            threadId: "thr_1",
+            turnId: "turn_1",
+            itemId: "item_permissions_1",
+            environmentId: "env_1",
+            startedAtMs: 123,
+            cwd: "/repo",
+            reason: "Needs network access",
+            permissions: {
+                network: { enabled: true },
+                fileSystem: null,
+            },
+        });
+
+        const approvalResponse = transport.sentMessages.find(
+            (msg) => "id" in msg && msg.id === 100 && "result" in msg,
+        ) as { id: number; result: unknown } | undefined;
+
+        expect(approvalResponse?.result).toEqual({
+            permissions: { network: { enabled: true } },
+            scope: "session",
+            strictAutoReview: true,
+        });
+    });
+
+    it("prefers per-call permissions approval handler over provider-level approvals", async () =>
+    {
+        const transport = new ScriptedTransport();
+        transport.setApprovalScenario("permissions");
+
+        const originalSendMessage = transport.sendMessage.bind(transport);
+        transport.sendMessage = async (message: JsonRpcMessage) =>
+        {
+            await originalSendMessage(message);
+            transport.handleApprovalResponse(message);
+        };
+
+        const providerOnPermissionsApproval = vi.fn().mockResolvedValue({
+            permissions: {},
+            scope: "turn",
+        });
+        const callOnPermissionsApproval = vi.fn().mockResolvedValue({
+            permissions: { fileSystem: { read: ["/repo"], write: null } },
+            scope: "turn",
+        });
+
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            approvals: { onPermissionsApproval: providerOnPermissionsApproval },
+        });
+
+        await readAll(
+            (
+                await provider.languageModel("gpt-5.5").doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "read files" }] }],
+                    providerOptions: codexCallOptions({
+                        approvals: {
+                            onPermissionsApproval: callOnPermissionsApproval,
+                        },
+                    }),
+                })
+            ).stream,
+        );
+
+        expect(callOnPermissionsApproval).toHaveBeenCalledOnce();
+        expect(providerOnPermissionsApproval).not.toHaveBeenCalled();
+
+        const approvalResponse = transport.sentMessages.find(
+            (msg) => "id" in msg && msg.id === 100 && "result" in msg,
+        ) as { id: number; result: unknown } | undefined;
+
+        expect(approvalResponse?.result).toEqual({
+            permissions: { fileSystem: { read: ["/repo"], write: null } },
+            scope: "turn",
+        });
     });
 
     it("auto-answers tool user input with first option by default", async () =>
@@ -521,9 +975,13 @@ describe("ApprovalsDispatcher", () =>
             approvals: { onToolUserInput },
         });
 
-        await readAll((await provider.languageModel("gpt-5.5").doStream({
-            prompt: [{ role: "user", content: [{ type: "text", text: "deploy" }] }],
-        })).stream);
+        await readAll(
+            (
+                await provider.languageModel("gpt-5.5").doStream({
+                    prompt: [{ role: "user", content: [{ type: "text", text: "deploy" }] }],
+                })
+            ).stream,
+        );
 
         expect(onToolUserInput).toHaveBeenCalledOnce();
         const [callArg] = onToolUserInput.mock.lastCall as [{ questions: { id: string }[] }];

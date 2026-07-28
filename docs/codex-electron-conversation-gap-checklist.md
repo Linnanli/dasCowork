@@ -203,21 +203,35 @@
 
 ### P0-06 审批与结构化提问补全
 
-- [ ] 命令审批展示可读命令，而不是只展示原始 JSON。
-- [ ] 文件修改审批展示文件列表和 diff。
-- [ ] 网络审批展示域名、原因和目标范围。
-- [ ] 支持仅本次、当前会话、相似操作和持久允许规则。
-- [ ] 支持单选、多选、自由文本、秘密输入和多问题表单。
-- [ ] 回答时保留选项值和多选数组，不降级为单一字符串。
-- [ ] 不把敏感参数、凭据或 provider 配置暴露给 Renderer。
-- [ ] 覆盖主 Agent、子 Agent、MCP、网络和秘密输入场景的测试。
+- [x] 命令审批展示可读命令，而不是只展示原始 JSON。
+- [x] 文件修改审批展示文件列表和 diff。
+- [x] 网络审批展示域名、原因和目标范围。
+- [x] 支持仅本次、当前会话、相似操作和持久允许规则。
+- [x] 支持单选、多选、自由文本、秘密输入和多问题表单。
+- [x] 回答时保留选项值和多选数组，不降级为单一字符串。
+- [x] 不把敏感参数、凭据或 provider 配置暴露给 Renderer。
+- [x] 覆盖主 Agent、子 Agent、MCP、网络和秘密输入场景的测试。
 
-状态：**部分实现**
+状态：**已完成（2026-07-26）**
 
 当前证据：
 
-- [已有单次、会话和 MCP 持久审批](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx#L104)
-- [问题解析未保留选项与多选信息](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx#L321)
+- [安全审批 DTO 与敏感字段白名单](../desktop-app/src/shared/codexApprovalApi.ts)
+- [Main 端原始协议决策的精确重建](../desktop-app/src/main/codexChatRuntimeService.ts)
+- [文件变更缓存与审批 payload 合并](../desktop-app/vendors/ai-sdk-provider-codex-asp/src/approvals.ts)
+- [可读命令、文件 diff、网络与结构化表单面板](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx)
+- [审批 UI 与结构化值保真单测](../desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.test.tsx)
+- [安全 DTO、Main 映射与 provider 回归测试](../desktop-app/src/shared/codexApprovalApi.test.ts)、[codexChatRuntimeService.test.ts](../desktop-app/src/main/codexChatRuntimeService.test.ts)、[approvals.test.ts](../desktop-app/vendors/ai-sdk-provider-codex-asp/tests/approvals.test.ts)
+- [审批重试、拒绝、并发、停止、崩溃和新 turn 的 Mock E2E](../desktop-app/tests/e2e/approvals.e2e.ts)
+- [文件 diff、网络策略、秘密输入和 MCP typed form 的协议 Mock E2E](../desktop-app/tests/e2e/approval-panels.e2e.ts)
+
+### P0-07 App Server 审批／待处理交互完整对齐
+
+- [x] `item/permissions/requestApproval` 从 provider callback 经 Main、IPC 到 renderer 权限卡；renderer 只提交 scope intent，Main 保留原始 profile。
+- [x] permission detail 支持网络、legacy read/write、entries、glob、特殊路径和 glob scan 深度；任一条无法完整解释时 fail closed。
+- [x] `tool/requestUserInput` 的自动处理 deadline 由 Main 持有，首次交互 snooze 且 Other 与 option 互斥。
+- [x] MCP typed form、可安全编译的 OpenAI form 和 URL 均通过同一审批 shell；Skip/Cancel/Accept 以及 URL 的打开后继续保持协议语义。
+- [x] renderer 不接收 raw permission profile 或 raw OpenAI schema；秘密答案不写入 pending snapshot。
 
 参考证据：
 
@@ -499,7 +513,7 @@
 - [x] P0-01 运行中追问队列与 Steer
 - [ ] P0-02 活跃任务重连与局部恢复
 - [ ] P0-05 会话管理入口
-- [ ] P0-06 审批与结构化提问补全
+- [x] P0-06 审批与结构化提问补全
 
 ### 批次二：任务可管理
 

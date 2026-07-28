@@ -22,6 +22,22 @@
 
 本节 A～G 的编号是固定主键：A01-A14、B01-B16、C01-C24、D01-D20、E01-E28、F01-F20、G01-G12。每组第 n 条就是该组的字母加两位 n，例如 A.4 是 A04、C.23 是 C23。新增或改名的测试标题必须包含对应场景 ID。M01-M12 是最低 Mock E2E 组，R01-R06 是发布验收组；它们引用 A～G 主键而不另行增加场景数量。
 
+### P0-06 审批与结构化提问补全证据
+
+本矩阵的主键是固定集合，因此 P0-06 的审批可靠性复用既有 `D12-D18` 和 `M11`，不另加不被 CI 识别的场景 ID。P0-06 专项单元证据与这些固定场景共同构成验收：
+
+- Provider：`approvals.test.ts` 覆盖文件 diff 缓存合并、清理和审批决策。
+- Main/Shared：`codexApprovalApi.test.ts`、`codexApprovalBroker.test.ts`、`codexChatRuntimeService.test.ts` 覆盖安全白名单、敏感字段剔除、请求动作校验及协议决策/表单值的准确还原。
+- Renderer：`server-request-panel.test.tsx`、`file-change-diff.test.ts` 和 `App.test.tsx` 覆盖可读命令、文件 diff、网络范围、文件授权菜单、秘密输入、选项、多问题和 MCP 多选/数字/布尔值。
+- Mock E2E：`approvals.e2e.ts` 的 `D12`、`D13/D17`、`D14`、`D15`、`D18` 覆盖批准、拒绝、并发隔离、停止、崩溃恢复和带新 request/call ID 的副作用重试；`approval-panels.e2e.ts` 使用测试专用协议 peer 覆盖文件 diff、网络规则、结构化问题/秘密输入和 MCP typed form 的完整 Renderer → IPC → Main → provider 审批链路。
+
+### P0-07 App Server 审批／待处理交互完整对齐证据
+
+- Provider：`approvals.test.ts` 覆盖 `item/permissions/requestApproval` 的 provider callback、per-call 覆盖 provider callback 与无 callback 时的 fail-closed response。
+- Main/Shared：`codexApprovalApi.test.ts`、`codexApprovalBroker.test.ts`、`codexChatRuntimeService.test.ts` 覆盖 permission detail 全量编译、scope-only intent、原始 profile 重建、自动处理 deadline/snooze、命令 `availableDecisions` 缺失/null/显式非空/显式空/畸形五类语义、command/file `decline` 与 `cancel` 分流、MCP `accept`/`decline`/`cancel` 与 OpenAI form 全有或全无编译。
+- Renderer：`server-request-panel.test.tsx` 覆盖共享卡片 shell 中的权限详情、Other 互斥、倒计时、终态清除 option 自动跳题 timer、可选 number/integer 空值省略、typed/OpenAI form 的 Skip/Cancel/Continue，以及 URL 的“打开链接 → 继续”状态。
+- Mock E2E：`approval-panels.e2e.ts` 覆盖 network/filesystem/mixed permission、命令附加权限、命令 decision 缺失/显式空/decline-cancel 分流、tool auto-resolution/snooze/终态 timer 竞态、MCP typed cancel/可选数字空值、OpenAI form supported/unsupported 的 skip/dismiss，以及 URL open→continue/invalid。每个场景断言可见动作、精确 JSON-RPC response、单次结算、renderer 无错误及 desktop/narrow 截图；秘密回答、raw schema 和 raw permission profile 不得写入附件。
+
 ### 终态、steer 与重试判定
 
 - 每个 stream/turn 只能提交一次终态；提交后不可覆盖。用户停止仅在停止请求先于任何上游终态记录时为 interrupted；已收到 canonical turn/completed outcome 时，它优先于随后 transport close/error；尚无 canonical outcome 时，不可恢复的 provider、transport 或 MessagePort 异常为 failed。

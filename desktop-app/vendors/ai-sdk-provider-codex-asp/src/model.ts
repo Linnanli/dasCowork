@@ -452,6 +452,9 @@ function resolveApprovalHandlers(
       callOptions?.approvals?.onToolUserInput ?? providerSettings.approvals?.onToolUserInput,
         onElicitation:
       callOptions?.approvals?.onElicitation ?? providerSettings.approvals?.onElicitation,
+        onPermissionsApproval:
+      callOptions?.approvals?.onPermissionsApproval ??
+      providerSettings.approvals?.onPermissionsApproval,
     });
 }
 

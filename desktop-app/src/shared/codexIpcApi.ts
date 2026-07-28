@@ -4,6 +4,7 @@ import { z } from 'zod'
 export * from './composerContext'
 export * from './composerContextSearch'
 export * from './codexFollowUpApi'
+export * from './codexApprovalApi'
 
 import type {
   LocalProject,
@@ -23,6 +24,11 @@ import {
   projectSelectionSchema
 } from './projects/projectSchemas'
 import { followUpTurnStartRequestSchema, type FollowUpTurnStartRequest } from './codexFollowUpApi'
+import {
+  codexApprovalResponseSchema,
+  type CodexApprovalRequest,
+  type CodexApprovalResponse
+} from './codexApprovalApi'
 
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
 
@@ -302,31 +308,6 @@ export const codexChatControlMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('thread-bound-ack'), threadId: z.string().min(1) })
 ]) satisfies z.ZodType<CodexChatControlMessage>
 
-export type CodexApprovalKind = 'command' | 'file-change' | 'tool-user-input' | 'mcp-elicitation'
-
-export type CodexApprovalContext = {
-  threadId?: string
-  turnId?: string
-  hostId?: string
-  cwd?: string
-  projectLabel?: string
-}
-
-export type CodexApprovalRequest = {
-  id: string
-  kind: CodexApprovalKind
-  params: unknown
-  createdAt: string
-  context?: CodexApprovalContext
-}
-
-export type CodexApprovalResponse =
-  | { action: 'approve' }
-  | { action: 'approveForSession' }
-  | { action: 'alwaysApprove' }
-  | { action: 'decline'; reason?: string }
-  | { action: 'answer'; answers: Record<string, string[]> }
-
 export type CodexOpenLocalPathPayload = {
   path: string
   line?: number
@@ -406,18 +387,14 @@ export const codexChatTerminalFallbackSchema = z.object({
   terminal: codexChatTerminalEventSchema
 }) satisfies z.ZodType<CodexChatTerminalFallback>
 
-export const codexApprovalResponseSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('approve') }),
-  z.object({ action: z.literal('approveForSession') }),
-  z.object({ action: z.literal('alwaysApprove') }),
-  z.object({ action: z.literal('decline'), reason: z.string().optional() }),
-  z.object({ action: z.literal('answer'), answers: z.record(z.string(), z.array(z.string())) })
-]) satisfies z.ZodType<CodexApprovalResponse>
-
 export const codexRespondApprovalPayloadSchema = z.object({
   requestId: z.string().min(1),
   response: codexApprovalResponseSchema
 })
+
+export const codexSnoozeApprovalAutoResolutionPayloadSchema = z
+  .object({ requestId: z.string().min(1) })
+  .strict()
 
 export const codexSetSelectedModelPayloadSchema = z.object({
   modelId: z.string().min(1)
@@ -526,6 +503,7 @@ export type DesktopCodexApi = {
   setSelectedModel(modelId: string): Promise<{ selectedModelId: string }>
   listPendingApprovals?(): Promise<CodexApprovalRequest[]>
   respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void>
+  snoozeApprovalAutoResolution?(requestId: string): Promise<boolean>
   openExternalHttpUrl(url: string): Promise<void>
   openLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
   pickLocalContext(kind: LocalContextPickerKind): Promise<LocalContextReference[]>

@@ -3,8 +3,10 @@ export type {
     ApprovalsDispatcherSettings,
     CodexCommandApprovalRequest,
     CodexFileChangeApprovalRequest,
+    CodexPermissionsApprovalRequest,
     CommandApprovalHandler,
     FileChangeApprovalHandler,
+    PermissionsApprovalHandler,
 } from "./approvals";
 export { ApprovalsDispatcher } from "./approvals";
 export type { AppServerClientSettings } from "./client/app-server-client";
@@ -158,6 +160,8 @@ export type {
     ItemCompletedNotification,
     ItemStartedNotification,
     JsonRpcMessageBase,
+    PermissionsRequestApprovalParams,
+    PermissionsRequestApprovalResponse,
     SandboxMode,
     ThreadItem,
     ThreadTokenUsageUpdatedNotification,

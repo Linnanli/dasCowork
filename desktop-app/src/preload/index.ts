@@ -46,6 +46,8 @@ const desktopCodex: DesktopCodexApi = {
     ipcRenderer.invoke('codex:list-pending-approvals') as Promise<CodexApprovalRequest[]>,
   respondApproval: (requestId: string, response: CodexApprovalResponse) =>
     ipcRenderer.invoke('codex:respond-approval', { requestId, response }) as Promise<void>,
+  snoozeApprovalAutoResolution: (requestId: string) =>
+    ipcRenderer.invoke('codex:snooze-approval-auto-resolution', { requestId }) as Promise<boolean>,
   openExternalHttpUrl: (url: string) =>
     ipcRenderer.invoke('codex:open-external-http-url', { url }) as Promise<void>,
   openLocalPath: (input) => ipcRenderer.invoke('codex:open-local-path', input) as Promise<void>,

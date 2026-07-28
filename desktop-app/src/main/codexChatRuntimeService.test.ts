@@ -51,6 +51,9 @@ vi.mock('electron', () => ({
 
 import {
   CodexChatRuntimeService,
+  commandApprovalDecisionFromResponse,
+  mcpElicitationResponseFromApprovalResponse,
+  permissionsApprovalResponseFromApprovalResponse,
   type CodexPortLike,
   type CodexChatRuntimeServiceOptions,
   type ModelCatalogLike
@@ -265,6 +268,69 @@ describe('CodexChatRuntimeService', () => {
     providerState.shutdown.mockReset()
     providerState.startThread.mockReset()
     providerState.startThread.mockResolvedValue({ threadId: 'thread-prestarted' })
+  })
+
+  it('returns the exact advertised command policy decision instead of renderer-provided policy data', () => {
+    const execPolicyDecision = {
+      acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git status *'] }
+    }
+    const networkPolicyDecision = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: 'github.com', action: 'allow' }
+      }
+    }
+    const params = {
+      availableDecisions: ['accept', execPolicyDecision, networkPolicyDecision, 'decline', 'cancel']
+    }
+
+    expect(
+      commandApprovalDecisionFromResponse(params, {
+        action: 'approveWithExecpolicyAmendment'
+      })
+    ).toBe(execPolicyDecision)
+    expect(
+      commandApprovalDecisionFromResponse(params, { action: 'applyNetworkPolicyAmendment' })
+    ).toBe(networkPolicyDecision)
+    expect(
+      commandApprovalDecisionFromResponse(
+        { availableDecisions: ['accept'] },
+        { action: 'applyNetworkPolicyAmendment' }
+      )
+    ).toBe('cancel')
+    expect(commandApprovalDecisionFromResponse(params, { action: 'decline' })).toBe('decline')
+    expect(commandApprovalDecisionFromResponse(params, { action: 'cancel' })).toBe('cancel')
+  })
+
+  it('keeps typed MCP form values intact when rebuilding the protocol response', () => {
+    expect(
+      mcpElicitationResponseFromApprovalResponse({
+        action: 'submitMcpForm',
+        values: { features: ['logs', 'metrics'], replicas: 2, dryRun: true }
+      })
+    ).toEqual({
+      action: 'accept',
+      content: { features: ['logs', 'metrics'], replicas: 2, dryRun: true },
+      _meta: null
+    })
+  })
+
+  it('rebuilds permission grants only from the original Main-process request', () => {
+    const originalPermissions = {
+      network: { enabled: true },
+      fileSystem: { read: ['/repo'], write: null }
+    }
+    expect(
+      permissionsApprovalResponseFromApprovalResponse(
+        { permissions: originalPermissions },
+        { action: 'approvePermissions', scope: 'session' }
+      )
+    ).toEqual({ permissions: originalPermissions, scope: 'session' })
+    expect(
+      permissionsApprovalResponseFromApprovalResponse(
+        { permissions: originalPermissions },
+        { action: 'decline' }
+      )
+    ).toEqual({ permissions: {}, scope: 'turn' })
   })
 
   it('replays an active turn to a replacement renderer port without interrupting it', async () => {

@@ -30,7 +30,8 @@ import {
   type CodexSteerResult,
   type CodexTurnLifecycleEvent as ProviderTurnLifecycleEvent,
   type CommandApprovalHandler,
-  type FileChangeApprovalHandler
+  type FileChangeApprovalHandler,
+  type PermissionsApprovalHandler
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { AdminBackendClientModel } from './adminBackendModelClient'
@@ -72,6 +73,10 @@ import {
   type FollowUpClaim,
   type FollowUpClaimFailure
 } from './followUps/ConversationFollowUpQueueService'
+
+type McpElicitationResponse = Awaited<
+  ReturnType<NonNullable<NonNullable<CodexCallOptions['approvals']>['onElicitation']>>
+>
 
 export type CodexPortLike = {
   postMessage(message: CodexChatStreamEnvelope | CodexChatStreamEvent): void
@@ -130,7 +135,7 @@ type ActiveConversationRun = {
   terminalDelivered: boolean
   stopRequested: boolean
   stopRequestedAt?: number
-  approvalDeclinePromise?: Promise<void>
+  approvalSettlementPromise?: Promise<void>
   interruptPromise?: Promise<void>
   canonicalOutcomeTimer?: ReturnType<typeof setTimeout>
   canonicalResolutionError?: string
@@ -307,6 +312,7 @@ export class CodexChatRuntimeService {
       connection: options.connection,
       onCommandApproval: this.handleCommandApproval,
       onFileChangeApproval: this.handleFileChangeApproval,
+      onPermissionsApproval: this.handlePermissionsApproval,
       onToolUserInput: this.handleToolUserInput,
       onElicitation: this.handleElicitation
     })
@@ -332,8 +338,12 @@ export class CodexChatRuntimeService {
     return this.approvalBroker.listPendingApprovals()
   }
 
-  respondApproval(requestId: string, response: CodexApprovalResponse): void {
-    void this.approvalBroker.respond(requestId, response)
+  respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void> {
+    return this.approvalBroker.respond(requestId, response)
+  }
+
+  snoozeApprovalAutoResolution(requestId: string): boolean {
+    return this.approvalBroker.snoozeAutoResolution(requestId)
   }
 
   async listModels(): Promise<CodexModelList> {
@@ -934,7 +944,7 @@ export class CodexChatRuntimeService {
     if (!run.stopRequested) {
       run.stopRequested = true
       run.stopRequestedAt = Date.now()
-      run.approvalDeclinePromise = this.declineRunApprovals(
+      run.approvalSettlementPromise = this.settleRunApprovalsForInterrupt(
         run,
         'The task was stopped before approval was completed.'
       )
@@ -943,7 +953,7 @@ export class CodexChatRuntimeService {
     if (!run.session || !run.threadId || !run.turnId) return Promise.resolve()
 
     run.interruptPromise = (async () => {
-      await run.approvalDeclinePromise
+      await run.approvalSettlementPromise
       try {
         await run.session?.interrupt()
       } catch (error) {
@@ -1939,18 +1949,11 @@ export class CodexChatRuntimeService {
     return {
       onCommandApproval: async (params) => {
         const response = await request({ kind: 'command', params })
-        if (response.action === 'approveForSession' || response.action === 'alwaysApprove') {
-          return 'acceptForSession'
-        }
-        if (response.action === 'approve') return 'accept'
-        if (response.action === 'decline') return 'decline'
-        return 'cancel'
+        return commandApprovalDecisionFromResponse(params, response)
       },
       onFileChangeApproval: async (params) => {
         const response = await request({ kind: 'file-change', params })
-        if (response.action === 'approveForSession' || response.action === 'alwaysApprove') {
-          return 'acceptForSession'
-        }
+        if (response.action === 'approveForSession') return 'acceptForSession'
         if (response.action === 'approve') return 'accept'
         if (response.action === 'decline') return 'decline'
         return 'cancel'
@@ -1961,26 +1964,13 @@ export class CodexChatRuntimeService {
           ? { answers: toToolUserInputAnswers(response.answers) }
           : { answers: {} }
       },
+      onPermissionsApproval: async (params) => {
+        const response = await request({ kind: 'permission-request', params })
+        return permissionsApprovalResponseFromApprovalResponse(params, response)
+      },
       onElicitation: async (params) => {
         const response = await request({ kind: 'mcp-elicitation', params })
-        if (response.action === 'alwaysApprove') {
-          return { action: 'accept' as const, content: null, _meta: { persist: 'always' as const } }
-        }
-        if (response.action === 'approveForSession') {
-          return {
-            action: 'accept' as const,
-            content: null,
-            _meta: { persist: 'session' as const }
-          }
-        }
-        if (response.action === 'approve') {
-          return { action: 'accept' as const, content: null, _meta: null }
-        }
-        return {
-          action: 'decline' as const,
-          content: null,
-          _meta: response.action === 'decline' ? { reason: response.reason ?? null } : null
-        }
+        return mcpElicitationResponseFromApprovalResponse(response)
       }
     }
   }
@@ -1992,11 +1982,24 @@ export class CodexChatRuntimeService {
     run.approvalRequestIds.clear()
   }
 
-  private async declineRunApprovals(run: ActiveConversationRun, reason: string): Promise<void> {
+  private async settleRunApprovalsForInterrupt(
+    run: ActiveConversationRun,
+    reason: string
+  ): Promise<void> {
+    const pendingRequests = new Map(
+      this.approvalBroker.listPendingApprovals().map((request) => [request.id, request])
+    )
     const responses: Promise<void>[] = []
     for (const requestId of run.approvalRequestIds) {
       try {
-        responses.push(this.approvalBroker.respond(requestId, { action: 'decline', reason }))
+        const request = pendingRequests.get(requestId)
+        const response: CodexApprovalResponse =
+          request?.kind === 'command' ||
+          request?.kind === 'file-change' ||
+          request?.kind === 'mcp-elicitation'
+            ? { action: 'cancel' }
+            : { action: 'decline', reason }
+        responses.push(this.approvalBroker.respond(requestId, response))
       } catch {
         // The approval may have settled concurrently; the matching server
         // request already has a response in that case.
@@ -2008,19 +2011,12 @@ export class CodexChatRuntimeService {
 
   private readonly handleCommandApproval: CommandApprovalHandler = async (params) => {
     const response = await this.approvalBroker.request({ kind: 'command', params })
-    if (response.action === 'approveForSession' || response.action === 'alwaysApprove') {
-      return 'acceptForSession'
-    }
-    if (response.action === 'approve') return 'accept'
-    if (response.action === 'decline') return 'decline'
-    return 'cancel'
+    return commandApprovalDecisionFromResponse(params, response)
   }
 
   private readonly handleFileChangeApproval: FileChangeApprovalHandler = async (params) => {
     const response = await this.approvalBroker.request({ kind: 'file-change', params })
-    if (response.action === 'approveForSession' || response.action === 'alwaysApprove') {
-      return 'acceptForSession'
-    }
+    if (response.action === 'approveForSession') return 'acceptForSession'
     if (response.action === 'approve') return 'accept'
     if (response.action === 'decline') return 'decline'
     return 'cancel'
@@ -2035,28 +2031,14 @@ export class CodexChatRuntimeService {
       : { answers: {} }
   }
 
-  private readonly handleElicitation = async (
-    params: unknown
-  ): Promise<{
-    action: 'accept' | 'decline'
-    content: null
-    _meta: { persist: 'always' } | { persist: 'session' } | { reason: string | null } | null
-  }> => {
+  private readonly handlePermissionsApproval: PermissionsApprovalHandler = async (params) => {
+    const response = await this.approvalBroker.request({ kind: 'permission-request', params })
+    return permissionsApprovalResponseFromApprovalResponse(params, response)
+  }
+
+  private readonly handleElicitation = async (params: unknown): Promise<McpElicitationResponse> => {
     const response = await this.approvalBroker.request({ kind: 'mcp-elicitation', params })
-    if (response.action === 'alwaysApprove') {
-      return { action: 'accept' as const, content: null, _meta: { persist: 'always' } }
-    }
-    if (response.action === 'approveForSession') {
-      return { action: 'accept' as const, content: null, _meta: { persist: 'session' } }
-    }
-    if (response.action === 'approve') {
-      return { action: 'accept' as const, content: null, _meta: null }
-    }
-    return {
-      action: 'decline' as const,
-      content: null,
-      _meta: response.action === 'decline' ? { reason: response.reason ?? null } : null
-    }
+    return mcpElicitationResponseFromApprovalResponse(response)
   }
 }
 
@@ -2392,6 +2374,72 @@ function toToolUserInputAnswers(
       { answers: questionAnswers }
     ])
   )
+}
+
+export function commandApprovalDecisionFromResponse(
+  params: unknown,
+  response: CodexApprovalResponse
+): Awaited<ReturnType<CommandApprovalHandler>> {
+  if (response.action === 'approve') return 'accept'
+  if (response.action === 'approveForSession') return 'acceptForSession'
+  if (response.action === 'approveWithExecpolicyAmendment') {
+    return (findAvailableCommandDecision(params, 'acceptWithExecpolicyAmendment') ??
+      'cancel') as Awaited<ReturnType<CommandApprovalHandler>>
+  }
+  if (response.action === 'applyNetworkPolicyAmendment') {
+    return (findAvailableCommandDecision(params, 'applyNetworkPolicyAmendment') ??
+      'cancel') as Awaited<ReturnType<CommandApprovalHandler>>
+  }
+  if (response.action === 'decline') return 'decline'
+  return 'cancel'
+}
+
+export function mcpElicitationResponseFromApprovalResponse(
+  response: CodexApprovalResponse
+): McpElicitationResponse {
+  if (response.action === 'submitMcpForm') {
+    return { action: 'accept' as const, content: response.values, _meta: null }
+  }
+  if (response.action === 'approve') {
+    return { action: 'accept' as const, content: null, _meta: null }
+  }
+  if (response.action === 'cancel') {
+    return { action: 'cancel' as const, content: null, _meta: null }
+  }
+  return {
+    action: 'decline' as const,
+    content: null,
+    _meta: response.action === 'decline' ? { reason: response.reason ?? null } : null
+  }
+}
+
+export function permissionsApprovalResponseFromApprovalResponse(
+  params: unknown,
+  response: CodexApprovalResponse
+): Awaited<ReturnType<PermissionsApprovalHandler>> {
+  if (response.action !== 'approvePermissions') return { permissions: {}, scope: 'turn' }
+  const permissions = asRecord(params)?.permissions
+  if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+    return { permissions: {}, scope: 'turn' }
+  }
+  return {
+    permissions: permissions as Awaited<ReturnType<PermissionsApprovalHandler>>['permissions'],
+    scope: response.scope
+  }
+}
+
+function findAvailableCommandDecision(
+  params: unknown,
+  key: 'acceptWithExecpolicyAmendment' | 'applyNetworkPolicyAmendment'
+): unknown {
+  const record = asRecord(params)
+  const decisions = Array.isArray(record?.availableDecisions) ? record.availableDecisions : []
+  return decisions.find((decision) => Boolean(asRecord(decision)?.[key]))
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
 }
 
 function isAbortMessage(value: unknown): value is { type: 'abort'; runId?: string } {

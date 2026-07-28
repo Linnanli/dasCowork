@@ -747,7 +747,7 @@ provider 通过 `ApprovalsDispatcher` 处理 app-server 发起的 JSON-RPC serve
 | `item/commandExecution/requestApproval` | `approvals.onCommandApproval` | `decline` |
 | `item/fileChange/requestApproval` | `approvals.onFileChangeApproval` | `decline` |
 | `item/tool/requestUserInput` | `approvals.onToolUserInput` | 每个问题选第一个 option |
-| `item/permissions/requestApproval` | 无公开 callback | `{ permissions: {}, scope: "turn" }` |
+| `item/permissions/requestApproval` | `approvals.onPermissionsApproval` | `{ permissions: {}, scope: "turn" }`（未配置 callback 时） |
 | `mcpServer/elicitation/request` | `approvals.onElicitation` | `{ action: "accept", content: null, _meta: null }` |
 
 Command approval handler 返回：
@@ -756,9 +756,10 @@ Command approval handler 返回：
 type CommandApprovalDecision =
   | "accept"
   | "acceptForSession"
+  | { acceptWithExecpolicyAmendment: { execpolicy_amendment: string[] } }
+  | { applyNetworkPolicyAmendment: { network_policy_amendment: { host: string; action: "allow" | "deny" } } }
   | "decline"
   | "cancel"
-  | "acceptWithExecpolicyAmendment";
 ```
 
 File change approval handler 返回：
@@ -773,11 +774,37 @@ type FileChangeApprovalDecision =
 
 dasCowork 当前把这些 callback 转发到 `CodexApprovalBroker`，再由 renderer 审批面板回答。
 
+文件审批的 server request 本身不含 patch。`ApprovalsDispatcher` 会在 provider 内按
+`threadId + turnId + itemId` 缓存 `item/started` 和
+`item/fileChange/patchUpdated` 通知中的 `changes`，并把下列增强字段交给
+`onFileChangeApproval`：
+
+```ts
+type CodexFileChangeApprovalRequest = FileChangeRequestApprovalParams & {
+  changes: Array<{ path: string; kind: "add" | "delete" | "update"; diff: string }>;
+};
+```
+
+缓存会在 item/turn 完成和 dispatcher detach 时清除，不跨 thread 或 turn 复用。
+
+桌面端不会把完整 app-server 参数交给 renderer。Main 只将命令、cwd、原因、网络
+host/协议、文件 path/diff、逐项白名单化的 permission detail、结构化问题和经过白名单转换的 MCP 字段发送到审批面板；
+renderer 只提交稳定 intent，Main 再从原请求的 `availableDecisions` 取回精确 policy
+对象；权限卡只回传 `turn`/`session` scope，Main 才从原始 request 取回完整 profile。秘密输入只作为一次回答存在，不进入 pending snapshot。
+
+命令审批保留 `availableDecisions` 的三态：缺失或 `null` 才按 App Server 历史规则推导；
+显式数组完全权威；显式空数组、未知 decision 或畸形 amendment 在 Main 中直接
+fail closed 为 `cancel`，不会发布 Renderer 卡片。命令和文件审批分别保留
+`decline`（拒绝但继续 turn）与 `cancel`（拒绝并中断 turn），Main 只接受当前请求允许的
+用户动作。可选 MCP number/integer 输入清空后从提交值省略，非空值转换为有限 number 后
+再执行 integer、minimum 和 maximum 校验。
+
 注意：
 
 - command / file 默认拒绝较安全。
 - MCP elicitation 默认接受，集成 UI 应显式提供 `onElicitation`，避免副作用 tool 静默放行。
-- `item/permissions/requestApproval` 当前没有 provider-level callback；如果后续 official app-server 对该 request 语义增强，需要补 adapter。
+- 未配置 `onPermissionsApproval` 时仍 fail closed；配置后只可由 Main 按原始 profile 重建 grant，renderer 不能注入路径、host 或 `strictAutoReview`。
+- typed MCP `form` 和安全编译成功的 `openai/form` 支持文本、number/integer、boolean、单选 enum 和 string-array 多选；任一字段或约束无法完整编译时整表 fail closed，绝不渲染原始 schema。MCP 的 `accept`、`decline`、`cancel` 分别保留，且不伪造 session/always 持久化语义。
 
 ## 11. Session API
 
