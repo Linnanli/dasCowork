@@ -11,6 +11,33 @@ import { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
 import { createGitFixture } from './testHelpers'
 
 describe('GitRepositoryTargetResolver', () => {
+  it('uses the active project only for a pre-send conversation', async () => {
+    const { repo } = await createGitFixture()
+    let receivedInput: Parameters<ProjectService['resolveExistingThreadTarget']>[0] | undefined
+    const resolver = createResolver(async (input) => {
+      receivedInput = input
+      return {
+        hostId: 'local',
+        cwd: repo,
+        workspaceRoots: [repo],
+        workspaceKind: 'project'
+      }
+    }, new GitHostRegistry())
+
+    await resolver.resolve({ conversationId: 'new-conversation' })
+    expect(receivedInput).toMatchObject({
+      conversationId: 'new-conversation',
+      allowActiveProjectFallback: true
+    })
+
+    await resolver.resolve({ conversationId: 'saved-conversation', threadId: 'thread-1' })
+    expect(receivedInput).toMatchObject({
+      conversationId: 'saved-conversation',
+      threadId: 'thread-1',
+      allowActiveProjectFallback: false
+    })
+  })
+
   it('discovers a repository from a trusted nested historical cwd', async () => {
     const { repo } = await createGitFixture()
     const nested = join(repo, 'src', 'feature')
@@ -165,7 +192,9 @@ describe('GitRepositoryTargetResolver', () => {
 })
 
 function createResolver(
-  resolveExistingThreadTarget: () => Promise<{
+  resolveExistingThreadTarget: (
+    input: Parameters<ProjectService['resolveExistingThreadTarget']>[0]
+  ) => Promise<{
     hostId: string
     cwd: string
     workspaceRoots: string[]

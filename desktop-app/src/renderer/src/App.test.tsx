@@ -1889,8 +1889,49 @@ describe('App composer', () => {
     )
   })
 
-  it('shows Git branch and review controls for remote conversations with a ready repository target', async () => {
-    const listBranches = vi.mocked(window.desktopApp.git.listBranches)
+  it('shows the selected project branch control beside the project card before a chat starts', async () => {
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const viewport = container.querySelector('[data-slot="aui_thread-viewport"]')
+    const projectCard = container.querySelector('[data-slot="composer-project-card-shell"]')
+    const switcher = container.querySelector('[data-slot="local-branch-switcher"]')
+
+    expect(projectCard?.closest('[data-slot="aui_thread-viewport"]')).toBe(viewport)
+    expect(switcher?.closest('[data-slot="aui_thread-viewport"]')).toBe(viewport)
+    expect(switcher?.closest('[data-slot="composer-project-card-shell"]')).toBe(projectCard)
+    expect(switcher?.previousElementSibling).toBe(
+      projectCard?.querySelector('button[data-slot="composer-project-card"]') ?? projectCard
+    )
+
+    projectHookState.controller.state = {
+      ...requireProjectHookState(),
+      activeProjectSelection: { projectKind: 'projectless' }
+    }
+    act(() => {
+      root.render(<App />)
+    })
+    expect(container.querySelector('[data-slot="local-branch-switcher"]')).toBeNull()
+
+    projectHookState.controller.state = {
+      ...requireProjectHookState(),
+      activeProjectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    threadMessagesState.messages = [threadMessageState.message]
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[data-slot="composer-project-card-shell"]')).toBeNull()
+    expect(container.querySelector('[data-slot="local-branch-switcher"]')).toBeNull()
+  })
+
+  it('hides the Git branch control but keeps Review available for remote conversations', async () => {
     runtimeState.activeConversation = {
       conversationId: 'conversation-remote-git',
       threadId: 'thread-remote-git',
@@ -1908,30 +1949,12 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    const branchButton = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Branch')
-    )
     const reviewButton = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Review'
     )
 
-    expect(branchButton).toBeTruthy()
+    expect(container.querySelector('[data-slot="local-branch-switcher"]')).toBeNull()
     expect(reviewButton?.disabled).toBe(false)
-
-    await act(async () => {
-      branchButton?.click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(listBranches).toHaveBeenCalledWith({
-      target: expect.objectContaining({
-        conversationId: 'conversation-remote-git',
-        threadId: 'thread-remote-git',
-        hostId: 'local',
-        gitRoot: '/repo'
-      })
-    })
   })
 
   it('blocks Review until the Composer draft and attachments are cleared', async () => {

@@ -30,9 +30,11 @@ const GitRepositoryContext = createContext<GitRepositoryContextValue>({
 
 export function GitRepositoryProvider({
   identity,
+  preSendProjectKey,
   children
 }: {
   identity?: GitConversationTarget
+  preSendProjectKey?: string
   children: ReactNode
 }): React.JSX.Element {
   const [state, setState] = useState<GitRepositoryState>({ status: 'idle' })
@@ -40,21 +42,22 @@ export function GitRepositoryProvider({
   const cacheRef = useRef(new Map<string, GitRepositoryState>())
   const requestIdRef = useRef(0)
   const identityKey = repositoryIdentityKey(identity)
+  const cacheKey = identityKey && `${identityKey}\u0000${preSendProjectKey ?? ''}`
 
   const retry = useCallback(() => {
-    if (!identityKey) return
-    cacheRef.current.delete(identityKey)
+    if (!cacheKey) return
+    cacheRef.current.delete(cacheKey)
     setRetryRevision((revision) => revision + 1)
-  }, [identityKey])
+  }, [cacheKey])
 
   useEffect(() => {
     const requestId = ++requestIdRef.current
-    if (!identity || !identityKey) {
+    if (!identity || !cacheKey) {
       setState({ status: 'idle' })
       return
     }
 
-    const cached = cacheRef.current.get(identityKey)
+    const cached = cacheRef.current.get(cacheKey)
     if (cached) {
       setState(cached)
       return
@@ -69,17 +72,17 @@ export function GitRepositoryProvider({
           result.status === 'ready'
             ? { status: 'ready', target: result.target }
             : { status: 'unavailable', reason: result.reason }
-        cacheRef.current.set(identityKey, next)
+        cacheRef.current.set(cacheKey, next)
         setState(next)
       })
       .catch((cause) => {
         if (requestId !== requestIdRef.current) return
         const error = cause instanceof Error ? cause : new Error('Unable to resolve Git repository')
         const next: GitRepositoryState = { status: 'error', error }
-        cacheRef.current.set(identityKey, next)
+        cacheRef.current.set(cacheKey, next)
         setState(next)
       })
-  }, [identity, identityKey, retryRevision])
+  }, [cacheKey, identity, retryRevision])
 
   const value = useMemo(() => ({ ...state, retry }), [retry, state])
 

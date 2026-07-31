@@ -595,4 +595,30 @@ describe('ProjectService', () => {
     })
     expect(readThread).not.toHaveBeenCalled()
   })
+
+  it('uses the active path selection for a brand-new home composer state', async () => {
+    const { service } = makeProjectService({
+      activeProjectSelection: { projectKind: 'path', path: '/active/repo' },
+      workspaceRootOptions: [
+        {
+          root: '/active/repo',
+          hostId: 'local',
+          addedAt: now,
+          lastOpenedAt: now
+        }
+      ]
+    })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        allowActiveProjectFallback: true
+      })
+    ).resolves.toMatchObject({
+      hostId: 'local',
+      cwd: '/active/repo',
+      workspaceRoots: ['/active/repo'],
+      workspaceKind: 'project'
+    })
+  })
 })

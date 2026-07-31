@@ -759,8 +759,6 @@ test('P004-E2E-09/P004-E2E-11/P004-EDGE-11 commits then retries a branch switch 
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
     await createLocalProject(page, `P004 Branch ${Date.now().toString(36)}`, projectRoot)
-    await sendComposerMessage(page, 'Start the local branch switch test.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     const switcher = page.locator('[data-slot="local-branch-switcher"]')
     await switcher.getByTitle('Switch branch').click()
@@ -789,6 +787,10 @@ test('P004-E2E-09/P004-E2E-11/P004-EDGE-11 commits then retries a branch switch 
         gitOutput(projectRoot, ['show', `${originalBranch}:created-after-commit-dialog.txt`])
       )
       .toBe('latest untracked')
+
+    await sendComposerMessage(page, 'Start the local branch switch test.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await expect(switcher).toHaveCount(0)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -827,8 +829,6 @@ test('P004-E2E-10 keeps the branch and working tree when the blocked commit is c
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
     await createLocalProject(page, 'P004 Branch Failure ' + Date.now().toString(36), projectRoot)
-    await sendComposerMessage(page, 'Start the local branch failure test.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     const switcher = page.locator('[data-slot="local-branch-switcher"]')
     await switcher.getByTitle('Switch branch').click()
@@ -856,6 +856,10 @@ test('P004-E2E-10 keeps the branch and working tree when the blocked commit is c
       .poll(() => gitOutput(projectRoot, ['branch', '--show-current']))
       .toBe(originalBranch)
     await expect.poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8')).toBe('blocked\n')
+
+    await sendComposerMessage(page, 'Start the local branch failure test.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await expect(switcher).toHaveCount(0)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -890,8 +894,6 @@ test('P004-E2E-16 creates and checks out a local branch through the branch UI', 
       `P004 Local Create Branch ${Date.now().toString(36)}`,
       projectRoot
     )
-    await sendComposerMessage(page, 'Start the local create branch UI test.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     const switcher = page.locator('[data-slot="local-branch-switcher"]')
     await switcher.getByTitle('Switch branch').click()
@@ -906,6 +908,10 @@ test('P004-E2E-16 creates and checks out a local branch through the branch UI', 
       .toBe('feature/local-ui-create')
     await switcher.getByTitle('Switch branch').click()
     await expect(switcher.getByRole('option', { name: 'feature/local-ui-create' })).toBeVisible()
+
+    await sendComposerMessage(page, 'Start the local create branch UI test.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await expect(switcher).toHaveCount(0)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -956,27 +962,6 @@ test('P004-E2E-15 runs remote branch, review, stage, and commit actions through 
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
     await createRemoteProject(page, `P004 Remote Git ${Date.now().toString(36)}`, projectRoot)
-    await sendComposerMessage(page, 'Start the remote Git review test.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
-
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await expect(changes).toContainText('+1')
-    await changes.click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
-    await expect(panel).toContainText('Unstaged')
-    await expect(panel).toContainText('remote change')
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
-    await expect
-      .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
-      .toBe('notes.txt')
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
-    await panel.getByRole('button', { name: 'Unstage', exact: true }).click()
-    await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
-    await panel.getByRole('button', { name: 'Unstaged', exact: true }).click()
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
-    await expect
-      .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
-      .toBe('notes.txt')
 
     const switcher = page.locator('[data-slot="local-branch-switcher"]')
     await switcher.getByTitle('Switch branch').click()
@@ -1006,6 +991,31 @@ test('P004-E2E-15 runs remote branch, review, stage, and commit actions through 
     await expect
       .poll(() => gitOutput(projectRoot, ['log', originalBranch, '-1', '--format=%s']))
       .toBe('Save remote Git changes')
+
+    await sendComposerMessage(page, 'Start the remote Git review test.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await expect(switcher).toHaveCount(0)
+
+    await writeFile(join(projectRoot, 'notes.txt'), 'remote review change\n', 'utf8')
+    const changes = page.locator('[data-slot="conversation-changes-row"]')
+    await expect(changes).toContainText('+1')
+    await changes.click()
+    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    await expect(panel).toContainText('Unstaged')
+    await expect(panel).toContainText('remote review change')
+    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    await expect
+      .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
+      .toBe('notes.txt')
+    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
+    await panel.getByRole('button', { name: 'Unstage', exact: true }).click()
+    await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
+    await panel.getByRole('button', { name: 'Unstaged', exact: true }).click()
+    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    await expect
+      .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
+      .toBe('notes.txt')
+
     await expect.poll(() => readFile(sshLogPath, 'utf8')).toContain('e2e-remote')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)

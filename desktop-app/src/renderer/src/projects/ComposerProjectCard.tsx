@@ -8,7 +8,7 @@ import {
   PlusIcon,
   XIcon
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -41,11 +41,13 @@ const projectPickerItemClassName =
 export type ComposerProjectCardProps = {
   activeSelection: ProjectSelection | undefined
   projectState: ProjectStateController
+  trailingControl?: ReactNode
 }
 
 export function ComposerProjectCard({
   activeSelection,
-  projectState
+  projectState,
+  trailingControl
 }: ComposerProjectCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState<ProjectPickerPage>('projects')
@@ -273,6 +275,7 @@ export function ComposerProjectCard({
             </Command>
           </PopoverContent>
         </Popover>
+        {trailingControl}
       </div>
       <CreateBlankProjectDialog
         open={createDialogOpen}

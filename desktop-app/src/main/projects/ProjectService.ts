@@ -319,6 +319,13 @@ export class ProjectService {
   private async resolveActiveProjectFallback(
     state: ProjectState
   ): Promise<ResolvedExecutionTarget | null> {
+    const selection = state.activeProjectSelection
+    if (selection && selection.projectKind !== 'projectless') {
+      return this.resolveNewThreadTarget({ selection, prompt: '' })
+    }
+
+    // Retain the legacy IDs as a fallback for persisted states created before
+    // activeProjectSelection became the source of truth.
     if (state.activeLocalProjectId) {
       const project = state.localProjects[state.activeLocalProjectId]
 

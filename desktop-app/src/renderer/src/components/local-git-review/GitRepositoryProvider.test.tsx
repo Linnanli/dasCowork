@@ -18,6 +18,31 @@ const target: GitRepositoryTarget = {
 }
 
 describe('GitRepositoryProvider', () => {
+  it('refreshes a pre-send repository lookup when the selected project changes', async () => {
+    act(() => {
+      root.render(
+        <GitRepositoryProvider identity={{ conversationId: 'new-conversation' }}>
+          <StatusConsumer slot="status" />
+        </GitRepositoryProvider>
+      )
+    })
+    await flush()
+
+    act(() => {
+      root.render(
+        <GitRepositoryProvider
+          identity={{ conversationId: 'new-conversation' }}
+          preSendProjectKey="local-project"
+        >
+          <StatusConsumer slot="status" />
+        </GitRepositoryProvider>
+      )
+    })
+    await flush()
+
+    expect(resolveRepositoryTarget).toHaveBeenCalledTimes(2)
+  })
+
   let container: HTMLDivElement
   let root: Root
   let resolveRepositoryTarget: ReturnType<typeof vi.fn>

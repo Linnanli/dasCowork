@@ -62,7 +62,10 @@ export class GitRepositoryTargetResolver {
     const executionTarget = await this.options.projectService.resolveExistingThreadTarget({
       conversationId: target.conversationId,
       threadId: target.threadId,
-      allowActiveProjectFallback: false
+      // A pre-send composer has no thread assignment yet, so it can only use
+      // the current project selection. Historical threads must remain bound to
+      // their persisted assignment and never fall back to a different project.
+      allowActiveProjectFallback: !target.threadId
     })
     if (!executionTarget?.cwd) return null
     const trustedCwd = executionTarget.cwd

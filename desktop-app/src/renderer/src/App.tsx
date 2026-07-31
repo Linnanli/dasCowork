@@ -805,6 +805,10 @@ function ActiveConversationPane({
       entry.context.threadId
     ]
   )
+  const preSendProjectKey =
+    activeConversation?.threadId || entry.context.threadId
+      ? undefined
+      : JSON.stringify(projectState.state?.activeProjectSelection ?? null)
   const startInlineCodeReview = useCallback(
     async (prompt: string): Promise<void> => {
       await sendCodeReviewMessage(entry.controller, prompt)
@@ -827,7 +831,7 @@ function ActiveConversationPane({
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}
       />
-      <GitRepositoryProvider identity={gitRepositoryIdentity}>
+      <GitRepositoryProvider identity={gitRepositoryIdentity} preSendProjectKey={preSendProjectKey}>
         <LocalGitReviewProvider>
           <ChatThread
             activeConversation={activeConversation}
@@ -1026,6 +1030,11 @@ function ChatThread({
   const effectiveProjectSelection = activeConversation
     ? activeConversation.projectSelection
     : projectState.state?.activeProjectSelection
+  const gitRepository = useGitRepository()
+  const projectBranchTarget = gitRepository.status === 'ready' ? gitRepository.target : undefined
+  const hasSelectedProject = Boolean(
+    effectiveProjectSelection && effectiveProjectSelection.projectKind !== 'projectless'
+  )
   const composerContextCatalog = useComposerContextCatalog({
     cwd: resolveComposerCwd(activeConversation, projectState),
     enabled: hasConversationProjectContext(activeConversation, projectState),
@@ -1210,12 +1219,17 @@ function ChatThread({
                   {followUps.error}
                 </p>
               ) : null}
-              {canChangeProject && (
+              {canChangeProject ? (
                 <ComposerProjectCard
                   activeSelection={effectiveProjectSelection}
                   projectState={projectState}
+                  trailingControl={
+                    hasSelectedProject ? (
+                      <LocalBranchSwitcher target={projectBranchTarget} />
+                    ) : undefined
+                  }
                 />
-              )}
+              ) : null}
               {approvalRequests.length > 0 ? (
                 <ServerRequestPanel
                   onInteraction={onSnoozeApproval}
@@ -3122,7 +3136,6 @@ function Composer({
                   variant="ghost"
                   size="sm"
                 />
-                <LocalBranchSwitcher target={gitTarget} />
                 {isRemoteExecution &&
                 (gitRepository.status === 'unavailable' || gitRepository.status === 'error') ? (
                   <Button
