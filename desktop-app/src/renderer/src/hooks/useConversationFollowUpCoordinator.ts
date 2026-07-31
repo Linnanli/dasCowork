@@ -28,6 +28,7 @@ export function useConversationFollowUpCoordinator(
 ): void {
   const states = useRef(new Map<string, ConversationFollowUpState>())
   const loadedConversationKeys = useRef(new Set<string>())
+  const loadingConversationKeys = useRef(new Map<string, Promise<void>>())
   const dispatchingConversationKeys = useRef(new Set<string>())
   const deliveryRetries = useRef(new Map<string, DeliveryRetry>())
   const [revision, setRevision] = useState(0)
@@ -50,24 +51,26 @@ export function useConversationFollowUpCoordinator(
 
   useEffect(() => {
     if (!api) return
-    let cancelled = false
     for (const entry of entries) {
       const conversationKey = conversationKeyForEntry(entry)
-      if (loadedConversationKeys.current.has(conversationKey)) continue
-      loadedConversationKeys.current.add(conversationKey)
-      void api
+      if (
+        loadedConversationKeys.current.has(conversationKey) ||
+        loadingConversationKeys.current.has(conversationKey)
+      ) {
+        continue
+      }
+      const load = api
         .getState(conversationKey)
         .then((state) => {
-          if (cancelled) return
           states.current.set(conversationKey, state)
+          loadedConversationKeys.current.add(conversationKey)
           setRevision((value) => value + 1)
         })
-        .catch(() => {
-          loadedConversationKeys.current.delete(conversationKey)
+        .catch(() => undefined)
+        .finally(() => {
+          loadingConversationKeys.current.delete(conversationKey)
         })
-    }
-    return () => {
-      cancelled = true
+      loadingConversationKeys.current.set(conversationKey, load)
     }
   }, [api, entries])
 

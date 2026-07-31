@@ -65,6 +65,7 @@ import type {
   CodexStatus
 } from '../shared/codexIpcApi'
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
+import type { LocalGitTarget } from '../shared/localGitApi'
 import { selectUniqueLegacyCandidate } from '../shared/uniqueLegacyCandidate'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
 import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
@@ -197,6 +198,7 @@ export type CodexChatRuntimeServiceOptions = {
   projectStore?: ProjectStoreLike
   streamText?: StreamTextLike
   onAgentLifecycle?: (event: CodexAgentLifecycleEvent) => void | Promise<void>
+  onTurnCompleted?: () => void
   followUpQueue?: ConversationFollowUpQueueService
   steerConfirmationTimeoutMs?: number
   scheduleTimeout?: (callback: () => void, timeoutMs: number) => ReturnType<typeof setTimeout>
@@ -241,6 +243,7 @@ export class CodexChatRuntimeService {
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
+  private readonly onTurnCompleted: (() => void) | undefined
   private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly steerConfirmationTimeoutMs: number
   private readonly scheduleTimeout: (
@@ -276,6 +279,7 @@ export class CodexChatRuntimeService {
       })
     this.streamText = options.streamText ?? defaultStreamText
     this.onAgentLifecycle = options.onAgentLifecycle
+    this.onTurnCompleted = options.onTurnCompleted
     this.followUpQueue = options.followUpQueue
     this.steerConfirmationTimeoutMs = Math.max(
       0,
@@ -391,6 +395,73 @@ export class CodexChatRuntimeService {
 
     this.selectedModelId = modelId
     return { selectedModelId: modelId }
+  }
+
+  async generateCommitMessage(input: {
+    target: LocalGitTarget
+    changeSummary: string
+  }): Promise<string> {
+    const modelList = await this.listModels()
+    const modelId = this.selectedModelId ?? modelList.selectedModelId
+    if (!modelId) throw new Error('No Codex model selected for commit message generation.')
+
+    const clientModel = this.modelCatalog
+      ? await this.modelCatalog.resolveClientModel(modelId)
+      : undefined
+    const executionTarget = await this.resolveCommitMessageExecutionTarget(input.target)
+    const messageId = `commit-message:${randomUUID()}`
+    const request: CodexChatRequest = {
+      chatId: messageId,
+      trigger: 'submit-message',
+      messageId,
+      messages: [
+        {
+          id: messageId,
+          role: 'user',
+          parts: [
+            {
+              type: 'text',
+              text: [
+                'Generate one concise Git commit subject for the following local changes.',
+                'Return only the subject line: no markdown, quotes, explanations, or tool calls.',
+                'Use imperative wording and keep it under 72 characters.',
+                '',
+                input.changeSummary
+              ].join('\n')
+            }
+          ]
+        }
+      ],
+      body: {
+        system:
+          'You generate a single Git commit subject from supplied change summaries. Do not use tools. Output only the subject line.'
+      }
+    }
+    const result = await this.streamText({
+      request,
+      modelId: clientModel?.model_id ?? modelId,
+      provider: this.provider,
+      abortSignal: new AbortController().signal,
+      clientModel,
+      executionTarget
+    })
+    let text = ''
+    let streamError: string | undefined
+
+    for await (const chunk of result.toUIMessageStream({
+      originalMessages: request.messages,
+      onError: (error) => {
+        streamError = errorMessage(error)
+        return streamError
+      }
+    })) {
+      if (chunk.type === 'text-delta') text += chunk.delta
+      if (chunk.type === 'error') streamError = chunk.errorText
+    }
+
+    if (streamError) throw new Error(streamError)
+    if (!text.trim()) throw new Error('Commit message generation returned an empty response.')
+    return text
   }
 
   async startChatStream(
@@ -1426,6 +1497,26 @@ export class CodexChatRuntimeService {
     return run
   }
 
+  private async resolveCommitMessageExecutionTarget(
+    target: LocalGitTarget
+  ): Promise<ConversationExecutionTarget> {
+    if (!this.projectService) {
+      throw new Error('Local project execution is unavailable for commit message generation.')
+    }
+    const resolved = await this.projectService.resolveExistingThreadTarget({
+      conversationId: target.conversationId,
+      threadId: target.threadId,
+      allowActiveProjectFallback: false
+    })
+    if (!resolved || resolved.hostId !== 'local' || !resolved.cwd) {
+      throw new Error('Local project execution is unavailable for this conversation.')
+    }
+    return {
+      cwd: resolved.cwd,
+      runtimeWorkspaceRoots: resolved.workspaceRoots
+    }
+  }
+
   private async prepareClaimedFollowUp(request: CodexChatRequest): Promise<{
     request: CodexChatRequest
     claim?: FollowUpClaim
@@ -1584,6 +1675,7 @@ export class CodexChatRuntimeService {
     }
 
     if (event.type === 'turn-completed') {
+      this.onTurnCompleted?.()
       const providerFailureDetail = providerTurnFailureDetail(event)
       if (event.outcome === 'failed' && providerFailureDetail) {
         run.canonicalFailureMessage = sanitizeUserFacingError(providerFailureDetail)

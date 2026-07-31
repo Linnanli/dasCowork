@@ -18,19 +18,21 @@ export function createProjectRuntimeServices({
   userDataPath,
   documentsPath = join(userDataPath, 'Documents'),
   readThread,
-  pickWorkspaceRoot
+  pickWorkspaceRoot,
+  validateRemoteRoot = async () => undefined
 }: {
   userDataPath: string
   documentsPath?: string
   readThread?: ThreadReader
   pickWorkspaceRoot?: () => Promise<string | null>
+  validateRemoteRoot?: (hostId: string, path: string) => Promise<void>
 }): ProjectRuntimeServices {
   const blankProjectRootOperations = new Map<string, { name: string; root: Promise<string> }>()
   const projectStore = ProjectStore.onDisk(join(userDataPath, 'projects', 'state.json'))
   const projectService = new ProjectService({
     store: projectStore,
     validateLocalRoot,
-    validateRemoteRoot: async () => undefined,
+    validateRemoteRoot,
     createProjectlessWorkspace: ({ prompt }) =>
       createProjectlessWorkspace({ userDataPath, prompt }),
     readThread
@@ -38,7 +40,7 @@ export function createProjectRuntimeServices({
   const projectApi = new ProjectApiService({
     store: projectStore,
     validateLocalRoot,
-    validateRemoteRoot: async () => undefined,
+    validateRemoteRoot,
     pickWorkspaceRoot: pickWorkspaceRoot ?? (async () => null),
     createBlankProjectRoot: (name, operationId) => {
       const existingOperation = blankProjectRootOperations.get(operationId)

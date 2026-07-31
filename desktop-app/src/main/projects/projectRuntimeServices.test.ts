@@ -170,6 +170,35 @@ describe('createProjectRuntimeServices', () => {
     }
   })
 
+  it('uses the configured app-server thread reader to recover an existing local cwd', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'dascowork-project-runtime-'))
+
+    try {
+      const repo = join(tempRoot, 'repo')
+      await mkdir(repo)
+      const realRepo = await realpath(repo)
+      const readThread = vi.fn(async () => ({ thread: { cwd: realRepo } }))
+      const services = createProjectRuntimeServices({
+        userDataPath: tempRoot,
+        readThread
+      })
+
+      await expect(
+        services.projectService.resolveExistingThreadTarget({
+          conversationId: 'conversation_1',
+          threadId: 'thread_1'
+        })
+      ).resolves.toMatchObject({
+        hostId: 'local',
+        cwd: realRepo,
+        workspaceRoots: [realRepo]
+      })
+      expect(readThread).toHaveBeenCalledWith('thread_1')
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   it('rejects local roots that are not directories', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'dascowork-project-runtime-'))
 

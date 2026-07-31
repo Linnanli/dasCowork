@@ -55,23 +55,28 @@ export function buildComposerTurnStatus(
 }
 
 export function isComposerStatusRenderUnit(unit: AssistantRenderUnit): boolean {
-  return composerStatusItemType(unit) !== undefined
+  const itemType = composerStatusItemType(unit)
+  return itemType === 'todoList' || (itemType === 'turnDiff' && !isCompletedTurnDiff(unit))
 }
 
 export function withoutComposerStatusRenderUnits(
-  units: readonly AssistantRenderUnit[]
+  units: readonly AssistantRenderUnit[],
+  options: { keepTurnDiff?: boolean } = {}
 ): AssistantRenderUnit[] {
   const visibleUnits: AssistantRenderUnit[] = []
 
   for (const unit of units) {
-    if (isComposerStatusRenderUnit(unit)) continue
+    const itemType = composerStatusItemType(unit)
+    if (isComposerStatusRenderUnit(unit) && !(options.keepTurnDiff && itemType === 'turnDiff')) {
+      continue
+    }
 
     if (unit.type !== 'reasoning-group') {
       visibleUnits.push(unit)
       continue
     }
 
-    const children = withoutComposerStatusRenderUnits(unit.children)
+    const children = withoutComposerStatusRenderUnits(unit.children, options)
     if (unit.children.length > 0 && children.length === 0) continue
     const childrenChanged =
       children.length !== unit.children.length ||
@@ -204,6 +209,11 @@ function composerStatusItemType(unit: AssistantRenderUnit): 'todoList' | 'turnDi
   if (itemType === 'todoList' || itemType === 'todo-list') return 'todoList'
   if (itemType === 'turnDiff' || itemType === 'turn-diff') return 'turnDiff'
   return undefined
+}
+
+function isCompletedTurnDiff(unit: AssistantRenderUnit): boolean {
+  if (unit.type !== 'entry') return false
+  return stringValue(unit.item?.status) === 'completed'
 }
 
 function normalizePlanStepStatus(status: unknown): ComposerPlanStepStatus {

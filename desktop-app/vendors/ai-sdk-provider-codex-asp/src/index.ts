@@ -36,6 +36,14 @@ export { CodexWorker } from "./client/worker";
 export type { CodexWorkerPoolSettings } from "./client/worker-pool";
 export { CodexWorkerPool } from "./client/worker-pool";
 export type {
+    CodexCommandClientSettings,
+    CodexCommandExecOptions,
+    CodexCommandExecResult,
+    CodexCommandJsonRpcClientLike,
+    CodexCommandWriteOptions,
+} from "./command-client";
+export { CodexCommandClient, createCodexCommandClient } from "./command-client";
+export type {
     CodexAppsListParams,
     CodexAppsPage,
     CodexCatalogApp,
@@ -57,7 +65,11 @@ export type {
     DynamicToolsDispatcherSettings,
 } from "./dynamic-tools";
 export { DynamicToolsDispatcher } from "./dynamic-tools";
-export type { CodedCodexProviderError, CodexProviderErrorCode, CodexProviderErrorOptions } from "./errors";
+export type {
+    CodedCodexProviderError,
+    CodexProviderErrorCode,
+    CodexProviderErrorOptions,
+} from "./errors";
 export {
     CODEX_PROVIDER_ERROR_CODES,
     CodexNotImplementedError,

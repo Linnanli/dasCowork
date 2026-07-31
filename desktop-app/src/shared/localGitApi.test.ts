@@ -1,0 +1,369 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  LOCAL_GIT_PATCH_MAX_CHARACTERS,
+  gitConversationTargetSchema,
+  gitIpcChannels,
+  gitRepositoryTargetSchema,
+  gitResolveRepositoryTargetRequestSchema,
+  gitResolveRepositoryTargetResultSchema,
+  localBranchCheckoutResultSchema,
+  localCommitRequestSchema,
+  localCommitResultSchema,
+  localGitBranchSearchRequestSchema,
+  localGitChangeEventSchema,
+  localGitCreateBranchRequestSchema,
+  localGitGetReviewSnapshotRequestSchema,
+  localGitRefreshReviewFilesRequestSchema,
+  localGitListCommitsRequestSchema,
+  localGitGetSummaryRequestSchema,
+  localGitMutationResultSchema,
+  localGitReviewMutationRequestSchema,
+  localGitReviewSnapshotSchema,
+  turnPatchRequestSchema
+} from './localGitApi'
+
+const conversationTarget = { conversationId: 'conversation-1', threadId: 'thread-1' }
+const target = {
+  ...conversationTarget,
+  hostId: 'local',
+  cwd: '/repo',
+  gitRoot: '/repo'
+}
+const source = { type: 'unstaged' as const }
+
+describe('local git API schemas', () => {
+  it('separates conversation targets from resolved repository targets', () => {
+    expect(gitConversationTargetSchema.safeParse(conversationTarget).success).toBe(true)
+    expect(gitRepositoryTargetSchema.safeParse(target).success).toBe(true)
+    expect(gitRepositoryTargetSchema.safeParse(conversationTarget).success).toBe(false)
+    expect(
+      gitResolveRepositoryTargetRequestSchema.safeParse({ target: conversationTarget }).success
+    ).toBe(true)
+    expect(
+      gitResolveRepositoryTargetResultSchema.safeParse({ status: 'ready', target }).success
+    ).toBe(true)
+    expect(
+      gitResolveRepositoryTargetResultSchema.safeParse({
+        status: 'unavailable',
+        reason: 'No local repository is attached'
+      }).success
+    ).toBe(true)
+  })
+
+  it('accepts fixed business requests and rejects arbitrary execution fields', () => {
+    expect(localGitGetSummaryRequestSchema.safeParse({ target }).success).toBe(true)
+    expect(localGitGetSummaryRequestSchema.safeParse({ target: conversationTarget }).success).toBe(
+      false
+    )
+    expect(
+      localGitGetSummaryRequestSchema.safeParse({
+        target,
+        cwd: '/repo',
+        args: ['status'],
+        shell: true
+      }).success
+    ).toBe(false)
+  })
+
+  it('bounds commit-list requests without accepting git command fields', () => {
+    expect(localGitListCommitsRequestSchema.safeParse({ target, limit: 30 }).success).toBe(true)
+    expect(
+      localGitListCommitsRequestSchema.safeParse({ target, limit: 101, args: ['log'] }).success
+    ).toBe(false)
+  })
+
+  it('accepts commits without a snapshot generation and rejects legacy commit snapshots', () => {
+    const request = {
+      target,
+      message: 'Commit current index',
+      includeUnstaged: true
+    }
+    expect(localCommitRequestSchema.safeParse(request).success).toBe(true)
+    expect(
+      localCommitRequestSchema.safeParse({
+        ...request,
+        snapshotGeneration: 'legacy-snapshot'
+      }).success
+    ).toBe(false)
+    expect(localCommitResultSchema.safeParse({ status: 'nothing-to-commit' }).success).toBe(true)
+    expect(localCommitResultSchema.safeParse({ status: 'stale-snapshot' }).success).toBe(false)
+  })
+
+  it('validates review sources and rejects unknown source shapes', () => {
+    expect(
+      localGitGetReviewSnapshotRequestSchema.safeParse({
+        target,
+        source: { type: 'commit', commitSha: 'abc1234' }
+      }).success
+    ).toBe(true)
+    expect(
+      localGitGetReviewSnapshotRequestSchema.safeParse({
+        target,
+        source: { type: 'range', base: 'main', head: 'feature' }
+      }).success
+    ).toBe(false)
+  })
+
+  it('rejects unsafe branch refs', () => {
+    expect(
+      localGitCreateBranchRequestSchema.safeParse({
+        target,
+        branch: 'feature/local-review',
+        failIfExists: true
+      }).success
+    ).toBe(true)
+    for (const branch of ['../escape', 'feature..bad', 'feature lock', 'feature.lock', 'bad@{1}']) {
+      expect(
+        localGitCreateBranchRequestSchema.safeParse({
+          target,
+          branch,
+          failIfExists: true
+        }).success
+      ).toBe(false)
+    }
+    expect(
+      localGitCreateBranchRequestSchema.safeParse({
+        target,
+        branch: 'feature/local-review',
+        failIfExists: false
+      }).success
+    ).toBe(false)
+  })
+
+  it('rejects repository path traversal and absolute paths in file targets', () => {
+    const validRequest = {
+      target,
+      source,
+      snapshotGeneration: 'generation-1',
+      action: 'stage',
+      scope: 'file',
+      files: [{ path: 'src/index.ts', revision: 'rev-1' }]
+    }
+    expect(localGitReviewMutationRequestSchema.safeParse(validRequest).success).toBe(true)
+    for (const path of ['../secret', 'src/../secret', '/tmp/secret', 'C:\\repo\\secret.ts']) {
+      expect(
+        localGitReviewMutationRequestSchema.safeParse({
+          ...validRequest,
+          files: [{ path, revision: 'rev-1' }]
+        }).success
+      ).toBe(false)
+    }
+  })
+
+  it('requires hunk indexes for hunk actions', () => {
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        action: 'revert',
+        scope: 'hunk',
+        files: [{ path: 'src/index.ts', revision: 'rev-1' }]
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        action: 'revert',
+        scope: 'hunk',
+        hunkIndex: 0,
+        files: [{ path: 'src/index.ts', revision: 'rev-1' }]
+      }).success
+    ).toBe(true)
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        action: 'stage',
+        scope: 'file',
+        hunkIndex: 0,
+        files: [{ path: 'src/index.ts', revision: 'rev-1' }]
+      }).success
+    ).toBe(false)
+  })
+
+  it('requires exact review-file cardinality and unique paths for each scope', () => {
+    const file = { path: 'src/index.ts', revision: 'rev-1' }
+    const secondFile = { path: 'src/other.ts', revision: 'rev-2' }
+    const baseRequest = {
+      target,
+      source,
+      snapshotGeneration: 'generation-1',
+      action: 'stage'
+    }
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        ...baseRequest,
+        scope: 'section',
+        files: [file, secondFile]
+      }).success
+    ).toBe(true)
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        ...baseRequest,
+        scope: 'file',
+        files: [file, secondFile]
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        ...baseRequest,
+        scope: 'hunk',
+        hunkIndex: 0,
+        files: [file, secondFile]
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewMutationRequestSchema.safeParse({
+        ...baseRequest,
+        scope: 'section',
+        files: [file, file]
+      }).success
+    ).toBe(false)
+  })
+
+  it('accepts bounded persistent turn patch batches and rejects malformed payloads', () => {
+    expect(
+      turnPatchRequestSchema.safeParse({
+        target,
+        action: 'undo',
+        turnId: 'turn-1',
+        batches: [{ cwd: '/repo', diff: 'diff --git a/a b/a\n' }]
+      }).success
+    ).toBe(true)
+    expect(
+      turnPatchRequestSchema.safeParse({
+        target,
+        action: 'undo',
+        turnId: 'turn-1'
+      }).success
+    ).toBe(false)
+    expect(
+      turnPatchRequestSchema.safeParse({
+        target,
+        action: 'undo',
+        turnId: 'turn-1',
+        batches: [{ cwd: 'relative', diff: 'diff --git a/a b/a\n' }]
+      }).success
+    ).toBe(false)
+    expect(
+      turnPatchRequestSchema.safeParse({
+        target,
+        action: 'undo',
+        turnId: 'turn-1',
+        batches: [{ cwd: '/repo', diff: 'x'.repeat(LOCAL_GIT_PATCH_MAX_CHARACTERS + 1) }]
+      }).success
+    ).toBe(false)
+    expect(
+      turnPatchRequestSchema.safeParse({
+        target,
+        action: 'undo',
+        turnId: 'turn-1',
+        batches: [
+          { cwd: '/repo', diff: 'x'.repeat(LOCAL_GIT_PATCH_MAX_CHARACTERS / 2 + 1) },
+          { cwd: '/repo', diff: 'x'.repeat(LOCAL_GIT_PATCH_MAX_CHARACTERS / 2 + 1) }
+        ]
+      }).success
+    ).toBe(false)
+  })
+
+  it('validates review snapshot and mutation result payloads', () => {
+    expect(
+      localGitReviewSnapshotSchema.safeParse({
+        snapshotGeneration: 'generation-1',
+        gitRoot: '/repo',
+        source,
+        files: [
+          {
+            path: 'src/index.ts',
+            changeKind: 'modified',
+            revision: 'rev-1',
+            additions: 2,
+            deletions: 1,
+            binary: false,
+            conflicted: false
+          }
+        ],
+        stagedFileCount: 0,
+        unstagedFileCount: 1,
+        largeDiff: false
+      }).success
+    ).toBe(true)
+    expect(
+      localGitMutationResultSchema.safeParse({
+        status: 'partial-success',
+        errorCode: 'stale-snapshot',
+        appliedPaths: ['src/index.ts'],
+        skippedPaths: ['src/skip.ts'],
+        conflictedPaths: ['src/conflict.ts']
+      }).success
+    ).toBe(true)
+    expect(
+      localGitMutationResultSchema.safeParse({
+        status: 'ok',
+        appliedPaths: [],
+        skippedPaths: [],
+        conflictedPaths: []
+      }).success
+    ).toBe(false)
+  })
+
+  it('validates branch and subscription result contracts', () => {
+    expect(
+      localGitBranchSearchRequestSchema.safeParse({
+        target,
+        query: 'feature'
+      }).success
+    ).toBe(true)
+    expect(
+      localBranchCheckoutResultSchema.safeParse({
+        status: 'error',
+        errorCode: 'blocked-by-working-tree-changes',
+        conflictedPaths: ['src/index.ts']
+      }).success
+    ).toBe(true)
+    expect(
+      localBranchCheckoutResultSchema.safeParse({
+        status: 'error',
+        errorCode: 'stash-failed',
+        conflictedPaths: []
+      }).success
+    ).toBe(false)
+    expect(
+      localGitChangeEventSchema.safeParse({
+        target,
+        snapshotGeneration: 'generation-2',
+        changeTypes: ['head', 'working-tree'],
+        changedPaths: ['src/index.ts']
+      }).success
+    ).toBe(true)
+  })
+
+  it('limits a review refresh to distinct repository-relative paths', () => {
+    expect(
+      localGitRefreshReviewFilesRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        paths: ['src/index.ts', 'src/previous-index.ts']
+      }).success
+    ).toBe(true)
+    expect(
+      localGitRefreshReviewFilesRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        paths: ['src/index.ts', 'src/index.ts']
+      }).success
+    ).toBe(false)
+  })
+
+  it('uses git IPC channel names', () => {
+    expect(gitIpcChannels.resolveRepositoryTarget).toBe('git:resolve-repository-target')
+    expect(Object.values(gitIpcChannels).every((channel) => channel.startsWith('git:'))).toBe(true)
+  })
+})

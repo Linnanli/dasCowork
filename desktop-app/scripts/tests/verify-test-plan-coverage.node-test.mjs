@@ -7,6 +7,8 @@ import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
 import {
   expectedMockIds,
+  expectedP004EdgeIds,
+  expectedP004Ids,
   expectedReleaseIds,
   expectedScenarioIds,
   validateTestPlanCoverage
@@ -21,6 +23,7 @@ import {
   flattenPlaywrightReporterSuites,
   normalizePlaywrightReporterFile
 } from '../lib/test-plan-playwright-reporter.mjs'
+import { playwrightEvidenceSelection } from '../lib/test-plan-playwright-selection.mjs'
 
 const temporaryRoots = []
 
@@ -78,12 +81,49 @@ test('keeps parameterized Playwright cases distinct instead of collapsing them i
   assert.ok(records.every((record) => record.fullTestName === 'B06 preserves rejection for $label'))
 })
 
+test('selects only manifest-declared Playwright evidence by literal test title', () => {
+  assert.deepEqual(
+    playwrightEvidenceSelection([
+      { file: 'tests/e2e/approvals.e2e.ts', testName: 'A01 verifies (the) approval' },
+      { file: 'tests/e2e/approvals.e2e.ts', testName: 'A01 verifies (the) approval' },
+      { file: 'tests/e2e/fault-injection.e2e.ts', testName: 'C22 handles $late event' }
+    ]),
+    {
+      files: ['tests/e2e/approvals.e2e.ts', 'tests/e2e/fault-injection.e2e.ts'],
+      grep: '(?:A01 verifies \\(the\\) approval|C22 handles \\$late event)'
+    }
+  )
+})
+
 test('accepts a complete manifest whose evidence covers every layer and assertion', async () => {
   const fixture = await createFixture()
 
   const result = await validateTestPlanCoverage(fixture)
 
   assert.deepEqual(result.failures, [])
+})
+
+test('requires every P0-04 case to point at a declared test', async () => {
+  const fixture = await createFixture()
+  fixture.manifest.p004.cases[0].evidence = 'tests/missing-p004.test.ts'
+
+  const result = await validateTestPlanCoverage(fixture)
+
+  assertFailure(
+    result,
+    'P0-04 case P004-E2E-01 evidence file does not exist: tests/missing-p004.test.ts'
+  )
+})
+
+test('includes the persisted-turn recovery P0-04 case without requiring an unused case 19', () => {
+  assert.ok(expectedP004Ids.includes('P004-E2E-20'))
+  assert.ok(!expectedP004Ids.includes('P004-E2E-19'))
+})
+
+test('requires the complete P0-04 edge-case matrix', () => {
+  assert.equal(expectedP004EdgeIds.length, 13)
+  assert.ok(expectedP004EdgeIds.includes('P004-EDGE-01'))
+  assert.ok(expectedP004EdgeIds.includes('P004-EDGE-13'))
 })
 
 test('core recorder records only a successful callback under runner-owned identity', async () => {
@@ -711,9 +751,31 @@ async function createFixture() {
       }
     ]
   }))
+  const p004 = {
+    title: 'P0-04 local Git review',
+    cases: expectedP004Ids.map((id) => ({
+      id,
+      status: 'covered',
+      evidence: 'tests/p004.test.ts'
+    })),
+    edgeCases: expectedP004EdgeIds.map((id) => ({
+      id,
+      title: `P0-04 edge ${id}`,
+      status: 'covered',
+      requiredLayer: ['desktop-unit'],
+      evidence: [
+        {
+          file: 'tests/evidence.test.ts',
+          testName: `${id} evidence`,
+          layer: 'desktop-unit'
+        }
+      ]
+    }))
+  }
 
   const manifest = {
     schemaVersion: 1,
+    p004,
     scenarios,
     mockE2E,
     releaseE2E
@@ -731,7 +793,10 @@ async function writeFixtureTestFile(desktopRoot, manifest, declarations = new Ma
   const evidenceNames = [
     ...manifest.scenarios.flatMap((entry) => entry.evidence.map((evidence) => evidence.testName)),
     ...manifest.mockE2E.flatMap((entry) => entry.evidence.map((evidence) => evidence.testName)),
-    ...manifest.releaseE2E.flatMap((entry) => entry.evidence.map((evidence) => evidence.testName))
+    ...manifest.releaseE2E.flatMap((entry) => entry.evidence.map((evidence) => evidence.testName)),
+    ...manifest.p004.edgeCases.flatMap((entry) =>
+      entry.evidence.map((evidence) => evidence.testName)
+    )
   ]
   await writeFile(
     join(desktopRoot, 'tests/evidence.test.ts'),
@@ -744,6 +809,16 @@ async function writeFixtureTestFile(desktopRoot, manifest, declarations = new Ma
       .join('\n'),
     'utf8'
   )
+  await writeFile(
+    join(desktopRoot, 'tests/p004.test.ts'),
+    manifest.p004.cases
+      .map(
+        (entry) =>
+          `test(${JSON.stringify(`${entry.id} is covered by the local Git review flow`)}, () => { expect(true).toBe(true) })`
+      )
+      .join('\n'),
+    'utf8'
+  )
 }
 
 function executionForManifest(manifest) {
@@ -751,7 +826,8 @@ function executionForManifest(manifest) {
   const entries = [
     ...manifest.scenarios.map((entry) => ({ id: entry.id, evidence: entry.evidence })),
     ...manifest.mockE2E.map((entry) => ({ id: entry.id, evidence: entry.evidence })),
-    ...manifest.releaseE2E.map((entry) => ({ id: entry.id, evidence: entry.evidence }))
+    ...manifest.releaseE2E.map((entry) => ({ id: entry.id, evidence: entry.evidence })),
+    ...manifest.p004.edgeCases.map((entry) => ({ id: entry.id, evidence: entry.evidence }))
   ]
   return {
     runId,

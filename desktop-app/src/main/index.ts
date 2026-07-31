@@ -60,8 +60,17 @@ import { FollowUpAssetStore } from './followUps/FollowUpAssetStore'
 import { steerQueuedFollowUp } from './followUps/steerQueuedFollowUp'
 import { validateQueuedLocalAttachments } from './followUps/validateQueuedLocalAttachments'
 import type { ProjectApiService } from './projects/ProjectApiService'
+import type { ProjectService } from './projects/ProjectService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import type { WorkspaceRecoveryService } from './projects/WorkspaceRecoveryService'
+import { LocalGitService } from './localGit/LocalGitService'
+import { LocalCommitService } from './localGit/LocalCommitService'
+import { GitManager } from './localGit/GitManager'
+import { GitHostRegistry } from './localGit/GitHostRegistry'
+import { GitRepositoryTargetResolver } from './localGit/GitRepositoryTargetResolver'
+import { createLocalGitIpcHandlers } from './localGit/localGitIpc'
+import { LocalGitWatchBroker, localGitWatchControlChannels } from './localGit/LocalGitWatchBroker'
+import { invalidateLocalGitWatchCaches } from './localGit/LocalGitWatchInvalidation'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
 import { createMainWindowOptions } from './windowOptions'
 import {
@@ -96,10 +105,12 @@ import {
   sidebarConversationRenamePayloadSchema,
   sidebarPreferencesPatchSchema
 } from '../shared/codexIpcApi'
+import { gitIpcChannels } from '../shared/localGitApi'
 import type { ProjectState } from '../shared/projects/projectTypes'
 
 let codexRuntime: CodexChatRuntimeService | undefined
 let projectApi: ProjectApiService | undefined
+let projectService: ProjectService | undefined
 let workspaceRecovery: WorkspaceRecoveryService | undefined
 let conversationApi: ConversationApiService | undefined
 let composerContextCatalog: ComposerContextCatalogService | undefined
@@ -108,6 +119,8 @@ let composerContextChanges: ComposerContextChangeBroker | undefined
 let composerContextClient: CodexContextCatalogClient | undefined
 let codexAppServerConnection: CodexAspSharedConnection | undefined
 let followUpQueue: ConversationFollowUpQueueService | undefined
+let localGitWatchBroker: LocalGitWatchBroker | undefined
+let gitHostRegistry: GitHostRegistry | undefined
 const localImageCapabilities = new LocalImageCapabilityStore()
 const localPathCapabilities = new LocalPathCapabilityStore()
 const convergingConversationThreadIds = new Set<string>()
@@ -118,14 +131,7 @@ const e2eDocumentsPath = process.env.DASCOWORK_E2E_DOCUMENTS_DIR?.trim()
 if (e2eDocumentsPath) app.setPath('documents', e2eDocumentsPath)
 registerAppSchemePrivileges(protocol)
 
-function createCodexRuntime(): CodexChatRuntimeService {
-  const projectRuntimeServices = createProjectRuntimeServices({
-    userDataPath: app.getPath('userData'),
-    documentsPath: app.getPath('documents'),
-    pickWorkspaceRoot: pickWorkspaceRootPath
-  })
-  projectApi = projectRuntimeServices.projectApi
-  workspaceRecovery = projectRuntimeServices.workspaceRecovery
+function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexChatRuntimeService {
   const launch = resolveCodexAppServerLaunchOptions({
     env: process.env,
     isPackaged: app.isPackaged,
@@ -143,6 +149,18 @@ function createCodexRuntime(): CodexChatRuntimeService {
     experimentalApi: true,
     transportFactory: connection.transportFactory
   })
+  const projectRuntimeServices = createProjectRuntimeServices({
+    userDataPath: app.getPath('userData'),
+    documentsPath: app.getPath('documents'),
+    pickWorkspaceRoot: pickWorkspaceRootPath,
+    validateRemoteRoot: (hostId, path) => hosts.validateRemoteRoot(hostId, path),
+    readThread: async (threadId) => ({
+      thread: await historyClient.readThread(threadId)
+    })
+  })
+  projectApi = projectRuntimeServices.projectApi
+  projectService = projectRuntimeServices.projectService
+  workspaceRecovery = projectRuntimeServices.workspaceRecovery
   const threadClient = new AppServerThreadClient({ historyClient })
   conversationApi = new ConversationApiService({
     threadClient,
@@ -225,6 +243,7 @@ function createCodexRuntime(): CodexChatRuntimeService {
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore,
     followUpQueue,
+    onTurnCompleted: () => manager.handleAppEvent({ type: 'turnComplete' }),
     onAgentLifecycle: (event) => {
       liveAgents.observe(event)
       composerContextChanges?.notify({
@@ -272,6 +291,11 @@ function requireProjectApi(): ProjectApiService {
 function requireWorkspaceRecovery(): WorkspaceRecoveryService {
   if (!workspaceRecovery) throw new Error('Workspace recovery is not initialized')
   return workspaceRecovery
+}
+
+function requireProjectService(): ProjectService {
+  if (!projectService) throw new Error('Project service is not initialized')
+  return projectService
 }
 
 function requireConversationApi(): ConversationApiService {
@@ -464,13 +488,38 @@ app.whenReady().then(() => {
     netFetch: (url, init) => net.fetch(url, init),
     logger: console
   })
-  const runtime = createCodexRuntime()
+  const runtimeConfig = loadDesktopRuntimeConfig(process.env)
+  const hosts = new GitHostRegistry({
+    remoteCodexCommand: runtimeConfig.remoteCodexCommand
+  })
+  const manager = new GitManager()
+  gitHostRegistry = hosts
+  const runtime = createCodexRuntime(hosts, manager)
   codexRuntime = runtime
+  const targetResolver = new GitRepositoryTargetResolver({
+    projectService: requireProjectService(),
+    gitManager: manager,
+    hosts
+  })
+  const localGit = new LocalGitService({ targetResolver })
+  localGitWatchBroker = new LocalGitWatchBroker({
+    getState: (target) => localGit.getWatchState(target),
+    onRepositoryChange: (target, event) =>
+      invalidateLocalGitWatchCaches(manager, hosts, target, event)
+  })
+  const localGitHandlers = createLocalGitIpcHandlers({
+    localGit,
+    targetResolver,
+    commits: new LocalCommitService(localGit, (input) => runtime.generateCommitMessage(input)),
+    watchBroker: localGitWatchBroker
+  })
 
   electronApp.setAppUserModelId('com.electron')
   nativeTheme.themeSource = 'system'
 
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+  app.on('browser-window-blur', () => manager.handleAppEvent({ type: 'background' }))
+  app.on('browser-window-focus', () => manager.handleAppEvent({ type: 'foreground' }))
 
   ipcMain.handle('codex:get-status', () => runtime.getStatus())
   ipcMain.handle('codex:list-models', () => runtime.listModels())
@@ -490,6 +539,26 @@ app.whenReady().then(() => {
   ipcMain.handle('codex:open-external-http-url', (_, payload: unknown) => {
     const request = codexOpenExternalHttpUrlPayloadSchema.parse(payload)
     return openExternalHttpUrl(request.url)
+  })
+  ipcMain.handle(gitIpcChannels.resolveRepositoryTarget, localGitHandlers.resolveRepositoryTarget)
+  ipcMain.handle(gitIpcChannels.getSummary, localGitHandlers.getSummary)
+  ipcMain.handle(gitIpcChannels.listCommits, localGitHandlers.listCommits)
+  ipcMain.handle(gitIpcChannels.getReviewSnapshot, localGitHandlers.getReviewSnapshot)
+  ipcMain.handle(gitIpcChannels.refreshReviewFiles, localGitHandlers.refreshReviewFiles)
+  ipcMain.handle(gitIpcChannels.getFileDiff, localGitHandlers.getFileDiff)
+  ipcMain.handle(gitIpcChannels.applyReviewAction, localGitHandlers.applyReviewAction)
+  ipcMain.handle(gitIpcChannels.applyTurnPatch, localGitHandlers.applyTurnPatch)
+  ipcMain.handle(gitIpcChannels.listBranches, localGitHandlers.listBranches)
+  ipcMain.handle(gitIpcChannels.searchBranches, localGitHandlers.searchBranches)
+  ipcMain.handle(gitIpcChannels.resolveMergeBase, localGitHandlers.resolveMergeBase)
+  ipcMain.handle(gitIpcChannels.createBranch, localGitHandlers.createBranch)
+  ipcMain.handle(gitIpcChannels.checkoutBranch, localGitHandlers.checkoutBranch)
+  ipcMain.handle(gitIpcChannels.commitChanges, localGitHandlers.commitChanges)
+  ipcMain.on(localGitWatchControlChannels.subscribe, (event) => {
+    localGitWatchBroker?.subscribe(event.sender)
+  })
+  ipcMain.on(localGitWatchControlChannels.unsubscribe, (event) => {
+    localGitWatchBroker?.unsubscribe(event.sender.id)
   })
   ipcMain.handle(
     'codex:open-local-path',
@@ -839,8 +908,13 @@ app.on(
       try {
         await composerContextSearch?.shutdown()
       } finally {
+        localGitWatchBroker?.dispose()
         composerContextChanges?.dispose()
-        await Promise.allSettled([codexRuntime?.stop(), composerContextClient?.shutdown()])
+        await Promise.allSettled([
+          codexRuntime?.stop(),
+          composerContextClient?.shutdown(),
+          gitHostRegistry?.shutdown()
+        ])
         await codexAppServerConnection?.shutdown()
       }
     },

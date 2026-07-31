@@ -40,7 +40,14 @@ export const projectCreateBlankPayloadSchema = z.object({
 export const projectCreateRemotePayloadSchema = z.object({
   hostId: z.string().min(1),
   label: z.string().trim().min(1),
-  remotePath: z.string().min(1)
+  remotePath: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (path) => path.startsWith('/') && !path.includes('\0') && !/[\r\n]/u.test(path),
+      'Remote project path must be an absolute POSIX path'
+    )
 })
 
 export const projectRenamePayloadSchema = z.discriminatedUnion('projectKind', [

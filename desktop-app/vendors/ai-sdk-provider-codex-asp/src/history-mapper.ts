@@ -14,7 +14,7 @@ import {
     userInputText,
 } from "./protocol/shared-item-extractors";
 import {
-    type FileChangeDiffBatch,
+    fileChangeDiffBatchesForOrderedItems,
     turnDiffItem,
     unifiedDiffForFileChangeBatches,
 } from "./protocol/turn-diff";
@@ -223,7 +223,7 @@ function mergeMessageMetadata(
 
 function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiPart | null
 {
-    const batches = fileChangeDiffBatchesForTurn(turn, cwd);
+    const batches = fileChangeDiffBatchesForOrderedItems(turn.items, cwd);
     const diff = unifiedDiffForFileChangeBatches(batches);
     if (!diff)
     {
@@ -235,6 +235,7 @@ function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiP
         status: "completed",
         cwd: batches[0]?.cwd ?? cwd,
         diff,
+        patchBatches: batches,
     });
     return {
         type: "dynamic-tool",
@@ -245,36 +246,6 @@ function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiP
         output: { item },
         providerExecuted: true,
     };
-}
-
-function fileChangeDiffBatchesForTurn(
-    turn: CodexTurnForUi,
-    initialCwd?: string,
-): FileChangeDiffBatch[]
-{
-    const batches: FileChangeDiffBatch[] = [];
-    let cwd = initialCwd;
-
-    for (const item of turn.items)
-    {
-        if (item.type === "commandExecution")
-        {
-            cwd = item.cwd;
-            continue;
-        }
-
-        if (
-            item.type === "fileChange" &&
-      item.status !== "failed" &&
-      item.status !== "declined" &&
-      item.changes.length > 0
-        )
-        {
-            batches.push({ changes: item.changes, cwd });
-        }
-    }
-
-    return batches;
 }
 
 export function mapCodexThreadItemToUiPart(item: CodexRenderableThreadItem): UiMessagePart | null

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { config as configureZod, type ZodType } from 'zod'
 import { codexChatTerminalFallbackSchema } from '../shared/codexIpcApi'
 import type {
   CodexApprovalRequest,
@@ -10,6 +11,7 @@ import type {
   DesktopCodexFollowUpApi,
   DesktopComposerContextApi,
   DesktopConversationsApi,
+  DesktopGitApi,
   DesktopProjectsApi,
   LocalContextPickerKind,
   LocalContextReference,
@@ -20,6 +22,24 @@ import type {
   SidebarConversationOpenResult,
   SidebarPreferences
 } from '../shared/codexIpcApi'
+import {
+  gitIpcChannels,
+  gitResolveRepositoryTargetRequestSchema,
+  localGitBranchRequestSchema,
+  localGitBranchSearchRequestSchema,
+  localGitChangeEventSchema,
+  localGitCheckoutBranchRequestSchema,
+  localGitCreateBranchRequestSchema,
+  localGitGetFileDiffRequestSchema,
+  localGitGetReviewSnapshotRequestSchema,
+  localGitRefreshReviewFilesRequestSchema,
+  localGitListCommitsRequestSchema,
+  localGitGetSummaryRequestSchema,
+  localGitReviewMutationRequestSchema,
+  localCommitRequestSchema,
+  localGitResolveMergeBaseRequestSchema,
+  turnPatchRequestSchema
+} from '../shared/localGitApi'
 import type {
   LocalProject,
   ProjectSelection,
@@ -30,6 +50,11 @@ import type {
 import { createChatStreamBridge } from './chatStreamBridge'
 import { createComposerContextBridge } from './composerContextBridge'
 import { assertFollowUpSnapshotFitsIpc } from './followUpPayloadGuard'
+
+// Electron's renderer CSP disallows Zod's optional dynamic parser compilation.
+// Set this globally before any IPC payload is parsed, including the schemas
+// imported by this preload bundle.
+configureZod({ jitless: true })
 
 const desktopEnvironment = {
   platform: process.platform
@@ -261,6 +286,97 @@ const desktopFollowUps: DesktopCodexFollowUpApi = {
   }
 }
 
+const desktopGit: DesktopGitApi = {
+  resolveRepositoryTarget: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.resolveRepositoryTarget,
+      parseGitPayload(gitResolveRepositoryTargetRequestSchema, input)
+    ),
+  getSummary: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getSummary,
+      parseGitPayload(localGitGetSummaryRequestSchema, input)
+    ),
+  listCommits: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.listCommits,
+      parseGitPayload(localGitListCommitsRequestSchema, input)
+    ),
+  getReviewSnapshot: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getReviewSnapshot,
+      parseGitPayload(localGitGetReviewSnapshotRequestSchema, input)
+    ),
+  refreshReviewFiles: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.refreshReviewFiles,
+      parseGitPayload(localGitRefreshReviewFilesRequestSchema, input)
+    ),
+  getFileDiff: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getFileDiff,
+      parseGitPayload(localGitGetFileDiffRequestSchema, input)
+    ),
+  applyReviewAction: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.applyReviewAction,
+      parseGitPayload(localGitReviewMutationRequestSchema, input)
+    ),
+  applyTurnPatch: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.applyTurnPatch,
+      parseGitPayload(turnPatchRequestSchema, input)
+    ),
+  listBranches: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.listBranches,
+      parseGitPayload(localGitBranchRequestSchema, input)
+    ),
+  searchBranches: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.searchBranches,
+      parseGitPayload(localGitBranchSearchRequestSchema, input)
+    ),
+  resolveMergeBase: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.resolveMergeBase,
+      parseGitPayload(localGitResolveMergeBaseRequestSchema, input)
+    ),
+  createBranch: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.createBranch,
+      parseGitPayload(localGitCreateBranchRequestSchema, input)
+    ),
+  checkoutBranch: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.checkoutBranch,
+      parseGitPayload(localGitCheckoutBranchRequestSchema, input)
+    ),
+  commitChanges: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.commitChanges,
+      parseGitPayload(localCommitRequestSchema, input)
+    ),
+  subscribe: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = localGitChangeEventSchema.safeParse(payload, { jitless: true })
+      if (parsed.success) callback(parsed.data)
+    }
+    ipcRenderer.send(`${gitIpcChannels.changed}:subscribe`)
+    ipcRenderer.on(gitIpcChannels.changed, listener)
+    return () => {
+      ipcRenderer.removeListener(gitIpcChannels.changed, listener)
+      ipcRenderer.send(`${gitIpcChannels.changed}:unsubscribe`)
+    }
+  }
+}
+
+function parseGitPayload<T>(schema: ZodType<T>, input: unknown): T {
+  const parsed = schema.safeParse(input, { jitless: true })
+  if (!parsed.success) throw parsed.error
+  return parsed.data
+}
+
 const desktopApp = {
   environment: desktopEnvironment,
   codex: desktopCodex,
@@ -268,7 +384,8 @@ const desktopApp = {
   composerContext: desktopComposerContext,
   projects: desktopProjects,
   conversations: desktopConversations,
-  followUps: desktopFollowUps
+  followUps: desktopFollowUps,
+  git: desktopGit
 }
 
 if (process.contextIsolated) {

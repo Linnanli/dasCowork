@@ -301,6 +301,26 @@ describe('ProjectApiService', () => {
     })
   })
 
+  it('rejects relative remote project paths before host validation', async () => {
+    const store = ProjectStore.inMemory(createDefaultProjectState())
+    const validateRemoteRoot = vi.fn(async () => undefined)
+    const service = new ProjectApiService({
+      store,
+      validateLocalRoot: async (path) => ({ realPath: path }),
+      validateRemoteRoot,
+      pickWorkspaceRoot: vi.fn()
+    })
+
+    await expect(
+      service.createRemoteProject({
+        hostId: 'ssh-devbox',
+        label: 'Staging API',
+        remotePath: '../srv/staging-api'
+      })
+    ).rejects.toThrow('must be an absolute POSIX path')
+    expect(validateRemoteRoot).not.toHaveBeenCalled()
+  })
+
   it('renames local, remote, and path project entries', async () => {
     const store = ProjectStore.inMemory({
       ...createDefaultProjectState(),

@@ -136,6 +136,44 @@ describe('ConversationChatRegistry', () => {
     expect(registry.getSnapshot().entries).toHaveLength(1)
   })
 
+  it('rebinds a terminal retry to its fresh thread without retaining the failed thread alias', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.bindThread(entry, 'thread-failed')
+
+    const rebound = registry.bindThread(entry, 'thread-retry', true)
+
+    expect(rebound).toBe(entry)
+    expect(registry.resolve('thread-failed')).toBeUndefined()
+    expect(registry.resolve('thread-retry')).toBe(entry)
+    expect(entry.context).toMatchObject({
+      conversationId: 'thread-retry',
+      threadId: 'thread-retry'
+    })
+  })
+
+  it('rebinds a terminal retry when its conversation state arrives before the transport event', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.bindThread(entry, 'thread-failed')
+
+    registry.applyConversationMetadata([
+      {
+        id: 'thread-retry',
+        threadId: 'thread-retry',
+        originConversationId: 'thread-failed',
+        title: 'Retried conversation'
+      }
+    ])
+
+    expect(entry.context).toMatchObject({
+      conversationId: 'thread-retry',
+      threadId: 'thread-retry'
+    })
+    expect(registry.resolve('thread-failed')).toBeUndefined()
+    expect(registry.resolve('thread-retry')).toBe(entry)
+  })
+
   it('restores a local conversation from a main-owned run before thread binding', async () => {
     const { bridge, registry } = registryFixture()
     const callbacks = new Map<string, CodexChatStreamCallbacks>()

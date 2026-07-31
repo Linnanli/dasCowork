@@ -172,6 +172,28 @@ describe('buildComposerTurnStatus', () => {
     expect(isComposerStatusRenderUnit(textUnit())).toBe(false)
   })
 
+  it('keeps completed turn diffs visible in the completed assistant message', () => {
+    const completedDiff = entryUnit('completed-diff', 'turnDiff', {
+      status: 'completed',
+      diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n+added\n'
+    })
+
+    expect(isComposerStatusRenderUnit(completedDiff)).toBe(false)
+    expect(withoutComposerStatusRenderUnits([completedDiff])).toEqual([completedDiff])
+  })
+
+  it('can keep the last in-progress diff after the assistant message completes', () => {
+    const latestDiff = entryUnit('latest-diff', 'turnDiff', {
+      status: 'inProgress',
+      diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n+added\n'
+    })
+
+    expect(withoutComposerStatusRenderUnits([latestDiff])).toEqual([])
+    expect(withoutComposerStatusRenderUnits([latestDiff], { keepTurnDiff: true })).toEqual([
+      latestDiff
+    ])
+  })
+
   it('returns undefined when no plan or diff status is available', () => {
     expect(buildComposerTurnStatus([textUnit()])).toBeUndefined()
   })

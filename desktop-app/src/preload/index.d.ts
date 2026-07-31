@@ -4,6 +4,7 @@ import type {
   DesktopCodexFollowUpApi,
   DesktopComposerContextApi,
   DesktopConversationsApi,
+  DesktopGitApi,
   DesktopProjectsApi
 } from '../shared/codexIpcApi'
 
@@ -17,6 +18,7 @@ export type DesktopAppApi = {
   projects: DesktopProjectsApi
   conversations: DesktopConversationsApi
   followUps: DesktopCodexFollowUpApi
+  git: DesktopGitApi
 }
 
 declare global {

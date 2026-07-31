@@ -38,6 +38,7 @@ export type StreamFinishedContext = {
   activeConversation: ActiveConversationContext | undefined
   projectSelection: ProjectSelection | undefined
   conversationRevision: number
+  startsFreshTerminalRetry?: true
 }
 
 type TrustedRequestContext = {
@@ -89,13 +90,15 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
         const trustedContext = this.createTrustedContext(options.body)
+        const startsFreshTerminalRetry = trustedContext.body?.retryTerminalTurn === true
         const abortSignal = options.abortSignal
         const streamContext = (threadId: string | undefined): StreamFinishedContext => ({
           chatId: options.chatId,
           threadId,
           activeConversation: trustedContext.activeConversation,
           projectSelection: trustedContext.projectSelection,
-          conversationRevision: trustedContext.conversationRevision
+          conversationRevision: trustedContext.conversationRevision,
+          ...(startsFreshTerminalRetry ? { startsFreshTerminalRetry: true } : {})
         })
         const markAccepted = (): void => {
           if (accepted) return

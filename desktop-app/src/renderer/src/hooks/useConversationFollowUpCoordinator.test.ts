@@ -347,6 +347,42 @@ describe('conversation follow-up coordinator', () => {
     }
   })
 
+  it('keeps a recovery queue load alive across registry snapshot updates', async () => {
+    const item = createItem('queue')
+    const entry = createReadyEntry()
+    const pendingState = deferred(createState([item]))
+    const api = createApi({
+      getState: vi
+        .fn()
+        .mockResolvedValueOnce(pendingState.promise)
+        .mockResolvedValue(createState([])),
+      prepareNextTurn: vi.fn(async () => preparedTurn(item))
+    })
+    const root = createRoot(document.createElement('div'))
+
+    try {
+      await act(async () => {
+        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
+        await flushPromises()
+      })
+      await act(async () => {
+        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
+        await flushPromises()
+      })
+
+      pendingState.resolve()
+      await act(async () => {
+        await flushPromises()
+        await flushPromises()
+      })
+
+      expect(api.getState).toHaveBeenCalledTimes(2)
+      expect(entry.controller.sendMessage).toHaveBeenCalledOnce()
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
   it('refreshes queue state and retries a transient renderer delivery failure', async () => {
     vi.useFakeTimers()
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)

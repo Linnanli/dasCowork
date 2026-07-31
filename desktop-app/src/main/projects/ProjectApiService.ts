@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, posix } from 'node:path'
 
 import type {
   LocalProject,
@@ -155,7 +155,8 @@ export class ProjectApiService {
     label: string
     remotePath: string
   }): Promise<RemoteProject> {
-    await this.dependencies.validateRemoteRoot?.(input.hostId, input.remotePath)
+    const remotePath = normalizeRemoteProjectPath(input.remotePath)
+    await this.dependencies.validateRemoteRoot?.(input.hostId, remotePath)
 
     const now = new Date().toISOString()
     const project: RemoteProject = {
@@ -163,7 +164,7 @@ export class ProjectApiService {
       kind: 'remote',
       hostId: input.hostId,
       label: input.label.trim(),
-      remotePath: input.remotePath,
+      remotePath,
       createdAt: now,
       updatedAt: now
     }
@@ -400,6 +401,14 @@ export class ProjectApiService {
       throw new Error('Local project requires at least one source root')
     return validatedRoots
   }
+}
+
+function normalizeRemoteProjectPath(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('/') || trimmed.includes('\0') || /[\r\n]/u.test(trimmed)) {
+    throw new Error('Remote project path must be an absolute POSIX path')
+  }
+  return posix.normalize(trimmed)
 }
 
 function clearActiveSelection(state: ProjectState, selection: ProjectSelection): ProjectState {

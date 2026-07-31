@@ -33,4 +33,28 @@ describe('loadDesktopRuntimeConfig', () => {
       adminBackendUrl: 'https://admin.example.com'
     })
   })
+
+  it('loads the main-process-only remote Codex command', () => {
+    expect(
+      loadDesktopRuntimeConfig({
+        DASCOWORK_REMOTE_CODEX_COMMAND: ' /opt/codex/bin/codex '
+      })
+    ).toEqual({ remoteCodexCommand: '/opt/codex/bin/codex' })
+  })
+
+  it('rejects multiline remote Codex commands', () => {
+    expect(() =>
+      loadDesktopRuntimeConfig({
+        DASCOWORK_REMOTE_CODEX_COMMAND: 'codex\nwhoami'
+      })
+    ).toThrow('must be an executable name or absolute POSIX path')
+  })
+
+  it('rejects relative remote Codex paths', () => {
+    expect(() =>
+      loadDesktopRuntimeConfig({
+        DASCOWORK_REMOTE_CODEX_COMMAND: './bin/codex'
+      })
+    ).toThrow('must be an executable name or absolute POSIX path')
+  })
 })

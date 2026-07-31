@@ -151,6 +151,7 @@ const runtimeState = vi.hoisted<{
     messages: []
     controller: {
       sendMessage: ReturnType<typeof vi.fn>
+      getSnapshot: ReturnType<typeof vi.fn>
       editMessage: ReturnType<typeof vi.fn>
       regenerate: ReturnType<typeof vi.fn>
       stop: ReturnType<typeof vi.fn>
@@ -171,6 +172,8 @@ const runtimeState = vi.hoisted<{
   setSelectedModelId: ReturnType<typeof vi.fn>
   setActiveProjectSelection: ReturnType<typeof vi.fn>
   startNewConversation: ReturnType<typeof vi.fn>
+  prepareNewConversation: ReturnType<typeof vi.fn>
+  activateConversation: ReturnType<typeof vi.fn>
   openConversation: ReturnType<typeof vi.fn>
   restoreActiveConversation: ReturnType<typeof vi.fn>
   restoreSingleActiveConversation: ReturnType<typeof vi.fn>
@@ -190,6 +193,7 @@ const runtimeState = vi.hoisted<{
     messages: [],
     controller: {
       sendMessage: vi.fn(async () => undefined),
+      getSnapshot: vi.fn(() => ({ status: 'ready' })),
       editMessage: vi.fn(async () => undefined),
       regenerate: vi.fn(async () => undefined),
       stop: vi.fn(),
@@ -209,6 +213,8 @@ const runtimeState = vi.hoisted<{
   setSelectedModelId: vi.fn(),
   setActiveProjectSelection: vi.fn(),
   startNewConversation: vi.fn(),
+  prepareNewConversation: vi.fn(),
+  activateConversation: vi.fn(),
   openConversation: vi.fn(),
   restoreActiveConversation: vi.fn(async () => false),
   restoreSingleActiveConversation: vi.fn(async () => false),
@@ -261,8 +267,9 @@ const composerState = vi.hoisted<{
 const composerRuntimeState = vi.hoisted<{
   eventHandlers: Record<string, (() => void) | undefined>
   insertedContextItems: unknown[]
+  sendCalls: number
   setTextCalls: string[]
-}>(() => ({ eventHandlers: {}, insertedContextItems: [], setTextCalls: [] }))
+}>(() => ({ eventHandlers: {}, insertedContextItems: [], sendCalls: 0, setTextCalls: [] }))
 
 const assistantThreadState = vi.hoisted<{ isRunning: boolean }>(() => ({ isRunning: false }))
 
@@ -326,6 +333,8 @@ function resetThreadMessageState(): void {
   runtimeState.setSelectedModelId.mockResolvedValue(undefined)
   runtimeState.setActiveProjectSelection.mockReset()
   runtimeState.startNewConversation.mockReset()
+  runtimeState.prepareNewConversation.mockReset()
+  runtimeState.activateConversation.mockReset()
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
   runtimeState.activeConversation = undefined
@@ -373,6 +382,54 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
       pickLocalContext: vi.fn(async () => [])
     },
     chat: {},
+    git: {
+      resolveRepositoryTarget: vi.fn(async ({ target }) => ({
+        status: 'ready' as const,
+        target: {
+          conversationId: target.conversationId,
+          ...(target.threadId ? { threadId: target.threadId } : {}),
+          hostId: 'local',
+          cwd: '/repo',
+          gitRoot: '/repo'
+        }
+      })),
+      getSummary: vi.fn(async () => ({
+        snapshotGeneration: 'generation',
+        gitRoot: '/repo',
+        stagedFileCount: 0,
+        unstagedFileCount: 0,
+        untrackedFileCount: 0,
+        additions: 0,
+        deletions: 0,
+        branch: 'main'
+      })),
+      listCommits: vi.fn(async () => []),
+      getReviewSnapshot: vi.fn(),
+      getFileDiff: vi.fn(),
+      applyReviewAction: vi.fn(),
+      applyTurnPatch: vi.fn(async () => ({
+        status: 'success' as const,
+        appliedPaths: [],
+        skippedPaths: [],
+        conflictedPaths: []
+      })),
+      listBranches: vi.fn(async () => ({
+        current: 'main',
+        defaultBase: 'main',
+        local: ['main'],
+        recent: [],
+        uncommittedFileCount: 0
+      })),
+      searchBranches: vi.fn(async () => []),
+      resolveMergeBase: vi.fn(async () => ({
+        baseBranch: 'main',
+        mergeBase: 'a'.repeat(40)
+      })),
+      createBranch: vi.fn(),
+      checkoutBranch: vi.fn(),
+      commitChanges: vi.fn(),
+      subscribe: vi.fn(() => () => undefined)
+    },
     followUps: {
       getState: vi.fn(async (conversationKey: string) => ({
         version: 2 as const,
@@ -585,6 +642,8 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       modelSelectionError: runtimeState.modelSelectionError,
       activeConversation: runtimeState.activeConversation,
       startNewConversation: runtimeState.startNewConversation,
+      prepareNewConversation: runtimeState.prepareNewConversation,
+      activateConversation: runtimeState.activateConversation,
       openConversation: runtimeState.openConversation,
       restoreActiveConversation: runtimeState.restoreActiveConversation,
       restoreSingleActiveConversation: runtimeState.restoreSingleActiveConversation,
@@ -759,6 +818,9 @@ vi.mock('@assistant-ui/react', () => {
       setText: (text: string) => {
         composerRuntimeState.setTextCalls.push(text)
         composerState.text = text
+      },
+      send: () => {
+        composerRuntimeState.sendCalls += 1
       }
     }),
     modelContext: () => ({
@@ -1041,6 +1103,7 @@ describe('App composer', () => {
     composerState.text = ''
     composerRuntimeState.eventHandlers = {}
     composerRuntimeState.insertedContextItems = []
+    composerRuntimeState.sendCalls = 0
     composerRuntimeState.setTextCalls = []
     assistantThreadState.isRunning = false
     runtimeState.setActiveDraft.mockReset()
@@ -1824,6 +1887,239 @@ describe('App composer', () => {
         projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' }
       })
     )
+  })
+
+  it('shows Git branch and review controls for remote conversations with a ready repository target', async () => {
+    const listBranches = vi.mocked(window.desktopApp.git.listBranches)
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-remote-git',
+      threadId: 'thread-remote-git',
+      title: 'Remote Git feature',
+      projectSelection: { projectKind: 'remote', projectId: 'remote', hostId: 'ssh-dev' },
+      cwd: '/srv/app'
+    }
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const branchButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branch')
+    )
+    const reviewButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Review'
+    )
+
+    expect(branchButton).toBeTruthy()
+    expect(reviewButton?.disabled).toBe(false)
+
+    await act(async () => {
+      branchButton?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(listBranches).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        conversationId: 'conversation-remote-git',
+        threadId: 'thread-remote-git',
+        hostId: 'local',
+        gitRoot: '/repo'
+      })
+    })
+  })
+
+  it('blocks Review until the Composer draft and attachments are cleared', async () => {
+    composerState.text = 'DRAFT_MARKER_DO_NOT_SEND'
+    composerState.attachments = [
+      {
+        id: 'attachment-marker',
+        type: 'file',
+        name: 'ATTACHMENT_MARKER_DO_NOT_SEND.txt',
+        status: { type: 'complete' },
+        content: []
+      }
+    ]
+    composerState.isEmpty = false
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const reviewButton = buttonWithText('Review')
+    expect(reviewButton?.disabled).toBe(true)
+    expect(reviewButton?.title).toContain('草稿和附件')
+  })
+
+  it('sends inline Review directly through the conversation controller without touching Composer', async () => {
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    composerRuntimeState.setTextCalls = []
+    composerRuntimeState.sendCalls = 0
+
+    await act(async () => {
+      buttonWithText('Review')?.click()
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="lexical-composer-input"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="添加文件和更多"]')).toBeNull()
+    expect(container.querySelector('button[aria-label="发送消息"]')).toBeNull()
+
+    await act(async () => {
+      buttonWithText('Review uncommitted changes')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(runtimeState.activeEntry.controller.sendMessage).toHaveBeenCalledTimes(1)
+    const message = runtimeState.activeEntry.controller.sendMessage.mock.calls[0]?.[0]
+    expect(message).toMatchObject({ role: 'user' })
+    expect(message.parts).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('Perform a focused code review.')
+      }
+    ])
+    expect(message.parts[0].text).not.toContain('DRAFT_MARKER_DO_NOT_SEND')
+    expect(message.parts[0].text).not.toContain('ATTACHMENT_MARKER_DO_NOT_SEND')
+    expect(composerRuntimeState.setTextCalls).toEqual([])
+    expect(composerRuntimeState.sendCalls).toBe(0)
+    expect(container.querySelector('[data-slot="composer-review-mode"]')).toBeNull()
+  })
+
+  it('keeps Review mode open when the Composer changes after opening it', async () => {
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    composerRuntimeState.setTextCalls = []
+    composerRuntimeState.sendCalls = 0
+    await act(async () => {
+      buttonWithText('Review')?.click()
+      await Promise.resolve()
+    })
+
+    composerState.text = 'RACE_DRAFT_MARKER_DO_NOT_SEND'
+    composerState.attachments = [
+      {
+        id: 'race-attachment-marker',
+        type: 'file',
+        name: 'RACE_ATTACHMENT_MARKER_DO_NOT_SEND.txt',
+        status: { type: 'complete' },
+        content: []
+      }
+    ]
+    composerState.isEmpty = false
+    act(() => {
+      root.render(<App />)
+    })
+
+    await act(async () => {
+      buttonWithText('Review uncommitted changes')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(runtimeState.activeEntry.controller.sendMessage).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
+    expect(container.textContent).toContain('请先发送或清空输入框中的草稿和附件')
+    expect(composerState.text).toBe('RACE_DRAFT_MARKER_DO_NOT_SEND')
+    expect(composerState.attachments[0]?.name).toBe('RACE_ATTACHMENT_MARKER_DO_NOT_SEND.txt')
+  })
+
+  it('keeps Review mode open and reports a direct-send failure', async () => {
+    runtimeState.activeEntry.controller.sendMessage.mockRejectedValueOnce(
+      new Error('Review transport unavailable')
+    )
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    composerRuntimeState.setTextCalls = []
+    composerRuntimeState.sendCalls = 0
+    await act(async () => {
+      buttonWithText('Review')?.click()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      buttonWithText('Review uncommitted changes')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(runtimeState.activeEntry.controller.sendMessage).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
+    expect(container.textContent).toContain('Review transport unavailable')
+    expect(composerRuntimeState.setTextCalls).toEqual([])
+    expect(composerRuntimeState.sendCalls).toBe(0)
+  })
+
+  it('keeps the initiating Review mode open when a detached send fails', async () => {
+    const detachedSend = vi
+      .fn()
+      .mockRejectedValue(new Error('Detached review transport unavailable'))
+    const detachedEntry = {
+      ...runtimeState.activeEntry,
+      localId: 'detached-review',
+      context: { conversationId: 'detached-review' },
+      controller: { ...runtimeState.activeEntry.controller, sendMessage: detachedSend }
+    }
+    runtimeState.activeConversation = { conversationId: 'source-review' }
+    runtimeState.prepareNewConversation.mockReturnValue(detachedEntry)
+
+    act(() => {
+      root.render(<App />)
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      buttonWithText('Review')?.click()
+      await Promise.resolve()
+      buttonWithText('Review in a new task')?.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      buttonWithText('Review uncommitted changes')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(detachedSend).toHaveBeenCalledOnce()
+    expect(runtimeState.activateConversation).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
+    expect(container.textContent).toContain('Detached review transport unavailable')
   })
 
   it('opens the add-context menu in a projectless conversation', async () => {
@@ -3349,6 +3645,7 @@ describe('App composer', () => {
         ]
       }),
       genericToolPart('diff-1', 'turn-diff', 'turn-diff', {
+        status: 'completed',
         cwd: '/repo',
         files: [
           {
@@ -3386,9 +3683,9 @@ describe('App composer', () => {
     })
 
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
-    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
     expect(container.textContent).not.toContain('待办进度')
-    expect(container.textContent).not.toContain('已编辑 1 个文件')
+    expect(container.textContent).toContain('已编辑 1 个文件')
     expect(container.querySelector('[data-slot="generated-image-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('已生成 1 张图片')
     expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
@@ -3421,6 +3718,92 @@ describe('App composer', () => {
       container.querySelector('[data-slot="automatic-approval-review-entry-unit"]')
     ).not.toBeNull()
     expect(container.textContent).toContain('自动审批已通过')
+  })
+
+  it('applies only complete persisted turn patch batches from the rendered history item', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-turn-patch',
+      threadId: 'thread-turn-patch',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('turn-diff:turn-history', 'turn-diff', 'turn-diff', {
+        cwd: '/repo',
+        patchBatches: [
+          {
+            cwd: '/repo',
+            gitRoot: '/repo',
+            diff: 'diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n'
+          }
+        ],
+        files: [{ path: 'notes.txt', diff: '--- a/notes.txt\n+++ b/notes.txt\n-old\n+new\n' }]
+      })
+    ]
+
+    await act(async () => {
+      root.render(<App />)
+      await Promise.resolve()
+    })
+
+    const turnCard = container.querySelector<HTMLElement>('[data-slot="turn-diff-entry-unit"]')
+    const undo = Array.from(turnCard?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === '撤销'
+    )
+    expect(undo).toBeInstanceOf(HTMLButtonElement)
+    expect((undo as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => {
+      undo?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(window.desktopApp.git.applyTurnPatch).toHaveBeenCalledWith({
+      target: {
+        conversationId: 'conversation-turn-patch',
+        threadId: 'thread-turn-patch',
+        hostId: 'local',
+        cwd: '/repo',
+        gitRoot: '/repo'
+      },
+      action: 'undo',
+      turnId: 'turn-history',
+      batches: [
+        {
+          cwd: '/repo',
+          gitRoot: '/repo',
+          diff: 'diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n'
+        }
+      ]
+    })
+  })
+
+  it('disables turn patch recovery when a history item lacks full persisted batches', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('turn-diff:turn-preview-only', 'turn-diff', 'turn-diff', {
+        cwd: '/repo',
+        truncated: true,
+        patchUnavailableReason: 'patch-too-large',
+        diff: 'preview only'
+      })
+    ]
+
+    await act(async () => {
+      root.render(<App />)
+      await Promise.resolve()
+    })
+
+    const turnCard = container.querySelector<HTMLElement>('[data-slot="turn-diff-entry-unit"]')
+    expect(turnCard?.textContent).toContain('完整补丁超过安全大小限制，无法恢复。')
+    const undo = Array.from(turnCard?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === '撤销'
+    )
+    expect(undo).toBeInstanceOf(HTMLButtonElement)
+    expect((undo as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('renders parsed code comments as a sorted expandable card and opens relative files', async () => {
@@ -3570,7 +3953,7 @@ describe('App composer', () => {
     expect(container.textContent).toContain('list-exploration')
   })
 
-  it('renders active plan and diff as a composer status card only while running', () => {
+  it('renders active plan and diff in the composer while running, then preserves the diff card', () => {
     threadMessageState.message.role = 'assistant'
     threadMessageState.message.status = { type: 'running' }
     threadMessageState.message.content = [
@@ -3620,7 +4003,8 @@ describe('App composer', () => {
 
     expect(container.querySelector('[data-slot="composer-turn-status-card"]')).toBeNull()
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
-    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).toBeNull()
+    expect(container.querySelector('[data-slot="turn-diff-entry-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('已编辑 1 个文件')
     expect(container.textContent).not.toContain('正在思考')
     expect(container.querySelector('[data-slot="message-thinking-unit"]')).toBeNull()
   })

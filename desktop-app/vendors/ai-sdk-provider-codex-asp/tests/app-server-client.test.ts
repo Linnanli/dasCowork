@@ -152,6 +152,37 @@ describe("AppServerClient", () =>
         });
     });
 
+    it("does not let later notifications overtake synchronous listeners", async () =>
+    {
+        const transport = new MockTransport();
+        const client = new AppServerClient(transport, { requestTimeoutMs: 1000 });
+        const calls: string[] = [];
+
+        await client.connect();
+        client.onNotification("item/started", () =>
+        {
+            calls.push("specific:item/started");
+        });
+        client.onAnyNotification((method) =>
+        {
+            calls.push(`mapper:${method}`);
+        });
+
+        transport.emitMessage({ method: "item/started", params: { item: { id: "item_1" } } });
+        transport.emitMessage({
+            method: "item/agentMessage/delta",
+            params: { itemId: "item_1", delta: "hello" },
+        });
+
+        await vi.waitFor(() =>
+            expect(calls).toEqual([
+                "specific:item/started",
+                "mapper:item/started",
+                "mapper:item/agentMessage/delta",
+            ]),
+        );
+    });
+
     it("processes a replayed pending inbound request only once", async () =>
     {
         const transport = new MockTransport();

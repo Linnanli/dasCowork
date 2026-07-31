@@ -118,15 +118,26 @@ export class ConversationChatRegistry {
 
   startNewConversation(projectSelection?: ProjectSelection): ConversationChatEntry {
     this.assertUsable()
+    const entry = this.prepareNewConversation(projectSelection)
     this.navigationEpoch += 1
-    const entry = this.createEntry({
+    this.activate(this.internalEntry(entry))
+    return entry
+  }
+
+  prepareNewConversation(projectSelection?: ProjectSelection): ConversationChatEntry {
+    this.assertUsable()
+    return this.createEntry({
       localId: this.createId(),
       projectSelection,
       loaded: true,
       newConversation: true
     })
-    this.activate(entry)
-    return entry
+  }
+
+  activateConversation(entry: ConversationChatEntry): void {
+    this.assertUsable()
+    this.navigationEpoch += 1
+    this.activate(this.internalEntry(entry))
   }
 
   /**
@@ -234,16 +245,20 @@ export class ConversationChatRegistry {
 
   bindThread(
     entryOrIdentity: ConversationChatEntry | string,
-    threadId: string
+    threadId: string,
+    allowFreshTerminalRetry = false
   ): ConversationChatEntry {
     const entry = this.internalEntry(entryOrIdentity)
     if (entry.context.threadId && entry.context.threadId !== threadId) {
-      entry.status = 'error'
-      entry.error = new Error(
-        `Conversation ${entry.localId} is already bound to thread ${entry.context.threadId}`
-      )
-      this.emit()
-      return entry
+      if (!allowFreshTerminalRetry) {
+        entry.status = 'error'
+        entry.error = new Error(
+          `Conversation ${entry.localId} is already bound to thread ${entry.context.threadId}`
+        )
+        this.emit()
+        return entry
+      }
+      this.releaseSupersededThreadAliases(entry)
     }
 
     const existingEntry = this.resolveInternal(threadId)
@@ -256,7 +271,11 @@ export class ConversationChatRegistry {
 
     const previousDraftIdentity = entry.context.threadId ?? entry.localId
     this.bindAlias(entry, threadId)
-    entry.context = { ...entry.context, threadId }
+    entry.context = {
+      ...entry.context,
+      ...(allowFreshTerminalRetry ? { conversationId: threadId } : {}),
+      threadId
+    }
     entry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     entry.draftAttachments = this.draftStore.getAttachments(threadId)
     this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
@@ -278,7 +297,7 @@ export class ConversationChatRegistry {
       if (originEntry && existingThreadEntry && originEntry !== existingThreadEntry) {
         entry = this.mergePlaceholderIntoLiveEntry(originEntry, existingThreadEntry, threadIdentity)
       } else if (originEntry && originEntry.context.threadId !== threadIdentity) {
-        entry = this.bindThread(originEntry, threadIdentity) as InternalConversationChatEntry
+        entry = this.bindThread(originEntry, threadIdentity, true) as InternalConversationChatEntry
       }
       const projectSelection = projectSelectionFromAssignment(conversation.projectAssignment)
       const context: ActiveConversationContext = {
@@ -475,8 +494,8 @@ export class ConversationChatRegistry {
         this.onStreamStarted?.(entry.context.threadId ?? entry.localId)
         entry.controller.handleStreamStarted()
       },
-      onThreadBound: ({ threadId }) => {
-        const boundEntry = this.bindThread(entry, threadId)
+      onThreadBound: ({ threadId, startsFreshTerminalRetry }) => {
+        const boundEntry = this.bindThread(entry, threadId, startsFreshTerminalRetry === true)
         if (boundEntry !== entry) {
           entry.status = 'error'
           entry.error = new Error(`Thread ${threadId} is already owned by another conversation`)
@@ -633,6 +652,17 @@ export class ConversationChatRegistry {
     const existing = this.aliases.get(identity)
     if (existing && existing !== entry) return
     this.aliases.set(identity, entry)
+  }
+
+  private releaseSupersededThreadAliases(entry: InternalConversationChatEntry): void {
+    const staleIdentities = new Set(
+      [entry.context.threadId, entry.context.conversationId].filter(
+        (identity): identity is string => Boolean(identity && identity !== entry.localId)
+      )
+    )
+    for (const identity of staleIdentities) {
+      if (this.aliases.get(identity) === entry) this.aliases.delete(identity)
+    }
   }
 
   private mergePlaceholderIntoLiveEntry(

@@ -11,6 +11,17 @@ import {
 import { unifiedDiffForFileChangeBatches } from "../src/protocol/turn-diff";
 import type { ThreadItem } from "../src/protocol/types";
 
+function historicalTurnDiffItem(thread: CodexThreadForUi): Record<string, unknown> | undefined
+{
+    const dynamicParts = mapCodexThreadToUiMessages(thread)
+        .flatMap((message) => message.parts)
+        .filter((part) => part.type === "dynamic-tool" && part.toolName === "codex_turn_diff");
+    const output = (dynamicParts.at(-1) as { output?: unknown } | undefined)?.output;
+    return output && typeof output === "object"
+        ? ((output as Record<string, unknown>)["item"] as Record<string, unknown> | undefined)
+        : undefined;
+}
+
 describe("history mapper", () =>
 {
     it("maps a full thread history to UI messages without dropping tool items", () =>
@@ -179,6 +190,35 @@ describe("history mapper", () =>
                                     "",
                                 ].join("\n"),
                                 truncated: false,
+                                patchBatches: [
+                                    {
+                                        cwd: "/repo",
+                                        diff: [
+                                            "diff --git a/notes.txt b/notes.txt",
+                                            "new file mode 100644",
+                                            "--- /dev/null",
+                                            "+++ b/notes.txt",
+                                            "@@ -0,0 +1,2 @@",
+                                            "+first line",
+                                            "+second line",
+                                            "",
+                                            "diff --git a/src/app.ts b/src/app.ts",
+                                            "--- a/src/app.ts",
+                                            "+++ b/src/app.ts",
+                                            "@@ -1 +1 @@",
+                                            "-before",
+                                            "+after",
+                                            "",
+                                            "diff --git a/obsolete.txt b/obsolete.txt",
+                                            "deleted file mode 100644",
+                                            "--- a/obsolete.txt",
+                                            "+++ /dev/null",
+                                            "@@ -1,1 +0,0 @@",
+                                            "-unused",
+                                            "",
+                                        ].join("\n"),
+                                    },
+                                ],
                             },
                         },
                         providerExecuted: true,
@@ -228,6 +268,222 @@ describe("history mapper", () =>
                 "",
             ].join("\n"),
         );
+    });
+
+    it("converts absolute file-change paths to paths relative to their working directory", () =>
+    {
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "/repo/src/app.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1 @@\n-before\n+after\n",
+                        },
+                    ],
+                },
+            ]),
+        ).toBe(
+            [
+                "diff --git a/src/app.ts b/src/app.ts",
+                "--- a/src/app.ts",
+                "+++ b/src/app.ts",
+                "@@ -1 +1 @@",
+                "-before",
+                "+after",
+                "",
+            ].join("\n"),
+        );
+    });
+
+    it("restores historical action patch batches in fileChange order with their cwd", () =>
+    {
+        const firstChange = {
+            path: "src/a.ts",
+            kind: { type: "update" as const, move_path: null },
+            diff: "@@ -1 +1 @@\n-old\n+new\n",
+        };
+        const secondChange = {
+            path: "src/b.ts",
+            kind: { type: "add" as const },
+            diff: "created\n",
+        };
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_batches",
+                    durationMs: null,
+                    items: [
+                        {
+                            type: "commandExecution",
+                            id: "cmd_a",
+                            command: "edit a",
+                            cwd: "/repo/a",
+                            processId: null,
+                            source: "agent",
+                            status: "completed",
+                            commandActions: [],
+                            aggregatedOutput: null,
+                            exitCode: 0,
+                            durationMs: null,
+                        },
+                        {
+                            type: "fileChange",
+                            id: "file_a",
+                            status: "completed",
+                            changes: [firstChange],
+                        },
+                        {
+                            type: "fileChange",
+                            id: "file_failed",
+                            status: "failed",
+                            changes: [
+                                {
+                                    path: "failed.ts",
+                                    kind: { type: "add" as const },
+                                    diff: "failed\n",
+                                },
+                            ],
+                        },
+                        {
+                            type: "commandExecution",
+                            id: "cmd_b",
+                            command: "edit b",
+                            cwd: "/repo/b",
+                            processId: null,
+                            source: "agent",
+                            status: "completed",
+                            commandActions: [],
+                            aggregatedOutput: null,
+                            exitCode: 0,
+                            durationMs: null,
+                        },
+                        {
+                            type: "fileChange",
+                            id: "file_b",
+                            status: "completed",
+                            changes: [secondChange],
+                        },
+                    ],
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        expect(historicalTurnDiffItem(thread)).toMatchObject({
+            status: "completed",
+            cwd: "/repo/a",
+            patchBatches: [
+                {
+                    cwd: "/repo/a",
+                    diff: [
+                        "diff --git a/src/a.ts b/src/a.ts",
+                        "--- a/src/a.ts",
+                        "+++ b/src/a.ts",
+                        "@@ -1 +1 @@",
+                        "-old",
+                        "+new",
+                        "",
+                    ].join("\n"),
+                },
+                {
+                    cwd: "/repo/b",
+                    diff: [
+                        "diff --git a/src/b.ts b/src/b.ts",
+                        "new file mode 100644",
+                        "--- /dev/null",
+                        "+++ b/src/b.ts",
+                        "@@ -0,0 +1,1 @@",
+                        "+created",
+                        "",
+                    ].join("\n"),
+                },
+            ],
+        });
+    });
+
+    it("keeps full historical action patches when only the preview is truncated", () =>
+    {
+        const largeContent = `${"x".repeat(60_000)}\n`;
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_truncated_preview",
+                    durationMs: null,
+                    items: [
+                        {
+                            type: "fileChange",
+                            id: "file_large_preview",
+                            status: "completed",
+                            changes: [
+                                {
+                                    path: "large-preview.txt",
+                                    kind: { type: "add" as const },
+                                    diff: largeContent,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        const item = historicalTurnDiffItem(thread);
+        expect(item).toMatchObject({
+            status: "completed",
+            truncated: true,
+        });
+        expect(item?.["originalLength"]).toEqual(expect.any(Number));
+        const patchBatches = item?.["patchBatches"];
+        expect(Array.isArray(patchBatches)).toBe(true);
+        const firstBatch: unknown = Array.isArray(patchBatches) ? patchBatches[0] : undefined;
+        expect(firstBatch).toMatchObject({ cwd: "/repo" });
+        expect(
+            firstBatch && typeof firstBatch === "object"
+                ? (firstBatch as Record<string, unknown>)["diff"]
+                : undefined,
+        ).toEqual(expect.stringContaining(largeContent));
+        expect((item?.["diff"] as string).length).toBe(50_000);
+    });
+
+    it("disables historical action patches when the complete patch exceeds the action limit", () =>
+    {
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_huge_patch",
+                    durationMs: null,
+                    items: [
+                        {
+                            type: "fileChange",
+                            id: "file_huge",
+                            status: "completed",
+                            changes: [
+                                {
+                                    path: "huge.txt",
+                                    kind: { type: "add" as const },
+                                    diff: `${"x".repeat(2 * 1024 * 1024 + 1)}\n`,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        const item = historicalTurnDiffItem(thread);
+        expect(item).toMatchObject({
+            status: "completed",
+            truncated: true,
+            patchUnavailableReason: "patch-too-large",
+        });
+        expect(item).not.toHaveProperty("patchBatches");
     });
 
     it("uses the shared extractor output for history dynamic-tool parts", () =>

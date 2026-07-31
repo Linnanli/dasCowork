@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { type CodexTurnForUi,mapCodexTurnToUiMessages } from "../src/history-mapper";
 import { CodexEventMapper } from "../src/protocol/event-mapper";
+import type { CodexRenderableThreadItem } from "../src/protocol/shared-item-extractors";
 import { planAssertionsForTest } from "./helpers/plan-assertion";
 
 const CODEX_PROVIDER_ID = "@janole/ai-sdk-provider-codex-asp";
@@ -75,6 +77,54 @@ function isToolLifecyclePart(
       (part as { type?: unknown }).type === "tool-result") &&
     typeof (part as { toolCallId?: unknown }).toolCallId === "string"
     );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown>
+{
+    return Boolean(value) && typeof value === "object";
+}
+
+function turnDiffItems(parts: readonly unknown[]): Record<string, unknown>[]
+{
+    return parts.flatMap((part) =>
+    {
+        if (!isRecord(part))
+        {
+            return [];
+        }
+        const result = part["result"];
+        if (!isRecord(result))
+        {
+            return [];
+        }
+        const item = result["item"];
+        if (isRecord(item) && item["type"] === "turnDiff")
+        {
+            return [item];
+        }
+        return [];
+    });
+}
+
+function historicalTurnDiffItem(
+    items: readonly CodexRenderableThreadItem[],
+): Record<string, unknown> | undefined
+{
+    const turn = {
+        id: "turn_history",
+        durationMs: null,
+        items,
+        itemsView: "full",
+        status: "completed",
+        error: null,
+    } satisfies CodexTurnForUi;
+    const dynamicParts = mapCodexTurnToUiMessages(turn, "/repo")
+        .flatMap((message) => message.parts)
+        .filter((part) => part.type === "dynamic-tool" && part.toolName === "codex_turn_diff");
+    const output = (dynamicParts.at(-1) as { output?: unknown } | undefined)?.output;
+    return output && typeof output === "object"
+        ? ((output as Record<string, unknown>)["item"] as Record<string, unknown> | undefined)
+        : undefined;
 }
 
 describe("CodexEventMapper", () =>
@@ -1943,6 +1993,7 @@ describe("CodexEventMapper", () =>
                 result: {
                     item: {
                         id: "turn-diff:turn_diff",
+                        threadId: "thr",
                         type: "turnDiff",
                         status: "inProgress",
                         cwd: "/repo",
@@ -2020,6 +2071,7 @@ describe("CodexEventMapper", () =>
                 result: {
                     item: {
                         id: "turn-diff:turn_diff",
+                        threadId: "thr",
                         type: "turnDiff",
                         status: "inProgress",
                         cwd: "/repo",
@@ -2036,6 +2088,7 @@ describe("CodexEventMapper", () =>
                 result: {
                     item: {
                         id: "turn-diff:turn_diff",
+                        threadId: "thr",
                         type: "turnDiff",
                         status: "inProgress",
                         cwd: "/repo",
@@ -2066,6 +2119,630 @@ describe("CodexEventMapper", () =>
                 usage: EMPTY_USAGE,
             },
         ]);
+    });
+
+    it("attaches completed action patch batches without adding them to in-progress previews", () =>
+    {
+        const mapper = new CodexEventMapper();
+        const firstInitialChange = {
+            path: "src/a.ts",
+            kind: { type: "update" as const, move_path: null },
+            diff: "@@ -1 +1 @@\n-old\n+initial\n",
+        };
+        const firstUpdatedChange = {
+            path: "src/a.ts",
+            kind: { type: "update" as const, move_path: null },
+            diff: "@@ -1 +1 @@\n-old\n+updated\n",
+        };
+        const secondChange = {
+            path: "src/b.ts",
+            kind: { type: "add" as const },
+            diff: "created\n",
+        };
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_patch" } } },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "commandExecution",
+                        id: "cmd_a",
+                        command: "edit a",
+                        cwd: "/repo/a",
+                        processId: null,
+                        status: "completed",
+                        commandActions: [],
+                        aggregatedOutput: null,
+                        exitCode: 0,
+                        durationMs: null,
+                    },
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_a",
+                        status: "inProgress",
+                        changes: [firstInitialChange],
+                    },
+                },
+            },
+            {
+                method: "item/fileChange/patchUpdated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    itemId: "file_a",
+                    changes: [firstUpdatedChange],
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    diff: "diff --git a/src/a.ts b/src/a.ts\n+preview\n",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_a",
+                        status: "completed",
+                        changes: [firstInitialChange],
+                    },
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "commandExecution",
+                        id: "cmd_b",
+                        command: "edit b",
+                        cwd: "/repo/b",
+                        processId: null,
+                        status: "completed",
+                        commandActions: [],
+                        aggregatedOutput: null,
+                        exitCode: 0,
+                        durationMs: null,
+                    },
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_b",
+                        status: "completed",
+                        changes: [secondChange],
+                    },
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_b",
+                        status: "completed",
+                        changes: [secondChange],
+                    },
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "turn_patch",
+                        items: [],
+                        itemsView: "notLoaded" as const,
+                        status: "completed" as const,
+                        error: null,
+                    },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        const items = turnDiffItems(parts);
+        expect(items[0]).toMatchObject({
+            status: "inProgress",
+        });
+        expect(items[0]).not.toHaveProperty("patchBatches");
+        expect(items.at(-1)).toMatchObject({
+            status: "completed",
+            patchBatches: [
+                {
+                    cwd: "/repo/a",
+                    diff: [
+                        "diff --git a/src/a.ts b/src/a.ts",
+                        "--- a/src/a.ts",
+                        "+++ b/src/a.ts",
+                        "@@ -1 +1 @@",
+                        "-old",
+                        "+updated",
+                        "",
+                    ].join("\n"),
+                },
+                {
+                    cwd: "/repo/b",
+                    diff: [
+                        "diff --git a/src/b.ts b/src/b.ts",
+                        "new file mode 100644",
+                        "--- /dev/null",
+                        "+++ b/src/b.ts",
+                        "@@ -0,0 +1,1 @@",
+                        "+created",
+                        "",
+                    ].join("\n"),
+                },
+            ],
+        });
+    });
+
+    it("uses full completed items as the authoritative ordered action-patch source", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const firstChange = {
+            path: "src/a.ts",
+            kind: { type: "update" as const, move_path: null },
+            diff: "@@ -1 +1 @@\n-before\n+after\n",
+        };
+        const secondChange = {
+            path: "src/b.ts",
+            kind: { type: "add" as const },
+            diff: "created\n",
+        };
+        const ghostChange = {
+            path: "src/ghost.ts",
+            kind: { type: "add" as const },
+            diff: "ghost\n",
+        };
+        const command = (id: string, cwd: string) => ({
+            type: "commandExecution" as const,
+            id,
+            command: "edit",
+            cwd,
+            processId: null,
+            source: "agent" as const,
+            status: "completed" as const,
+            commandActions: [],
+            aggregatedOutput: null,
+            exitCode: 0,
+            durationMs: null,
+        });
+        const completedItems = [
+            command("cmd_a", "/repo/a"),
+            {
+                type: "fileChange" as const,
+                id: "file_a",
+                status: "completed" as const,
+                changes: [firstChange],
+            },
+            command("cmd_b", "/repo/b"),
+            {
+                type: "fileChange" as const,
+                id: "file_b",
+                status: "completed" as const,
+                changes: [secondChange],
+            },
+        ] satisfies readonly CodexRenderableThreadItem[];
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_full" } } },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_full",
+                    item: { type: "fileChange", id: "ghost", status: "completed", changes: [ghostChange] },
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_full",
+                    item: { type: "fileChange", id: "ghost", status: "completed", changes: [ghostChange] },
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_full",
+                    item: {
+                        type: "fileChange",
+                        id: "duplicate",
+                        status: "completed",
+                        changes: [secondChange],
+                    },
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_full",
+                    diff: "diff --git a/src/a.ts b/src/a.ts\n+preview\n",
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "turn_full",
+                        items: completedItems,
+                        itemsView: "full" as const,
+                        status: "completed" as const,
+                        error: null,
+                    },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        const completedItem = turnDiffItems(parts).at(-1);
+        expect(completedItem?.["patchBatches"]).toEqual([
+            {
+                cwd: "/repo/a",
+                diff: [
+                    "diff --git a/src/a.ts b/src/a.ts",
+                    "--- a/src/a.ts",
+                    "+++ b/src/a.ts",
+                    "@@ -1 +1 @@",
+                    "-before",
+                    "+after",
+                    "",
+                ].join("\n"),
+            },
+            {
+                cwd: "/repo/b",
+                diff: [
+                    "diff --git a/src/b.ts b/src/b.ts",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    "+++ b/src/b.ts",
+                    "@@ -0,0 +1,1 @@",
+                    "+created",
+                    "",
+                ].join("\n"),
+            },
+        ]);
+        expect(completedItem?.["patchBatches"]).toEqual(
+            historicalTurnDiffItem(completedItems)?.["patchBatches"],
+        );
+    });
+
+    it("does not reuse streamed file changes when full completed items contain none", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const streamedChange = {
+            path: "src/streamed.ts",
+            kind: { type: "add" as const },
+            diff: "streamed\n",
+        };
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_empty_full" } } },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_empty_full",
+                    item: {
+                        type: "fileChange",
+                        id: "streamed",
+                        status: "completed",
+                        changes: [streamedChange],
+                    },
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_empty_full",
+                    diff: "diff --git a/src/streamed.ts b/src/streamed.ts\n+preview\n",
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "turn_empty_full",
+                        items: [],
+                        itemsView: "full" as const,
+                        status: "completed" as const,
+                        error: null,
+                    },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        expect(turnDiffItems(parts).at(-1)).not.toHaveProperty("patchBatches");
+    });
+
+    it("keeps streamed batches as the fallback for summary, notLoaded, and legacy completed items", () =>
+    {
+        const change = {
+            path: "src/fallback.ts",
+            kind: { type: "add" as const },
+            diff: "fallback\n",
+        };
+
+        for (const itemsView of ["summary", "notLoaded", undefined] as const)
+        {
+            const mapper = new CodexEventMapper();
+            mapper.setThreadCwd("/repo");
+            const turn = {
+                id: `turn_fallback_${itemsView ?? "legacy"}`,
+                items: [],
+                status: "completed" as const,
+                error: null,
+                ...(itemsView ? { itemsView } : {}),
+            };
+            const parts = [
+                { method: "turn/started", params: { threadId: "thr", turn: { id: turn.id } } },
+                {
+                    method: "item/completed",
+                    params: {
+                        threadId: "thr",
+                        turnId: turn.id,
+                        item: { type: "fileChange", id: "file", status: "completed", changes: [change] },
+                    },
+                },
+                {
+                    method: "turn/diff/updated",
+                    params: {
+                        threadId: "thr",
+                        turnId: turn.id,
+                        diff: "diff --git a/src/fallback.ts b/src/fallback.ts\n+preview\n",
+                    },
+                },
+                { method: "turn/completed", params: { threadId: "thr", turn } },
+            ].flatMap((event) => mapper.map(event));
+
+            expect(turnDiffItems(parts).at(-1)?.["patchBatches"]).toEqual([
+                {
+                    cwd: "/repo",
+                    diff: [
+                        "diff --git a/src/fallback.ts b/src/fallback.ts",
+                        "new file mode 100644",
+                        "--- /dev/null",
+                        "+++ b/src/fallback.ts",
+                        "@@ -0,0 +1,1 @@",
+                        "+fallback",
+                        "",
+                    ].join("\n"),
+                },
+            ]);
+        }
+    });
+
+    it("cleans streamed patch state before a reused turn id can receive another turn", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const firstChange = {
+            path: "src/first.ts",
+            kind: { type: "add" as const },
+            diff: "first\n",
+        };
+        const secondChange = {
+            path: "src/second.ts",
+            kind: { type: "add" as const },
+            diff: "second\n",
+        };
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "reused_turn" } } },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    item: {
+                        type: "commandExecution",
+                        id: "first_command",
+                        command: "edit first",
+                        cwd: "/repo/first",
+                        processId: null,
+                        source: "agent",
+                        status: "completed",
+                        commandActions: [],
+                        aggregatedOutput: null,
+                        exitCode: 0,
+                        durationMs: null,
+                    },
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    item: { type: "fileChange", id: "first", status: "completed", changes: [firstChange] },
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    item: { type: "fileChange", id: "first", status: "completed", changes: [firstChange] },
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    item: { type: "fileChange", id: "pending", status: "inProgress", changes: [] },
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    diff: "diff --git a/src/first.ts b/src/first.ts\n+first\n",
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "reused_turn",
+                        items: [],
+                        itemsView: "notLoaded" as const,
+                        status: "completed" as const,
+                        error: null,
+                    },
+                },
+            },
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "reused_turn" } } },
+            {
+                method: "item/fileChange/patchUpdated",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    itemId: "pending",
+                    changes: [secondChange],
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    item: { type: "fileChange", id: "pending", status: "completed", changes: [] },
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "reused_turn",
+                    diff: "diff --git a/src/second.ts b/src/second.ts\n+second\n",
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: {
+                        id: "reused_turn",
+                        items: [],
+                        itemsView: "notLoaded" as const,
+                        status: "completed" as const,
+                        error: null,
+                    },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        expect(turnDiffItems(parts).at(-1)?.["patchBatches"]).toEqual([
+            {
+                cwd: "/repo",
+                diff: [
+                    "diff --git a/src/second.ts b/src/second.ts",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    "+++ b/src/second.ts",
+                    "@@ -0,0 +1,1 @@",
+                    "+second",
+                    "",
+                ].join("\n"),
+            },
+        ]);
+    });
+
+    it("omits action patch batches and marks completed turn diffs when the action patch is too large", () =>
+    {
+        const mapper = new CodexEventMapper();
+        mapper.setThreadCwd("/repo");
+        const largeChange = {
+            path: "large.txt",
+            kind: { type: "add" as const },
+            diff: `${"x".repeat(2 * 1024 * 1024 + 1)}\n`,
+        };
+
+        const parts = [
+            { method: "turn/started", params: { threadId: "thr", turn: { id: "turn_large_patch" } } },
+            {
+                method: "item/started",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_large_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_large",
+                        status: "completed",
+                        changes: [largeChange],
+                    },
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_large_patch",
+                    item: {
+                        type: "fileChange",
+                        id: "file_large",
+                        status: "completed",
+                        changes: [largeChange],
+                    },
+                },
+            },
+            {
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr",
+                    turnId: "turn_large_patch",
+                    diff: `diff --git a/large.txt b/large.txt\n${largeChange.diff}`,
+                },
+            },
+            {
+                method: "turn/completed",
+                params: {
+                    threadId: "thr",
+                    turn: { id: "turn_large_patch", items: [], status: "completed" as const, error: null },
+                },
+            },
+        ].flatMap((event) => mapper.map(event));
+
+        const completedItem = turnDiffItems(parts).at(-1);
+        expect(completedItem).toMatchObject({
+            status: "completed",
+            truncated: true,
+            patchUnavailableReason: "patch-too-large",
+        });
+        expect(completedItem).not.toHaveProperty("patchBatches");
     });
 
     it("suppresses plan updates when emitPlanUpdates is false", () =>

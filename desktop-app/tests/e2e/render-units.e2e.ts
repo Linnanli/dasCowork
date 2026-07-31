@@ -151,7 +151,7 @@ test('renders web search and exploration render units through the real desktop c
   }
 })
 
-test('renders a turn diff status card during a real file change through the desktop chat flow', async ({
+test('renders live turn status and a completed turn-diff card through the desktop chat flow', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -232,7 +232,19 @@ test('renders a turn diff status card during a real file change through the desk
       'Turn diff render unit complete'
     )
     await expect(statusCard).toHaveCount(0)
-    await expect(page.locator('[data-slot="turn-diff-entry-unit"]')).toHaveCount(0)
+    const completedDiff = page.locator('[data-slot="turn-diff-entry-unit"]')
+    await expect(completedDiff).toBeVisible()
+    await expect(
+      page.locator('[data-slot="completed-turn-diff"] [data-slot="turn-diff-entry-unit"]')
+    ).toHaveCount(1)
+    await expect(
+      page.locator('[data-slot="reasoning-group-content"] [data-slot="turn-diff-entry-unit"]')
+    ).toHaveCount(0)
+    await expect(completedDiff).toContainText('已编辑 1 个文件')
+    await expect(completedDiff).toContainText('notes.txt')
+    await expect(
+      completedDiff.getByRole('button', { name: 'Review', exact: true }).first()
+    ).toBeVisible()
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: 'Turn diff render unit complete' })
     ).toBeVisible()

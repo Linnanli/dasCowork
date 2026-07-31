@@ -155,29 +155,54 @@
 - [从旧消息继续](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L12740)
 - [Side task 与 Continue in](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/thread-overflow-menu-Co-VIJCM.js#L612)
 
-### P0-04 Git 改动审核与 PR 闭环
+### P0-04 本地 Git 改动审核与恢复
 
-- [ ] “撤销”和“审核”从静态文字改为真实操作。
-- [ ] 提供完整改动列表、文件级 diff 和上一个 turn 的改动视图。
-- [ ] 支持比较分支、创建分支和创建 PR。
-- [ ] 展示 PR 状态、CI 检查、评论、reviewer 和合并冲突。
-- [ ] 可针对失败检查、评论和冲突启动修复任务。
-- [ ] 支持请求 review/approval，以及打开 GitHub 页面。
-- [ ] GitHub CLI 未安装、未登录或仓库无远端时提供明确降级提示。
-- [ ] 所有 Git 写操作都必须有可见状态和失败恢复路径。
-- [ ] 覆盖非 Git 目录、无远端、未登录、CI 失败和冲突场景的测试。
+- [x] “撤销”和“审核”已是真实操作；审核打开改动审核面板，turn 卡片仅在完整成功撤销后切换为“重新应用”。
+- [x] 改动审核面板提供文件树、文件级 diff、增删统计、刷新、加载、空、失败、过大 diff 和过期快照状态。
+- [x] 改动审核面板的数据源已区分未暂存、已暂存、指定提交、当前分支相对基准分支和上一个 turn；不混入任意自定义 diff 范围。
+- [x] 改动审核面板支持对全部改动、单个文件或单个 hunk 暂存、取消暂存和恢复；已暂存恢复先处理 index，再处理工作区，并报告完整成功、部分成功、跳过和冲突路径。
+- [x] turn 级撤销只使用本 turn 的 patch batches，并按目录逆序恢复、成功后可重新应用；Renderer 仅在可信 Git target、完整 patch batches 与已完成 turn 均已就绪时启用操作，Main 仍会逐 batch 验证 cwd 与 Git 根目录。
+- [x] 按参考项目策略，Review 写操作在写入前重新读取 revision；turn 撤销／重新应用由 `git apply` 的 applied、skipped、conflicted 结果处理漂移和冲突，不额外逐文件 revision 对照。
+- [x] 普通恢复有首次确认和“不再询问”；确认时冻结最初选择的 target、source、snapshot generation、section/file/hunk 范围、文件路径（含旧路径）及 revision。确认框沿用参考项目的通用文案，不重复展示范围。
+- [x] Review patch 写后会合并 applied、skipped、conflicted 路径并仅刷新相关文件；写入结果未提供路径时使用冻结的 patch 文件目标（含重命名前路径）兜底，文件监听提供 changedPaths 时同样定向刷新。
+- [x] Codex Review 与 Git diff 面板分开；仅支持审核未提交改动或相对基准分支的改动，并可在当前会话或独立会话中复用普通聊天链路和 `::code-comment` 结果。
+- [x] 支持本地分支搜索、创建和切换；切换被未提交改动阻塞时会列出受影响文件与增删统计，并在提交后重试原操作，不暴露 stash UI。
+- [x] 本地 Git 读取和写入只在 Main process 专用服务中执行，经 shared schema 和 preload 白名单暴露给 Renderer；未修改 Codex App Server，也不依赖远端仓库、GitHub 账号或 GitHub CLI。
+- [x] Review、turn、分支创建/切换和“提交后重试切换”均使用全局 Git 操作反馈；分支列表、阻塞文件和可重试错误仍保留在对应交互中，“提交后重试切换”按 `hostId + cwd` 维护单一进行中阶段，避免同一仓库重复提交。
+- [x] 覆盖非 Git 目录、空仓库、未跟踪文件、重命名、复制、类型变化、二进制文件、submodule/gitlink、工作区漂移、过期快照、分支切换阻塞、冲突和部分恢复失败场景的单元、组件和 Electron E2E 测试。
 
-状态：**部分实现**
+状态：**完成（13/13 条完成）**
+
+本次更新：Review、turn 和分支/提交终态统一使用 Git Review Provider 提供全局、可关闭且辅助技术可读的提示；保留局部 pending、错误和阻塞恢复交互，并让提交后重试按仓库串行，不新增依赖。新增 P004-EDGE-01 至 P004-EDGE-13 覆盖契约，以真实 Git 临时仓库、组件状态和五类 Electron 流程追踪全部边界场景。
+
+范围边界：
+
+- 本项只负责本地工作区的改动查看、Codex Review、本地分支操作和安全恢复。
+- `push`、发布分支、创建 PR、CI、评论、reviewer、合并冲突和 GitHub 页面跳转不属于 P0-04，统一由 P1-07 负责。
+- GitHub 插件、GitHub App/Connector 和 GitHub CLI 都不是完成本项的前置条件。
+- App Server 的 `review/start` 不是参考项目这条 Codex Review 交互的实现前置；本项沿用普通 `turn/start`，不扩展或修改 App Server。
 
 当前证据：
 
-- [已有改动摘要和文件 diff](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L454)
-- [撤销与审核目前是静态占位](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L492)
+- [会话 Changes 行与打开 Review 面板](../desktop-app/src/renderer/src/components/local-git-review/ConversationChangesRow.tsx#L10)
+- [turn 撤销／重新应用、审核及操作反馈](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L460)
+- [Review 面板的来源、操作与可恢复反馈](../desktop-app/src/renderer/src/components/local-git-review/LocalGitReviewPanel.tsx#L237)
+- [本地 Git 读取、review 写操作与 turn patch 服务](../desktop-app/src/main/localGit/LocalGitService.ts#L228)
+- [Git 操作的全局可访问提示](../desktop-app/src/renderer/src/components/local-git-review/LocalGitReviewProvider.tsx#L28)
+- [Composer Review Mode 与本地分支控件](../desktop-app/src/renderer/src/App.tsx#L3083)
+- [Review、turn patch 与分支操作的单元／组件／E2E 测试](../desktop-app/src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx)、[turn patch](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.test.tsx)、[E2E](../desktop-app/tests/e2e/local-git-review.e2e.ts)
+- [已有 `::code-comment` 解析与安全降级](../desktop-app/src/renderer/src/lib/codeCommentDirectives.ts#L18)
+- [当前 Provider 未暴露 review/start，但参考实现不以此为前置](ai-sdk-provider-codex-asp-api.md#L1029)
 
 参考证据：
 
-- [Changes 与 PR 创建](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L6936)
-- [reviewer、CI 与 PR 自动修复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-page-DRtMyF4d.js#L2320)
+- [参考项目的 Changes 与本地 Git 操作](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L6936)
+- [审核面板区分未暂存、已暂存、指定提交、分支和上一个 turn](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/app-initial~app-main~onboarding-page-DWQ2hD55.js#L42301)
+- [审核面板按全部、文件和 hunk 暂存、取消暂存或恢复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/app-initial~app-main~onboarding-page-DWQ2hD55.js#L30737)
+- [turn 改动按 patch batches 撤销并支持重新应用](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/app-initial~app-main~onboarding-page-DWQ2hD55.js#L61171)
+- [Review 写操作前核对文件 revision 并报告部分结果](../reference-projects/codex-electron-26.707.72221-beautified/.vite/build/worker.js#L67577)
+- [Codex Review 通过普通 turn 或新会话执行](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/review-mode-content-CRO4r5jd.js#L126)
+- [Composer footer 分支搜索、创建、切换受阻与提交后重试](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/git-branch-switcher-DHRrTd6u.js#L430)
 
 ### P0-05 会话管理入口
 
@@ -369,7 +394,33 @@
 
 - [环境 Actions 和环境切换](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-thread-TggZ39FG.js#L6129)
 
-### P1-07 任务搜索、会话内查找与快捷键
+### P1-07 GitHub PR 协作闭环
+
+- [ ] 支持检查远端、发布或推送当前分支，并清楚展示将推送的远端和分支。
+- [ ] 支持创建 Draft/Ready PR，并展示 PR 状态、CI 检查、评论、reviewer 和合并冲突。
+- [ ] 可针对失败检查、评论和冲突启动修复任务。
+- [ ] 支持请求 review/approval、提交 review、评论以及打开 GitHub 页面。
+- [ ] 固定 PR 界面通过 Main 层的稳定能力接口访问 GitHub，不让 Renderer 直接依赖 CLI 输出或插件工具的原始响应。
+- [ ] GitHub 插件或 App/Connector 作为首选对接方式；GitHub CLI 可以作为可选的本地增强或补充后端，但不是应用安装和本地 Git 功能的硬依赖。
+- [ ] 无远端、非 GitHub 远端、能力未安装、未授权或权限不足时提供明确降级，并保留本地 Git 和 Review 能力。
+- [ ] 覆盖无远端、未授权、插件不可用、GitHub CLI 不可用、CI 失败、评论修复和合并冲突场景的测试。
+
+状态：**缺失**
+
+当前证据：
+
+- [当前插件目录只把 App/Plugin 暴露为 Composer 上下文入口](../desktop-app/src/main/composerContext/ComposerContextCatalogService.ts#L336)
+- [当前公共桌面 API 没有 GitHub PR 专用接口](../desktop-app/src/shared/codexIpcApi.ts)
+
+参考证据：
+
+- [参考项目把本地 Git 与 gh-pr IPC 注册为不同能力](../reference-projects/codex-electron-26.707.72221-beautified/.vite/build/main-CpD8a18d.js#L32215)
+- [参考项目的 GitHub CLI 安装与登录检查](../reference-projects/codex-electron-26.707.72221-beautified/.vite/build/src-HagpvBpE.js#L54206)
+- [参考项目通过 gh pr create 创建 PR](../reference-projects/codex-electron-26.707.72221-beautified/.vite/build/src-HagpvBpE.js#L54358)
+- [参考项目也支持 GitHub Connector/Plugin 路径](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/app-initial~app-main~quick-chat-window-page~chatgpt-conversation-page-CrA1-JEm.js#L231348)
+- [reviewer、CI 与 PR 自动修复](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/local-conversation-page-DRtMyF4d.js#L2320)
+
+### P1-08 任务搜索、会话内查找与快捷键
 
 - [ ] 支持跨项目搜索任务。
 - [ ] 支持在当前会话内查找文本。
@@ -386,7 +437,7 @@
 
 - [参考项目快捷键搜索与编辑](../reference-projects/codex-electron-26.707.72221-beautified/webview/assets/keyboard-shortcuts-settings-CLU9-DGr.js#L118)
 
-### P1-08 归档任务中心
+### P1-09 归档任务中心
 
 - [ ] 提供归档任务页面或抽屉。
 - [ ] 支持搜索、项目筛选、类型筛选、分组和排序。
@@ -525,11 +576,12 @@
 
 ### 批次三：开发协作闭环
 
-- [ ] P0-04 Git 改动审核与 PR 闭环
+- [ ] P0-04 本地 Git 改动审核与恢复
 - [ ] P1-01 Goal、Plan、Review 模式与运行参数
 - [ ] P1-06 环境、分支与可复用运行操作
-- [ ] P1-07 任务搜索、会话内查找与快捷键
-- [ ] P1-08 归档任务中心
+- [ ] P1-07 GitHub PR 协作闭环
+- [ ] P1-08 任务搜索、会话内查找与快捷键
+- [ ] P1-09 归档任务中心
 
 ### 批次四：平台增强
 

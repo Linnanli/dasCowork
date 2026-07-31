@@ -5,6 +5,7 @@ export * from './composerContext'
 export * from './composerContextSearch'
 export * from './codexFollowUpApi'
 export * from './codexApprovalApi'
+export * from './localGitApi'
 
 import type {
   LocalProject,
@@ -29,6 +30,35 @@ import {
   type CodexApprovalRequest,
   type CodexApprovalResponse
 } from './codexApprovalApi'
+import type {
+  LocalBranchCheckoutResult,
+  LocalBranchSearchResult,
+  LocalBranchSummary,
+  LocalCommitRequest,
+  LocalCommitResult,
+  GitResolveRepositoryTargetRequest,
+  GitResolveRepositoryTargetResult,
+  LocalGitCommitSummary,
+  LocalGitBranchRequest,
+  LocalGitBranchSearchRequest,
+  LocalGitChangeEvent,
+  LocalGitCheckoutBranchRequest,
+  LocalGitCreateBranchRequest,
+  LocalGitFileDiff,
+  LocalGitGetReviewSnapshotRequest,
+  LocalGitRefreshReviewFilesRequest,
+  LocalGitListCommitsRequest,
+  LocalGitGetSummaryRequest,
+  LocalGitGetFileDiffRequest,
+  LocalGitMutationResult,
+  LocalGitMergeBase,
+  LocalGitResolveMergeBaseRequest,
+  LocalGitReviewMutationRequest,
+  LocalGitReviewFilesRefresh,
+  LocalGitReviewSnapshot,
+  LocalGitSummary,
+  TurnPatchRequest
+} from './localGitApi'
 
 export type CodexRunState = 'stopped' | 'starting' | 'ready' | 'stopping' | 'failed'
 
@@ -573,6 +603,26 @@ export type DesktopProjectsApi = {
   getWorkspaceRecovery(input: WorkspaceRecoveryPayload): Promise<WorkspaceRecoveryStatus>
   restoreWorkspace(input: WorkspaceRecoveryPayload): Promise<WorkspaceRecoveryStatus>
   onStateChange(callback: (state: ProjectState) => void): () => void
+}
+
+export type DesktopGitApi = {
+  resolveRepositoryTarget(
+    input: GitResolveRepositoryTargetRequest
+  ): Promise<GitResolveRepositoryTargetResult>
+  getSummary(input: LocalGitGetSummaryRequest): Promise<LocalGitSummary>
+  listCommits(input: LocalGitListCommitsRequest): Promise<LocalGitCommitSummary[]>
+  getReviewSnapshot(input: LocalGitGetReviewSnapshotRequest): Promise<LocalGitReviewSnapshot>
+  refreshReviewFiles(input: LocalGitRefreshReviewFilesRequest): Promise<LocalGitReviewFilesRefresh>
+  getFileDiff(input: LocalGitGetFileDiffRequest): Promise<LocalGitFileDiff>
+  applyReviewAction(input: LocalGitReviewMutationRequest): Promise<LocalGitMutationResult>
+  applyTurnPatch(input: TurnPatchRequest): Promise<LocalGitMutationResult>
+  listBranches(input: LocalGitBranchRequest): Promise<LocalBranchSummary>
+  searchBranches(input: LocalGitBranchSearchRequest): Promise<LocalBranchSearchResult[]>
+  resolveMergeBase(input: LocalGitResolveMergeBaseRequest): Promise<LocalGitMergeBase>
+  createBranch(input: LocalGitCreateBranchRequest): Promise<LocalBranchCheckoutResult>
+  checkoutBranch(input: LocalGitCheckoutBranchRequest): Promise<LocalBranchCheckoutResult>
+  commitChanges(input: LocalCommitRequest): Promise<LocalCommitResult>
+  subscribe(callback: (event: LocalGitChangeEvent) => void): () => void
 }
 
 export {

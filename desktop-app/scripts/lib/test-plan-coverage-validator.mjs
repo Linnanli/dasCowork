@@ -36,6 +36,16 @@ export const expectedReleaseIds = Array.from(
   (_, index) => `R${String(index + 1).padStart(2, '0')}`
 )
 
+export const expectedP004Ids = [
+  ...Array.from({ length: 18 }, (_, index) => `P004-E2E-${String(index + 1).padStart(2, '0')}`),
+  'P004-E2E-20'
+]
+
+export const expectedP004EdgeIds = Array.from(
+  { length: 13 },
+  (_, index) => `P004-EDGE-${String(index + 1).padStart(2, '0')}`
+)
+
 export async function validateTestPlanCoverage({ manifest, desktopRoot, execution }) {
   const failures = []
   const executionIndex = indexExecutionEvidence(execution, failures)
@@ -43,6 +53,13 @@ export async function validateTestPlanCoverage({ manifest, desktopRoot, executio
   if (manifest?.schemaVersion !== 1) {
     failures.push('schemaVersion must be 1')
   }
+
+  const { p004CaseCount, p004EdgeCaseCount } = await checkP004Coverage(
+    manifest?.p004,
+    desktopRoot,
+    executionIndex,
+    failures
+  )
 
   const scenarios = Array.isArray(manifest?.scenarios) ? manifest.scenarios : []
   checkExpectedIds('scenario', scenarios, expectedScenarioIds, failures)
@@ -87,8 +104,107 @@ export async function validateTestPlanCoverage({ manifest, desktopRoot, executio
 
   return {
     failures,
+    p004CaseCount,
+    p004EdgeCaseCount,
     scenarioCount: scenarios.length,
     summary: summarize(scenarios)
+  }
+}
+
+async function checkP004Coverage(p004, desktopRoot, executionIndex, failures) {
+  if (!p004 || typeof p004 !== 'object') {
+    failures.push('P0-04 coverage is missing')
+    return { p004CaseCount: 0, p004EdgeCaseCount: 0 }
+  }
+  checkTitle(p004.title, 'P0-04 coverage', failures)
+  const cases = Array.isArray(p004.cases) ? p004.cases : []
+  checkExpectedIds('P0-04 case', cases, expectedP004Ids, failures)
+  await Promise.all(cases.map((entry) => checkP004Case(entry, desktopRoot, failures)))
+  const edgeCases = Array.isArray(p004.edgeCases) ? p004.edgeCases : []
+  checkExpectedIds('P0-04 edge case', edgeCases, expectedP004EdgeIds, failures)
+  await Promise.all(
+    edgeCases.map((entry) => checkP004EdgeCase(entry, desktopRoot, executionIndex, failures))
+  )
+  return { p004CaseCount: cases.length, p004EdgeCaseCount: edgeCases.length }
+}
+
+async function checkP004Case(entry, desktopRoot, failures) {
+  const label = `P0-04 case ${entry?.id ?? '<unknown>'}`
+  if (!entry || typeof entry !== 'object') return
+  if (!coverageStatuses.has(entry.status)) {
+    failures.push(`${label} has invalid status ${String(entry.status)}`)
+  } else if (entry.status !== 'covered') {
+    failures.push(`${label} must be covered`)
+  }
+  if (typeof entry.evidence !== 'string' || entry.evidence.trim() === '') {
+    failures.push(`${label} has no evidence file`)
+    return
+  }
+
+  const path = resolve(desktopRoot, entry.evidence)
+  const pathFromDesktopRoot = relative(desktopRoot, path)
+  if (
+    pathFromDesktopRoot === '..' ||
+    pathFromDesktopRoot.startsWith(`..${sep}`) ||
+    pathFromDesktopRoot === ''
+  ) {
+    failures.push(`${label} evidence points outside desktop-app`)
+    return
+  }
+
+  try {
+    const [source, fileStat] = await Promise.all([readFile(path, 'utf8'), stat(path)])
+    if (!fileStat.isFile()) failures.push(`${label} evidence is not a file`)
+    const testNames = extractDeclaredTests(source).keys()
+    if (![...testNames].some((testName) => testName.includes(entry.id))) {
+      failures.push(`${label} evidence has no declared test named ${entry.id}`)
+    }
+  } catch {
+    failures.push(`${label} evidence file does not exist: ${entry.evidence}`)
+  }
+}
+
+async function checkP004EdgeCase(entry, desktopRoot, executionIndex, failures) {
+  const label = `P0-04 edge case ${entry?.id ?? '<unknown>'}`
+  if (!entry || typeof entry !== 'object') return
+
+  checkTitle(entry.title, label, failures)
+  if (entry.status !== 'covered') {
+    failures.push(`${label} must be covered`)
+  }
+  const requiredLayers = checkRequiredLayers(entry.requiredLayer, label, failures)
+  if (!Array.isArray(entry.evidence) || entry.evidence.length === 0) {
+    failures.push(`${label} must declare evidence`)
+    return
+  }
+
+  const evidencedLayers = new Set()
+  await Promise.all(
+    entry.evidence.map(async (evidence, index) => {
+      const evidenceLabel = `${label} evidence #${index + 1}`
+      if (!evidence || typeof evidence !== 'object') {
+        failures.push(`${evidenceLabel} must be an object`)
+        return
+      }
+      checkEvidenceLayer(evidence.layer, evidenceLabel, requiredLayers, evidencedLayers, failures)
+      if (typeof evidence.testName === 'string' && !evidence.testName.includes(entry.id)) {
+        failures.push(`${evidenceLabel} test name must include edge case ID ${entry.id}`)
+      }
+      await checkEvidenceTestReference({
+        entry: evidence,
+        evidenceLabel,
+        covered: true,
+        desktopRoot,
+        executionIndex,
+        failures
+      })
+    })
+  )
+
+  for (const layer of requiredLayers) {
+    if (!evidencedLayers.has(layer)) {
+      failures.push(`${label} is covered but has no evidence for required layer ${layer}`)
+    }
   }
 }
 

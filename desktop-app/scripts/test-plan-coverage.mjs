@@ -6,8 +6,13 @@ import { tmpdir } from 'node:os'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { validateTestPlanCoverage } from './lib/test-plan-coverage-validator.mjs'
+import {
+  expectedP004EdgeIds,
+  expectedP004Ids,
+  validateTestPlanCoverage
+} from './lib/test-plan-coverage-validator.mjs'
 import { flattenPlaywrightReporterSuites } from './lib/test-plan-playwright-reporter.mjs'
+import { playwrightEvidenceSelection } from './lib/test-plan-playwright-selection.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const desktopRoot = resolve(scriptDir, '..')
@@ -22,7 +27,9 @@ try {
   const execution = await executeEvidenceTests(manifest)
   await writeFile(resolve(runDirectory, 'execution.json'), JSON.stringify(execution), 'utf8')
   const validation = await validateTestPlanCoverage({ manifest, desktopRoot, execution })
-  console.log(`Test-plan coverage: ${validation.scenarioCount} scenarios; ${validation.summary}`)
+  console.log(
+    `Test-plan coverage: P0-04 ${validation.p004CaseCount}/${expectedP004Ids.length} cases, ${validation.p004EdgeCaseCount}/${expectedP004EdgeIds.length} edge cases; ${validation.scenarioCount} scenarios; ${validation.summary}`
+  )
   if (validation.failures.length > 0) {
     for (const failure of validation.failures) console.error(`- ${failure}`)
     process.exitCode = 1
@@ -33,6 +40,7 @@ try {
 
 async function executeEvidenceTests(manifest) {
   const coveredEntries = [
+    ...(manifest.p004?.edgeCases ?? []).filter((entry) => entry.status === 'covered'),
     ...manifest.scenarios.filter((entry) => entry.status === 'covered'),
     ...manifest.mockE2E.filter((entry) => entry.status === 'covered'),
     ...manifest.releaseE2E.filter((entry) => entry.status === 'covered')
@@ -51,7 +59,7 @@ async function executeEvidenceTests(manifest) {
       .filter((file) => file.startsWith('vendors/'))
       .map((file) => file.replace(/^vendors\/ai-sdk-provider-codex-asp\//u, ''))
   )
-  const e2eTests = unique(evidence.map((item) => item.file).filter(isPlaywrightEvidence))
+  const e2eEvidence = evidence.filter((item) => isPlaywrightEvidence(item.file))
   const tests = [
     ...(desktopTests.length === 0 ? [] : await runVitest(desktopRoot, desktopTests, 'desktop')),
     ...(providerTests.length === 0
@@ -61,7 +69,7 @@ async function executeEvidenceTests(manifest) {
           providerTests,
           'provider'
         )),
-    ...(e2eTests.length === 0 ? [] : await runPlaywright(e2eTests))
+    ...(e2eEvidence.length === 0 ? [] : await runPlaywright(e2eEvidence))
   ]
   return {
     runId,
@@ -102,12 +110,15 @@ function vitestExecutionMode(status) {
   return ['pending', 'skipped', 'todo'].includes(status) ? 'skip' : 'run'
 }
 
-async function runPlaywright(files) {
+async function runPlaywright(evidence) {
+  const { files, grep } = playwrightEvidenceSelection(evidence)
+  if (files.length === 0 || !grep) return []
+
   const reportPath = resolve(runDirectory, 'playwright.json')
   runOrThrow('npm', ['run', 'build'], desktopRoot)
   const result = spawnSync(
     'npx',
-    ['playwright', 'test', ...files, '--retries=0', '--reporter=json'],
+    ['playwright', 'test', ...files, '--grep', grep, '--retries=0', '--reporter=json'],
     {
       cwd: desktopRoot,
       encoding: 'utf8',

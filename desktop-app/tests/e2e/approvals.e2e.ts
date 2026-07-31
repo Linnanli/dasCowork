@@ -361,12 +361,7 @@ test('M11/D13/D17 @approval-retry rejects a command request through the desktop 
         timeout_ms: 5000,
         sandbox_permissions: 'require_escalated',
         justification: 'E2E verifies command rejection'
-      }),
-      assistantMessageResponse(
-        'resp-reject-final',
-        'msg-reject-final',
-        'Command was rejected by the user'
-      )
+      })
     ]
   })
   const logs: string[] = []
@@ -383,18 +378,12 @@ test('M11/D13/D17 @approval-retry rejects a command request through the desktop 
     await expect(panel).toContainText('是否允许执行以下命令？')
     await expect(panel).toContainText('pwd')
 
-    await panel.getByRole('button', { name: '拒绝' }).click()
-
-    await expect(page.locator('[data-role="assistant"]')).toContainText(
-      'Command was rejected by the user'
-    )
+    await panel.getByRole('button', { name: '拒绝并停止', exact: true }).click()
     await expect(panel).toBeHidden()
 
     const providerBodies = providerResponseBodies(backend)
-    expect(providerBodies).toHaveLength(2)
-    const toolOutput = functionCallOutputText(providerBodies[1], 'call-rejected-pwd')
-    expect(toolOutput).toBe('exec command rejected by user')
-    expect(toolOutput).not.toContain('E2E_REJECTED_COMMAND_SHOULD_NOT_RUN')
+    expect(providerBodies).toHaveLength(1)
+    expect(functionCallOutputText(providerBodies[0], 'call-rejected-pwd')).toBeUndefined()
     const evidence = planEvidence(
       'M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel',
       ['M11']
@@ -403,35 +392,30 @@ test('M11/D13/D17 @approval-retry rejects a command request through the desktop 
       page,
       logs,
       backend,
-      terminal: 'finish',
-      providerRequestCount: 2,
+      terminal: 'aborted',
+      providerRequestCount: 1,
       turnStartedCount: 1,
       pendingApprovalCount: 0,
       observedToolCount: 1,
-      toolResultCount: 1,
+      toolResultCount: 0,
       queue: { items: [] },
       planEvidence: withoutQueueStateEvidence(evidence, 'M11')
     })
     await assertEmptyQueueStateEvidence(evidence, page, logs)
     await planAssert({
       scenarioId: 'D13',
-      assertionId: '拒绝后不执行命令并返回拒绝结果',
+      assertionId: '拒绝后不执行命令并中止当前回合',
       assertion: () => {
-        expect(providerBodies).toHaveLength(2)
-        expect(functionCallOutputText(providerBodies[1], 'call-rejected-pwd')).toBe(
-          'exec command rejected by user'
-        )
-        expect(functionCallOutputText(providerBodies[1], 'call-rejected-pwd')).not.toContain(
-          'E2E_REJECTED_COMMAND_SHOULD_NOT_RUN'
-        )
+        expect(providerBodies).toHaveLength(1)
+        expect(functionCallOutputText(providerBodies[0], 'call-rejected-pwd')).toBeUndefined()
       }
     })
     await planAssert({
       scenarioId: 'D17',
       assertionId: '拒绝不会自动重试或重复工具请求',
       assertion: () => {
-        expect(providerBodies).toHaveLength(2)
-        expect(functionCallOutputCount(providerBodies, 'call-rejected-pwd')).toBe(1)
+        expect(providerBodies).toHaveLength(1)
+        expect(functionCallOutputCount(providerBodies, 'call-rejected-pwd')).toBe(0)
       }
     })
   } finally {
@@ -549,11 +533,6 @@ test('M11/A09/D14 @approval-retry replaces composer while approval is pending, t
           justification: 'E2E verifies approval replacement and rejection ordering'
         },
         { phase: 'commentary' }
-      ),
-      assistantMessageResponse(
-        'resp-approval-reject-final',
-        'msg-approval-reject-final',
-        'The command was rejected and the composer is available again.'
       )
     ]
   })
@@ -585,7 +564,7 @@ test('M11/A09/D14 @approval-retry replaces composer while approval is pending, t
       assertion: () => expect(page.locator('[data-slot="queued-follow-up-list"]')).toHaveCount(0)
     })
 
-    await panel.getByRole('button', { name: '拒绝', exact: true }).click()
+    await panel.getByRole('button', { name: '拒绝并停止', exact: true }).click()
     const evidence = planEvidence(
       'M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection',
       ['M11']
@@ -594,12 +573,12 @@ test('M11/A09/D14 @approval-retry replaces composer while approval is pending, t
       page,
       logs,
       backend,
-      terminal: 'finish',
-      providerRequestCount: 2,
+      terminal: 'aborted',
+      providerRequestCount: 1,
       turnStartedCount: 1,
       pendingApprovalCount: 0,
       observedToolCount: 1,
-      toolResultCount: 1,
+      toolResultCount: 0,
       planEvidence: withoutQueueStateEvidence(evidence, 'M11')
     })
     await assertEmptyQueueStateEvidence(evidence, page, logs)
@@ -607,23 +586,20 @@ test('M11/A09/D14 @approval-retry replaces composer while approval is pending, t
     await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1)
     await planAssert({
       scenarioId: 'D14',
-      assertionId: '审批待处理时不显示独立停止按钮，拒绝后恢复 composer',
+      assertionId: '审批待处理时停止不执行工具',
       assertion: async () => {
-        expect(providerResponseBodies(backend)).toHaveLength(2)
+        expect(providerResponseBodies(backend)).toHaveLength(1)
         expect(
           functionCallOutputCount(providerResponseBodies(backend), 'call-approval-steer-stop')
-        ).toBe(1)
-        expect(
-          functionCallOutputText(providerResponseBodies(backend)[1], 'call-approval-steer-stop')
-        ).toBe('exec command rejected by user')
+        ).toBe(0)
         await expect(panel).toHaveCount(0)
         await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1)
       }
     })
     await planAssert({
       scenarioId: 'A09',
-      assertionId: '拒绝后复用原 turn，不额外启动 turn',
-      assertion: () => expect(providerResponseBodies(backend)).toHaveLength(2)
+      assertionId: '复用原 turn，不能额外启动 turn',
+      assertion: () => expect(providerResponseBodies(backend)).toHaveLength(1)
     })
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
@@ -632,7 +608,7 @@ test('M11/A09/D14 @approval-retry replaces composer while approval is pending, t
   }
 })
 
-test('M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure', async ({
+test('M11/D15 @approval-retry invalidates a pending approval after crash, then cancels the new approval', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -656,8 +632,7 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
         command: `printf ${secondMarker}`,
         sandbox_permissions: 'require_escalated',
         justification: 'E2E verifies a fresh approval after restart'
-      }),
-      disconnectingResponse('resp-approval-after-crash-final-failure')
+      })
     ]
   })
   const logs: string[] = []
@@ -708,44 +683,39 @@ test('M11/D15 @approval-retry invalidates a pending approval after crash, then r
     await expect(approvalCards(restartedPanel)).toHaveCount(1)
     expect(functionCallOutputText(providerResponseBodies(backend)[1], secondCallId)).toBeUndefined()
 
-    await secondCard.getByRole('button', { name: '拒绝' }).click()
+    await secondCard.getByRole('button', { name: '拒绝并停止', exact: true }).click()
     const evidence = planEvidence(
-      'M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure',
+      'M11/D15 @approval-retry invalidates a pending approval after crash, then cancels the new approval',
       ['M11']
     )
     await expectTerminalScenario({
       page,
       logs,
       backend,
-      terminal: 'error',
-      providerRequestCount: 3,
+      terminal: 'aborted',
+      providerRequestCount: 2,
       turnStartedCount: 2,
       terminalEventCount: 1,
       pendingApprovalCount: 0,
       observedToolCount: 1,
-      toolResultCount: 1,
+      toolResultCount: 0,
       queue: { items: [] },
       planEvidence: withoutQueueStateEvidence(evidence, 'M11')
     })
     await assertEmptyQueueStateEvidence(evidence, page, logs)
-    expect(functionCallOutputText(providerResponseBodies(backend)[2], secondCallId)).toBe(
-      'exec command rejected by user'
-    )
-    expect(functionCallOutputText(providerResponseBodies(backend)[2], secondCallId)).not.toContain(
-      secondMarker
-    )
+    expect(functionCallOutputText(providerResponseBodies(backend)[1], secondCallId)).toBeUndefined()
     await expect(approvalCards(restartedPanel)).toHaveCount(0)
     await planAssert({
       scenarioId: 'D15',
       assertionId: '终态后旧审批失效且不能再执行',
       assertion: async () => {
-        expect(providerResponseBodies(backend)).toHaveLength(3)
+        expect(providerResponseBodies(backend)).toHaveLength(2)
         expect(
           functionCallOutputText(providerResponseBodies(backend)[0], firstCallId)
         ).toBeUndefined()
-        expect(functionCallOutputText(providerResponseBodies(backend)[2], secondCallId)).toBe(
-          'exec command rejected by user'
-        )
+        expect(
+          functionCallOutputText(providerResponseBodies(backend)[1], secondCallId)
+        ).toBeUndefined()
         await expect(approvalCards(restartedPanel)).toHaveCount(0)
       }
     })
@@ -824,12 +794,6 @@ test('D18 @approval-retry requires new turn, approval, and call ids before rerun
     expect(functionCallOutputText(firstAttemptBodies[1], firstCallId)).toContain(firstMarker)
     await expect.poll(() => readMarkerLines(firstMarkerPath)).toEqual([firstMarker])
     await page.locator('[data-slot="aui_assistant-message-retry"]').click()
-    const sidebar = page.locator('[data-slot="codex-sidebar"]')
-    const retriedConversation = sidebar
-      .getByRole('button', { name: /^Run a side-effecting command/u })
-      .last()
-    await expect(retriedConversation).toBeVisible()
-    await retriedConversation.click()
     await expect(panel).toContainText(secondMarker)
     const secondApprovalCard = approvalCards(panel).filter({ hasText: secondMarker })
     const secondApprovalId = await secondApprovalCard.getAttribute('data-request-id')

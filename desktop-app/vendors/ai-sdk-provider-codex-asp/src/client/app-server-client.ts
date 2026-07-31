@@ -423,13 +423,21 @@ export class AppServerClient
         {
             for (const handler of handlers) 
             {
-                await handler(params);
+                const result = handler(params);
+                if (isPromiseLike(result))
+                {
+                    await result;
+                }
             }
         }
 
-        for (const handler of this.anyNotificationHandlers) 
+        for (const handler of this.anyNotificationHandlers)
         {
-            await handler(method, params);
+            const result = handler(method, params);
+            if (isPromiseLike(result))
+            {
+                await result;
+            }
         }
     }
 
@@ -504,4 +512,9 @@ export class AppServerClient
             this.inFlightInboundRequestIds.delete(request.id);
         }
     }
+}
+
+function isPromiseLike(value: void | Promise<void>): value is Promise<void>
+{
+    return typeof value === "object" && value !== null && typeof value.then === "function";
 }

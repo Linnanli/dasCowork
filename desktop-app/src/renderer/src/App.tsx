@@ -35,12 +35,24 @@ import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
 import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
+import {
+  ComposerReviewMode,
+  type ComposerReviewSelection
+} from '@/components/local-git-review/ComposerReviewMode'
+import { ConversationChangesRow } from '@/components/local-git-review/ConversationChangesRow'
+import {
+  GitRepositoryProvider,
+  useGitRepository
+} from '@/components/local-git-review/GitRepositoryProvider'
+import { LocalBranchSwitcher } from '@/components/local-git-review/LocalBranchSwitcher'
+import { LocalGitReviewProvider } from '@/components/local-git-review/LocalGitReviewProvider'
 import { ConversationTurnErrorBoundary } from '@/components/conversation/ConversationTurnErrorBoundary'
 import { ConversationRecoveryStatus } from '@/components/conversation/ConversationRecoveryStatus'
 import { WorkspaceRecoveryBanner } from '@/components/conversation/WorkspaceRecoveryBanner'
 import { ContextLexicalInput } from '@/composer/contextLexicalInput'
 import { ComposerContextSuggestionProvider } from '@/composer/composerContextSuggestionController'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
+import { buildCodeReviewPrompt } from '@/lib/codeReviewPrompt'
 import {
   CollapsedActivityDetails,
   McpToolCallDetails,
@@ -219,6 +231,8 @@ type ComposerProps = {
       | QueuedUserMessageSnapshot
       | QueuedUserMessageSnapshotInput
   ) => Promise<void>
+  onStartInlineReview: (prompt: string) => Promise<void>
+  onStartDetachedReview: (prompt: string) => Promise<void>
 }
 
 type ChatThreadProps = ComposerProps & {
@@ -399,6 +413,30 @@ async function runTranscriptAction(
   }
 }
 
+function createCodeReviewMessage(prompt: string): UIMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ type: 'text', text: prompt }]
+  }
+}
+
+async function sendCodeReviewMessage(
+  controller: ConversationTranscriptController,
+  prompt: string
+): Promise<void> {
+  let sendError: unknown
+  await runTranscriptAction(controller, async () => {
+    try {
+      await controller.sendMessage(createCodeReviewMessage(prompt))
+    } catch (error) {
+      sendError = error
+      throw error
+    }
+  })
+  if (sendError) throw sendError
+}
+
 function App(): React.JSX.Element {
   const storedProjectState = useProjectState()
   const storedProjectSelection = storedProjectState.state?.activeProjectSelection
@@ -416,6 +454,8 @@ function App(): React.JSX.Element {
     setSelectedModelId,
     activeConversation,
     startNewConversation,
+    prepareNewConversation,
+    activateConversation,
     restoreActiveConversation,
     restoreSingleActiveConversation,
     openConversation,
@@ -564,6 +604,24 @@ function App(): React.JSX.Element {
     clearActiveConversationId()
     startNewConversation()
   }
+  const startDetachedCodeReview = useCallback(
+    async (prompt: string): Promise<void> => {
+      const entry = prepareNewConversation(
+        activeConversation?.projectSelection ?? storedProjectSelection
+      )
+      try {
+        await sendCodeReviewMessage(entry.controller, prompt)
+      } catch (error) {
+        if (activeConversation?.conversationId) {
+          writeActiveConversationId(activeConversation.conversationId)
+        }
+        throw error
+      }
+      clearActiveConversationId()
+      activateConversation(entry)
+    },
+    [activateConversation, activeConversation, prepareNewConversation, storedProjectSelection]
+  )
   const handleOpenConversation = useCallback<OpenSubagentConversation>(
     (conversationId) => {
       void openConversation({ conversationId })
@@ -612,6 +670,7 @@ function App(): React.JSX.Element {
             onScrollSnapshotChange={setActiveScroll}
             onSelectedModelChange={handleSelectedModelChange}
             onCreateNewTask={handleStartNewConversation}
+            onStartDetachedReview={startDetachedCodeReview}
             onRejectApproval={rejectServerRequest}
             onSnoozeApproval={snoozeServerRequest}
             onRespondApproval={respondToServerRequest}
@@ -640,6 +699,7 @@ function ActiveConversationPane({
   onScrollSnapshotChange,
   onSelectedModelChange,
   onCreateNewTask,
+  onStartDetachedReview,
   onRejectApproval,
   onSnoozeApproval,
   onRespondApproval,
@@ -661,6 +721,7 @@ function ActiveConversationPane({
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
   onSelectedModelChange: (modelId: string) => void
   onCreateNewTask: () => void
+  onStartDetachedReview: (prompt: string) => Promise<void>
   onRejectApproval: (request: CodexApprovalRequest) => Promise<void>
   onSnoozeApproval: (request: CodexApprovalRequest) => Promise<void>
   onRespondApproval: (
@@ -730,6 +791,26 @@ function ActiveConversationPane({
     },
     [entry, followUps]
   )
+  const gitRepositoryIdentity = useMemo(
+    () => ({
+      conversationId: activeConversation?.conversationId ?? entry.context.conversationId,
+      ...((activeConversation?.threadId ?? entry.context.threadId)
+        ? { threadId: activeConversation?.threadId ?? entry.context.threadId }
+        : {})
+    }),
+    [
+      activeConversation?.conversationId,
+      activeConversation?.threadId,
+      entry.context.conversationId,
+      entry.context.threadId
+    ]
+  )
+  const startInlineCodeReview = useCallback(
+    async (prompt: string): Promise<void> => {
+      await sendCodeReviewMessage(entry.controller, prompt)
+    },
+    [entry.controller]
+  )
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -746,33 +827,37 @@ function ActiveConversationPane({
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}
       />
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <ChatThread
-          activeConversation={activeConversation}
-          approvalRequests={approvalRequests}
-          disabled={!entry.loaded}
-          followUps={followUps}
-          hasBlockingRequest={hasBlockingRequest}
-          loading={entry.status === 'loading'}
-          loadError={!entry.loaded ? entry.error : undefined}
-          models={models}
-          selectedModelId={selectedModelId}
-          modelSelectionError={modelSelectionError}
-          onSteerFollowUp={steerFollowUp}
-          onRetryLoad={onRetryLoad}
-          onOpenConversation={onOpenConversation}
-          onScrollSnapshotChange={onScrollSnapshotChange}
-          onSelectedModelChange={onSelectedModelChange}
-          onCreateNewTask={onCreateNewTask}
-          onRejectApproval={onRejectApproval}
-          onSnoozeApproval={onSnoozeApproval}
-          onRespondApproval={onRespondApproval}
-          projectState={projectState}
-          scrollSnapshot={entry.scroll}
-          recoveryPhase={entry.recoveryPhase}
-          recoveryError={entry.recoveryError}
-        />
-      </div>
+      <GitRepositoryProvider identity={gitRepositoryIdentity}>
+        <LocalGitReviewProvider>
+          <ChatThread
+            activeConversation={activeConversation}
+            approvalRequests={approvalRequests}
+            disabled={!entry.loaded}
+            followUps={followUps}
+            hasBlockingRequest={hasBlockingRequest}
+            loading={entry.status === 'loading'}
+            loadError={!entry.loaded ? entry.error : undefined}
+            models={models}
+            selectedModelId={selectedModelId}
+            modelSelectionError={modelSelectionError}
+            onSteerFollowUp={steerFollowUp}
+            onRetryLoad={onRetryLoad}
+            onOpenConversation={onOpenConversation}
+            onScrollSnapshotChange={onScrollSnapshotChange}
+            onSelectedModelChange={onSelectedModelChange}
+            onCreateNewTask={onCreateNewTask}
+            onStartInlineReview={startInlineCodeReview}
+            onStartDetachedReview={onStartDetachedReview}
+            onRejectApproval={onRejectApproval}
+            onSnoozeApproval={onSnoozeApproval}
+            onRespondApproval={onRespondApproval}
+            projectState={projectState}
+            scrollSnapshot={entry.scroll}
+            recoveryPhase={entry.recoveryPhase}
+            recoveryError={entry.recoveryError}
+          />
+        </LocalGitReviewProvider>
+      </GitRepositoryProvider>
     </AssistantRuntimeProvider>
   )
 }
@@ -917,6 +1002,8 @@ function ChatThread({
   onOpenConversation,
   onSelectedModelChange,
   onSteerFollowUp,
+  onStartInlineReview,
+  onStartDetachedReview,
   projectState,
   scrollSnapshot,
   onScrollSnapshotChange,
@@ -1063,6 +1150,7 @@ function ChatThread({
             />
             <ComposerTurnStatusCard status={composerTurnStatus} />
             <div data-slot="composer-project-stack" className="flex w-full flex-col">
+              <ConversationChangesRow />
               {reservedEditingItem && !editingFollowUp ? (
                 <div
                   data-slot="queued-follow-up-edit-recovery"
@@ -1146,6 +1234,8 @@ function ChatThread({
                   modelSelectionError={modelSelectionError}
                   onSelectedModelChange={onSelectedModelChange}
                   onSteerFollowUp={onSteerFollowUp}
+                  onStartInlineReview={onStartInlineReview}
+                  onStartDetachedReview={onStartDetachedReview}
                   projectState={projectState}
                   editingFollowUp={editingFollowUp}
                   onEditingFollowUpChange={setEditingFollowUp}
@@ -1469,7 +1559,9 @@ function AssistantMessage({
     [canOpenLocalPaths, hasBlockingRequest, message, textPartMetadata, turnDurationMs, workspaceCwd]
   )
   const isThinkingOnly = renderModel.isThinkingOnly
-  const visibleUnits = withoutComposerStatusRenderUnits(renderModel.units)
+  const visibleUnits = withoutComposerStatusRenderUnits(renderModel.units, {
+    keepTurnDiff: message.status?.type === 'complete'
+  })
   const wasCancelled =
     message.status?.type === 'incomplete' && message.status.reason === 'cancelled'
 
@@ -1953,6 +2045,11 @@ function ReasoningGroupUnit({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isActive = unit.active === true
+  const completedTurnDiffs = isActive ? [] : unit.children.filter(isCompletedTurnDiffEntry)
+  const processChildren =
+    completedTurnDiffs.length === 0
+      ? unit.children
+      : unit.children.filter((child) => !isCompletedTurnDiffEntry(child))
   const [completedProcessOpen, setCompletedProcessOpen] = useState(false)
   const measuredDurationMs = useReasoningElapsedDuration(isActive)
   let label = isActive
@@ -1993,15 +2090,26 @@ function ReasoningGroupUnit({
         className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
       >
         <div className="min-w-0 space-y-4">
-          {unit.children.map((child) => (
+          {processChildren.map((child) => (
             <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
               <AssistantRenderUnitView unit={child} onOpenConversation={onOpenConversation} />
             </div>
           ))}
         </div>
       </CollapsibleContent>
+      {completedTurnDiffs.map((child) => (
+        <div key={child.key} data-slot="completed-turn-diff" className="min-w-0">
+          <AssistantRenderUnitView unit={child} onOpenConversation={onOpenConversation} />
+        </div>
+      ))}
     </Collapsible>
   )
+}
+
+function isCompletedTurnDiffEntry(
+  unit: AssistantRenderUnit
+): unit is Extract<AssistantRenderUnit, { type: 'entry' }> {
+  return unit.type === 'entry' && unit.itemType === 'turnDiff' && unit.item?.status === 'completed'
 }
 
 type ReasoningTimerState = {
@@ -2572,6 +2680,8 @@ function Composer({
   modelSelectionError,
   onSelectedModelChange,
   onSteerFollowUp,
+  onStartInlineReview,
+  onStartDetachedReview,
   projectState,
   editingFollowUp,
   onEditingFollowUpChange,
@@ -2585,9 +2695,22 @@ function Composer({
     ? conversationProjectSelection
     : globalProjectSelection
   const isRemoteExecution = effectiveProjectSelection?.projectKind === 'remote'
+  const gitRepository = useGitRepository()
+  const gitTarget = gitRepository.status === 'ready' ? gitRepository.target : undefined
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const localContextPickerEnabled = !isRemoteExecution
   const [contextSearchOpen, setContextSearchOpen] = useState(false)
+  const [reviewModeOpen, setReviewModeOpen] = useState(false)
+  const [reviewModeError, setReviewModeError] = useState<string>()
+  const [reviewDelivery, setReviewDelivery] = useState<'inline' | 'detached'>(() => {
+    try {
+      return window.localStorage.getItem('local-git-review.delivery') === 'detached'
+        ? 'detached'
+        : 'inline'
+    } catch {
+      return 'inline'
+    }
+  })
   const composerText = useAuiState((state) => state.composer.text)
   const composerAttachments = useAuiState((state) => state.composer.attachments)
   const isThreadRunning = useAuiState((state) => state.thread.isRunning)
@@ -2690,6 +2813,59 @@ function Composer({
     (isRemoteExecution && hasLocalPathAttachments) ||
     Boolean(reservedEditingItemId && !editingFollowUp)
   const hasComposerContent = composerText.trim().length > 0 || composerAttachments.length > 0
+  const submitCodeReview = useCallback(
+    async (selection: ComposerReviewSelection): Promise<void> => {
+      if (!gitTarget) throw new Error('Choose a Git-backed conversation before starting a review')
+      if (composerText.trim().length > 0 || composerAttachments.length > 0) {
+        throw new Error('请先发送或清空输入框中的草稿和附件，再开始审核')
+      }
+      setReviewModeError(undefined)
+      const reviewTarget =
+        selection.type === 'uncommitted'
+          ? selection
+          : {
+              type: 'base-branch' as const,
+              ...(await window.desktopApp.git.resolveMergeBase({
+                target: gitTarget,
+                baseBranch: selection.baseBranch
+              }))
+            }
+      const prompt = buildCodeReviewPrompt(reviewTarget)
+      if (reviewDelivery === 'detached') {
+        await onStartDetachedReview(prompt)
+        setReviewModeOpen(false)
+        return
+      }
+      await onStartInlineReview(prompt)
+      setReviewModeOpen(false)
+    },
+    [
+      composerAttachments.length,
+      composerText,
+      gitTarget,
+      onStartDetachedReview,
+      onStartInlineReview,
+      reviewDelivery
+    ]
+  )
+  let reviewDisabledReason: string | undefined
+  if (!gitTarget) {
+    reviewDisabledReason = '当前会话没有可审核的 Git 仓库'
+  } else if (isThreadRunning) {
+    reviewDisabledReason = '请等待当前任务完成后再开始审核'
+  } else if (editingFollowUp) {
+    reviewDisabledReason = '请先完成或取消正在编辑的排队消息'
+  } else if (hasComposerContent) {
+    reviewDisabledReason = '请先发送或清空输入框中的草稿和附件，再开始审核'
+  }
+  const updateReviewDelivery = (delivery: 'inline' | 'detached'): void => {
+    setReviewDelivery(delivery)
+    try {
+      window.localStorage.setItem('local-git-review.delivery', delivery)
+    } catch {
+      // The preference only affects this renderer and remains optional.
+    }
+  }
   const enqueueRunningFollowUp = useCallback(
     async (mode: FollowUpMode) => {
       const id = editingFollowUp?.itemId ?? crypto.randomUUID()
@@ -2860,9 +3036,17 @@ function Composer({
         <ComposerPrimitive.Root
           className="aui-composer-root relative flex w-full flex-col"
           onKeyDown={(event) => {
-            if (event.key !== 'Escape' || !isThreadRunning) return
-            event.preventDefault()
-            aui.composer().cancel()
+            if (event.key !== 'Escape') return
+            if (reviewModeOpen) {
+              event.preventDefault()
+              setReviewModeOpen(false)
+              setReviewModeError(undefined)
+              return
+            }
+            if (isThreadRunning) {
+              event.preventDefault()
+              aui.composer().cancel()
+            }
           }}
         >
           <div
@@ -2894,22 +3078,43 @@ function Composer({
                 </Button>
               </div>
             ) : null}
-            <ComposerAttachments />
-            <ContextLexicalInput
-              className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
-              directiveChip={DirectiveChip}
-              formatter={composerContextDirectiveFormatter}
-              placeholder="输入消息（@ 提及工具，/ 输入命令）"
-            />
+            {!reviewModeOpen ? <ComposerAttachments /> : null}
+            {reviewModeOpen ? (
+              <ComposerReviewMode
+                target={gitTarget}
+                disabled={sendDisabled || isThreadRunning}
+                delivery={reviewDelivery}
+                error={reviewModeError}
+                onCancel={() => {
+                  setReviewModeOpen(false)
+                  setReviewModeError(undefined)
+                  window.requestAnimationFrame(() =>
+                    document.querySelector<HTMLElement>('.aui-lexical-input')?.focus()
+                  )
+                }}
+                onError={setReviewModeError}
+                onDeliveryChange={updateReviewDelivery}
+                onSubmit={submitCodeReview}
+              />
+            ) : (
+              <ContextLexicalInput
+                className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
+                directiveChip={DirectiveChip}
+                formatter={composerContextDirectiveFormatter}
+                placeholder="输入消息（@ 提及工具，/ 输入命令）"
+              />
+            )}
             <div className="aui-composer-action-wrapper flex items-center justify-between">
               <div className="flex min-w-0 items-center gap-1">
-                <ComposerAddContextPopover
-                  localPickerEnabled={localContextPickerEnabled}
-                  onOpenChange={setContextSearchOpen}
-                  onQueryChange={composerContextCatalog.setQuery}
-                  pickLocalContext={pickLocalContext}
-                  sections={contextSections}
-                />
+                {!reviewModeOpen ? (
+                  <ComposerAddContextPopover
+                    localPickerEnabled={localContextPickerEnabled}
+                    onOpenChange={setContextSearchOpen}
+                    onQueryChange={composerContextCatalog.setQuery}
+                    pickLocalContext={pickLocalContext}
+                    sections={contextSections}
+                  />
+                ) : null}
                 <ModelSelector
                   models={models}
                   value={selectedModelId}
@@ -2917,6 +3122,38 @@ function Composer({
                   variant="ghost"
                   size="sm"
                 />
+                <LocalBranchSwitcher target={gitTarget} />
+                {isRemoteExecution &&
+                (gitRepository.status === 'unavailable' || gitRepository.status === 'error') ? (
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    data-slot="git-repository-retry"
+                    title={
+                      gitRepository.status === 'unavailable'
+                        ? gitRepository.reason
+                        : gitRepository.error.message
+                    }
+                    onClick={gitRepository.retry}
+                  >
+                    重试 Git
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  disabled={Boolean(reviewDisabledReason)}
+                  aria-pressed={reviewModeOpen}
+                  title={reviewDisabledReason ?? '开始代码审核'}
+                  onClick={() => {
+                    setReviewModeOpen(true)
+                    setReviewModeError(undefined)
+                  }}
+                >
+                  Review
+                </Button>
                 {modelSelectionError && (
                   <span
                     role="alert"
@@ -2947,7 +3184,7 @@ function Composer({
                 ) : null}
               </div>
               <div className="flex items-center gap-1.5">
-                {!editingFollowUp ? (
+                {!reviewModeOpen && !editingFollowUp ? (
                   <AuiIf condition={(state) => !state.thread.isRunning}>
                     <ComposerPrimitive.Send asChild>
                       <IconButton
@@ -2961,7 +3198,7 @@ function Composer({
                     </ComposerPrimitive.Send>
                   </AuiIf>
                 ) : null}
-                {isThreadRunning && !hasComposerContent ? (
+                {!reviewModeOpen && isThreadRunning && !hasComposerContent ? (
                   <ComposerPrimitive.Cancel asChild>
                     <IconButton
                       className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
@@ -2972,7 +3209,7 @@ function Composer({
                     </IconButton>
                   </ComposerPrimitive.Cancel>
                 ) : null}
-                {(editingFollowUp || isThreadRunning) && hasComposerContent ? (
+                {!reviewModeOpen && (editingFollowUp || isThreadRunning) && hasComposerContent ? (
                   <>
                     <IconButton
                       className="size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
@@ -3018,7 +3255,9 @@ function Composer({
               </div>
             </div>
           </div>
-          <ComposerTriggerPopover char="/" emptyItemsLabel="没有匹配命令" {...slash} />
+          {!reviewModeOpen ? (
+            <ComposerTriggerPopover char="/" emptyItemsLabel="没有匹配命令" {...slash} />
+          ) : null}
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </ComposerContextSuggestionProvider>

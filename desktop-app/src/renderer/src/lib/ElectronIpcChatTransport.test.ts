@@ -513,6 +513,41 @@ describe('ElectronIpcChatTransport', () => {
     })
   })
 
+  it('marks a fresh terminal retry before reporting its replacement thread', async () => {
+    let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn((_request, nextCallbacks) => {
+        callbacks = nextCallbacks
+        return 'stream-1'
+      }),
+      abortChatStream: vi.fn()
+    }
+    const onThreadBound = vi.fn()
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({ conversationId: 'thread-failed', threadId: 'thread-failed' }),
+      getSelectedModelId: () => 'gpt-test',
+      onThreadBound
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-1',
+      trigger: 'submit-message',
+      messageId: 'assistant-failed',
+      messages: [],
+      body: { retryTerminalTurn: true },
+      abortSignal: undefined
+    })
+    callbacks?.onThreadBound('thread-retry')
+
+    expect(onThreadBound).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-retry',
+        startsFreshTerminalRetry: true
+      })
+    )
+  })
+
   it('C24 does not call onStreamFinished for a late finish after an error', async () => {
     let callbacks: Parameters<DesktopCodexChatApi['startChatStream']>[1] | undefined
     const bridge: DesktopCodexChatApi = {

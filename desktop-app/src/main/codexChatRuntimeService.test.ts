@@ -270,6 +270,75 @@ describe('CodexChatRuntimeService', () => {
     providerState.startThread.mockResolvedValue({ threadId: 'thread-prestarted' })
   })
 
+  it('generates a commit subject through the configured Codex provider in the trusted local cwd', async () => {
+    const streamText = vi.fn(async () => ({
+      toUIMessageStream: () =>
+        (async function* () {
+          yield {
+            type: 'text-delta',
+            id: 'commit-subject',
+            delta: 'Update local review flow'
+          } as never
+        })()
+    }))
+    const resolveExistingThreadTarget = vi.fn(async () => ({
+      hostId: 'local',
+      cwd: '/repo',
+      workspaceRoots: ['/repo']
+    }))
+    const service = new CodexChatRuntimeService({
+      modelCatalog: {
+        listModels: vi.fn(async () => ({
+          models: [{ id: 'gpt-test', displayName: 'Test', inputModalities: [], isDefault: true }],
+          selectedModelId: 'gpt-test'
+        })),
+        setSelectedModel: vi.fn(async (modelId: string) => ({ selectedModelId: modelId })),
+        resolveClientModel: vi.fn(async () => ({
+          model_id: 'gpt-test',
+          display_name: 'Test',
+          description: null,
+          provider: 'test',
+          is_default: true,
+          capabilities: [],
+          api_base_url: null,
+          api_key: null,
+          api_format: 'responses',
+          source: 'test'
+        }))
+      } satisfies ModelCatalogLike,
+      projectService: { resolveExistingThreadTarget } as never,
+      streamText
+    })
+
+    await expect(
+      service.generateCommitMessage({
+        target: {
+          conversationId: 'conversation-1',
+          threadId: 'thread-1',
+          hostId: 'local',
+          cwd: '/repo',
+          gitRoot: '/repo'
+        },
+        changeSummary: 'Staged changes:\n review.ts | 2 +-'
+      })
+    ).resolves.toBe('Update local review flow')
+
+    expect(resolveExistingThreadTarget).toHaveBeenCalledWith({
+      conversationId: 'conversation-1',
+      threadId: 'thread-1',
+      allowActiveProjectFallback: false
+    })
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'gpt-test',
+        executionTarget: { cwd: '/repo', runtimeWorkspaceRoots: ['/repo'] },
+        request: expect.objectContaining({
+          body: expect.not.objectContaining({ threadId: expect.anything() })
+        })
+      })
+    )
+  })
+
   it('returns the exact advertised command policy decision instead of renderer-provided policy data', () => {
     const execPolicyDecision = {
       acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git status *'] }
@@ -981,6 +1050,58 @@ describe('CodexChatRuntimeService', () => {
       ])
     )
     expect(port.messages.at(-1)).toEqual({ type: 'finish', threadId: 'thread-prestarted' })
+  })
+
+  it('forwards completed provider turn patches without keeping a Main-memory copy', async () => {
+    const port = new FakePort()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText: async (input: RuntimeStreamTextInput) => {
+        await input.onThreadStarted?.({ threadId: 'thread-prestarted' })
+        await completeCanonicalTurn(input)
+        return {
+          toUIMessageStream: () =>
+            (async function* () {
+              yield {
+                type: 'tool-output-available',
+                toolCallId: 'turn-diff:turn-prestarted',
+                output: {
+                  item: {
+                    type: 'turnDiff',
+                    status: 'completed',
+                    patchBatches: [{ cwd: '/repo', gitRoot: '/repo', diff: 'trusted patch' }]
+                  }
+                }
+              } as never
+            })()
+        }
+      }
+    })
+
+    await service.startChatStream(
+      { chatId: 'chat-turn-diff', trigger: 'submit-message', messages: [], modelId: 'gpt-test' },
+      port
+    )
+
+    expect(port.messages).toContainEqual({
+      type: 'chunk',
+      chunk: {
+        type: 'tool-output-available',
+        toolCallId: 'turn-diff:turn-prestarted',
+        output: {
+          item: {
+            type: 'turnDiff',
+            status: 'completed',
+            patchBatches: [{ cwd: '/repo', gitRoot: '/repo', diff: 'trusted patch' }]
+          }
+        }
+      }
+    })
   })
 
   it('resumes the same active turn after an app-server transport disconnect', async () => {

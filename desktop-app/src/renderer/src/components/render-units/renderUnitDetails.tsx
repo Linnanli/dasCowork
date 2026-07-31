@@ -31,6 +31,10 @@ import {
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { DiffViewer } from '@/components/assistant-ui/diff-viewer'
+import {
+  useLocalGitReview,
+  type LocalGitReviewLastTurn
+} from '@/components/local-git-review/LocalGitReviewProvider'
 import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { CodeComment } from '@/lib/codeCommentDirectives'
@@ -459,7 +463,52 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
   const largeDiff = isDiffTruncated(item) || diffTextLength > LARGE_DIFF_TEXT_LENGTH
   const cwd = turnDiffCwd(item)
   const [expanded, setExpanded] = useState(false)
+  const [patchAction, setPatchAction] = useState<'undo' | 'reapply'>('undo')
+  const [patchPending, setPatchPending] = useState(false)
+  const [patchError, setPatchError] = useState<string>()
+  const [patchFeedback, setPatchFeedback] = useState<string>()
+  const { notifyGitOperation, openReview, target } = useLocalGitReview()
+  const batches = turnPatchBatches(item)
+  const turnId = completedTurnId(item, unit.key)
+  const patchUnavailableReason = turnPatchUnavailableReason(item, batches)
+  const canApplyPatch = Boolean(target && batches && item.status === 'completed')
+  const patchActionLabel = turnPatchActionLabel(patchAction, patchPending)
   const visible = expanded ? files : files.slice(0, MAX_VISIBLE_DIFF_FILES)
+
+  const applyTurnPatch = (): void => {
+    if (!target || !batches || !canApplyPatch || patchPending) return
+    setPatchPending(true)
+    setPatchError(undefined)
+    setPatchFeedback(undefined)
+    void window.desktopApp.git
+      .applyTurnPatch({ target, action: patchAction, turnId, batches })
+      .then((result) => {
+        if (result.status === 'success') {
+          setPatchAction((action) => (action === 'undo' ? 'reapply' : 'undo'))
+          notifyGitOperation?.({
+            tone: 'success',
+            message: patchAction === 'undo' ? 'Changes reverted' : 'Changes reapplied'
+          })
+          return
+        }
+        const message = turnPatchFeedback(patchAction, result.status)
+        notifyGitOperation?.({
+          tone: result.status === 'partial-success' ? 'info' : 'error',
+          message
+        })
+        if (result.status === 'partial-success') {
+          setPatchFeedback(mutationResultDetails(result))
+          return
+        }
+        setPatchError(message)
+      })
+      .catch((error) => {
+        const message = turnPatchFeedback(patchAction, 'error')
+        notifyGitOperation?.({ tone: 'error', message })
+        setPatchError(error instanceof Error ? error.message : message)
+      })
+      .finally(() => setPatchPending(false))
+  }
 
   return (
     <Card
@@ -467,7 +516,7 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
       className="mt-6 gap-0 rounded-2xl py-0 shadow-none"
       {...renderUnitAttributes(unit)}
     >
-      <CardHeader className="grid-cols-[auto_1fr_auto] items-center gap-3 border-b px-3 py-3 sm:px-4">
+      <CardHeader className="!grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b px-3 py-3 sm:px-4">
         <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-background">
           <FilePenIcon aria-hidden className="size-5 text-muted-foreground" strokeWidth={1.8} />
         </div>
@@ -489,15 +538,28 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
             </CardDescription>
           ) : null}
         </div>
-        <CardAction
-          aria-hidden
-          data-slot="turn-diff-static-actions"
-          className="col-start-auto row-span-1 row-start-auto hidden shrink-0 items-center gap-5 self-auto justify-self-auto text-sm sm:flex"
-        >
-          <span className="inline-flex items-center gap-1.5">
-            撤销 <Undo2Icon className="size-4" strokeWidth={1.8} />
-          </span>
-          <span className="rounded-xl border border-border px-3 py-1.5">审核</span>
+        <CardAction className="!col-start-3 !row-span-1 !row-start-1 flex shrink-0 items-center gap-5 self-center justify-self-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={!canApplyPatch || patchPending}
+            title={turnPatchActionTitle(canApplyPatch, patchAction, patchUnavailableReason)}
+            className="h-auto gap-1.5 px-0 py-1.5 text-sm font-semibold hover:bg-transparent"
+            onClick={applyTurnPatch}
+          >
+            {patchActionLabel}
+            <Undo2Icon className="size-4" strokeWidth={1.8} />
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-auto rounded-xl px-3 py-1.5 text-sm font-semibold"
+            onClick={() => openReview({ type: 'last-turn', turnId }, lastTurnReview(turnId, files))}
+          >
+            审核
+          </Button>
         </CardAction>
       </CardHeader>
       {largeDiff ? (
@@ -520,6 +582,21 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
           暂未取得文件明细
         </CardContent>
       )}
+      {patchError ? (
+        <CardContent className="border-t px-3 py-2 text-xs text-destructive sm:px-4">
+          <span role="alert">{patchError}</span>
+        </CardContent>
+      ) : null}
+      {patchFeedback ? (
+        <CardContent className="border-t px-3 py-2 text-xs text-muted-foreground sm:px-4">
+          <span role="status">{patchFeedback}</span>
+        </CardContent>
+      ) : null}
+      {patchUnavailableReason ? (
+        <CardContent className="border-t px-3 py-2 text-xs text-muted-foreground sm:px-4">
+          {patchUnavailableReason}
+        </CardContent>
+      ) : null}
       {expanded || files.length > visible.length ? (
         <CardFooter className="p-0">
           <TurnDiffShowMoreButton
@@ -531,6 +608,88 @@ function TurnDiffEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
       ) : null}
     </Card>
   )
+}
+
+function turnPatchActionLabel(action: 'undo' | 'reapply', pending: boolean): string {
+  if (pending) return '处理中'
+  return action === 'undo' ? '撤销' : '重新应用'
+}
+
+function turnPatchActionTitle(
+  canApplyPatch: boolean,
+  action: 'undo' | 'reapply',
+  unavailableReason: string | undefined
+): string {
+  if (!canApplyPatch) return unavailableReason ?? '撤销需要受信任 Git 仓库中的已完成补丁'
+  return action === 'undo' ? '撤销本轮编辑' : '重新应用本轮编辑'
+}
+
+function turnPatchFeedback(
+  action: 'undo' | 'reapply',
+  status: 'partial-success' | 'error'
+): string {
+  if (status === 'partial-success') {
+    return action === 'undo' ? 'Changes partially reverted' : 'Changes partially reapplied'
+  }
+  return action === 'undo' ? 'Failed to revert changes' : 'Failed to reapply changes'
+}
+
+function mutationResultDetails(result: {
+  appliedPaths: string[]
+  skippedPaths: string[]
+  conflictedPaths: string[]
+}): string {
+  const parts = [
+    result.appliedPaths.length > 0 ? `Applied: ${result.appliedPaths.join(', ')}` : undefined,
+    result.skippedPaths.length > 0 ? `Skipped: ${result.skippedPaths.join(', ')}` : undefined,
+    result.conflictedPaths.length > 0
+      ? `Conflicts: ${result.conflictedPaths.join(', ')}`
+      : undefined
+  ].filter((part): part is string => Boolean(part))
+  return parts.join(' · ') || 'Partial success'
+}
+
+function turnPatchBatches(
+  item: AnyRecord
+): Array<{ cwd: string; diff: string; gitRoot?: string }> | undefined {
+  const rawBatches = item.patchBatches
+  if (!Array.isArray(rawBatches) || rawBatches.length === 0) return undefined
+  const batches = rawBatches.map((rawBatch) => {
+    const batch = recordValue(rawBatch)
+    const cwd = stringValue(batch?.cwd)
+    const diff = stringValue(batch?.diff)
+    if (!cwd || !diff) return undefined
+    const gitRoot = stringValue(batch?.gitRoot)
+    return { cwd, diff, ...(gitRoot ? { gitRoot } : {}) }
+  })
+  return batches.every(isDefined) ? batches : undefined
+}
+
+function turnPatchUnavailableReason(
+  item: AnyRecord,
+  batches: Array<{ cwd: string; diff: string; gitRoot?: string }> | undefined
+): string | undefined {
+  if (item.status !== 'completed') return '本轮编辑尚未完成，暂不能恢复。'
+  if (batches) return undefined
+  if (item.patchUnavailableReason === 'patch-too-large') {
+    return '完整补丁超过安全大小限制，无法恢复。'
+  }
+  if (item.patchUnavailableReason === 'missing-cwd') {
+    return '缺少完整补丁的工作目录，无法恢复。'
+  }
+  return '缺少完整补丁数据，无法恢复。'
+}
+
+function lastTurnReview(turnId: string, files: readonly TurnDiffFile[]): LocalGitReviewLastTurn {
+  return {
+    turnId,
+    files: files.map((file) => ({
+      path: file.path,
+      diff: file.diff,
+      additions: file.added,
+      deletions: file.removed
+    }))
+  }
 }
 
 function TurnDiffFileRow({
@@ -1230,6 +1389,19 @@ function turnDiffCwd(item: AnyRecord): string | undefined {
       stringValue(context?.cwd) ??
       stringValue(thread?.cwd)
   )
+}
+
+/**
+ * Provider turn-diff entries use `turn-diff:<turnId>` as their render-unit id.
+ * The local Git bridge deliberately stores patches by the app-server turn id, so
+ * normalize the display id before requesting an undo or reapply.
+ */
+function completedTurnId(item: AnyRecord, fallback: string): string {
+  const explicitTurnId = stringValue(item.turnId)
+  if (explicitTurnId) return explicitTurnId
+
+  const itemId = stringValue(item.id)
+  return itemId?.startsWith('turn-diff:') ? itemId.slice('turn-diff:'.length) : (itemId ?? fallback)
 }
 
 function resolveTurnDiffFilePath(path: string, cwd: string | undefined): string | undefined {

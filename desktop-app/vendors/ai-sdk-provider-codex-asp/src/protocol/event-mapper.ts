@@ -8,6 +8,7 @@ import type {
 import { turnErrorMessage } from "../turn-error";
 import { stripUndefined } from "../utils/object";
 import type { AgentMessageDeltaNotification } from "./app-server-protocol/v2/AgentMessageDeltaNotification";
+import type { FileChangePatchUpdatedNotification } from "./app-server-protocol/v2/FileChangePatchUpdatedNotification";
 import type { ItemCompletedNotification } from "./app-server-protocol/v2/ItemCompletedNotification";
 import type { ItemGuardianApprovalReviewCompletedNotification } from "./app-server-protocol/v2/ItemGuardianApprovalReviewCompletedNotification";
 import type { ItemGuardianApprovalReviewStartedNotification } from "./app-server-protocol/v2/ItemGuardianApprovalReviewStartedNotification";
@@ -28,7 +29,12 @@ import {
     toolInvocationForItem,
     webSearchHasContent,
 } from "./shared-item-extractors";
-import { type TurnDiffItem, turnDiffItem } from "./turn-diff";
+import {
+    type FileChangeDiffBatch,
+    fileChangeDiffBatchesForOrderedItems,
+    type TurnDiffItem,
+    turnDiffItem,
+} from "./turn-diff";
 import type { CodexDynamicToolCallItem } from "./types";
 
 export interface CodexEventMapperInput {
@@ -212,6 +218,7 @@ function turnDiffItemForNotification(
     return {
         ...turnDiffItem({
             id: itemId,
+            threadId: notification.threadId,
             status,
             cwd,
             diff: notification.diff,
@@ -224,6 +231,16 @@ type TurnDiffState = {
     cwd?: string | undefined
     diff: string
 };
+
+type FileChangePatchState = {
+    cwd?: string | undefined
+    changes: Extract<CodexRenderableThreadItem, { type: "fileChange" }>["changes"]
+};
+
+function turnItemKey(turnId: string, itemId: string): string
+{
+    return `${turnId}\0${itemId}`;
+}
 
 function sourceItemIdForPart(part: LanguageModelV3StreamPart): string | undefined
 {
@@ -293,9 +310,12 @@ export class CodexEventMapper
    * Item IDs for dynamicToolCall items seen in cross-call mode — tracked so
    * item/tool/call dedup fires without adding them to openToolCalls (which
    * would cause handleTurnCompleted to emit spurious error tool-results).
-   */
+    */
     private readonly _sdkDynamicToolCallIds = new Set<string>();
     private readonly turnDiffByTurnId = new Map<string, TurnDiffState>();
+    private readonly currentCwdByTurnId = new Map<string, string>();
+    private readonly fileChangePatchByItemKey = new Map<string, FileChangePatchState>();
+    private readonly fileChangeBatchesByTurnId = new Map<string, FileChangeDiffBatch[]>();
     /**
    * Set to true by enableCrossCallMode() when PersistentTransport + SDK tools
    * are active. In cross-call mode the mapper stays silent for dynamicToolCall
@@ -330,6 +350,7 @@ export class CodexEventMapper
             "item/reasoning/summaryPartAdded": (p) => this.handleSummaryPartAdded(p),
             "turn/plan/updated": (p) => this.handlePlanUpdated(p),
             "turn/diff/updated": (p) => this.handleTurnDiffUpdated(p),
+            "item/fileChange/patchUpdated": (p) => this.handleFileChangePatchUpdated(p),
             "item/mcpToolCall/progress": (p) => this.handleMcpToolCallProgress(p),
             "item/tool/callStarted": (p) => this.handleToolCallStarted(p),
             "item/tool/callDelta": (p) => this.handleToolCallDelta(p),
@@ -584,6 +605,18 @@ export class CodexEventMapper
             return [];
         }
 
+        if (p.turnId && item.type === "commandExecution" && item.cwd)
+        {
+            this.currentCwdByTurnId.set(p.turnId, item.cwd);
+        }
+        if (p.turnId && item.type === "fileChange")
+        {
+            this.fileChangePatchByItemKey.set(turnItemKey(p.turnId, item.id), {
+                cwd: this.currentCwdByTurnId.get(p.turnId) ?? this.threadCwd,
+                changes: item.changes,
+            });
+        }
+
         const parts: LanguageModelV3StreamPart[] = [];
 
         switch (item.type)
@@ -700,6 +733,28 @@ export class CodexEventMapper
         if (!item?.id)
         {
             return [];
+        }
+
+        if (p.turnId && item.type === "commandExecution" && item.cwd)
+        {
+            this.currentCwdByTurnId.set(p.turnId, item.cwd);
+        }
+        if (p.turnId && item.type === "fileChange")
+        {
+            const key = turnItemKey(p.turnId, item.id);
+            const tracked = this.fileChangePatchByItemKey.get(key);
+            const changes = tracked?.changes ?? item.changes;
+            if (
+                item.status !== "failed" &&
+        item.status !== "declined" &&
+        changes.length > 0
+            )
+            {
+                const batches = this.fileChangeBatchesByTurnId.get(p.turnId) ?? [];
+                batches.push({ cwd: tracked?.cwd ?? this.currentCwdByTurnId.get(p.turnId) ?? this.threadCwd, changes });
+                this.fileChangeBatchesByTurnId.set(p.turnId, batches);
+            }
+            this.fileChangePatchByItemKey.delete(key);
         }
 
         const parts: LanguageModelV3StreamPart[] = [];
@@ -942,6 +997,24 @@ export class CodexEventMapper
         });
 
         return parts;
+    }
+
+    // item/fileChange/patchUpdated
+    private handleFileChangePatchUpdated(params: unknown): LanguageModelV3StreamPart[]
+    {
+        const p = (params ?? {}) as FileChangePatchUpdatedNotification;
+        if (!p.turnId || !p.itemId || !Array.isArray(p.changes))
+        {
+            return [];
+        }
+
+        const key = turnItemKey(p.turnId, p.itemId);
+        const tracked = this.fileChangePatchByItemKey.get(key);
+        this.fileChangePatchByItemKey.set(key, {
+            cwd: tracked?.cwd ?? this.currentCwdByTurnId.get(p.turnId) ?? this.threadCwd,
+            changes: p.changes,
+        });
+        return [];
     }
 
     // item/mcpToolCall/progress
@@ -1252,14 +1325,19 @@ export class CodexEventMapper
 
         if (completed.turn?.id)
         {
+            const patchBatches = completed.turn.itemsView === "full"
+                ? fileChangeDiffBatchesForOrderedItems(completed.turn.items, this.threadCwd)
+                : this.fileChangeBatchesByTurnId.get(completed.turn.id);
             const turnDiff = this.turnDiffByTurnId.get(completed.turn.id);
             if (turnDiff)
             {
                 const item = turnDiffItem({
                     id: turnDiff.toolCallId,
+                    threadId: this.threadId,
                     status: "completed",
                     cwd: turnDiff.cwd,
                     diff: turnDiff.diff,
+                    patchBatches,
                 });
                 parts.push(
                     this.withMeta({
@@ -1270,6 +1348,15 @@ export class CodexEventMapper
                     }),
                 );
                 this.turnDiffByTurnId.delete(completed.turn.id);
+            }
+            this.currentCwdByTurnId.delete(completed.turn.id);
+            this.fileChangeBatchesByTurnId.delete(completed.turn.id);
+            for (const key of this.fileChangePatchByItemKey.keys())
+            {
+                if (key.startsWith(`${completed.turn.id}\0`))
+                {
+                    this.fileChangePatchByItemKey.delete(key);
+                }
             }
             this.planSequenceByTurnId.delete(completed.turn.id);
             this.planSequenceByTurnId.delete(`diff:${completed.turn.id}`);

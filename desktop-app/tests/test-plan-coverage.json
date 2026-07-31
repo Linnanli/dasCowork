@@ -1,6 +1,248 @@
 {
   "schemaVersion": 1,
-  "description": "引导对话测试计划的机器可读覆盖契约。A01-G12 是唯一场景主键；M 和 R 是最低 Mock E2E 与发布验收组。",
+  "description": "引导对话测试计划的机器可读覆盖契约。A01-G12 是唯一场景主键；M 和 R 是最低 Mock E2E 与发布验收组；P004-EDGE-01 至 P004-EDGE-13 追踪本地 Git 边界场景。",
+  "p004": {
+    "title": "本地 Git 审核与恢复",
+    "cases": [
+      {
+        "id": "P004-E2E-01",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-02",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-03",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-04",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-05",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-06",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-07",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-08",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-09",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-10",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-11",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-12",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-13",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-14",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-15",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-16",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-17",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-18",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      },
+      {
+        "id": "P004-E2E-20",
+        "status": "covered",
+        "evidence": "tests/e2e/local-git-review.e2e.ts"
+      }
+    ],
+    "edgeCases": [
+      {
+        "id": "P004-EDGE-01",
+        "title": "非 Git 目录安全降级",
+        "status": "covered",
+        "requiredLayer": ["desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/GitRepositoryTargetResolver.test.ts", "testName": "P004-EDGE-01 returns unavailable instead of throwing for a non-repository cwd", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-01 keeps Changes unavailable for a non-Git local project", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-02",
+        "title": "空仓库可审核",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-02 returns an empty snapshot for a repository without a HEAD commit", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-02 renders an empty repository snapshot and keeps review controls available", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-02 opens an empty repository without a HEAD commit", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-03",
+        "title": "未跟踪文件暂存",
+        "status": "covered",
+        "requiredLayer": ["integration", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-03 includes untracked files in an unstaged snapshot and produces a safe add patch", "layer": "integration"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review snapshot and stages it", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-04",
+        "title": "重命名文件保留旧路径",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-04 reports a pure rename with its original path even when Git rename detection is disabled", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-05",
+        "title": "复制文件保留源路径",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-06",
+        "title": "类型变化安全显示",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-07",
+        "title": "二进制文件不渲染文本 diff",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-08",
+        "title": "gitlink 不访问网络且可取消暂存",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/LocalGitService.integration.test.ts", "testName": "P004-EDGE-08/P004-EDGE-09/P004-EDGE-13 safely unstages a gitlink and reports a partial staged revert without overwriting drift", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-09",
+        "title": "工作区漂移不被覆盖",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/LocalGitService.test.ts", "testName": "P004-EDGE-09/P004-EDGE-10 rejects review mutation after the file revision drifts", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the panel, and does not retry the write", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-10",
+        "title": "过期快照拒绝旧写入",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit"],
+        "evidence": [
+          {"file": "src/main/localGit/LocalGitService.test.ts", "testName": "P004-EDGE-09/P004-EDGE-10 rejects review mutation after the file revision drifts", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the panel, and does not retry the write", "layer": "desktop-unit"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-11",
+        "title": "分支切换阻塞并重试",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/LocalBranchService.test.ts", "testName": "P004-EDGE-11 reports checkout blocked by working tree changes", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalBranchSwitcher.test.tsx", "testName": "P004-EDGE-11 blocks checkout, commits changes, and retries the saved checkout", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-09/P004-E2E-11/P004-EDGE-11 commits then retries a branch switch in a local-only repository", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-12",
+        "title": "冲突状态和路径可见",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-12 marks an unresolved merge as conflicted", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
+        ]
+      },
+      {
+        "id": "P004-EDGE-13",
+        "title": "部分恢复保留成功和冲突路径",
+        "status": "covered",
+        "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
+        "evidence": [
+          {"file": "src/main/localGit/LocalGitService.integration.test.ts", "testName": "P004-EDGE-08/P004-EDGE-09/P004-EDGE-13 safely unstages a gitlink and reports a partial staged revert without overwriting drift", "layer": "integration"},
+          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-13 keeps partial-success feedback and conflict paths visible after refreshing the snapshot", "layer": "desktop-unit"},
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
+        ]
+      }
+    ]
+  },
   "scenarios": [
     {
       "id": "A01",
@@ -208,7 +450,7 @@
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
-          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "testName": "M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection",
           "layer": "mock-e2e",
           "assertions": [
             "已显示回答保持不变",
@@ -1505,18 +1747,14 @@
       "title": "单个只读工具成功后正常回答",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "恢复工具结果后正常输出答案"
-      ],
+      "requiredAssertions": ["恢复工具结果后正常输出答案"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "D01 resumes a successful single read-only tool result and emits the normal final answer",
           "layer": "provider-unit",
-          "assertions": [
-            "恢复工具结果后正常输出答案"
-          ]
+          "assertions": ["恢复工具结果后正常输出答案"]
         }
       ]
     },
@@ -1525,18 +1763,14 @@
       "title": "多个工具串行后回答",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "多个工具串行后输出汇总答案"
-      ],
+      "requiredAssertions": ["多个工具串行后输出汇总答案"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "D02 serializes multiple tool calls before emitting the final answer",
           "layer": "provider-unit",
-          "assertions": [
-            "多个工具串行后输出汇总答案"
-          ]
+          "assertions": ["多个工具串行后输出汇总答案"]
         }
       ]
     },
@@ -1545,18 +1779,14 @@
       "title": "工具退出码非零",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "非零退出映射失败工具结果且保留回答"
-      ],
+      "requiredAssertions": ["非零退出映射失败工具结果且保留回答"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/event-mapper.test.ts",
           "testName": "D03 marks a non-zero command exit code as a failed tool result without masking the final answer",
           "layer": "provider-unit",
-          "assertions": [
-            "非零退出映射失败工具结果且保留回答"
-          ]
+          "assertions": ["非零退出映射失败工具结果且保留回答"]
         }
       ]
     },
@@ -1565,18 +1795,14 @@
       "title": "工具返回 output-error",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "失败动态工具映射为单个 output-error"
-      ],
+      "requiredAssertions": ["失败动态工具映射为单个 output-error"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
           "testName": "D04 forwards a failed dynamic tool response as an output-error record",
           "layer": "provider-unit",
-          "assertions": [
-            "失败动态工具映射为单个 output-error"
-          ]
+          "assertions": ["失败动态工具映射为单个 output-error"]
         }
       ]
     },
@@ -1585,18 +1811,14 @@
       "title": "工具执行超时",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "工具超时返回单个失败结果"
-      ],
+      "requiredAssertions": ["工具超时返回单个失败结果"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
           "testName": "D05 returns a failed tool result when execution times out",
           "layer": "provider-unit",
-          "assertions": [
-            "工具超时返回单个失败结果"
-          ]
+          "assertions": ["工具超时返回单个失败结果"]
         }
       ]
     },
@@ -1605,18 +1827,14 @@
       "title": "工具返回空输出",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "空输出作为成功结果保留"
-      ],
+      "requiredAssertions": ["空输出作为成功结果保留"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
           "testName": "D06 preserves an empty successful tool output as an available result",
           "layer": "provider-unit",
-          "assertions": [
-            "空输出作为成功结果保留"
-          ]
+          "assertions": ["空输出作为成功结果保留"]
         }
       ]
     },
@@ -1625,18 +1843,14 @@
       "title": "工具返回超大输出",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "超大输出完整保留并回传"
-      ],
+      "requiredAssertions": ["超大输出完整保留并回传"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/dynamic-tools.test.ts",
           "testName": "D07 preserves a large successful tool output without truncating the tool record",
           "layer": "provider-unit",
-          "assertions": [
-            "超大输出完整保留并回传"
-          ]
+          "assertions": ["超大输出完整保留并回传"]
         }
       ]
     },
@@ -1645,18 +1859,14 @@
       "title": "工具返回中文、emoji、替代字符或复杂 JSON",
       "priority": "P2",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "复杂 JSON 工具输出完整且只回传一次"
-      ],
+      "requiredAssertions": ["复杂 JSON 工具输出完整且只回传一次"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "D08 preserves Chinese, emoji, replacement characters, and complex JSON tool output",
           "layer": "provider-unit",
-          "assertions": [
-            "复杂 JSON 工具输出完整且只回传一次"
-          ]
+          "assertions": ["复杂 JSON 工具输出完整且只回传一次"]
         }
       ]
     },
@@ -1665,18 +1875,14 @@
       "title": "工具开始后没有完成事件",
       "priority": "P1",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "未完成工具由 turn/completed 以错误结果关闭"
-      ],
+      "requiredAssertions": ["未完成工具由 turn/completed 以错误结果关闭"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "D09 closes an adopted call that never completes via the turn-completed safety net",
           "layer": "provider-unit",
-          "assertions": [
-            "未完成工具由 turn/completed 以错误结果关闭"
-          ]
+          "assertions": ["未完成工具由 turn/completed 以错误结果关闭"]
         }
       ]
     },
@@ -1685,18 +1891,14 @@
       "title": "completed 早于 started",
       "priority": "P1",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "提前完成结果保持正确事件顺序与单终态"
-      ],
+      "requiredAssertions": ["提前完成结果保持正确事件顺序与单终态"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "C15/D10 emits a result completing before the tool request within the same step",
           "layer": "provider-unit",
-          "assertions": [
-            "提前完成结果保持正确事件顺序与单终态"
-          ]
+          "assertions": ["提前完成结果保持正确事件顺序与单终态"]
         }
       ]
     },
@@ -1705,18 +1907,14 @@
       "title": "相同工具结果重复到达",
       "priority": "P1",
       "requiredLayer": ["provider-unit"],
-      "requiredAssertions": [
-        "恢复步骤不重复工具生命周期结果"
-      ],
+      "requiredAssertions": ["恢复步骤不重复工具生命周期结果"],
       "status": "covered",
       "evidence": [
         {
           "file": "vendors/ai-sdk-provider-codex-asp/tests/cross-call-tools.test.ts",
           "testName": "D11 does not duplicate dynamic tool lifecycle parts on resumed steps",
           "layer": "provider-unit",
-          "assertions": [
-            "恢复步骤不重复工具生命周期结果"
-          ]
+          "assertions": ["恢复步骤不重复工具生命周期结果"]
         }
       ]
     },
@@ -1725,18 +1923,14 @@
       "title": "审批允许后继续",
       "priority": "P1",
       "requiredLayer": ["mock-e2e"],
-      "requiredAssertions": [
-        "批准后执行一次并返回工具输出"
-      ],
+      "requiredAssertions": ["批准后执行一次并返回工具输出"],
       "status": "covered",
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
           "testName": "M11/D12 @approval-retry approves a command request through the desktop approval panel",
           "layer": "mock-e2e",
-          "assertions": [
-            "批准后执行一次并返回工具输出"
-          ]
+          "assertions": ["批准后执行一次并返回工具输出"]
         }
       ]
     },
@@ -1745,18 +1939,14 @@
       "title": "审批拒绝后不执行工具",
       "priority": "P1",
       "requiredLayer": ["mock-e2e"],
-      "requiredAssertions": [
-        "拒绝后不执行命令并返回拒绝结果"
-      ],
+      "requiredAssertions": ["拒绝后不执行命令并中止当前回合"],
       "status": "covered",
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
           "testName": "M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel",
           "layer": "mock-e2e",
-          "assertions": [
-            "拒绝后不执行命令并返回拒绝结果"
-          ]
+          "assertions": ["拒绝后不执行命令并中止当前回合"]
         }
       ]
     },
@@ -1765,18 +1955,14 @@
       "title": "审批等待期间用户停止",
       "priority": "P1",
       "requiredLayer": ["mock-e2e"],
-      "requiredAssertions": [
-        "审批待处理时停止不执行工具"
-      ],
+      "requiredAssertions": ["审批待处理时停止不执行工具"],
       "status": "covered",
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
-          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "testName": "M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection",
           "layer": "mock-e2e",
-          "assertions": [
-            "审批待处理时停止不执行工具"
-          ]
+          "assertions": ["审批待处理时停止不执行工具"]
         }
       ]
     },
@@ -1785,26 +1971,20 @@
       "title": "审批等待期间模型断流",
       "priority": "P1",
       "requiredLayer": ["desktop-unit", "mock-e2e"],
-      "requiredAssertions": [
-        "终态后旧审批失效且不能再执行"
-      ],
+      "requiredAssertions": ["终态后旧审批失效且不能再执行"],
       "status": "covered",
       "evidence": [
         {
           "file": "src/main/codexChatRuntimeService.test.ts",
           "testName": "D15 closes a pending approval when the model stream fails",
           "layer": "desktop-unit",
-          "assertions": [
-            "终态后旧审批失效且不能再执行"
-          ]
+          "assertions": ["终态后旧审批失效且不能再执行"]
         },
         {
           "file": "tests/e2e/approvals.e2e.ts",
-          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure",
+          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then cancels the new approval",
           "layer": "mock-e2e",
-          "assertions": [
-            "终态后旧审批失效且不能再执行"
-          ]
+          "assertions": ["终态后旧审批失效且不能再执行"]
         }
       ]
     },
@@ -1837,18 +2017,14 @@
       "title": "工具失败不得自动重试或重复",
       "priority": "P1",
       "requiredLayer": ["mock-e2e"],
-      "requiredAssertions": [
-        "拒绝不会自动重试或重复工具请求"
-      ],
+      "requiredAssertions": ["拒绝不会自动重试或重复工具请求"],
       "status": "covered",
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
           "testName": "M11/D13/D17 @approval-retry rejects a command request through the desktop approval panel",
           "layer": "mock-e2e",
-          "assertions": [
-            "拒绝不会自动重试或重复工具请求"
-          ]
+          "assertions": ["拒绝不会自动重试或重复工具请求"]
         }
       ]
     },
@@ -1857,18 +2033,14 @@
       "title": "手动重试再次请求副作用工具必须重新审批",
       "priority": "P0",
       "requiredLayer": ["mock-e2e"],
-      "requiredAssertions": [
-        "手动重试使用新的 turn、call ID、approval ID"
-      ],
+      "requiredAssertions": ["手动重试使用新的 turn、call ID、approval ID"],
       "status": "covered",
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
           "testName": "D18 @approval-retry requires new turn, approval, and call ids before rerunning a side-effecting tool",
           "layer": "mock-e2e",
-          "assertions": [
-            "手动重试使用新的 turn、call ID、approval ID"
-          ]
+          "assertions": ["手动重试使用新的 turn、call ID、approval ID"]
         }
       ]
     },
@@ -1877,18 +2049,14 @@
       "title": "steer 在工具三阶段到达",
       "priority": "P1",
       "requiredLayer": ["desktop-unit"],
-      "requiredAssertions": [
-        "三阶段工具事件期间 steer 保持同一 active turn"
-      ],
+      "requiredAssertions": ["三阶段工具事件期间 steer 保持同一 active turn"],
       "status": "covered",
       "evidence": [
         {
           "file": "src/renderer/src/runtime/ConversationTranscriptController.test.ts",
           "testName": "A05/A06/A07/D19 keeps one active turn while staging Steers across all tool phases",
           "layer": "desktop-unit",
-          "assertions": [
-            "三阶段工具事件期间 steer 保持同一 active turn"
-          ]
+          "assertions": ["三阶段工具事件期间 steer 保持同一 active turn"]
         }
       ]
     },
@@ -1897,9 +2065,7 @@
       "title": "工具失败与 steer RPC 失败并发",
       "priority": "P1",
       "requiredLayer": ["desktop-unit"],
-      "requiredAssertions": [
-        "工具失败与 steer 拒绝并发时只结算一次"
-      ],
+      "requiredAssertions": ["工具失败与 steer 拒绝并发时只结算一次"],
       "status": "covered",
       "evidence": [
         {
@@ -1907,9 +2073,7 @@
           "testName": "B06/D20 preserves an explicit $label steer rejection after terminal settlement",
           "fullTestName": "CodexChatRuntimeService > B06/D20 preserves an explicit 'turn-race' steer rejection after terminal settlement",
           "layer": "desktop-unit",
-          "assertions": [
-            "工具失败与 steer 拒绝并发时只结算一次"
-          ]
+          "assertions": ["工具失败与 steer 拒绝并发时只结算一次"]
         }
       ]
     },
@@ -2213,10 +2377,7 @@
           "file": "src/main/followUps/ConversationFollowUpQueueStore.test.ts",
           "testName": "E12 keeps an unclaimed queued follow-up sendable after an on-disk restart",
           "layer": "desktop-unit",
-          "assertions": [
-            "队列顺序、revision、lease 与消费状态正确",
-            "重启从持久化状态恢复"
-          ]
+          "assertions": ["队列顺序、revision、lease 与消费状态正确", "重启从持久化状态恢复"]
         }
       ]
     },
@@ -3737,7 +3898,7 @@
       "evidence": [
         {
           "file": "tests/e2e/approvals.e2e.ts",
-          "testName": "M11/A09/D14 @approval-retry steers while approval is pending, then user stop settles once",
+          "testName": "M11/A09/D14 @approval-retry replaces composer while approval is pending, then restores it after rejection",
           "layer": "mock-e2e",
           "assertions": [
             "最终 UI 状态",
@@ -3779,7 +3940,7 @@
         },
         {
           "file": "tests/e2e/approvals.e2e.ts",
-          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then rejects the new approval before transport failure",
+          "testName": "M11/D15 @approval-retry invalidates a pending approval after crash, then cancels the new approval",
           "layer": "mock-e2e",
           "assertions": [
             "最终 UI 状态",
