@@ -120,6 +120,28 @@ describe('LocalBranchSwitcher', () => {
     expect(document.body.textContent).toContain('feature/a')
   })
 
+  it('closes when focus or a pointer leaves the branch switcher', async () => {
+    await renderSwitcher()
+
+    await act(async () => buttonWithText('Branch')?.click())
+    await flush()
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+
+    await act(async () => {
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    })
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+
+    await act(async () => buttonWithText('Branch')?.click())
+    await flush()
+    const trigger = buttonWithText('Branch')
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    trigger?.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outside }))
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
   it('moves through branch options with arrow keys', async () => {
     await renderSwitcher()
     await act(async () => buttonWithText('Branch')?.click())

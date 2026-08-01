@@ -65,6 +65,7 @@ export function LocalBranchSwitcher({
     message?: string
   }>()
   const [commitOpen, setCommitOpen] = useState(false)
+  const switcherRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const feedbackId = target ? `branch-operation:${target.hostId}:${target.cwd}` : 'branch-operation'
 
@@ -86,6 +87,16 @@ export function LocalBranchSwitcher({
     if (!target || !open) return
     void loadBranches()
   }, [loadBranches, open, target])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const closeWhenPointerLeaves = (event: PointerEvent): void => {
+      if (switcherRef.current?.contains(event.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeWhenPointerLeaves)
+    return () => document.removeEventListener('pointerdown', closeWhenPointerLeaves)
+  }, [open])
 
   useEffect(() => {
     let active = true
@@ -294,7 +305,15 @@ export function LocalBranchSwitcher({
   const commitWorkflow = getGitWorkflow(target)
 
   return (
-    <div data-slot="local-branch-switcher" className="relative">
+    <div
+      ref={switcherRef}
+      data-slot="local-branch-switcher"
+      className="relative"
+      onBlur={(event) => {
+        if (switcherRef.current?.contains(event.relatedTarget)) return
+        setOpen(false)
+      }}
+    >
       <Button
         ref={triggerRef}
         type="button"
