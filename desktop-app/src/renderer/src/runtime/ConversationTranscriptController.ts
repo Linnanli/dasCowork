@@ -121,6 +121,12 @@ export class ConversationTranscriptController {
   private turnSequence = 0
   private activeStreamAccepted = false
   private acceptedCurrentSend = false
+  private sendAcceptanceWaiter:
+    | {
+        resolve: () => void
+        reject: (error: Error) => void
+      }
+    | undefined
 
   constructor(options: ConversationTranscriptControllerOptions) {
     this.id = options.id
@@ -167,6 +173,26 @@ export class ConversationTranscriptController {
     }
     this.baseMessages = [...this.currentMessages(), toRegularTranscriptMessage(userMessage)]
     await this.startRequest('submit-message', userMessage.id, options)
+  }
+
+  /**
+   * Starts a message request and resolves once Main has accepted its stream.
+   * The transcript continues consuming the response after this method resolves.
+   */
+  async sendMessageUntilAccepted(
+    message: UIMessage,
+    options: ChatRequestOptions = {}
+  ): Promise<void> {
+    this.assertReady()
+    const accepted = new Promise<void>((resolve, reject) => {
+      this.sendAcceptanceWaiter = { resolve, reject }
+    })
+
+    void this.sendMessage(message, options).catch((error: unknown) => {
+      this.rejectSendAcceptance(toError(error))
+    })
+
+    await accepted
   }
 
   async editMessage(
@@ -369,6 +395,7 @@ export class ConversationTranscriptController {
     this.activeStreamAccepted = true
     this.acceptedCurrentSend = true
     this.status = 'streaming'
+    this.resolveSendAcceptance()
     this.emit()
   }
 
@@ -445,6 +472,18 @@ export class ConversationTranscriptController {
     const accepted = this.acceptedCurrentSend
     this.acceptedCurrentSend = false
     return accepted
+  }
+
+  private resolveSendAcceptance(): void {
+    const waiter = this.sendAcceptanceWaiter
+    this.sendAcceptanceWaiter = undefined
+    waiter?.resolve()
+  }
+
+  private rejectSendAcceptance(error: Error): void {
+    const waiter = this.sendAcceptanceWaiter
+    this.sendAcceptanceWaiter = undefined
+    waiter?.reject(error)
   }
 
   private async startRequest(

@@ -50,6 +50,7 @@ import type {
 import { createChatStreamBridge } from './chatStreamBridge'
 import { createComposerContextBridge } from './composerContextBridge'
 import { assertFollowUpSnapshotFitsIpc } from './followUpPayloadGuard'
+import { createMcpServerStatusBridge } from './mcpServerStatusBridge'
 
 // Electron's renderer CSP disallows Zod's optional dynamic parser compilation.
 // Set this globally before any IPC payload is parsed, including the schemas
@@ -63,6 +64,7 @@ const desktopEnvironment = {
 const desktopCodex: DesktopCodexApi = {
   getStatus: () => ipcRenderer.invoke('codex:get-status') as Promise<CodexStatus>,
   listModels: () => ipcRenderer.invoke('codex:list-models') as Promise<CodexModelList>,
+  ...createMcpServerStatusBridge((channel, payload) => ipcRenderer.invoke(channel, payload)),
   setSelectedModel: (modelId: string) =>
     ipcRenderer.invoke('codex:set-selected-model', { modelId }) as Promise<{
       selectedModelId: string

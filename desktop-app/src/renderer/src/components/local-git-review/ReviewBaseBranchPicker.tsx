@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 type Props = {
   target?: LocalGitTarget
   pendingBranch?: string
-  onSelectBranch(branch: string): void
+  onSelectBranch(branch: string, sourceBranch: string): void
   onCancel(): void
   onError?(message: string): void
 }
@@ -146,7 +146,7 @@ export function ReviewBaseBranchPicker({
               className="h-9 w-full justify-start px-3"
               disabled={Boolean(pendingBranch)}
               aria-busy={pendingBranch === branch}
-              onClick={() => onSelectBranch(branch)}
+              onClick={() => onSelectBranch(branch, state.summary.current ?? 'HEAD')}
               onKeyDown={(event) =>
                 moveRovingFocus(event, event.currentTarget.parentElement, 'button[role="option"]')
               }

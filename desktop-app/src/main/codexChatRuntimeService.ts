@@ -67,6 +67,7 @@ import type {
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
 import type { LocalGitTarget } from '../shared/localGitApi'
 import { selectUniqueLegacyCandidate } from '../shared/uniqueLegacyCandidate'
+import { extractVisibleUserRequest } from '../shared/userRequestEnvelope'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
 import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
 import {
@@ -2282,14 +2283,14 @@ function conversationTitleFromRequest(request: CodexChatRequest): string | null 
   const latestUserMessage = request.messages.findLast((message) => message.role === 'user')
   if (!latestUserMessage) return null
 
-  const title = latestUserMessage.parts
+  const fullText = latestUserMessage.parts
     .map((part) => {
       if (part.type !== 'text') return ''
       return typeof part.text === 'string' ? part.text : ''
     })
     .filter(Boolean)
     .join('\n')
-    .trim()
+  const title = extractVisibleUserRequest(fullText).trim()
 
   return title ? title : null
 }

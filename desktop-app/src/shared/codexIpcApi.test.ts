@@ -9,6 +9,8 @@ import {
   codexSetSelectedModelPayloadSchema,
   localContextPickerPayloadSchema,
   localContextReferenceSchema,
+  mcpServerListRequestSchema,
+  mcpServerListResultSchema,
   projectCreateBlankPayloadSchema,
   sidebarConversationActionPayloadSchema,
   sidebarConversationOpenResultSchema,
@@ -184,6 +186,47 @@ describe('codex IPC schemas', () => {
         label: 'photo.png',
         mediaType: 'image/png',
         previewUrl: 'https://example.com/photo.png'
+      }).success
+    ).toBe(false)
+  })
+
+  it('validates renderer-safe MCP server status requests and results', () => {
+    expect(mcpServerListRequestSchema.safeParse({ version: 1 }).success).toBe(true)
+    expect(mcpServerListRequestSchema.safeParse({ version: 1, threadId: 'thread-1' }).success).toBe(
+      true
+    )
+    expect(mcpServerListRequestSchema.safeParse({ version: 2 }).success).toBe(false)
+    expect(
+      mcpServerListRequestSchema.safeParse({ version: 1, threadId: '', method: 'raw/list' }).success
+    ).toBe(false)
+
+    expect(
+      mcpServerListResultSchema.safeParse({
+        version: 1,
+        generatedAt: '2026-08-01T00:00:00.000Z',
+        servers: [
+          {
+            name: 'github',
+            connected: true,
+            authStatus: 'oAuth',
+            toolCount: 3
+          }
+        ]
+      }).success
+    ).toBe(true)
+    expect(
+      mcpServerListResultSchema.safeParse({
+        version: 1,
+        generatedAt: '2026-08-01T00:00:00.000Z',
+        servers: [
+          {
+            name: 'github',
+            connected: true,
+            authStatus: 'oAuth',
+            toolCount: 3,
+            tools: { read: {} }
+          }
+        ]
       }).success
     ).toBe(false)
   })

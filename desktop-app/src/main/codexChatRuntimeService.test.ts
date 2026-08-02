@@ -1784,7 +1784,18 @@ describe('CodexChatRuntimeService', () => {
           {
             id: 'user-1',
             role: 'user',
-            parts: [{ type: 'text', text: '你好,你是什么模型?' }]
+            parts: [
+              {
+                type: 'text',
+                text: [
+                  '## Code review guidelines:',
+                  '# Review Guidelines',
+                  'internal instructions',
+                  '## My request for Codex:',
+                  '请检查我未提交的更改'
+                ].join('\n')
+              }
+            ]
           }
         ],
         modelId: 'gpt-test'
@@ -1805,7 +1816,7 @@ describe('CodexChatRuntimeService', () => {
       expect.objectContaining({
         threadId: 'thread-prestarted',
         originConversationId: 'chat-1',
-        title: '你好,你是什么模型?'
+        title: '请检查我未提交的更改'
       })
     )
     expect(streamText).toHaveBeenCalledWith(

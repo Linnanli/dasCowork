@@ -7,14 +7,10 @@ import {
   type AssistantState,
   MessagePrimitive,
   ThreadPrimitive,
-  type Unstable_DirectiveFormatter,
   type QuoteMessagePartProps,
   type TextMessagePartProps,
   type ToolCallMessagePartStatus,
-  type Unstable_SlashCommand,
   type Unstable_TriggerItem,
-  unstable_defaultDirectiveFormatter,
-  unstable_useSlashCommandAdapter,
   getExternalStoreMessages,
   useExternalStoreRuntime,
   useAui,
@@ -34,11 +30,9 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
+import type { ComposerReviewSelection } from '@/components/assistant-ui/composer-code-review-command-content'
+import { ComposerSuggestionSurface } from '@/components/assistant-ui/composer-suggestion-surface'
 import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
-import {
-  ComposerReviewMode,
-  type ComposerReviewSelection
-} from '@/components/local-git-review/ComposerReviewMode'
 import { ConversationChangesRow } from '@/components/local-git-review/ConversationChangesRow'
 import {
   GitRepositoryProvider,
@@ -50,7 +44,15 @@ import { ConversationTurnErrorBoundary } from '@/components/conversation/Convers
 import { ConversationRecoveryStatus } from '@/components/conversation/ConversationRecoveryStatus'
 import { WorkspaceRecoveryBanner } from '@/components/conversation/WorkspaceRecoveryBanner'
 import { ContextLexicalInput } from '@/composer/contextLexicalInput'
-import { ComposerContextSuggestionProvider } from '@/composer/composerContextSuggestionController'
+import {
+  ComposerSuggestionProvider,
+  useComposerSuggestion
+} from '@/composer/composerSuggestionController'
+import {
+  ComposerCommandRegistryProvider,
+  createComposerCommandRegistry,
+  useRegisterComposerCommand
+} from '@/composer/commands/composerCommandRegistry'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { buildCodeReviewPrompt } from '@/lib/codeReviewPrompt'
 import {
@@ -75,13 +77,9 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   CopyIcon,
   FileIcon,
-  FileTextIcon,
   FolderIcon,
-  HelpCircleIcon,
   MessageSquareIcon,
   PackageIcon,
   PanelLeftIcon,
@@ -89,7 +87,6 @@ import {
   PlusIcon,
   PuzzleIcon,
   QuoteIcon,
-  SlashIcon,
   SparklesIcon,
   SquareIcon,
   WrenchIcon
@@ -104,7 +101,6 @@ import {
   useRef,
   useState,
   type ButtonHTMLAttributes,
-  type ComponentPropsWithoutRef,
   type FC,
   type ReactNode
 } from 'react'
@@ -178,6 +174,7 @@ import type {
   QueuedUserMessageSnapshotInput
 } from '../../shared/codexFollowUpApi'
 import type { ProjectSelection } from '../../shared/projects/projectTypes'
+import { extractVisibleUserRequest } from '../../shared/userRequestEnvelope'
 import type { ModelOption } from './components/assistant-ui'
 import {
   composerContextDirectiveFormatter,
@@ -231,8 +228,8 @@ type ComposerProps = {
       | QueuedUserMessageSnapshot
       | QueuedUserMessageSnapshotInput
   ) => Promise<void>
-  onStartInlineReview: (prompt: string) => Promise<void>
-  onStartDetachedReview: (prompt: string) => Promise<void>
+  onStartCodeReview: (prompt: string) => Promise<void>
+  onCreateNewTask: () => void
 }
 
 type ChatThreadProps = ComposerProps & {
@@ -286,76 +283,10 @@ const directiveChipIcons: Record<string, IconComponent> = {
   app: PackageIcon
 }
 
-type DirectiveBehaviorProps = {
-  formatter?: Unstable_DirectiveFormatter
-  onInserted?: (item: Unstable_TriggerItem) => void
-}
-
-type ActionBehaviorProps = {
-  formatter?: Unstable_DirectiveFormatter
-  onExecute: (item: Unstable_TriggerItem) => void
-  removeOnExecute?: boolean
-}
-
-type ComposerTriggerPopoverBaseProps = Omit<
-  ComponentPropsWithoutRef<typeof ComposerPrimitive.Unstable_TriggerPopover>,
-  'children'
-> & {
-  backLabel?: string
-  emptyCategoriesLabel?: string
-  emptyItemsLabel?: string
-  fallbackIcon?: IconComponent
-  iconMap?: Record<string, IconComponent>
-}
-
-type ComposerTriggerPopoverProps = ComposerTriggerPopoverBaseProps &
-  (
-    | {
-        action?: never
-        directive: DirectiveBehaviorProps
-      }
-    | {
-        action: ActionBehaviorProps
-        directive?: never
-      }
-  )
-
 type RenderTargetScrollEventDetail = {
   targetId?: unknown
   behavior?: ScrollBehavior
   focus?: boolean
-}
-
-const noopSlashCommand = (): void => {}
-
-const slashCommands: readonly Unstable_SlashCommand[] = [
-  {
-    id: 'explain-changes',
-    label: '解释改动',
-    description: '总结当前工作区里的主要变化',
-    icon: 'FileText',
-    execute: noopSlashCommand
-  },
-  {
-    id: 'draft-pr',
-    label: '生成 PR 描述',
-    description: '整理背景、范围和验证信息',
-    icon: 'Pencil',
-    execute: noopSlashCommand
-  },
-  {
-    id: 'review-risks',
-    label: '审查风险',
-    description: '查找潜在回归和遗漏测试',
-    icon: 'HelpCircle',
-    execute: noopSlashCommand
-  }
-]
-
-const slashIconMap: Record<string, IconComponent> = {
-  FileText: FileTextIcon,
-  HelpCircle: HelpCircleIcon,
-  Pencil: PencilIcon
 }
 
 const streamdownPlugins = { code, math, mermaid, cjk }
@@ -428,7 +359,7 @@ async function sendCodeReviewMessage(
   let sendError: unknown
   await runTranscriptAction(controller, async () => {
     try {
-      await controller.sendMessage(createCodeReviewMessage(prompt))
+      await controller.sendMessageUntilAccepted(createCodeReviewMessage(prompt))
     } catch (error) {
       sendError = error
       throw error
@@ -454,8 +385,6 @@ function App(): React.JSX.Element {
     setSelectedModelId,
     activeConversation,
     startNewConversation,
-    prepareNewConversation,
-    activateConversation,
     restoreActiveConversation,
     restoreSingleActiveConversation,
     openConversation,
@@ -604,24 +533,6 @@ function App(): React.JSX.Element {
     clearActiveConversationId()
     startNewConversation()
   }
-  const startDetachedCodeReview = useCallback(
-    async (prompt: string): Promise<void> => {
-      const entry = prepareNewConversation(
-        activeConversation?.projectSelection ?? storedProjectSelection
-      )
-      try {
-        await sendCodeReviewMessage(entry.controller, prompt)
-      } catch (error) {
-        if (activeConversation?.conversationId) {
-          writeActiveConversationId(activeConversation.conversationId)
-        }
-        throw error
-      }
-      clearActiveConversationId()
-      activateConversation(entry)
-    },
-    [activateConversation, activeConversation, prepareNewConversation, storedProjectSelection]
-  )
   const handleOpenConversation = useCallback<OpenSubagentConversation>(
     (conversationId) => {
       void openConversation({ conversationId })
@@ -670,7 +581,6 @@ function App(): React.JSX.Element {
             onScrollSnapshotChange={setActiveScroll}
             onSelectedModelChange={handleSelectedModelChange}
             onCreateNewTask={handleStartNewConversation}
-            onStartDetachedReview={startDetachedCodeReview}
             onRejectApproval={rejectServerRequest}
             onSnoozeApproval={snoozeServerRequest}
             onRespondApproval={respondToServerRequest}
@@ -699,7 +609,6 @@ function ActiveConversationPane({
   onScrollSnapshotChange,
   onSelectedModelChange,
   onCreateNewTask,
-  onStartDetachedReview,
   onRejectApproval,
   onSnoozeApproval,
   onRespondApproval,
@@ -721,7 +630,6 @@ function ActiveConversationPane({
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
   onSelectedModelChange: (modelId: string) => void
   onCreateNewTask: () => void
-  onStartDetachedReview: (prompt: string) => Promise<void>
   onRejectApproval: (request: CodexApprovalRequest) => Promise<void>
   onSnoozeApproval: (request: CodexApprovalRequest) => Promise<void>
   onRespondApproval: (
@@ -809,7 +717,7 @@ function ActiveConversationPane({
     activeConversation?.threadId || entry.context.threadId
       ? undefined
       : JSON.stringify(projectState.state?.activeProjectSelection ?? null)
-  const startInlineCodeReview = useCallback(
+  const startCodeReview = useCallback(
     async (prompt: string): Promise<void> => {
       await sendCodeReviewMessage(entry.controller, prompt)
     },
@@ -850,8 +758,7 @@ function ActiveConversationPane({
             onScrollSnapshotChange={onScrollSnapshotChange}
             onSelectedModelChange={onSelectedModelChange}
             onCreateNewTask={onCreateNewTask}
-            onStartInlineReview={startInlineCodeReview}
-            onStartDetachedReview={onStartDetachedReview}
+            onStartCodeReview={startCodeReview}
             onRejectApproval={onRejectApproval}
             onSnoozeApproval={onSnoozeApproval}
             onRespondApproval={onRespondApproval}
@@ -1006,8 +913,7 @@ function ChatThread({
   onOpenConversation,
   onSelectedModelChange,
   onSteerFollowUp,
-  onStartInlineReview,
-  onStartDetachedReview,
+  onStartCodeReview,
   projectState,
   scrollSnapshot,
   onScrollSnapshotChange,
@@ -1248,8 +1154,8 @@ function ChatThread({
                   modelSelectionError={modelSelectionError}
                   onSelectedModelChange={onSelectedModelChange}
                   onSteerFollowUp={onSteerFollowUp}
-                  onStartInlineReview={onStartInlineReview}
-                  onStartDetachedReview={onStartDetachedReview}
+                  onStartCodeReview={onStartCodeReview}
+                  onCreateNewTask={onCreateNewTask}
                   projectState={projectState}
                   editingFollowUp={editingFollowUp}
                   onEditingFollowUpChange={setEditingFollowUp}
@@ -1708,9 +1614,31 @@ function transcriptMessageToThreadMessageLike(
 ): ThreadMessageLike & {
   readonly convertConfig?: { readonly joinStrategy: 'none' }
 } {
+  const visibleUserText =
+    message.role === 'user'
+      ? extractVisibleUserRequest(
+          message.parts
+            .filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join('\n')
+        )
+      : undefined
+  let userTextEmitted = false
+
   const content = message.parts.flatMap((part): unknown[] => {
     if (part.type === 'step-start') return []
-    if (part.type === 'text') return [{ type: 'text', text: part.text }]
+    if (part.type === 'text') {
+      if (message.role === 'user') {
+        if (userTextEmitted) return []
+        userTextEmitted = true
+      }
+      return [
+        {
+          type: 'text',
+          text: visibleUserText ?? part.text
+        }
+      ]
+    }
     if (part.type === 'reasoning') return [{ type: 'reasoning', text: part.text }]
     if (isToolUIPart(part)) {
       const input =
@@ -2447,41 +2375,38 @@ function UserActionBar(): React.JSX.Element {
 
 function EditComposer(): React.JSX.Element {
   return (
-    <ComposerContextSuggestionProvider>
-      <MessagePrimitive.Root
-        data-slot="aui_edit-composer-wrapper"
-        className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
-      >
-        <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-          <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl border border-border/60 bg-background shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:border-muted-foreground/15 dark:bg-muted/30 dark:shadow-none">
-            <ContextLexicalInput
-              autoFocus
-              directiveChip={DirectiveChip}
-              formatter={composerContextDirectiveFormatter}
-              className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base text-foreground outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
-            />
-            <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
-              <ComposerPrimitive.Cancel asChild>
-                <button
-                  className="h-8 rounded-full px-3.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  type="button"
-                >
-                  取消
-                </button>
-              </ComposerPrimitive.Cancel>
-              <ComposerPrimitive.Send asChild>
-                <button
-                  className="h-8 rounded-full bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                  type="button"
-                >
-                  更新
-                </button>
-              </ComposerPrimitive.Send>
-            </div>
-          </ComposerPrimitive.Root>
-        </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      </MessagePrimitive.Root>
-    </ComposerContextSuggestionProvider>
+    <MessagePrimitive.Root
+      data-slot="aui_edit-composer-wrapper"
+      className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
+    >
+      <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl border border-border/60 bg-background shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:border-muted-foreground/15 dark:bg-muted/30 dark:shadow-none">
+        <ContextLexicalInput
+          autoFocus
+          directiveChip={DirectiveChip}
+          formatter={composerContextDirectiveFormatter}
+          suggestionEnabled={false}
+          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base text-foreground outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
+        />
+        <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
+          <ComposerPrimitive.Cancel asChild>
+            <button
+              className="h-8 rounded-full px-3.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              type="button"
+            >
+              取消
+            </button>
+          </ComposerPrimitive.Cancel>
+          <ComposerPrimitive.Send asChild>
+            <button
+              className="h-8 rounded-full bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              type="button"
+            >
+              更新
+            </button>
+          </ComposerPrimitive.Send>
+        </div>
+      </ComposerPrimitive.Root>
+    </MessagePrimitive.Root>
   )
 }
 
@@ -2534,157 +2459,18 @@ function DirectiveChip({
   )
 }
 
-function resolveTriggerIcon(
-  iconKey: string | undefined,
-  iconMap: Record<string, IconComponent> | undefined,
-  fallbackIcon: IconComponent
-): IconComponent {
-  if (iconKey && iconMap?.[iconKey]) return iconMap[iconKey]
-  return fallbackIcon
-}
-
-function TriggerPopoverCategories({
-  emptyLabel,
-  fallbackIcon,
-  iconMap
-}: {
-  emptyLabel: string
-  fallbackIcon: IconComponent
-  iconMap?: Record<string, IconComponent>
-}): React.JSX.Element {
+function Composer(props: ComposerComponentProps): React.JSX.Element {
+  const commandRegistry = useMemo(() => createComposerCommandRegistry(), [])
   return (
-    <ComposerPrimitive.Unstable_TriggerPopoverCategories>
-      {(categories) => (
-        <div className="flex flex-col py-1" data-slot="composer-trigger-popover-categories">
-          {categories.map((category) => {
-            const Icon = resolveTriggerIcon(category.id, iconMap, fallbackIcon)
-
-            return (
-              <ComposerPrimitive.Unstable_TriggerPopoverCategoryItem
-                key={category.id}
-                categoryId={category.id}
-                className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-sm transition-colors outline-none hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent"
-              >
-                <span className="flex items-center gap-2">
-                  <Icon className="size-4 text-muted-foreground" />
-                  {category.label}
-                </span>
-                <ChevronRightIcon className="size-4 text-muted-foreground" />
-              </ComposerPrimitive.Unstable_TriggerPopoverCategoryItem>
-            )
-          })}
-          {categories.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-muted-foreground">{emptyLabel}</div>
-          ) : null}
-        </div>
-      )}
-    </ComposerPrimitive.Unstable_TriggerPopoverCategories>
+    <ComposerSuggestionProvider>
+      <ComposerCommandRegistryProvider registry={commandRegistry}>
+        <ComposerBody {...props} />
+      </ComposerCommandRegistryProvider>
+    </ComposerSuggestionProvider>
   )
 }
 
-function TriggerPopoverItems({
-  backLabel,
-  emptyLabel,
-  fallbackIcon,
-  iconMap
-}: {
-  backLabel: string
-  emptyLabel: string
-  fallbackIcon: IconComponent
-  iconMap?: Record<string, IconComponent>
-}): React.JSX.Element {
-  return (
-    <ComposerPrimitive.Unstable_TriggerPopoverItems>
-      {(items) => (
-        <div className="flex flex-col" data-slot="composer-trigger-popover-items">
-          <ComposerPrimitive.Unstable_TriggerPopoverBack className="flex cursor-pointer items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground uppercase transition-colors hover:bg-accent">
-            <ChevronLeftIcon className="size-3.5" />
-            {backLabel}
-          </ComposerPrimitive.Unstable_TriggerPopoverBack>
-
-          <div className="py-1">
-            {items.map((item, index) => {
-              const iconKey =
-                typeof item.metadata?.icon === 'string' ? item.metadata.icon : undefined
-              const Icon = resolveTriggerIcon(iconKey, iconMap, fallbackIcon)
-
-              return (
-                <ComposerPrimitive.Unstable_TriggerPopoverItem
-                  key={item.id}
-                  item={item}
-                  index={index}
-                  className="flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-start transition-colors outline-none hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent"
-                >
-                  <span className="flex items-center gap-2 text-sm font-medium">
-                    <Icon className="size-3.5 text-primary" />
-                    {item.label}
-                  </span>
-                  {item.description ? (
-                    <span className="ms-5.5 text-xs leading-tight text-muted-foreground">
-                      {item.description}
-                    </span>
-                  ) : null}
-                </ComposerPrimitive.Unstable_TriggerPopoverItem>
-              )
-            })}
-            {items.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-muted-foreground">{emptyLabel}</div>
-            ) : null}
-          </div>
-        </div>
-      )}
-    </ComposerPrimitive.Unstable_TriggerPopoverItems>
-  )
-}
-
-function ComposerTriggerPopover({
-  action,
-  backLabel = '返回',
-  className,
-  directive,
-  emptyCategoriesLabel = '没有可用项目',
-  emptyItemsLabel = '没有匹配项',
-  fallbackIcon = SlashIcon,
-  iconMap,
-  ...props
-}: ComposerTriggerPopoverProps): React.JSX.Element {
-  return (
-    <ComposerPrimitive.Unstable_TriggerPopover
-      className={cn(
-        'aui-composer-trigger-popover absolute bottom-full start-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg',
-        className
-      )}
-      data-slot="composer-trigger-popover"
-      {...props}
-    >
-      {directive ? (
-        <ComposerPrimitive.Unstable_TriggerPopover.Directive
-          formatter={directive.formatter ?? unstable_defaultDirectiveFormatter}
-          onInserted={directive.onInserted}
-        />
-      ) : (
-        <ComposerPrimitive.Unstable_TriggerPopover.Action
-          formatter={action.formatter ?? unstable_defaultDirectiveFormatter}
-          onExecute={action.onExecute}
-          removeOnExecute={action.removeOnExecute}
-        />
-      )}
-      <TriggerPopoverCategories
-        emptyLabel={emptyCategoriesLabel}
-        fallbackIcon={fallbackIcon}
-        iconMap={iconMap}
-      />
-      <TriggerPopoverItems
-        backLabel={backLabel}
-        emptyLabel={emptyItemsLabel}
-        fallbackIcon={fallbackIcon}
-        iconMap={iconMap}
-      />
-    </ComposerPrimitive.Unstable_TriggerPopover>
-  )
-}
-
-function Composer({
+function ComposerBody({
   activeConversation,
   composerContextCatalog,
   disabled,
@@ -2694,8 +2480,8 @@ function Composer({
   modelSelectionError,
   onSelectedModelChange,
   onSteerFollowUp,
-  onStartInlineReview,
-  onStartDetachedReview,
+  onStartCodeReview,
+  onCreateNewTask,
   projectState,
   editingFollowUp,
   onEditingFollowUpChange,
@@ -2703,6 +2489,7 @@ function Composer({
   reservedEditingItemId
 }: ComposerComponentProps): React.JSX.Element {
   const aui = useAui()
+  const { controller: suggestionController, state: suggestionState } = useComposerSuggestion()
   const globalProjectSelection = projectState.state?.activeProjectSelection
   const conversationProjectSelection = activeConversation?.projectSelection
   const effectiveProjectSelection = activeConversation
@@ -2714,17 +2501,6 @@ function Composer({
   const hasProjectContext = hasConversationProjectContext(activeConversation, projectState)
   const localContextPickerEnabled = !isRemoteExecution
   const [contextSearchOpen, setContextSearchOpen] = useState(false)
-  const [reviewModeOpen, setReviewModeOpen] = useState(false)
-  const [reviewModeError, setReviewModeError] = useState<string>()
-  const [reviewDelivery, setReviewDelivery] = useState<'inline' | 'detached'>(() => {
-    try {
-      return window.localStorage.getItem('local-git-review.delivery') === 'detached'
-        ? 'detached'
-        : 'inline'
-    } catch {
-      return 'inline'
-    }
-  })
   const composerText = useAuiState((state) => state.composer.text)
   const composerAttachments = useAuiState((state) => state.composer.attachments)
   const isThreadRunning = useAuiState((state) => state.thread.isRunning)
@@ -2777,11 +2553,6 @@ function Composer({
       metadata: { icon: 'tool' }
     }))
   }, [aui])
-  const slash = unstable_useSlashCommandAdapter({
-    commands: slashCommands,
-    fallbackIcon: SlashIcon,
-    iconMap: slashIconMap
-  })
   const selectedModel = models.find((model) => model.id === selectedModelId)
   const selectedModelSupportsImages = selectedModel?.inputModalities?.includes('image') ?? true
   const cannotSendImages = hasImageAttachments && !selectedModelSupportsImages
@@ -2827,59 +2598,134 @@ function Composer({
     (isRemoteExecution && hasLocalPathAttachments) ||
     Boolean(reservedEditingItemId && !editingFollowUp)
   const hasComposerContent = composerText.trim().length > 0 || composerAttachments.length > 0
+  const commandDraftText = useMemo(() => {
+    if (!suggestionState.open || suggestionState.trigger !== '/' || !suggestionState.range) {
+      return composerText
+    }
+    return `${composerText.slice(0, suggestionState.range.start)}${composerText.slice(suggestionState.range.end)}`
+  }, [composerText, suggestionState])
+  const hasReviewCommandDraft = commandDraftText.trim().length > 0 || composerAttachments.length > 0
   const submitCodeReview = useCallback(
     async (selection: ComposerReviewSelection): Promise<void> => {
       if (!gitTarget) throw new Error('Choose a Git-backed conversation before starting a review')
-      if (composerText.trim().length > 0 || composerAttachments.length > 0) {
+      if (hasComposerContent) {
         throw new Error('请先发送或清空输入框中的草稿和附件，再开始审核')
       }
-      setReviewModeError(undefined)
       const reviewTarget =
         selection.type === 'uncommitted'
           ? selection
           : {
               type: 'base-branch' as const,
+              sourceBranch: selection.sourceBranch,
               ...(await window.desktopApp.git.resolveMergeBase({
                 target: gitTarget,
                 baseBranch: selection.baseBranch
               }))
             }
       const prompt = buildCodeReviewPrompt(reviewTarget)
-      if (reviewDelivery === 'detached') {
-        await onStartDetachedReview(prompt)
-        setReviewModeOpen(false)
-        return
-      }
-      await onStartInlineReview(prompt)
-      setReviewModeOpen(false)
+      await onStartCodeReview(prompt)
     },
+    [gitTarget, hasComposerContent, onStartCodeReview]
+  )
+  const reviewCommandDisabledReason = getReviewDisabledReason({
+    hasDraft: hasReviewCommandDraft,
+    hasGitTarget: Boolean(gitTarget),
+    isEditing: Boolean(editingFollowUp),
+    isRunning: isThreadRunning
+  })
+  const composerContentScope = useMemo(
+    () =>
+      JSON.stringify({
+        conversationId: activeConversation?.conversationId,
+        cwd: activeConversation?.cwd,
+        projectSelection: effectiveProjectSelection,
+        threadId: activeConversation?.threadId
+      }),
     [
-      composerAttachments.length,
-      composerText,
-      gitTarget,
-      onStartDetachedReview,
-      onStartInlineReview,
-      reviewDelivery
+      activeConversation?.conversationId,
+      activeConversation?.cwd,
+      activeConversation?.threadId,
+      effectiveProjectSelection
     ]
   )
-  let reviewDisabledReason: string | undefined
-  if (!gitTarget) {
-    reviewDisabledReason = '当前会话没有可审核的 Git 仓库'
-  } else if (isThreadRunning) {
-    reviewDisabledReason = '请等待当前任务完成后再开始审核'
-  } else if (editingFollowUp) {
-    reviewDisabledReason = '请先完成或取消正在编辑的排队消息'
-  } else if (hasComposerContent) {
-    reviewDisabledReason = '请先发送或清空输入框中的草稿和附件，再开始审核'
-  }
-  const updateReviewDelivery = (delivery: 'inline' | 'detached'): void => {
-    setReviewDelivery(delivery)
-    try {
-      window.localStorage.setItem('local-git-review.delivery', delivery)
-    } catch {
-      // The preference only affects this renderer and remains optional.
-    }
-  }
+  const previousComposerContentScope = useRef(composerContentScope)
+  useEffect(() => {
+    const previousScope = previousComposerContentScope.current
+    previousComposerContentScope.current = composerContentScope
+    if (previousScope === composerContentScope) return
+
+    const suggestionContentOpen = suggestionState.open && suggestionState.view.type === 'content'
+    if (!suggestionContentOpen) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      suggestionController.close()
+    })
+    return () => window.cancelAnimationFrame(frameId)
+  }, [composerContentScope, suggestionController, suggestionState])
+  useEffect(() => {
+    const suggestionContentOpen = suggestionState.open && suggestionState.view.type === 'content'
+    if (!isThreadRunning || !suggestionContentOpen) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      suggestionController.close()
+    })
+    return () => window.cancelAnimationFrame(frameId)
+  }, [isThreadRunning, suggestionController, suggestionState])
+  const commandContext = useMemo(
+    () => ({
+      draftText: commandDraftText,
+      hasAttachments: composerAttachments.length > 0,
+      isRunning: isThreadRunning,
+      isEditing: Boolean(editingFollowUp),
+      activeContentId:
+        suggestionState.open && suggestionState.view.type === 'content'
+          ? suggestionState.view.id
+          : null,
+      hasProject: hasProjectContext,
+      hasGitReviewTarget: Boolean(gitTarget)
+    }),
+    [
+      commandDraftText,
+      composerAttachments.length,
+      editingFollowUp,
+      gitTarget,
+      hasProjectContext,
+      isThreadRunning,
+      suggestionState
+    ]
+  )
+  useRegisterComposerCommand({
+    id: 'new-chat',
+    title: 'New chat',
+    description: '创建一个新的空白任务',
+    group: 'General',
+    searchAliases: ['new', 'new chat'],
+    triggers: ['/'],
+    requiresEmptyComposer: true,
+    enabled: !isThreadRunning && !editingFollowUp,
+    selection: { type: 'action', run: onCreateNewTask }
+  })
+  useRegisterComposerCommand({
+    id: 'code-review',
+    title: 'Code review',
+    description: '审核当前 Git 工作区的改动',
+    group: 'Development',
+    searchAliases: ['review', '代码审查'],
+    triggers: ['/'],
+    requiresEmptyComposer: true,
+    enabled: !reviewCommandDisabledReason,
+    selection: { type: 'content', contentId: 'code-review', placement: 'panel' }
+  })
+  useRegisterComposerCommand({
+    id: 'mcp',
+    title: 'MCP',
+    description: '查看 MCP 服务状态',
+    group: 'Development',
+    searchAliases: ['mcp servers'],
+    triggers: ['/'],
+    enabled: !editingFollowUp,
+    selection: { type: 'content', contentId: 'mcp', placement: 'panel' }
+  })
   const enqueueRunningFollowUp = useCallback(
     async (mode: FollowUpMode) => {
       const id = editingFollowUp?.itemId ?? crypto.randomUUID()
@@ -2992,7 +2838,7 @@ function Composer({
   ])
 
   return (
-    <ComposerContextSuggestionProvider>
+    <>
       <Dialog
         open={pausedSubmission !== null}
         onOpenChange={(open) => {
@@ -3046,234 +2892,197 @@ function Composer({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root
-          className="aui-composer-root relative flex w-full flex-col"
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape') return
-            if (reviewModeOpen) {
-              event.preventDefault()
-              setReviewModeOpen(false)
-              setReviewModeError(undefined)
-              return
-            }
-            if (isThreadRunning) {
-              event.preventDefault()
-              aui.composer().cancel()
-            }
-          }}
+      <ComposerPrimitive.Root
+        className="aui-composer-root relative flex w-full flex-col"
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return
+          if (isThreadRunning) {
+            event.preventDefault()
+            aui.composer().cancel()
+          }
+        }}
+      >
+        <div
+          data-slot="aui_composer-shell"
+          className={cn(
+            'flex w-full flex-col gap-2 border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/70',
+            queueAttached ? 'rounded-b-3xl rounded-t-none' : 'rounded-3xl'
+          )}
         >
-          <div
-            data-slot="aui_composer-shell"
-            className={cn(
-              'flex w-full flex-col gap-2 border border-border/60 bg-background p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:bg-muted/70',
-              queueAttached ? 'rounded-b-3xl rounded-t-none' : 'rounded-3xl'
-            )}
-          >
-            {editingFollowUp ? (
-              <div
-                data-slot="queued-follow-up-editing"
-                className="flex items-center justify-between gap-3 rounded-xl bg-muted/65 px-2.5 py-1.5 text-xs text-muted-foreground"
-              >
-                <span>正在编辑排队消息</span>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => {
-                    void (async () => {
-                      await followUps.cancelEdit(editingFollowUp.itemId)
-                      await aui.composer().reset()
-                      onEditingFollowUpChange(null)
-                    })()
-                  }}
-                >
-                  取消编辑
-                </Button>
-              </div>
-            ) : null}
-            {!reviewModeOpen ? <ComposerAttachments /> : null}
-            {reviewModeOpen ? (
-              <ComposerReviewMode
-                target={gitTarget}
-                disabled={sendDisabled || isThreadRunning}
-                delivery={reviewDelivery}
-                error={reviewModeError}
-                onCancel={() => {
-                  setReviewModeOpen(false)
-                  setReviewModeError(undefined)
-                  window.requestAnimationFrame(() =>
-                    document.querySelector<HTMLElement>('.aui-lexical-input')?.focus()
-                  )
+          {editingFollowUp ? (
+            <div
+              data-slot="queued-follow-up-editing"
+              className="flex items-center justify-between gap-3 rounded-xl bg-muted/65 px-2.5 py-1.5 text-xs text-muted-foreground"
+            >
+              <span>正在编辑排队消息</span>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                onClick={() => {
+                  void (async () => {
+                    await followUps.cancelEdit(editingFollowUp.itemId)
+                    await aui.composer().reset()
+                    onEditingFollowUpChange(null)
+                  })()
                 }}
-                onError={setReviewModeError}
-                onDeliveryChange={updateReviewDelivery}
-                onSubmit={submitCodeReview}
+              >
+                取消编辑
+              </Button>
+            </div>
+          ) : null}
+          <ComposerAttachments />
+          <ContextLexicalInput
+            className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
+            directiveChip={DirectiveChip}
+            formatter={composerContextDirectiveFormatter}
+            placeholder="输入消息（@ 提及工具，/ 输入命令）"
+          />
+          <div className="aui-composer-action-wrapper flex items-center justify-between">
+            <div className="flex min-w-0 items-center gap-1">
+              <ComposerAddContextPopover />
+              <ModelSelector
+                models={models}
+                value={selectedModelId}
+                onValueChange={onSelectedModelChange}
+                variant="ghost"
+                size="sm"
               />
-            ) : (
-              <ContextLexicalInput
-                className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
-                directiveChip={DirectiveChip}
-                formatter={composerContextDirectiveFormatter}
-                placeholder="输入消息（@ 提及工具，/ 输入命令）"
-              />
-            )}
-            <div className="aui-composer-action-wrapper flex items-center justify-between">
-              <div className="flex min-w-0 items-center gap-1">
-                {!reviewModeOpen ? (
-                  <ComposerAddContextPopover
-                    localPickerEnabled={localContextPickerEnabled}
-                    onOpenChange={setContextSearchOpen}
-                    onQueryChange={composerContextCatalog.setQuery}
-                    pickLocalContext={pickLocalContext}
-                    sections={contextSections}
-                  />
-                ) : null}
-                <ModelSelector
-                  models={models}
-                  value={selectedModelId}
-                  onValueChange={onSelectedModelChange}
-                  variant="ghost"
-                  size="sm"
-                />
-                {isRemoteExecution &&
-                (gitRepository.status === 'unavailable' || gitRepository.status === 'error') ? (
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    data-slot="git-repository-retry"
-                    title={
-                      gitRepository.status === 'unavailable'
-                        ? gitRepository.reason
-                        : gitRepository.error.message
-                    }
-                    onClick={gitRepository.retry}
-                  >
-                    重试 Git
-                  </Button>
-                ) : null}
+              {isRemoteExecution &&
+              (gitRepository.status === 'unavailable' || gitRepository.status === 'error') ? (
                 <Button
                   type="button"
                   size="xs"
                   variant="ghost"
-                  disabled={Boolean(reviewDisabledReason)}
-                  aria-pressed={reviewModeOpen}
-                  title={reviewDisabledReason ?? '开始代码审核'}
-                  onClick={() => {
-                    setReviewModeOpen(true)
-                    setReviewModeError(undefined)
-                  }}
+                  data-slot="git-repository-retry"
+                  title={
+                    gitRepository.status === 'unavailable'
+                      ? gitRepository.reason
+                      : gitRepository.error.message
+                  }
+                  onClick={gitRepository.retry}
                 >
-                  Review
+                  重试 Git
                 </Button>
-                {modelSelectionError && (
-                  <span
-                    role="alert"
-                    data-slot="model-selection-error"
-                    className="text-destructive max-w-56 truncate text-xs"
-                    title={modelSelectionError}
-                  >
-                    {modelSelectionError}
-                  </span>
-                )}
-                {cannotSendImages ? (
-                  <span
-                    role="alert"
-                    data-slot="composer-image-model-error"
-                    className="max-w-56 truncate text-xs text-destructive"
-                  >
-                    移除照片或切换到支持图片的模型
-                  </span>
-                ) : null}
-                {isRemoteExecution && hasLocalPathAttachments ? (
-                  <span
-                    role="alert"
-                    data-slot="composer-remote-local-attachment-error"
-                    className="max-w-64 truncate text-xs text-destructive"
-                  >
-                    移除本地文件附件后才能发送到远程项目
-                  </span>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-1.5">
-                {!reviewModeOpen && !editingFollowUp ? (
-                  <AuiIf condition={(state) => !state.thread.isRunning}>
-                    <ComposerPrimitive.Send asChild>
-                      <IconButton
-                        className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                        disabled={sendDisabled}
-                        label="发送消息"
-                        title="发送消息"
-                      >
-                        <ArrowUpIcon className="size-4.5" />
-                      </IconButton>
-                    </ComposerPrimitive.Send>
-                  </AuiIf>
-                ) : null}
-                {!reviewModeOpen && isThreadRunning && !hasComposerContent ? (
-                  <ComposerPrimitive.Cancel asChild>
+              ) : null}
+              {modelSelectionError && (
+                <span
+                  role="alert"
+                  data-slot="model-selection-error"
+                  className="text-destructive max-w-56 truncate text-xs"
+                  title={modelSelectionError}
+                >
+                  {modelSelectionError}
+                </span>
+              )}
+              {cannotSendImages ? (
+                <span
+                  role="alert"
+                  data-slot="composer-image-model-error"
+                  className="max-w-56 truncate text-xs text-destructive"
+                >
+                  移除照片或切换到支持图片的模型
+                </span>
+              ) : null}
+              {isRemoteExecution && hasLocalPathAttachments ? (
+                <span
+                  role="alert"
+                  data-slot="composer-remote-local-attachment-error"
+                  className="max-w-64 truncate text-xs text-destructive"
+                >
+                  移除本地文件附件后才能发送到远程项目
+                </span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {!editingFollowUp ? (
+                <AuiIf condition={(state) => !state.thread.isRunning}>
+                  <ComposerPrimitive.Send asChild>
                     <IconButton
-                      className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                      label="停止生成"
-                      title="停止生成"
-                    >
-                      <SquareIcon className="size-3.5 fill-current" />
-                    </IconButton>
-                  </ComposerPrimitive.Cancel>
-                ) : null}
-                {!reviewModeOpen && (editingFollowUp || isThreadRunning) && hasComposerContent ? (
-                  <>
-                    <IconButton
-                      className="size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                      disabled={sendDisabled || followUps.loading}
-                      label={
-                        editingFollowUp
-                          ? '保存编辑后的排队消息'
-                          : followUps.defaultMode === 'queue'
-                            ? '将追问加入队列'
-                            : '立即调整当前任务'
-                      }
-                      title={
-                        editingFollowUp
-                          ? '保存到原来的队列位置'
-                          : followUps.defaultMode === 'queue'
-                            ? '排队（按住 Shift 单次引导）'
-                            : '引导（按住 Shift 单次排队）'
-                      }
-                      onClick={(event) => {
-                        const mode = editingFollowUp
-                          ? followUps.defaultMode
-                          : event.shiftKey
-                            ? followUps.defaultMode === 'queue'
-                              ? 'steer'
-                              : 'queue'
-                            : followUps.defaultMode
-                        void enqueueRunningFollowUp(mode).catch(() => undefined)
-                      }}
+                      className="aui-composer-send size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      disabled={sendDisabled}
+                      label="发送消息"
+                      title="发送消息"
                     >
                       <ArrowUpIcon className="size-4.5" />
                     </IconButton>
-                    <ComposerPrimitive.Cancel asChild>
-                      <IconButton
-                        className="size-7 rounded-full bg-transparent hover:bg-muted"
-                        label="停止生成"
-                        title="停止生成（Esc）"
-                      >
-                        <SquareIcon className="size-3 fill-current" />
-                      </IconButton>
-                    </ComposerPrimitive.Cancel>
-                  </>
-                ) : null}
-              </div>
+                  </ComposerPrimitive.Send>
+                </AuiIf>
+              ) : null}
+              {isThreadRunning && !hasComposerContent ? (
+                <ComposerPrimitive.Cancel asChild>
+                  <IconButton
+                    className="aui-composer-cancel size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                    label="停止生成"
+                    title="停止生成"
+                  >
+                    <SquareIcon className="size-3.5 fill-current" />
+                  </IconButton>
+                </ComposerPrimitive.Cancel>
+              ) : null}
+              {(editingFollowUp || isThreadRunning) && hasComposerContent ? (
+                <>
+                  <IconButton
+                    className="size-7 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                    disabled={sendDisabled || followUps.loading}
+                    label={
+                      editingFollowUp
+                        ? '保存编辑后的排队消息'
+                        : followUps.defaultMode === 'queue'
+                          ? '将追问加入队列'
+                          : '立即调整当前任务'
+                    }
+                    title={
+                      editingFollowUp
+                        ? '保存到原来的队列位置'
+                        : followUps.defaultMode === 'queue'
+                          ? '排队（按住 Shift 单次引导）'
+                          : '引导（按住 Shift 单次排队）'
+                    }
+                    onClick={(event) => {
+                      const mode = editingFollowUp
+                        ? followUps.defaultMode
+                        : event.shiftKey
+                          ? followUps.defaultMode === 'queue'
+                            ? 'steer'
+                            : 'queue'
+                          : followUps.defaultMode
+                      void enqueueRunningFollowUp(mode).catch(() => undefined)
+                    }}
+                  >
+                    <ArrowUpIcon className="size-4.5" />
+                  </IconButton>
+                  <ComposerPrimitive.Cancel asChild>
+                    <IconButton
+                      className="size-7 rounded-full bg-transparent hover:bg-muted"
+                      label="停止生成"
+                      title="停止生成（Esc）"
+                    >
+                      <SquareIcon className="size-3 fill-current" />
+                    </IconButton>
+                  </ComposerPrimitive.Cancel>
+                </>
+              ) : null}
             </div>
           </div>
-          {!reviewModeOpen ? (
-            <ComposerTriggerPopover char="/" emptyItemsLabel="没有匹配命令" {...slash} />
-          ) : null}
-        </ComposerPrimitive.Root>
-      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-    </ComposerContextSuggestionProvider>
+        </div>
+        <ComposerSuggestionSurface
+          codeReview={{
+            target: gitTarget,
+            disabled: sendDisabled || isThreadRunning,
+            onSubmit: submitCodeReview
+          }}
+          commandContext={commandContext}
+          contextSections={contextSections}
+          localPickerEnabled={localContextPickerEnabled}
+          onContextOpenChange={setContextSearchOpen}
+          onContextQueryChange={composerContextCatalog.setQuery}
+          onOpenContent={() => undefined}
+          pickLocalContext={pickLocalContext}
+          threadId={activeConversation?.threadId}
+        />
+      </ComposerPrimitive.Root>
+    </>
   )
 }
 
@@ -3285,6 +3094,24 @@ function hasConversationProjectContext(
   return Boolean(
     activeConversation.threadId || activeConversation.projectSelection || activeConversation.cwd
   )
+}
+
+function getReviewDisabledReason({
+  hasDraft,
+  hasGitTarget,
+  isEditing,
+  isRunning
+}: {
+  hasDraft: boolean
+  hasGitTarget: boolean
+  isEditing: boolean
+  isRunning: boolean
+}): string | undefined {
+  if (!hasGitTarget) return '当前会话没有可审核的 Git 仓库'
+  if (isRunning) return '请等待当前任务完成后再开始审核'
+  if (isEditing) return '请先完成或取消正在编辑的排队消息'
+  if (hasDraft) return '请先发送或清空输入框中的草稿和附件，再开始审核'
+  return undefined
 }
 
 function resolveComposerCwd(

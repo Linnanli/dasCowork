@@ -5,64 +5,9 @@ import { $createDirectiveNodeWithFormatter, DirectiveNode } from '@assistant-ui/
 import { describe, expect, it, vi } from 'vitest'
 
 import { composerContextDirectiveFormatter } from './composerContextDirectiveFormatter'
-import {
-  ComposerContextSuggestionStore,
-  replacePlainTextRange
-} from './composerContextSuggestionController'
+import { plainTextRangeMatches, replacePlainTextRange } from './composerSuggestionLexicalText'
 
-describe('ComposerContextSuggestionStore', () => {
-  it('uses one navigation state for typed @ and plus activation', () => {
-    const store = new ComposerContextSuggestionStore()
-
-    store.openFromEditor('typed-at', 'read')
-    expect(store.getSnapshot()).toEqual({
-      open: true,
-      highlightedIndex: 0,
-      query: 'read',
-      source: 'typed-at'
-    })
-
-    store.closeFromEditor()
-    store.openFromEditor('plus', '')
-    expect(store.getSnapshot()).toEqual({
-      open: true,
-      highlightedIndex: 0,
-      query: '',
-      source: 'plus'
-    })
-  })
-
-  it('wraps keyboard navigation and selects the highlighted entry', () => {
-    const first = vi.fn()
-    const second = vi.fn()
-    const store = new ComposerContextSuggestionStore()
-    store.setNavigationEntries([
-      { id: 'first', select: first },
-      { id: 'second', select: second }
-    ])
-    store.openFromEditor('plus', '')
-
-    expect(store.moveHighlight(-1)).toBe(true)
-    expect(store.getSnapshot().highlightedIndex).toBe(1)
-    expect(store.selectHighlighted()).toBe(true)
-    expect(second).toHaveBeenCalledOnce()
-    expect(first).not.toHaveBeenCalled()
-  })
-
-  it('delegates plus toggling and directive selection to the active editor', () => {
-    const togglePlus = vi.fn()
-    const insert = vi.fn()
-    const store = new ComposerContextSuggestionStore()
-    store.registerEditorController({ dismiss: vi.fn(), insert, togglePlus })
-    const item = { id: '/repo/file.ts', type: 'file', label: 'file.ts' }
-
-    store.togglePlus()
-    store.selectItem(item)
-
-    expect(togglePlus).toHaveBeenCalledOnce()
-    expect(insert).toHaveBeenCalledWith(item)
-  })
-
+describe('composer suggestion lexical text', () => {
   it.each([
     {
       name: 'the beginning',
@@ -134,6 +79,20 @@ describe('ComposerContextSuggestionStore', () => {
     editor.getEditorState().read(() => {
       expect($getRoot().getTextContent()).toBe('before  after')
     })
+  })
+
+  it('matches the exact trigger text before replacing a stored range', () => {
+    const editor = createEditor({ namespace: 'range-matches', onError: vi.fn() })
+    editor.update(
+      () => {
+        $getRoot().append($createParagraphNode().append($createTextNode('before /review after')))
+      },
+      { discrete: true }
+    )
+
+    expect(plainTextRangeMatches(editor, 7, 14, '/review')).toBe(true)
+    expect(plainTextRangeMatches(editor, 7, 14, '/new')).toBe(false)
+    expect(plainTextRangeMatches(editor, 7, 13, '/review')).toBe(false)
   })
 
   it('deduplicates the same path within workspace mention mode', () => {

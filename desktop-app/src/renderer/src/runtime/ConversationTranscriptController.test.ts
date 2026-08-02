@@ -27,6 +27,46 @@ async function recordPlanAssertions({
 }
 
 describe('ConversationTranscriptController', () => {
+  it('resolves a start-only send after the stream is accepted without waiting for completion', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    const start = controller.sendMessageUntilAccepted({
+      id: 'review-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Review my uncommitted changes.' }]
+    })
+
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    controller.handleStreamAccepted()
+
+    await expect(start).resolves.toBeUndefined()
+    expect(controller.getSnapshot().status).toBe('streaming')
+
+    beginCanonicalTurn(controller, 'review-turn')
+    completeCanonicalTurn(controller, 'review-turn', 'completed', 2)
+    transport.close()
+    await vi.waitFor(() => expect(controller.getSnapshot().status).toBe('ready'))
+  })
+
+  it('rejects a start-only send when the stream fails before acceptance', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    const start = controller.sendMessageUntilAccepted({
+      id: 'review-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Review my uncommitted changes.' }]
+    })
+
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    transport.error(new Error('Review start failed'))
+
+    await expect(start).rejects.toThrow('Review start failed')
+    expect(controller.getSnapshot()).toMatchObject({
+      status: 'error',
+      error: { message: 'Review start failed' }
+    })
+  })
+
   it('rejects duplicate history render ids with conversation and source context', () => {
     const controller = createController(new ControlledTransport())
     let thrown: unknown

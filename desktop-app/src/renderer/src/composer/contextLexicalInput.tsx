@@ -37,7 +37,7 @@ import {
   type DirectiveChipProps,
   type DirectivePluginProps
 } from '@assistant-ui/react-lexical'
-import { ComposerContextSuggestionPlugin } from './composerContextSuggestionController'
+import { ComposerSuggestionLexicalPlugin } from './composerSuggestionLexicalPlugin'
 
 export type ContextLexicalInputProps = Omit<ComponentPropsWithoutRef<'div'>, 'autoFocus'> & {
   /** Controls how Enter submits. @default "enter" */
@@ -54,6 +54,8 @@ export type ContextLexicalInputProps = Omit<ComponentPropsWithoutRef<'div'>, 'au
   directiveChip?: FC<DirectiveChipProps> | undefined
   /** Custom formatter for serializing/parsing directives. */
   formatter?: Unstable_DirectiveFormatter | undefined
+  /** Enables the shared Composer suggestion controller. @default true */
+  suggestionEnabled?: boolean | undefined
 }
 
 function KeyboardPlugin({
@@ -260,6 +262,7 @@ export const ContextLexicalInput = forwardRef<HTMLDivElement, ContextLexicalInpu
       directivePluginProps,
       directiveChip,
       formatter: formatterProp,
+      suggestionEnabled = true,
       className,
       ...rest
     },
@@ -301,7 +304,9 @@ export const ContextLexicalInput = forwardRef<HTMLDivElement, ContextLexicalInpu
             <ComposerLexicalSyncPlugin formatter={resolvedFormatter} />
             <ComposerContextIdentityHydrationPlugin formatter={resolvedFormatter} />
             <DirectivePlugin {...directivePluginProps} />
-            <ComposerContextSuggestionPlugin formatter={resolvedFormatter} />
+            {suggestionEnabled ? (
+              <ComposerSuggestionLexicalPlugin formatter={resolvedFormatter} />
+            ) : null}
             <KeyboardPlugin submitMode={submitMode} cancelOnEscape={cancelOnEscape} />
             <CursorPlugin />
             <FocusPlugin autoFocus={autoFocus} />

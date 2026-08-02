@@ -208,7 +208,7 @@ function turnDiffUnit(): Extract<AssistantRenderUnit, { type: 'entry' }> {
     partIndices: [0],
     part: {},
     itemType: 'turnDiff',
-    renderMode: 'special',
+    renderMode: 'custom',
     item: {
       id: 'turn-diff:turn-history',
       status: 'completed',

@@ -59,6 +59,8 @@ import { ConversationFollowUpQueueStore } from './followUps/ConversationFollowUp
 import { FollowUpAssetStore } from './followUps/FollowUpAssetStore'
 import { steerQueuedFollowUp } from './followUps/steerQueuedFollowUp'
 import { validateQueuedLocalAttachments } from './followUps/validateQueuedLocalAttachments'
+import { McpServerStatusService } from './mcp/McpServerStatusService'
+import { createListMcpServersHandler } from './mcp/mcpServerStatusIpc'
 import type { ProjectApiService } from './projects/ProjectApiService'
 import type { ProjectService } from './projects/ProjectService'
 import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
@@ -117,6 +119,7 @@ let composerContextCatalog: ComposerContextCatalogService | undefined
 let composerContextSearch: ComposerContextSearchService | undefined
 let composerContextChanges: ComposerContextChangeBroker | undefined
 let composerContextClient: CodexContextCatalogClient | undefined
+let mcpServerStatus: McpServerStatusService | undefined
 let codexAppServerConnection: CodexAspSharedConnection | undefined
 let followUpQueue: ConversationFollowUpQueueService | undefined
 let localGitWatchBroker: LocalGitWatchBroker | undefined
@@ -183,6 +186,9 @@ function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexC
     experimentalApi: true,
     connectionLifecycle: 'per-operation',
     transportFactory: connection.transportFactory
+  })
+  mcpServerStatus = new McpServerStatusService({
+    provider: composerContextClient
   })
   composerContextCatalog = new ComposerContextCatalogService({
     provider: composerContextClient,
@@ -311,6 +317,11 @@ function requireComposerContextCatalog(): ComposerContextCatalogService {
 function requireComposerContextSearch(): ComposerContextSearchService {
   if (!composerContextSearch) throw new Error('Composer context search is not initialized')
   return composerContextSearch
+}
+
+function requireMcpServerStatus(): McpServerStatusService {
+  if (!mcpServerStatus) throw new Error('MCP server status service is not initialized')
+  return mcpServerStatus
 }
 
 function requireFollowUpQueue(): ConversationFollowUpQueueService {
@@ -523,6 +534,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('codex:get-status', () => runtime.getStatus())
   ipcMain.handle('codex:list-models', () => runtime.listModels())
+  ipcMain.handle('codex:list-mcp-servers', createListMcpServersHandler(requireMcpServerStatus()))
   ipcMain.handle('codex:set-selected-model', (_, payload: unknown) => {
     const request = codexSetSelectedModelPayloadSchema.parse(payload)
     return runtime.setSelectedModel(request.modelId)

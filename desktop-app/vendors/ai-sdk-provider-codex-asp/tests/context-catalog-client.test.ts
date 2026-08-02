@@ -56,6 +56,38 @@ function fuzzyFile(path: string)
     };
 }
 
+function mcpStatus(name: string, overrides: Record<string, unknown> = {})
+{
+    return {
+        name,
+        serverInfo: {
+            name,
+            title: `${name} title`,
+            version: "1.0.0",
+            description: "private server description",
+            icons: [{ src: "private-icon" }],
+            websiteUrl: "https://private.example.invalid",
+        },
+        tools: {
+            lookup: {
+                name: "lookup",
+                title: "Lookup",
+                description: "private tool schema",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        token: { type: "string" },
+                    },
+                },
+            },
+        },
+        resources: [{ uri: "secret://resource", name: "secret resource" }],
+        resourceTemplates: [{ uriTemplate: "secret://{id}", name: "secret template" }],
+        authStatus: "oAuth",
+        ...overrides,
+    };
+}
+
 describe("CodexContextCatalogClient", () =>
 {
     it("leases and releases a client for each catalog operation when sharing a host connection", async () =>
@@ -254,6 +286,126 @@ describe("CodexContextCatalogClient", () =>
                 mentionName: "fallback-app",
                 mentionPath: "app://fallback-app",
             },
+        ]);
+    });
+
+    it("lists MCP server status with tools-and-auth detail and returns safe summaries", async () =>
+    {
+        const mock = new CatalogMockClient((method, params) =>
+        {
+            expect(method).toBe("mcpServerStatus/list");
+            expect(params).toEqual({
+                limit: 25,
+                detail: "toolsAndAuthOnly",
+                threadId: "thread-1",
+            });
+            return {
+                data: [
+                    mcpStatus("connected-server"),
+                    mcpStatus("auth-only-server", {
+                        serverInfo: null,
+                        tools: {},
+                        resources: [],
+                        resourceTemplates: [],
+                        authStatus: "notLoggedIn",
+                    }),
+                ],
+                nextCursor: null,
+            };
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+
+        const result = await client.listMcpServerStatus({ threadId: "thread-1", pageSize: 25 });
+
+        expect(result).toEqual([
+            {
+                name: "connected-server",
+                connected: true,
+                authStatus: "oAuth",
+                toolCount: 1,
+            },
+            {
+                name: "auth-only-server",
+                connected: false,
+                authStatus: "notLoggedIn",
+                toolCount: 0,
+            },
+        ]);
+        expect(Object.keys(result[0] ?? {})).toEqual([
+            "name",
+            "connected",
+            "authStatus",
+            "toolCount",
+        ]);
+        expect(JSON.stringify(result)).not.toContain("private");
+        expect(JSON.stringify(result)).not.toContain("secret://");
+    });
+
+    it("auto-pages MCP server status and advances cursors", async () =>
+    {
+        const mock = new CatalogMockClient((method, params) =>
+        {
+            expect(method).toBe("mcpServerStatus/list");
+            const request = params as { cursor?: string; limit?: number; detail?: string };
+            expect(request.limit).toBe(1);
+            expect(request.detail).toBe("toolsAndAuthOnly");
+            return request.cursor
+                ? {
+                    data: [mcpStatus("second", {
+                        serverInfo: null,
+                        tools: { second_tool: { name: "second_tool" } },
+                        authStatus: "bearerToken",
+                    })],
+                    nextCursor: null,
+                }
+                : {
+                    data: [mcpStatus("first", {
+                        tools: {},
+                        authStatus: "unsupported",
+                    })],
+                    nextCursor: "page-2",
+                };
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+
+        await expect(client.listMcpServerStatus({ pageSize: 1 })).resolves.toEqual([
+            {
+                name: "first",
+                connected: true,
+                authStatus: "unsupported",
+                toolCount: 0,
+            },
+            {
+                name: "second",
+                connected: true,
+                authStatus: "bearerToken",
+                toolCount: 1,
+            },
+        ]);
+        expect(mock.requests
+            .filter(({ method }) => method === "mcpServerStatus/list")
+            .map(({ params }) => (params as { cursor?: string }).cursor)).toEqual([
+            undefined,
+            "page-2",
+        ]);
+    });
+
+    it("rejects MCP server status pagination when the cursor does not advance", async () =>
+    {
+        const mock = new CatalogMockClient(() => ({
+            data: [],
+            nextCursor: "same-cursor",
+        }));
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+
+        await expect(client.listMcpServerStatus()).rejects.toThrow(
+            "mcpServerStatus/list returned the same pagination cursor twice.",
+        );
+        expect(mock.requests
+            .filter(({ method }) => method === "mcpServerStatus/list")
+            .map(({ params }) => (params as { cursor?: string }).cursor)).toEqual([
+            undefined,
+            "same-cursor",
         ]);
     });
 

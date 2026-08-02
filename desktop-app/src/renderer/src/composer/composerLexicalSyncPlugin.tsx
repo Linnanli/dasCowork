@@ -2,7 +2,7 @@
 
 /* eslint-disable react-refresh/only-export-components -- parser helpers are tested with the sync plugin */
 
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import {
   $getRoot,
@@ -13,11 +13,9 @@ import {
 } from 'lexical'
 import {
   unstable_defaultDirectiveFormatter,
-  unstable_useTriggerPopoverRootContextOptional,
   useAui,
   type Unstable_DirectiveFormatter,
-  type Unstable_DirectiveSegment,
-  type Unstable_RegisteredTrigger
+  type Unstable_DirectiveSegment
 } from '@assistant-ui/react'
 import { $createDirectiveNodeWithFormatter } from '@assistant-ui/react-lexical'
 
@@ -28,9 +26,8 @@ type ParsedSegment = {
 
 type CompositeParser = (text: string) => readonly ParsedSegment[]
 
-/** Ordered, identity-deduped: prop formatter, trigger formatters, default tail. */
+/** Ordered, identity-deduped: the Composer formatter, then the default tail. */
 export function collectFormatters(
-  triggers: ReadonlyMap<string, Unstable_RegisteredTrigger>,
   propFormatter: Unstable_DirectiveFormatter | undefined
 ): readonly Unstable_DirectiveFormatter[] {
   const ordered: Unstable_DirectiveFormatter[] = []
@@ -41,7 +38,6 @@ export function collectFormatters(
     ordered.push(f)
   }
   push(propFormatter)
-  for (const trigger of triggers.values()) push(trigger.behavior?.formatter)
   push(unstable_defaultDirectiveFormatter)
   return ordered
 }
@@ -120,9 +116,6 @@ function syncRuntimeToLexical(
 
 const SYNC_TAG = 'aui-sync'
 
-const EMPTY_TRIGGERS: ReadonlyMap<string, Unstable_RegisteredTrigger> = new Map()
-const noopSubscribe = (): (() => void) => () => undefined
-
 /** Bidirectional sync between Lexical and ComposerRuntime with composite directive parsing. */
 export function ComposerLexicalSyncPlugin({
   formatter: propFormatter
@@ -131,20 +124,7 @@ export function ComposerLexicalSyncPlugin({
 } = {}): null {
   const [editor] = useLexicalComposerContext()
   const aui = useAui()
-  const root = unstable_useTriggerPopoverRootContextOptional()
-
-  const subscribe = useCallback(
-    (listener: () => void) => (root ? root.subscribe(listener) : noopSubscribe()),
-    [root]
-  )
-  const getSnapshot = useCallback(() => (root ? root.getTriggers() : EMPTY_TRIGGERS), [root])
-
-  const triggers = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-
-  const formatters = useMemo(
-    () => collectFormatters(triggers, propFormatter),
-    [triggers, propFormatter]
-  )
+  const formatters = useMemo(() => collectFormatters(propFormatter), [propFormatter])
 
   const parser = useMemo(() => composeParsers(formatters), [formatters])
   const parserRef = useRef<CompositeParser>(parser)

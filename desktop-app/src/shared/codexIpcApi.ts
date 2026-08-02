@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 export * from './composerContext'
 export * from './composerContextSearch'
+export * from './mcpServerStatus'
 export * from './codexFollowUpApi'
 export * from './codexApprovalApi'
 export * from './localGitApi'
@@ -30,6 +31,7 @@ import {
   type CodexApprovalRequest,
   type CodexApprovalResponse
 } from './codexApprovalApi'
+import type { McpServerListRequest, McpServerListResult } from './mcpServerStatus'
 import type {
   LocalBranchCheckoutResult,
   LocalBranchSearchResult,
@@ -530,6 +532,7 @@ export const sidebarPreferencesPatchSchema = sidebarPreferencesSchema.partial()
 export type DesktopCodexApi = {
   getStatus(): Promise<CodexStatus>
   listModels(): Promise<CodexModelList>
+  listMcpServers(input: McpServerListRequest): Promise<McpServerListResult>
   setSelectedModel(modelId: string): Promise<{ selectedModelId: string }>
   listPendingApprovals?(): Promise<CodexApprovalRequest[]>
   respondApproval(requestId: string, response: CodexApprovalResponse): Promise<void>

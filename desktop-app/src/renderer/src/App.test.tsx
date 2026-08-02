@@ -151,6 +151,7 @@ const runtimeState = vi.hoisted<{
     messages: []
     controller: {
       sendMessage: ReturnType<typeof vi.fn>
+      sendMessageUntilAccepted: ReturnType<typeof vi.fn>
       getSnapshot: ReturnType<typeof vi.fn>
       editMessage: ReturnType<typeof vi.fn>
       regenerate: ReturnType<typeof vi.fn>
@@ -193,6 +194,7 @@ const runtimeState = vi.hoisted<{
     messages: [],
     controller: {
       sendMessage: vi.fn(async () => undefined),
+      sendMessageUntilAccepted: vi.fn(async () => undefined),
       getSnapshot: vi.fn(() => ({ status: 'ready' })),
       editMessage: vi.fn(async () => undefined),
       regenerate: vi.fn(async () => undefined),
@@ -240,12 +242,13 @@ const aiSdkRuntimeState = vi.hoisted<{
       message: {
         renderId: string
         role: 'assistant' | 'user'
-        parts: []
+        parts: { type: 'text'; text: string }[]
         metadata?: unknown
       },
       index: number
     ) => {
       status?: { type: string; reason?: string; error?: unknown }
+      content?: unknown[]
     }
     onReload?: (parentId: string | null, config: { runConfig?: unknown }) => Promise<void>
   }
@@ -568,6 +571,7 @@ type PrimitiveProps = {
   placeholder?: string
   directiveChip?: unknown
   className?: string
+  suggestionEnabled?: boolean
 }
 
 function messagePartComponentFor(
@@ -681,35 +685,62 @@ vi.mock('@assistant-ui/react-lexical', () => ({
 
 vi.mock('@/composer/contextLexicalInput', async () => {
   const { useEffect: useMockEffect } = await import('react')
-  const { useComposerContextSuggestion } =
-    await import('@/composer/composerContextSuggestionController')
+  const { useComposerSuggestion } = await import('@/composer/composerSuggestionController')
+  const { composerContextReferenceToTriggerItem } =
+    await import('@/composer/useComposerContextCatalog')
+
+  const MockLexicalInput = ({
+    placeholder,
+    directiveChip,
+    className
+  }: PrimitiveProps): React.JSX.Element => (
+    <div
+      className={className}
+      data-has-directive-chip={String(Boolean(directiveChip))}
+      data-placeholder={placeholder}
+      data-testid="lexical-composer-input"
+    />
+  )
+
+  const SuggestionAwareMockLexicalInput = (props: PrimitiveProps): React.JSX.Element => {
+    const { controller } = useComposerSuggestion()
+    useMockEffect(
+      () =>
+        controller.registerEditorController({
+          dismiss: () => controller.closeFromEditor(),
+          insertContext: (reference) => {
+            composerRuntimeState.insertedContextItems.push(
+              composerContextReferenceToTriggerItem(reference)
+            )
+          },
+          insertTriggerItem: (item) => {
+            composerRuntimeState.insertedContextItems.push(item)
+          },
+          rangeMatches: () => true,
+          replaceRange: () => {},
+          togglePlus: () => {
+            if (controller.getSnapshot().open) controller.closeFromEditor()
+            else
+              controller.openFromEditor({
+                trigger: '+',
+                source: 'plus',
+                query: '',
+                range: null
+              })
+          }
+        }),
+      [controller]
+    )
+    return <MockLexicalInput {...props} />
+  }
 
   return {
-    ContextLexicalInput: ({ placeholder, directiveChip, className }: PrimitiveProps) => {
-      const { controller } = useComposerContextSuggestion()
-      useMockEffect(
-        () =>
-          controller.registerEditorController({
-            dismiss: () => controller.closeFromEditor(),
-            insert: (item: unknown) => {
-              composerRuntimeState.insertedContextItems.push(item)
-              controller.closeFromEditor()
-            },
-            togglePlus: () => {
-              if (controller.getSnapshot().open) controller.closeFromEditor()
-              else controller.openFromEditor('plus', '')
-            }
-          }),
-        [controller]
-      )
-      return (
-        <div
-          className={className}
-          data-has-directive-chip={String(Boolean(directiveChip))}
-          data-placeholder={placeholder}
-          data-testid="lexical-composer-input"
-        />
-      )
+    ContextLexicalInput: ({
+      suggestionEnabled = true,
+      ...props
+    }: PrimitiveProps): React.JSX.Element => {
+      if (!suggestionEnabled) return <MockLexicalInput {...props} />
+      return <SuggestionAwareMockLexicalInput {...props} />
     }
   }
 })
@@ -891,32 +922,7 @@ vi.mock('@assistant-ui/react', () => {
         <textarea data-testid="plain-composer-input" {...omitPrimitiveOnlyProps(props)} />
       ),
       Root: primitive('Composer.Root'),
-      Send: primitive('Composer.Send'),
-      Unstable_TriggerPopover: Object.assign(
-        ({ char, children }: PrimitiveProps) => (
-          <div data-testid="composer-trigger-popover" data-trigger-char={char}>
-            {renderChildren(children)}
-          </div>
-        ),
-        {
-          Action: () => null,
-          Directive: () => null
-        }
-      ),
-      Unstable_TriggerPopoverBack: primitive('Composer.TriggerPopoverBack'),
-      Unstable_TriggerPopoverCategories: ({ children }: PrimitiveProps) => (
-        <div data-primitive="Composer.TriggerPopoverCategories">
-          {typeof children === 'function' ? children([]) : children}
-        </div>
-      ),
-      Unstable_TriggerPopoverCategoryItem: primitive('Composer.TriggerPopoverCategoryItem'),
-      Unstable_TriggerPopoverItem: primitive('Composer.TriggerPopoverItem'),
-      Unstable_TriggerPopoverItems: ({ children }: PrimitiveProps) => (
-        <div data-primitive="Composer.TriggerPopoverItems">
-          {typeof children === 'function' ? children([]) : children}
-        </div>
-      ),
-      Unstable_TriggerPopoverRoot: primitive('Composer.TriggerPopoverRoot')
+      Send: primitive('Composer.Send')
     },
     ErrorPrimitive: {
       Message: primitive('Error.Message'),
@@ -1054,7 +1060,6 @@ vi.mock('@assistant-ui/react', () => {
       mentionAdapterState.calls.push(options)
       return { adapter: {}, directive: {} }
     },
-    unstable_useSlashCommandAdapter: () => ({ action: { onExecute: vi.fn() }, adapter: {} }),
     groupPartByType: () => () => undefined,
     useScrollLock: () => vi.fn(),
     useAuiEvent: (event: string, handler: () => void) => {
@@ -1138,18 +1143,12 @@ describe('App composer', () => {
     vi.unstubAllGlobals()
   })
 
-  it('uses the shared Lexical context input while keeping the slash trigger popover', () => {
+  it('uses the shared Lexical context input without the legacy slash popover', () => {
     act(() => {
       root.render(<App />)
     })
 
     const lexicalInput = container.querySelector('[data-testid="lexical-composer-input"]')
-    const triggerChars = Array.from(
-      container.querySelectorAll('[data-testid="composer-trigger-popover"]')
-    )
-      .map((node) => node.getAttribute('data-trigger-char'))
-      .sort()
-
     expect(lexicalInput).not.toBeNull()
     expect(lexicalInput?.getAttribute('data-has-directive-chip')).toBe('true')
     expect(lexicalInput?.getAttribute('data-placeholder')).toContain('@')
@@ -1168,7 +1167,7 @@ describe('App composer', () => {
         : false
     ).toBe(true)
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
-    expect(triggerChars).toEqual(['/'])
+    expect(container.querySelector('[data-testid="composer-trigger-popover"]')).toBeNull()
   })
 
   it('attaches queued follow-ups to the Composer without a persistent mode toggle', async () => {
@@ -1682,12 +1681,6 @@ describe('App composer', () => {
       panel?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []
     ).find((option) => option.textContent?.includes('reviewer'))
     expect(reviewer?.textContent).toContain('Reviews code')
-    const reviewerText = reviewer?.querySelector<HTMLElement>('[data-context-item-text]')
-    expect(reviewerText?.className).toContain('items-center')
-    expect(reviewerText?.className).toContain('gap-2')
-    expect(reviewerText?.className).not.toContain('flex-col')
-    expect(reviewerText?.textContent).toContain('reviewer')
-    expect(reviewerText?.textContent).toContain('Reviews code')
 
     await act(async () => {
       reviewer?.click()
@@ -1695,6 +1688,22 @@ describe('App composer', () => {
     })
     expect(composerRuntimeState.insertedContextItems).toEqual([
       expect.objectContaining({ type: 'agentRole', id: 'subagent://reviewer', label: 'reviewer' })
+    ])
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="添加文件和更多"]')?.click()
+      await Promise.resolve()
+    })
+    const tool = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.aui-composer-context-panel [role="option"]')
+    ).find((option) => option.textContent?.includes('shell'))
+    await act(async () => {
+      tool?.click()
+      await Promise.resolve()
+    })
+    expect(composerRuntimeState.insertedContextItems).toEqual([
+      expect.objectContaining({ type: 'agentRole', id: 'subagent://reviewer', label: 'reviewer' }),
+      expect.objectContaining({ type: 'tool', id: 'shell', label: 'shell' })
     ])
   })
 
@@ -1931,7 +1940,7 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="local-branch-switcher"]')).toBeNull()
   })
 
-  it('hides the Git branch control but keeps Review available for remote conversations', async () => {
+  it('hides the Git branch control and does not render a duplicate Review action', async () => {
     runtimeState.activeConversation = {
       conversationId: 'conversation-remote-git',
       threadId: 'thread-remote-git',
@@ -1949,200 +1958,8 @@ describe('App composer', () => {
       await Promise.resolve()
     })
 
-    const reviewButton = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Review'
-    )
-
     expect(container.querySelector('[data-slot="local-branch-switcher"]')).toBeNull()
-    expect(reviewButton?.disabled).toBe(false)
-  })
-
-  it('blocks Review until the Composer draft and attachments are cleared', async () => {
-    composerState.text = 'DRAFT_MARKER_DO_NOT_SEND'
-    composerState.attachments = [
-      {
-        id: 'attachment-marker',
-        type: 'file',
-        name: 'ATTACHMENT_MARKER_DO_NOT_SEND.txt',
-        status: { type: 'complete' },
-        content: []
-      }
-    ]
-    composerState.isEmpty = false
-
-    act(() => {
-      root.render(<App />)
-    })
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    const reviewButton = buttonWithText('Review')
-    expect(reviewButton?.disabled).toBe(true)
-    expect(reviewButton?.title).toContain('草稿和附件')
-  })
-
-  it('sends inline Review directly through the conversation controller without touching Composer', async () => {
-    act(() => {
-      root.render(<App />)
-    })
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    composerRuntimeState.setTextCalls = []
-    composerRuntimeState.sendCalls = 0
-
-    await act(async () => {
-      buttonWithText('Review')?.click()
-      await Promise.resolve()
-    })
-
-    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="lexical-composer-input"]')).toBeNull()
-    expect(container.querySelector('button[aria-label="添加文件和更多"]')).toBeNull()
-    expect(container.querySelector('button[aria-label="发送消息"]')).toBeNull()
-
-    await act(async () => {
-      buttonWithText('Review uncommitted changes')?.click()
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(runtimeState.activeEntry.controller.sendMessage).toHaveBeenCalledTimes(1)
-    const message = runtimeState.activeEntry.controller.sendMessage.mock.calls[0]?.[0]
-    expect(message).toMatchObject({ role: 'user' })
-    expect(message.parts).toEqual([
-      {
-        type: 'text',
-        text: expect.stringContaining('Perform a focused code review.')
-      }
-    ])
-    expect(message.parts[0].text).not.toContain('DRAFT_MARKER_DO_NOT_SEND')
-    expect(message.parts[0].text).not.toContain('ATTACHMENT_MARKER_DO_NOT_SEND')
-    expect(composerRuntimeState.setTextCalls).toEqual([])
-    expect(composerRuntimeState.sendCalls).toBe(0)
-    expect(container.querySelector('[data-slot="composer-review-mode"]')).toBeNull()
-  })
-
-  it('keeps Review mode open when the Composer changes after opening it', async () => {
-    act(() => {
-      root.render(<App />)
-    })
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    composerRuntimeState.setTextCalls = []
-    composerRuntimeState.sendCalls = 0
-    await act(async () => {
-      buttonWithText('Review')?.click()
-      await Promise.resolve()
-    })
-
-    composerState.text = 'RACE_DRAFT_MARKER_DO_NOT_SEND'
-    composerState.attachments = [
-      {
-        id: 'race-attachment-marker',
-        type: 'file',
-        name: 'RACE_ATTACHMENT_MARKER_DO_NOT_SEND.txt',
-        status: { type: 'complete' },
-        content: []
-      }
-    ]
-    composerState.isEmpty = false
-    act(() => {
-      root.render(<App />)
-    })
-
-    await act(async () => {
-      buttonWithText('Review uncommitted changes')?.click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(runtimeState.activeEntry.controller.sendMessage).not.toHaveBeenCalled()
-    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
-    expect(container.textContent).toContain('请先发送或清空输入框中的草稿和附件')
-    expect(composerState.text).toBe('RACE_DRAFT_MARKER_DO_NOT_SEND')
-    expect(composerState.attachments[0]?.name).toBe('RACE_ATTACHMENT_MARKER_DO_NOT_SEND.txt')
-  })
-
-  it('keeps Review mode open and reports a direct-send failure', async () => {
-    runtimeState.activeEntry.controller.sendMessage.mockRejectedValueOnce(
-      new Error('Review transport unavailable')
-    )
-    act(() => {
-      root.render(<App />)
-    })
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    composerRuntimeState.setTextCalls = []
-    composerRuntimeState.sendCalls = 0
-    await act(async () => {
-      buttonWithText('Review')?.click()
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      buttonWithText('Review uncommitted changes')?.click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(runtimeState.activeEntry.controller.sendMessage).toHaveBeenCalledTimes(1)
-    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
-    expect(container.textContent).toContain('Review transport unavailable')
-    expect(composerRuntimeState.setTextCalls).toEqual([])
-    expect(composerRuntimeState.sendCalls).toBe(0)
-  })
-
-  it('keeps the initiating Review mode open when a detached send fails', async () => {
-    const detachedSend = vi
-      .fn()
-      .mockRejectedValue(new Error('Detached review transport unavailable'))
-    const detachedEntry = {
-      ...runtimeState.activeEntry,
-      localId: 'detached-review',
-      context: { conversationId: 'detached-review' },
-      controller: { ...runtimeState.activeEntry.controller, sendMessage: detachedSend }
-    }
-    runtimeState.activeConversation = { conversationId: 'source-review' }
-    runtimeState.prepareNewConversation.mockReturnValue(detachedEntry)
-
-    act(() => {
-      root.render(<App />)
-    })
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      buttonWithText('Review')?.click()
-      await Promise.resolve()
-      buttonWithText('Review in a new task')?.click()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      buttonWithText('Review uncommitted changes')?.click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(detachedSend).toHaveBeenCalledOnce()
-    expect(runtimeState.activateConversation).not.toHaveBeenCalled()
-    expect(container.querySelector('[data-slot="composer-review-mode"]')).not.toBeNull()
-    expect(container.textContent).toContain('Detached review transport unavailable')
+    expect(buttonWithText('Review')).toBeUndefined()
   })
 
   it('opens the add-context menu in a projectless conversation', async () => {
@@ -2621,6 +2438,36 @@ describe('App composer', () => {
     expect(container.querySelector('[data-primitive="Message.Parts"]')).not.toBeNull()
     expect(container.querySelector('.aui-user-action-bar-wrapper')).not.toBeNull()
     expect(container.querySelector('.aui-user-action-bar-root')).not.toBeNull()
+  })
+
+  it('projects only the visible request from a complete user prompt', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const converted = aiSdkRuntimeState.options?.convertMessage?.(
+      {
+        renderId: 'message:user-review',
+        role: 'user',
+        parts: [
+          {
+            type: 'text',
+            text: ['## Code review guidelines:', '# Review Guidelines'].join('\n')
+          },
+          {
+            type: 'text',
+            text: ['internal instructions', '## My request for Codex:'].join('\n')
+          },
+          {
+            type: 'text',
+            text: '请检查我未提交的更改'
+          }
+        ]
+      },
+      0
+    )
+
+    expect(converted?.content).toEqual([{ type: 'text', text: '请检查我未提交的更改' }])
   })
 
   it('renders user image attachments with the assistant-ui attachment component', () => {

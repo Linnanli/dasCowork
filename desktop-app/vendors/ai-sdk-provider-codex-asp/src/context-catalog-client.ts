@@ -5,6 +5,9 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
 import type { FuzzyFileSearchResponse } from "./protocol/app-server-protocol/FuzzyFileSearchResponse";
 import type { FuzzyFileSearchResult } from "./protocol/app-server-protocol/FuzzyFileSearchResult";
 import type { AppInfo } from "./protocol/app-server-protocol/v2/AppInfo";
+import type { ListMcpServerStatusResponse } from "./protocol/app-server-protocol/v2/ListMcpServerStatusResponse";
+import type { McpAuthStatus } from "./protocol/app-server-protocol/v2/McpAuthStatus";
+import type { McpServerStatus } from "./protocol/app-server-protocol/v2/McpServerStatus";
 import type { PluginInstalledResponse } from "./protocol/app-server-protocol/v2/PluginInstalledResponse";
 import type { SkillMetadata } from "./protocol/app-server-protocol/v2/SkillMetadata";
 import type { SkillsListResponse } from "./protocol/app-server-protocol/v2/SkillsListResponse";
@@ -103,10 +106,30 @@ export interface CodexTaskSearchResult
     archived: boolean;
 }
 
+export interface CodexMcpServerStatusListParams
+{
+    threadId?: string | null;
+    pageSize?: number;
+}
+
+export interface CodexMcpServerStatusSummary
+{
+    name: string;
+    connected: boolean;
+    authStatus: McpAuthStatus;
+    toolCount: number;
+}
+
 interface AppsListResponse
 {
     data: AppInfo[];
     nextCursor: string | null;
+}
+
+interface McpServerStatusPage
+{
+    data: CodexMcpServerStatusSummary[];
+    nextCursor?: string;
 }
 
 export class CodexContextCatalogClient
@@ -190,6 +213,27 @@ export class CodexContextCatalogClient
     async listAppsPage(params: CodexAppsListParams & { cursor?: string } = {}): Promise<CodexAppsPage>
     {
         return this.withClient((client) => this.requestAppsPage(client, params, params.cursor));
+    }
+
+    async listMcpServerStatus(
+        params: CodexMcpServerStatusListParams = {},
+    ): Promise<CodexMcpServerStatusSummary[]>
+    {
+        return this.withClient(async (client) =>
+        {
+            const servers: CodexMcpServerStatusSummary[] = [];
+            let cursor: string | undefined;
+
+            do
+            {
+                const response = await this.requestMcpServerStatusPage(client, params, cursor);
+                servers.push(...response.data);
+                cursor = nextCursor(response.nextCursor, cursor, "mcpServerStatus/list");
+            }
+            while (cursor);
+
+            return servers;
+        });
     }
 
     createFuzzyFileSearchSession(params: {
@@ -288,6 +332,25 @@ export class CodexContextCatalogClient
             data: response.data
                 .filter((app) => app.isEnabled && app.isAccessible)
                 .map(normalizeApp),
+            nextCursor: response.nextCursor ?? undefined,
+        });
+    }
+
+    private async requestMcpServerStatusPage(
+        client: CodexContextCatalogJsonRpcClientLike,
+        params: CodexMcpServerStatusListParams,
+        cursor: string | undefined,
+    ): Promise<McpServerStatusPage>
+    {
+        const response = await client.request<ListMcpServerStatusResponse>("mcpServerStatus/list", stripUndefined({
+            cursor,
+            limit: params.pageSize ?? 100,
+            detail: "toolsAndAuthOnly",
+            threadId: params.threadId,
+        }));
+
+        return stripUndefined({
+            data: response.data.map(normalizeMcpServerStatus),
             nextCursor: response.nextCursor ?? undefined,
         });
     }
@@ -477,6 +540,26 @@ function normalizeApp(app: AppInfo): CodexCatalogApp
         enabled: true as const,
         accessible: true as const,
     });
+}
+
+function normalizeMcpServerStatus(status: McpServerStatus): CodexMcpServerStatusSummary
+{
+    const toolCount = countRecordKeys(status.tools);
+    return {
+        name: status.name,
+        connected: status.serverInfo !== null || toolCount > 0,
+        authStatus: status.authStatus,
+        toolCount,
+    };
+}
+
+function countRecordKeys(value: unknown): number
+{
+    if (!value || typeof value !== "object" || Array.isArray(value))
+    {
+        return 0;
+    }
+    return Object.keys(value).length;
 }
 
 function skillDisplayName(skill: SkillMetadata): string

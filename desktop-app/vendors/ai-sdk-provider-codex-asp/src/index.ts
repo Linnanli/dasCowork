@@ -52,6 +52,8 @@ export type {
     CodexContextCatalogClientSettings,
     CodexContextCatalogJsonRpcClientLike,
     CodexFuzzyFileSearchSession,
+    CodexMcpServerStatusListParams,
+    CodexMcpServerStatusSummary,
     CodexTaskSearchResult,
 } from "./context-catalog-client";
 export {
