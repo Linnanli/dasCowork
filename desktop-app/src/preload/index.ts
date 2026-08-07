@@ -23,6 +23,46 @@ import type {
   SidebarPreferences
 } from '../shared/codexIpcApi'
 import {
+  browserWorkspaceCreateRequestSchema,
+  browserWorkspaceEventSchema,
+  browserWorkspaceIpcChannels,
+  browserWorkspaceListRequestSchema,
+  browserWorkspaceNavigateRequestSchema,
+  browserWorkspaceSetBoundsRequestSchema,
+  browserWorkspaceViewRequestSchema
+} from '../shared/browserWorkspaceApi'
+import {
+  fileWorkspaceListDirectoryRequestSchema,
+  fileWorkspaceEventSchema,
+  fileWorkspaceMetadataRequestSchema,
+  fileWorkspaceReadFileRequestSchema,
+  fileWorkspaceSearchRequestSchema,
+  fileWorkspaceSearchSessionEventSchema,
+  fileWorkspaceSearchSessionStartRequestSchema,
+  fileWorkspaceSearchSessionStopRequestSchema,
+  fileWorkspaceSearchSessionUpdateRequestSchema
+} from '../shared/fileWorkspaceApi'
+import {
+  rightWorkspaceIpcChannels,
+  rightWorkspaceDisposeRequestSchema,
+  rightWorkspacePrepareFileRootRequestSchema,
+  type DesktopRightWorkspaceApi
+} from '../shared/rightWorkspaceApi'
+import {
+  nativeContextMenuIpcChannels,
+  nativeContextMenuRequestSchema,
+  type DesktopNativeContextMenuApi
+} from '../shared/nativeContextMenuApi'
+import {
+  terminalWorkspaceCreateRequestSchema,
+  terminalWorkspaceEventSchema,
+  terminalWorkspaceIpcChannels,
+  terminalWorkspaceKillRequestSchema,
+  terminalWorkspaceListRequestSchema,
+  terminalWorkspaceResizeRequestSchema,
+  terminalWorkspaceWriteRequestSchema
+} from '../shared/terminalWorkspaceApi'
+import {
   gitIpcChannels,
   gitResolveRepositoryTargetRequestSchema,
   localGitBranchRequestSchema,
@@ -174,6 +214,14 @@ const desktopProjects: DesktopProjectsApi = {
     ipcRenderer.on('codex:projects-state-change', listener)
     return () => ipcRenderer.removeListener('codex:projects-state-change', listener)
   }
+}
+
+const desktopNativeContextMenu: DesktopNativeContextMenuApi = {
+  show: (items) =>
+    ipcRenderer.invoke(
+      nativeContextMenuIpcChannels.show,
+      parseWorkspacePayload(nativeContextMenuRequestSchema, { items })
+    ) as Promise<string | null>
 }
 
 const desktopConversations: DesktopConversationsApi = {
@@ -373,10 +421,192 @@ const desktopGit: DesktopGitApi = {
   }
 }
 
+const desktopRightWorkspace: DesktopRightWorkspaceApi = {
+  dispose: (input) =>
+    ipcRenderer.invoke(
+      rightWorkspaceIpcChannels.disposeWorkspace,
+      parseWorkspacePayload(rightWorkspaceDisposeRequestSchema, input)
+    ) as Promise<void>,
+  files: {
+    prepareRoot: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.prepareFileRoot,
+        parseWorkspacePayload(rightWorkspacePrepareFileRootRequestSchema, input)
+      ),
+    listDirectory: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.listDirectory,
+        parseWorkspacePayload(fileWorkspaceListDirectoryRequestSchema, input)
+      ),
+    metadata: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.metadata,
+        parseWorkspacePayload(fileWorkspaceMetadataRequestSchema, input)
+      ),
+    readFile: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.readFile,
+        parseWorkspacePayload(fileWorkspaceReadFileRequestSchema, input)
+      ),
+    search: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.searchFiles,
+        parseWorkspacePayload(fileWorkspaceSearchRequestSchema, input)
+      ),
+    startSearch: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.startFileSearch,
+        parseWorkspacePayload(fileWorkspaceSearchSessionStartRequestSchema, input)
+      ),
+    updateSearch: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.updateFileSearch,
+        parseWorkspacePayload(fileWorkspaceSearchSessionUpdateRequestSchema, input)
+      ) as Promise<void>,
+    stopSearch: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.stopFileSearch,
+        parseWorkspacePayload(fileWorkspaceSearchSessionStopRequestSchema, input)
+      ) as Promise<void>,
+    onSearchEvent: (callback) =>
+      subscribeWorkspaceEvent(
+        rightWorkspaceIpcChannels.fileSearchEvent,
+        fileWorkspaceSearchSessionEventSchema,
+        callback
+      ),
+    openWithSystem: (input) =>
+      ipcRenderer.invoke(
+        rightWorkspaceIpcChannels.openWithSystem,
+        parseWorkspacePayload(fileWorkspaceMetadataRequestSchema, input)
+      ) as Promise<void>,
+    onEvent: (callback) =>
+      subscribeWorkspaceEvent(
+        rightWorkspaceIpcChannels.fileEvent,
+        fileWorkspaceEventSchema,
+        callback
+      )
+  },
+  terminal: {
+    create: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.create,
+        parseWorkspacePayload(terminalWorkspaceCreateRequestSchema, input)
+      ),
+    write: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.write,
+        parseWorkspacePayload(terminalWorkspaceWriteRequestSchema, input)
+      ),
+    resize: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.resize,
+        parseWorkspacePayload(terminalWorkspaceResizeRequestSchema, input)
+      ),
+    kill: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.kill,
+        parseWorkspacePayload(terminalWorkspaceKillRequestSchema, input)
+      ),
+    list: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.list,
+        parseWorkspacePayload(terminalWorkspaceListRequestSchema, input)
+      ),
+    onEvent: (callback) =>
+      subscribeWorkspaceEvent(
+        terminalWorkspaceIpcChannels.event,
+        terminalWorkspaceEventSchema,
+        callback
+      )
+  },
+  browser: {
+    create: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.create,
+        parseWorkspacePayload(browserWorkspaceCreateRequestSchema, input)
+      ),
+    navigate: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.navigate,
+        parseWorkspacePayload(browserWorkspaceNavigateRequestSchema, input)
+      ),
+    setBounds: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.setBounds,
+        parseWorkspacePayload(browserWorkspaceSetBoundsRequestSchema, input)
+      ),
+    goBack: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.goBack,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    goForward: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.goForward,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    reload: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.reload,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    stop: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.stop,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    show: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.show,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    hide: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.hide,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    destroy: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.destroy,
+        parseWorkspacePayload(browserWorkspaceViewRequestSchema, input)
+      ),
+    list: (input) =>
+      ipcRenderer.invoke(
+        browserWorkspaceIpcChannels.list,
+        parseWorkspacePayload(browserWorkspaceListRequestSchema, input)
+      ),
+    onEvent: (callback) =>
+      subscribeWorkspaceEvent(
+        browserWorkspaceIpcChannels.event,
+        browserWorkspaceEventSchema,
+        callback
+      )
+  }
+}
+
 function parseGitPayload<T>(schema: ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input, { jitless: true })
   if (!parsed.success) throw parsed.error
   return parsed.data
+}
+
+function parseWorkspacePayload<T>(schema: ZodType<T>, input: unknown): T {
+  const parsed = schema.safeParse(input, { jitless: true })
+  if (!parsed.success) throw parsed.error
+  return parsed.data
+}
+
+function subscribeWorkspaceEvent<T>(
+  channel: string,
+  schema: ZodType<T>,
+  callback: (event: T) => void
+): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+    const parsed = schema.safeParse(payload, { jitless: true })
+    if (parsed.success) callback(parsed.data)
+  }
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
 }
 
 const desktopApp = {
@@ -387,7 +617,9 @@ const desktopApp = {
   projects: desktopProjects,
   conversations: desktopConversations,
   followUps: desktopFollowUps,
-  git: desktopGit
+  git: desktopGit,
+  nativeContextMenu: desktopNativeContextMenu,
+  workspace: desktopRightWorkspace
 }
 
 if (process.contextIsolated) {

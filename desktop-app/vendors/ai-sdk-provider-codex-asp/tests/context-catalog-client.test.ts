@@ -10,6 +10,7 @@ class CatalogMockClient implements CodexContextCatalogJsonRpcClientLike
 {
     readonly requests: Array<{ method: string; params: unknown }> = [];
     readonly notifications: Array<{ method: string; params: unknown }> = [];
+    private readonly notificationHandlers = new Map<string, Set<(params: unknown) => void | Promise<void>>>();
     connectCount = 0;
     disconnectCount = 0;
 
@@ -33,6 +34,21 @@ class CatalogMockClient implements CodexContextCatalogJsonRpcClientLike
         return Promise.resolve();
     }
 
+    onNotification(method: string, handler: (params: unknown) => void | Promise<void>): () => void
+    {
+        const handlers = this.notificationHandlers.get(method) ?? new Set();
+        handlers.add(handler);
+        this.notificationHandlers.set(method, handlers);
+        return () =>
+        {
+            handlers.delete(handler);
+            if (handlers.size === 0)
+            {
+                this.notificationHandlers.delete(method);
+            }
+        };
+    }
+
     request<T>(method: string, params?: unknown): Promise<T>
     {
         this.requests.push({ method, params });
@@ -41,6 +57,14 @@ class CatalogMockClient implements CodexContextCatalogJsonRpcClientLike
             return Promise.resolve({} as T);
         }
         return Promise.resolve(this.handler(method, params) as T);
+    }
+
+    emitNotification(method: string, params: unknown): void
+    {
+        for (const handler of this.notificationHandlers.get(method) ?? [])
+        {
+            void handler(params);
+        }
     }
 }
 
@@ -437,24 +461,24 @@ describe("CodexContextCatalogClient", () =>
         expect(clients[1]?.connectCount).toBe(1);
     });
 
-    it("binds out-of-order fuzzy responses to the query that issued each request", async () =>
+    it("uses a reusable app-server fuzzy file search session and notification updates", async () =>
     {
-        type SearchResponse = {
-            files: Array<{
-                root: string;
-                path: string;
-                match_type: "file";
-                file_name: string;
-                score: number;
-                indices: null;
-            }>;
-        };
-        const pending = new Map<string, (response: SearchResponse) => void>();
         const mock = new CatalogMockClient((method, value) =>
         {
-            expect(method).toBe("fuzzyFileSearch");
-            const query = (value as { query: string }).query;
-            return new Promise<SearchResponse>((resolve) => pending.set(query, resolve));
+            if (method === "fuzzyFileSearch/sessionStart")
+            {
+                expect(value).toMatchObject({ roots: ["/repo"] });
+                return {};
+            }
+            if (method === "fuzzyFileSearch/sessionUpdate")
+            {
+                return {};
+            }
+            if (method === "fuzzyFileSearch/sessionStop")
+            {
+                return {};
+            }
+            throw new Error(`unexpected method: ${method}`);
         });
         const client = new CodexContextCatalogClient({ createClient: () => mock });
         const updated: Array<{ query: string; path: string }> = [];
@@ -465,44 +489,57 @@ describe("CodexContextCatalogClient", () =>
             onCompleted: (query) => completed.push(query),
         });
 
-        const first = session.update("one");
-        const second = session.update("two");
-        await vi.waitFor(() => expect(pending.size).toBe(2));
-        pending.get("two")?.({ files: [fuzzyFile("two.ts")] });
-        await second;
-        pending.get("one")?.({ files: [fuzzyFile("one.ts")] });
-        await first;
+        await session.update("one");
+        await session.update("two");
+        const sessionId = (mock.requests.find(({ method }) =>
+            method === "fuzzyFileSearch/sessionStart")?.params as { sessionId: string }).sessionId;
+        mock.emitNotification("fuzzyFileSearch/sessionUpdated", {
+            sessionId,
+            query: "two",
+            files: [fuzzyFile("two.ts")],
+        });
+        mock.emitNotification("fuzzyFileSearch/sessionCompleted", { sessionId });
         await session.stop();
         await session.update("ignored");
 
-        expect(updated).toEqual([
-            { query: "two", path: "two.ts" },
-            { query: "one", path: "one.ts" },
+        expect(updated).toEqual([{ query: "two", path: "two.ts" }]);
+        expect(completed).toEqual(["two"]);
+        expect(mock.requests.map(({ method }) => method)).toEqual([
+            "initialize",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionUpdate",
+            "fuzzyFileSearch/sessionUpdate",
+            "fuzzyFileSearch/sessionStop",
         ]);
-        expect(completed).toEqual(["two", "one"]);
-        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch")).toHaveLength(2);
-        expect(mock.requests.at(-1)?.params).toMatchObject({
+        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch")).toHaveLength(0);
+        expect(mock.requests[2]?.params).toMatchObject({
+            sessionId,
+            query: "one",
+        });
+        expect(mock.requests[3]?.params).toMatchObject({
+            sessionId,
             query: "two",
-            roots: ["/repo"],
-            cancellationToken: null,
         });
     });
 
-    it("reconnects and replays a fuzzy request after transport loss", async () =>
+    it("keeps one leased connection for a fuzzy file search session with per-operation lifecycle", async () =>
     {
         const clients: CatalogMockClient[] = [];
         const client = new CodexContextCatalogClient({
+            connectionLifecycle: "per-operation",
             createClient: () =>
             {
-                const attempt = clients.length;
                 const mock = new CatalogMockClient((method) =>
                 {
-                    expect(method).toBe("fuzzyFileSearch");
-                    if (attempt === 0)
+                    if (
+                        method === "fuzzyFileSearch/sessionStart" ||
+                        method === "fuzzyFileSearch/sessionUpdate" ||
+                        method === "fuzzyFileSearch/sessionStop"
+                    )
                     {
-                        throw new Error("transport closed");
+                        return {};
                     }
-                    return { files: [fuzzyFile("needle.ts")] };
+                    throw new Error(`unexpected method: ${method}`);
                 });
                 clients.push(mock);
                 return mock;
@@ -517,12 +554,127 @@ describe("CodexContextCatalogClient", () =>
         });
 
         await session.update("needle");
+        const mock = clients[0];
+        const sessionId = (mock?.requests.find(({ method }) =>
+            method === "fuzzyFileSearch/sessionStart")?.params as { sessionId: string }).sessionId;
+        mock?.emitNotification("fuzzyFileSearch/sessionUpdated", {
+            sessionId,
+            query: "needle",
+            files: [fuzzyFile("needle.ts")],
+        });
+        await session.stop();
+
+        expect(clients).toHaveLength(1);
+        expect(mock?.connectCount).toBe(1);
+        expect(mock?.disconnectCount).toBe(1);
+        expect(mock?.requests.map(({ method }) => method)).toEqual([
+            "initialize",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionUpdate",
+            "fuzzyFileSearch/sessionStop",
+        ]);
+        expect(updated).toHaveBeenCalledWith([
+            expect.objectContaining({ path: "needle.ts" }),
+        ], "needle");
+        expect(completed).not.toHaveBeenCalled();
+    });
+
+    it("falls back to legacy fuzzyFileSearch when session methods are unsupported", async () =>
+    {
+        const mock = new CatalogMockClient((method) =>
+        {
+            if (method === "fuzzyFileSearch/sessionStart")
+            {
+                throw new JsonRpcError({
+                    code: -32601,
+                    message: "method not found: fuzzyFileSearch/sessionStart",
+                });
+            }
+            if (method === "fuzzyFileSearch")
+            {
+                return { files: [fuzzyFile("needle.ts")] };
+            }
+            throw new Error(`unexpected method: ${method}`);
+        });
+        const client = new CodexContextCatalogClient({ createClient: () => mock });
+        const updated = vi.fn();
+        const completed = vi.fn();
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: updated,
+            onCompleted: completed,
+        });
+
+        await session.update("needle");
+        await session.stop();
+
+        expect(updated).toHaveBeenCalledWith([
+            expect.objectContaining({ path: "needle.ts" }),
+        ], "needle");
+        expect(completed).toHaveBeenCalledWith("needle");
+        expect(mock.requests.map(({ method }) => method)).toEqual([
+            "initialize",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch",
+        ]);
+        expect(mock.requests.at(-1)?.params).toMatchObject({
+            query: "needle",
+            roots: ["/repo"],
+            cancellationToken: "vscode-fuzzy-file-search",
+        });
+    });
+
+    it("reconnects, restarts the fuzzy session, and replays an update after transport loss", async () =>
+    {
+        const clients: CatalogMockClient[] = [];
+        const client = new CodexContextCatalogClient({
+            createClient: () =>
+            {
+                const attempt = clients.length;
+                const mock = new CatalogMockClient((method) =>
+                {
+                    if (method === "fuzzyFileSearch/sessionStart")
+                    {
+                        return {};
+                    }
+                    if (method === "fuzzyFileSearch/sessionUpdate")
+                    {
+                        if (attempt === 0)
+                        {
+                            throw new Error("transport closed");
+                        }
+                        return {};
+                    }
+                    throw new Error(`unexpected method: ${method}`);
+                });
+                clients.push(mock);
+                return mock;
+            },
+        });
+        const updated = vi.fn();
+        const completed = vi.fn();
+        const session = await client.createFuzzyFileSearchSession({
+            roots: ["/repo"],
+            onUpdated: updated,
+            onCompleted: completed,
+        });
+
+        await session.update("needle");
+        const sessionId = (clients[1]?.requests.find(({ method }) =>
+            method === "fuzzyFileSearch/sessionStart")?.params as { sessionId: string }).sessionId;
+        clients[1]?.emitNotification("fuzzyFileSearch/sessionUpdated", {
+            sessionId,
+            query: "needle",
+            files: [fuzzyFile("needle.ts")],
+        });
+        clients[1]?.emitNotification("fuzzyFileSearch/sessionCompleted", { sessionId });
 
         expect(clients).toHaveLength(2);
         expect(clients[0]?.disconnectCount).toBe(1);
         expect(clients[1]?.requests.map(({ method }) => method)).toEqual([
             "initialize",
-            "fuzzyFileSearch",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionUpdate",
         ]);
         expect(updated).toHaveBeenCalledWith([
             expect.objectContaining({ path: "needle.ts" }),
@@ -532,8 +684,12 @@ describe("CodexContextCatalogClient", () =>
 
     it("propagates fuzzy search protocol errors without reconnecting around them", async () =>
     {
-        const mock = new CatalogMockClient(() =>
+        const mock = new CatalogMockClient((method) =>
         {
+            if (method === "fuzzyFileSearch/sessionStart")
+            {
+                return {};
+            }
             throw new JsonRpcError({ code: -32602, message: "invalid roots" });
         });
         const client = new CodexContextCatalogClient({ createClient: () => mock });
@@ -548,19 +704,22 @@ describe("CodexContextCatalogClient", () =>
             message: "invalid roots",
         });
         expect(mock.disconnectCount).toBe(0);
-        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch")).toHaveLength(1);
+        expect(mock.requests.filter(({ method }) => method === "fuzzyFileSearch/sessionUpdate")).toHaveLength(1);
     });
 
-    it("suppresses a pending fuzzy response after catalog shutdown", async () =>
+    it("suppresses fuzzy session notifications after catalog shutdown", async () =>
     {
-        let resolveSearch: ((response: { files: ReturnType<typeof fuzzyFile>[] }) => void) | undefined;
         const mock = new CatalogMockClient((method) =>
         {
-            expect(method).toBe("fuzzyFileSearch");
-            return new Promise<{ files: ReturnType<typeof fuzzyFile>[] }>((resolve) =>
+            if (
+                method === "fuzzyFileSearch/sessionStart" ||
+                method === "fuzzyFileSearch/sessionUpdate" ||
+                method === "fuzzyFileSearch/sessionStop"
+            )
             {
-                resolveSearch = resolve;
-            });
+                return {};
+            }
+            throw new Error(`unexpected method: ${method}`);
         });
         const client = new CodexContextCatalogClient({ createClient: () => mock });
         const updated = vi.fn();
@@ -571,14 +730,25 @@ describe("CodexContextCatalogClient", () =>
             onCompleted: completed,
         });
 
-        const update = session.update("needle");
-        await vi.waitFor(() => expect(resolveSearch).toBeTypeOf("function"));
+        await session.update("needle");
+        const sessionId = (mock.requests.find(({ method }) =>
+            method === "fuzzyFileSearch/sessionStart")?.params as { sessionId: string }).sessionId;
         await client.shutdown();
-        resolveSearch?.({ files: [fuzzyFile("needle.ts")] });
-        await update;
+        mock.emitNotification("fuzzyFileSearch/sessionUpdated", {
+            sessionId,
+            query: "needle",
+            files: [fuzzyFile("needle.ts")],
+        });
+        mock.emitNotification("fuzzyFileSearch/sessionCompleted", { sessionId });
 
         expect(updated).not.toHaveBeenCalled();
         expect(completed).not.toHaveBeenCalled();
+        expect(mock.requests.map(({ method }) => method)).toEqual([
+            "initialize",
+            "fuzzyFileSearch/sessionStart",
+            "fuzzyFileSearch/sessionUpdate",
+            "fuzzyFileSearch/sessionStop",
+        ]);
         expect(mock.disconnectCount).toBe(1);
     });
 

@@ -7,6 +7,8 @@ import type {
   DesktopGitApi,
   DesktopProjectsApi
 } from '../shared/codexIpcApi'
+import type { DesktopRightWorkspaceApi } from '../shared/rightWorkspaceApi'
+import type { DesktopNativeContextMenuApi } from '../shared/nativeContextMenuApi'
 
 export type DesktopAppApi = {
   environment: {
@@ -19,6 +21,8 @@ export type DesktopAppApi = {
   conversations: DesktopConversationsApi
   followUps: DesktopCodexFollowUpApi
   git: DesktopGitApi
+  nativeContextMenu: DesktopNativeContextMenuApi
+  workspace: DesktopRightWorkspaceApi
 }
 
 declare global {

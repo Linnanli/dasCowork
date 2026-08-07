@@ -16,6 +16,7 @@ files:
   - '!node_modules/**/{demo,demos,docs,examples,test,tests,__tests__}/**'
 asarUnpack:
   - resources/**
+  - node_modules/node-pty/**
 extraResources:
   - from: .bundle-resources/codex-app-server
     to: codex-app-server

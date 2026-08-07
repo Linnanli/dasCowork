@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { AppServerClient, JsonRpcError } from "./client/app-server-client";
 import { StdioTransport } from "./client/transport-stdio";
 import { WebSocketTransport } from "./client/transport-websocket";
@@ -21,6 +23,7 @@ export interface CodexContextCatalogJsonRpcClientLike
     connect(): Promise<void>;
     disconnect(): Promise<void>;
     notification(method: string, params?: unknown): Promise<void>;
+    onNotification(method: string, handler: (params: unknown) => void | Promise<void>): () => void;
     request<T = unknown>(method: string, params?: unknown): Promise<T>;
 }
 
@@ -136,6 +139,7 @@ export class CodexContextCatalogClient
 {
     private clientPromise: Promise<CodexContextCatalogJsonRpcClientLike> | undefined;
     private readonly fuzzyFileSearchSessionStops = new Set<() => Promise<void>>();
+    private fuzzyFileSearchSessionSupport: "unknown" | "supported" | "unsupported" = "unknown";
 
     constructor(private readonly settings: CodexContextCatalogClientSettings = {}) {}
 
@@ -236,14 +240,107 @@ export class CodexContextCatalogClient
         });
     }
 
-    createFuzzyFileSearchSession(params: {
+    async createFuzzyFileSearchSession(params: {
         roots: string[];
         onUpdated: (files: FuzzyFileSearchResult[], query: string) => void;
         onCompleted: (query: string) => void;
     }): Promise<CodexFuzzyFileSearchSession>
     {
+        const sessionId = randomUUID();
+        let lease = await this.createFuzzyFileSearchClientLease();
         let stopped = false;
-        // sessionCompleted has no query, so request-scoped searches keep completion attribution exact.
+        let currentQuery = "";
+        let lastUpdatedQuery = "";
+
+        let removeUpdatedHandler: () => void = () => undefined;
+        let removeCompletedHandler: () => void = () => undefined;
+        const subscribeToSessionNotifications = (): void =>
+        {
+            removeUpdatedHandler();
+            removeCompletedHandler();
+            removeUpdatedHandler = lease.client.onNotification(
+                "fuzzyFileSearch/sessionUpdated",
+                (raw) =>
+                {
+                    const notification = parseFuzzyFileSearchSessionUpdated(raw);
+                    if (!notification || notification.sessionId !== sessionId || stopped)
+                    {
+                        return;
+                    }
+
+                    lastUpdatedQuery = notification.query;
+                    params.onUpdated(notification.files, notification.query);
+                },
+            );
+            removeCompletedHandler = lease.client.onNotification(
+                "fuzzyFileSearch/sessionCompleted",
+                (raw) =>
+                {
+                    const notification = parseFuzzyFileSearchSessionCompleted(raw);
+                    if (!notification || notification.sessionId !== sessionId || stopped)
+                    {
+                        return;
+                    }
+
+                    params.onCompleted(lastUpdatedQuery || currentQuery);
+                },
+            );
+        };
+        subscribeToSessionNotifications();
+
+        const startSession = async (): Promise<void> =>
+        {
+            if (this.fuzzyFileSearchSessionSupport === "unsupported")
+            {
+                return;
+            }
+
+            try
+            {
+                await lease.client.request("fuzzyFileSearch/sessionStart", {
+                    sessionId,
+                    roots: params.roots,
+                });
+                this.fuzzyFileSearchSessionSupport = "supported";
+            }
+            catch (error)
+            {
+                if (isUnsupportedFuzzyFileSearchMethod(error, "fuzzyFileSearch/sessionStart"))
+                {
+                    this.fuzzyFileSearchSessionSupport = "unsupported";
+                    return;
+                }
+                throw error;
+            }
+        };
+
+        try
+        {
+            await startSession();
+        }
+        catch (error)
+        {
+            removeUpdatedHandler();
+            removeCompletedHandler();
+            await this.invalidateFuzzyFileSearchClientLease(lease.client, lease.release);
+            throw error;
+        }
+
+        const reconnect = async (): Promise<void> =>
+        {
+            const staleLease = lease;
+            await this.invalidateFuzzyFileSearchClientLease(staleLease.client, staleLease.release);
+            lease = await this.createFuzzyFileSearchClientLease();
+            subscribeToSessionNotifications();
+            if (this.fuzzyFileSearchSessionSupport === "supported")
+            {
+                await lease.client.request("fuzzyFileSearch/sessionStart", {
+                    sessionId,
+                    roots: params.roots,
+                });
+            }
+        };
+
         const update = async (query: string, canReconnect = true): Promise<void> =>
         {
             if (stopped)
@@ -251,17 +348,22 @@ export class CodexContextCatalogClient
                 return;
             }
 
+            currentQuery = query;
             try
             {
-                await this.withClient((client) =>
-                    this.fuzzyFileSearch(
-                        client,
-                        params.roots,
-                        query,
-                        () => stopped,
-                        params.onUpdated,
-                        params.onCompleted,
-                    ),
+                if (this.fuzzyFileSearchSessionSupport === "supported")
+                {
+                    await this.updateFuzzyFileSearchSession(lease.client, sessionId, query, params.roots);
+                    return;
+                }
+
+                await this.fuzzyFileSearch(
+                    lease.client,
+                    params.roots,
+                    query,
+                    () => stopped,
+                    params.onUpdated,
+                    params.onCompleted,
                 );
             }
             catch (error)
@@ -270,22 +372,31 @@ export class CodexContextCatalogClient
                 {
                     throw error;
                 }
+                await reconnect();
                 await update(query, false);
             }
         };
 
-        const stop = (): Promise<void> =>
+        const stop = async (): Promise<void> =>
         {
+            if (stopped)
+            {
+                return;
+            }
+
             stopped = true;
             this.fuzzyFileSearchSessionStops.delete(stop);
-            return Promise.resolve();
+            removeUpdatedHandler();
+            removeCompletedHandler();
+            await this.stopFuzzyFileSearchSession(lease.client, sessionId);
+            await lease.release();
         };
         this.fuzzyFileSearchSessionStops.add(stop);
 
-        return Promise.resolve({
+        return {
             update,
             stop,
-        });
+        };
     }
 
     async searchThreads(params: { query: string; limit?: number }): Promise<CodexTaskSearchResult[]>
@@ -409,13 +520,114 @@ export class CodexContextCatalogClient
         const response = await client.request<FuzzyFileSearchResponse>("fuzzyFileSearch", {
             query,
             roots,
-            cancellationToken: null,
+            cancellationToken: "vscode-fuzzy-file-search",
         });
         if (!isStopped())
         {
             onUpdated(response.files, query);
             onCompleted(query);
         }
+    }
+
+    private async updateFuzzyFileSearchSession(
+        client: CodexContextCatalogJsonRpcClientLike,
+        sessionId: string,
+        query: string,
+        roots: string[],
+    ): Promise<void>
+    {
+        try
+        {
+            await client.request("fuzzyFileSearch/sessionUpdate", {
+                sessionId,
+                query,
+            });
+        }
+        catch (error)
+        {
+            if (!isFuzzyFileSearchSessionNotFound(error))
+            {
+                throw error;
+            }
+
+            await client.request("fuzzyFileSearch/sessionStart", {
+                sessionId,
+                roots,
+            });
+            await client.request("fuzzyFileSearch/sessionUpdate", {
+                sessionId,
+                query,
+            });
+        }
+    }
+
+    private async stopFuzzyFileSearchSession(
+        client: CodexContextCatalogJsonRpcClientLike,
+        sessionId: string,
+    ): Promise<void>
+    {
+        if (this.fuzzyFileSearchSessionSupport === "unsupported")
+        {
+            return;
+        }
+
+        try
+        {
+            await client.request("fuzzyFileSearch/sessionStop", { sessionId });
+        }
+        catch (error)
+        {
+            if (isUnsupportedFuzzyFileSearchMethod(error, "fuzzyFileSearch/sessionStop"))
+            {
+                this.fuzzyFileSearchSessionSupport = "unsupported";
+            }
+        }
+    }
+
+    private async createFuzzyFileSearchClientLease(): Promise<{
+        client: CodexContextCatalogJsonRpcClientLike;
+        release: () => Promise<void>;
+    }>
+    {
+        if (this.settings.connectionLifecycle !== "per-operation")
+        {
+            return {
+                client: await this.connectedClient(),
+                release: () => Promise.resolve(),
+            };
+        }
+
+        const client = this.createClient();
+        await client.connect();
+        try
+        {
+            await client.request<CodexInitializeResult>("initialize", this.initializeParams());
+            await client.notification("initialized");
+        }
+        catch (error)
+        {
+            await client.disconnect().catch(() => undefined);
+            throw error;
+        }
+
+        return {
+            client,
+            release: () => client.disconnect().catch(() => undefined),
+        };
+    }
+
+    private async invalidateFuzzyFileSearchClientLease(
+        client: CodexContextCatalogJsonRpcClientLike,
+        release: () => Promise<void>,
+    ): Promise<void>
+    {
+        if (this.settings.connectionLifecycle !== "per-operation")
+        {
+            await this.invalidateClient(client);
+            return;
+        }
+
+        await release();
     }
 
     private async invalidateClient(client: CodexContextCatalogJsonRpcClientLike): Promise<void>
@@ -560,6 +772,75 @@ function countRecordKeys(value: unknown): number
         return 0;
     }
     return Object.keys(value).length;
+}
+
+function parseFuzzyFileSearchSessionUpdated(value: unknown): {
+    sessionId: string;
+    query: string;
+    files: FuzzyFileSearchResult[];
+} | undefined
+{
+    if (!value || typeof value !== "object")
+    {
+        return undefined;
+    }
+
+    const candidate = value as {
+        sessionId?: unknown;
+        query?: unknown;
+        files?: unknown;
+    };
+    if (
+        typeof candidate.sessionId !== "string" ||
+        typeof candidate.query !== "string" ||
+        !Array.isArray(candidate.files)
+    )
+    {
+        return undefined;
+    }
+
+    return {
+        sessionId: candidate.sessionId,
+        query: candidate.query,
+        files: candidate.files as FuzzyFileSearchResult[],
+    };
+}
+
+function parseFuzzyFileSearchSessionCompleted(value: unknown): { sessionId: string } | undefined
+{
+    if (!value || typeof value !== "object")
+    {
+        return undefined;
+    }
+
+    const sessionId = (value as { sessionId?: unknown }).sessionId;
+    return typeof sessionId === "string" ? { sessionId } : undefined;
+}
+
+function isUnsupportedFuzzyFileSearchMethod(error: unknown, method: string): boolean
+{
+    if (!(error instanceof JsonRpcError))
+    {
+        return false;
+    }
+
+    const message = error.message.toLowerCase();
+    return (
+        error.code === -32_601 ||
+        message.includes("method not found") ||
+        (
+            message.includes("unknown variant") &&
+            message.includes(method.toLowerCase())
+        )
+    );
+}
+
+function isFuzzyFileSearchSessionNotFound(error: unknown): boolean
+{
+    return (
+        error instanceof JsonRpcError &&
+        error.message.toLowerCase().includes("fuzzy file search session not found")
+    );
 }
 
 function skillDisplayName(skill: SkillMetadata): string

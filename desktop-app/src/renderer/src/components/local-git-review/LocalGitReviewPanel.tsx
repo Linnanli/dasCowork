@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect -- effects synchronize asynchronously loaded Git snapshots with the panel. */
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { LoaderCircleIcon, RefreshCwIcon, XIcon } from 'lucide-react'
+import { LoaderCircleIcon, RefreshCwIcon } from 'lucide-react'
 
 import type {
   LocalBranchSummary,
@@ -15,6 +15,7 @@ import type {
 import { LOCAL_GIT_REVIEW_MUTATION_MAX_FILES } from '../../../../shared/localGitApi'
 import { DiffViewer } from '@/components/assistant-ui/diff-viewer'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -79,6 +80,7 @@ export function LocalGitReviewPanel({
   const [mutationFeedback, setMutationFeedback] = useState<string>()
   const [pending, setPending] = useState(false)
   const [showFiles, setShowFiles] = useState(true)
+  const [fileQuery, setFileQuery] = useState('')
   const [split, setSplit] = useState(false)
   const [diffsCollapsed, setDiffsCollapsed] = useState(false)
   const [confirmRevert, setConfirmRevert] = useState(false)
@@ -298,6 +300,9 @@ export function LocalGitReviewPanel({
   const mutationAction = mutationActionForSource(source)
   const snapshotMatchesSource = Boolean(snapshot && sameReviewSource(snapshot.source, source))
   const hasSectionFiles = Boolean(snapshotMatchesSource && snapshot && snapshot.files.length > 0)
+  const visibleFiles = snapshot?.files.filter((file) =>
+    file.path.toLocaleLowerCase().includes(fileQuery.trim().toLocaleLowerCase())
+  )
   const sectionMutationIsAllowed = Boolean(
     snapshotMatchesSource &&
     snapshot &&
@@ -435,14 +440,15 @@ export function LocalGitReviewPanel({
     }
   }
 
+  void onClose
   if (!open) return null
   return (
-    <aside
+    <div
       data-slot="local-git-review-panel"
       aria-label="Review"
-      className="flex h-full w-[min(46vw,42rem)] min-w-80 shrink-0 flex-col border-l bg-background"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background"
     >
-      <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+      <div className="flex h-13 shrink-0 items-center justify-between gap-2 border-b px-3">
         <div>
           <h2 className="text-sm font-semibold">Review</h2>
           <p className="text-xs text-muted-foreground">{sourceLabels[source.type]}</p>
@@ -467,15 +473,6 @@ export function LocalGitReviewPanel({
             onClick={() => void load(true)}
           >
             <RefreshCwIcon className={cn('size-3.5', refreshing && 'animate-spin')} />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Close Review"
-            onClick={onClose}
-          >
-            <XIcon className="size-3.5" />
           </Button>
         </div>
       </div>
@@ -698,35 +695,54 @@ export function LocalGitReviewPanel({
           {showFiles ? (
             <div
               data-slot="local-git-review-file-tree"
-              className="w-48 shrink-0 overflow-y-auto border-r p-1"
+              role="tree"
+              aria-label="Changed files"
+              className="order-2 flex w-[32%] min-w-52 shrink-0 flex-col border-l p-2"
             >
-              {snapshot?.files.map((file) => (
-                <button
-                  key={file.path}
-                  type="button"
-                  data-selected={selectedFile?.path === file.path}
-                  className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-muted data-[selected=true]:bg-muted"
-                  onClick={() => {
-                    setSelectedFile(file)
-                    setDiffsCollapsed(false)
-                  }}
-                >
-                  <span className="block truncate">{file.path}</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">
-                    {reviewFileStatus(file)}
-                  </span>
-                  <span className="text-emerald-600">+{file.additions}</span>{' '}
-                  <span className="text-red-600">-{file.deletions}</span>
-                </button>
-              ))}
+              <Input
+                aria-label="Search changed files"
+                placeholder="Search files"
+                value={fileQuery}
+                onChange={(event) => setFileQuery(event.target.value)}
+                className="mb-2 h-9 shrink-0 text-xs"
+              />
+              <div className="min-h-0 overflow-y-auto">
+                {visibleFiles?.map((file) => (
+                  <button
+                    key={file.path}
+                    type="button"
+                    role="treeitem"
+                    aria-selected={selectedFile?.path === file.path}
+                    data-selected={selectedFile?.path === file.path}
+                    className="w-full rounded-lg px-2 py-1.5 text-left text-xs hover:bg-muted data-[selected=true]:bg-muted"
+                    onClick={() => {
+                      setSelectedFile(file)
+                      setDiffsCollapsed(false)
+                    }}
+                  >
+                    <span className="block truncate">{file.path}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {reviewFileStatus(file)}
+                    </span>
+                    <span className="text-emerald-600">+{file.additions}</span>{' '}
+                    <span className="text-red-600">-{file.deletions}</span>
+                  </button>
+                ))}
+              </div>
               {snapshot?.files.length === 0 ? (
                 <p className="p-2 text-xs text-muted-foreground">
                   No {sourceLabels[source.type].toLowerCase()} changes
                 </p>
               ) : null}
+              {snapshot && snapshot.files.length > 0 && visibleFiles?.length === 0 ? (
+                <p className="p-2 text-xs text-muted-foreground">No matching files</p>
+              ) : null}
             </div>
           ) : null}
-          <div data-slot="local-git-review-diff" className="min-w-0 flex-1 overflow-auto p-3">
+          <div
+            data-slot="local-git-review-diff"
+            className="order-1 min-w-0 flex-1 overflow-auto p-3"
+          >
             {snapshotMatchesSource && snapshot?.largeDiff && !selectedFile ? (
               <p className="text-sm text-muted-foreground">
                 Diff too large to display. Select a file.
@@ -762,9 +778,9 @@ export function LocalGitReviewPanel({
             ) : null}
             {(selectedFile || hasSectionFiles) &&
             (mutationAction || source.type === 'staged' || source.type === 'unstaged') ? (
-              <div className="mt-3 flex gap-2 border-t pt-3">
+              <div className="mt-3 border-t pt-3">
                 {mutationAction ? (
-                  <>
+                  <div className="flex flex-wrap gap-2">
                     {selectedFile ? (
                       <>
                         <Button
@@ -803,10 +819,10 @@ export function LocalGitReviewPanel({
                           </Button>
                         ))
                       : null}
-                  </>
+                  </div>
                 ) : null}
                 {source.type === 'staged' || source.type === 'unstaged' ? (
-                  <>
+                  <div className="mt-2 flex flex-wrap gap-2">
                     {selectedFile ? (
                       <Button
                         type="button"
@@ -844,7 +860,7 @@ export function LocalGitReviewPanel({
                           </Button>
                         ))
                       : null}
-                  </>
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -885,7 +901,7 @@ export function LocalGitReviewPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </aside>
+    </div>
   )
 }
 

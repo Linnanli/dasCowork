@@ -1,4 +1,5 @@
-import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
+import type { BrowserWindow, MenuItemConstructorOptions, WebContents } from 'electron'
+import { nativeContextMenuRequestSchema } from '../shared/nativeContextMenuApi'
 
 type ContextMenuPoint = {
   x: number
@@ -13,11 +14,15 @@ type ContextMenuWebContents = {
 }
 
 type PopupMenu = {
-  popup(options: { window?: BrowserWindow }): void
+  popup(options: { window?: BrowserWindow; callback?: () => void }): void
 }
 
 type MenuBuilder = {
   buildFromTemplate(template: MenuItemConstructorOptions[]): PopupMenu
+}
+
+type ContextMenuInvokeEvent = {
+  sender: WebContents
 }
 
 export function createWindowContextMenuTemplate(
@@ -53,4 +58,35 @@ export function installWindowContextMenu(
     const menu = menuBuilder.buildFromTemplate(createWindowContextMenuTemplate(webContents, params))
     menu.popup({ window: mainWindow })
   })
+}
+
+export function createNativeContextMenuHandler(
+  menuBuilder: MenuBuilder,
+  resolveWindow: (event: ContextMenuInvokeEvent) => BrowserWindow | undefined
+): (event: ContextMenuInvokeEvent, payload: unknown) => Promise<string | null> {
+  return async (event, payload) => {
+    const request = nativeContextMenuRequestSchema.parse(payload)
+    const window = resolveWindow(event)
+
+    return new Promise((resolve) => {
+      let settled = false
+      const settle = (id: string | null): void => {
+        if (settled) return
+        settled = true
+        resolve(id)
+      }
+      const menu = menuBuilder.buildFromTemplate(
+        request.items.map((item): MenuItemConstructorOptions => {
+          if (item.type === 'separator') return { type: 'separator' }
+          return {
+            id: item.id,
+            label: item.label,
+            enabled: item.enabled ?? true,
+            click: () => settle(item.id)
+          }
+        })
+      )
+      menu.popup({ window, callback: () => settle(null) })
+    })
+  }
 }

@@ -341,6 +341,7 @@ function resetThreadMessageState(): void {
   runtimeState.openConversation.mockReset()
   runtimeState.openConversation.mockResolvedValue(undefined)
   runtimeState.activeConversation = undefined
+  runtimeState.activeEntry.localId = 'local-test'
   runtimeState.activeEntry.newConversation = true
   runtimeState.activeEntry.context = { conversationId: 'local-test' }
   runtimeState.activeEntry.status = 'ready'
@@ -1095,7 +1096,8 @@ vi.mock('@assistant-ui/react', () => {
   }
 })
 
-import App from './App'
+import App, { WorkspacePreviewBoundary } from './App'
+import type { WorkspaceTabRecord } from './components/workspace-container'
 
 describe('App composer', () => {
   let container: HTMLDivElement
@@ -1141,6 +1143,42 @@ describe('App composer', () => {
     container.remove()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('keeps the workspace child mounted when switching between pinned and preview tabs', () => {
+    let mounts = 0
+    const WorkspaceChild = (): React.JSX.Element => {
+      useState(() => {
+        mounts += 1
+      })
+      return <div data-testid="workspace-child" />
+    }
+    const renderBoundary = (isPreview: boolean): void => {
+      root.render(
+        <WorkspacePreviewBoundary
+          onPin={vi.fn()}
+          tab={
+            {
+              id: 'file:README.md',
+              kind: 'file',
+              title: 'README.md',
+              props: { relativePath: 'README.md' },
+              isPreview,
+              isClosable: true
+            } satisfies WorkspaceTabRecord
+          }
+        >
+          <WorkspaceChild />
+        </WorkspacePreviewBoundary>
+      )
+    }
+
+    act(() => renderBoundary(false))
+    const child = container.querySelector('[data-testid="workspace-child"]')
+    act(() => renderBoundary(true))
+
+    expect(mounts).toBe(1)
+    expect(container.querySelector('[data-testid="workspace-child"]')).toBe(child)
   })
 
   it('uses the shared Lexical context input without the legacy slash popover', () => {
@@ -1850,6 +1888,35 @@ describe('App composer', () => {
     expect(runtimeState.startNewConversation).toHaveBeenCalledOnce()
   })
 
+  it('moves the shared sidebar trigger into the conversation header rail when collapsed', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const sidebar = container.querySelector<HTMLElement>('[data-slot="codex-sidebar"]')
+    const headerSlot = container.querySelector<HTMLElement>('[data-slot="sidebar-header-slot"]')
+    const conversationHeader = container.querySelector<HTMLElement>('header')
+    const hideSidebar = container.querySelector<HTMLButtonElement>('button[aria-label="隐藏侧栏"]')
+
+    expect(container.querySelectorAll('[data-slot="sidebar-toggle"]')).toHaveLength(1)
+    expect(sidebar?.style.width).toBe('260px')
+    expect(headerSlot?.style.width).toBe('260px')
+    expect(conversationHeader?.style.paddingLeft).toBe('16px')
+    expect(sidebar?.contains(hideSidebar ?? null)).toBe(false)
+    expect(conversationHeader?.contains(hideSidebar ?? null)).toBe(false)
+
+    act(() => {
+      hideSidebar?.click()
+    })
+
+    expect(container.querySelectorAll('[data-slot="sidebar-toggle"]')).toHaveLength(1)
+    expect(container.querySelector('button[aria-label="显示侧栏"]')).not.toBeNull()
+    expect(sidebar?.style.width).toBe('0px')
+    expect(sidebar?.getAttribute('aria-hidden')).toBe('true')
+    expect(headerSlot?.style.width).toBe('48px')
+    expect(conversationHeader?.style.paddingLeft).toBe('56px')
+  })
+
   it('shows active conversation title in the header without workspace path', () => {
     runtimeState.activeConversation = {
       conversationId: 'conversation-1',
@@ -1866,6 +1933,88 @@ describe('App composer', () => {
 
     expect(header?.textContent).toContain('Feature thread')
     expect(header?.innerHTML).not.toContain('/Users/test/repo')
+  })
+
+  it('keeps one shared workspace trigger across the conversation and workspace headers', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(container.querySelector('[aria-label="Right workspace launcher"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Right workspace"]')).toBeNull()
+    expect(container.querySelectorAll('[data-slot="workspace-toggle"]')).toHaveLength(1)
+
+    const workspaceActions = container.querySelector<HTMLElement>(
+      '[data-slot="workspace-header-actions"]'
+    )
+    const secondaryActionSlot = workspaceActions?.firstElementChild as HTMLElement | null
+    const workspaceToggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开工作区"]'
+    )
+    expect(secondaryActionSlot?.style.width).toBe('0px')
+
+    act(() => {
+      workspaceToggle?.click()
+    })
+
+    const mainSection = container.querySelector('[data-slot="app-main-section"]')
+    const workspaceRow = container.querySelector('[data-slot="conversation-workspace-row"]')
+    const rightWorkspace = container.querySelector('[data-slot="right-workspace-shell"]')
+    const closeWorkspace = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="关闭工作区"]'
+    )
+
+    expect(rightWorkspace).not.toBeNull()
+    expect(workspaceRow?.parentElement?.parentElement).toBe(mainSection)
+    expect(rightWorkspace?.parentElement).toBe(workspaceRow)
+    expect(container.querySelectorAll('[data-slot="workspace-toggle"]')).toHaveLength(1)
+    expect(closeWorkspace).toBe(workspaceToggle)
+    expect(secondaryActionSlot?.style.width).toBe('40px')
+    expect(container.querySelector('button[aria-label="最大化工作区"]')).not.toBeNull()
+    expect(container.querySelector('button[aria-label="Collapse workspace"]')).toBeNull()
+
+    act(() => {
+      closeWorkspace?.click()
+    })
+
+    expect(secondaryActionSlot?.style.width).toBe('0px')
+    expect(container.querySelectorAll('[data-slot="workspace-toggle"]')).toHaveLength(1)
+  })
+
+  it('restores each conversation\'s saved right-workspace open state when switching back', async () => {
+    const openConversationId = 'workspace-recovery-open'
+    const closedConversationId = 'workspace-recovery-closed'
+    window.localStorage.removeItem(`workspace-container:v2:${openConversationId}`)
+    window.localStorage.removeItem(`workspace-container:v2:${closedConversationId}`)
+
+    const renderConversation = async (conversationId: string): Promise<void> => {
+      runtimeState.activeEntry.localId = conversationId
+      runtimeState.activeEntry.context = { conversationId }
+      await act(async () => {
+        root.render(<App />)
+        await Promise.resolve()
+      })
+    }
+    const workspaceToggle = (): HTMLButtonElement | null =>
+      container.querySelector('button[data-slot="workspace-toggle"]')
+
+    await renderConversation(openConversationId)
+    expect(workspaceToggle()?.getAttribute('aria-label')).toBe('打开工作区')
+
+    await act(async () => {
+      workspaceToggle()?.click()
+      await Promise.resolve()
+    })
+    expect(workspaceToggle()?.getAttribute('aria-label')).toBe('关闭工作区')
+
+    await renderConversation(closedConversationId)
+    expect(workspaceToggle()?.getAttribute('aria-label')).toBe('打开工作区')
+
+    await renderConversation(openConversationId)
+    expect(workspaceToggle()?.getAttribute('aria-label')).toBe('关闭工作区')
+
+    await renderConversation(closedConversationId)
+    expect(workspaceToggle()?.getAttribute('aria-label')).toBe('打开工作区')
   })
 
   it('uses the active conversation project for context and hides its project picker', async () => {

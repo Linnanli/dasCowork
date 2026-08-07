@@ -42,6 +42,13 @@ export type ResolveExistingThreadTargetInput = {
   threadId?: string | null
   routeFallback?: ResolvedExecutionTarget | null
   allowActiveProjectFallback?: boolean
+  /**
+   * Workspace tools can opt in when they need a local root for the task that
+   * is currently open. This remains separate from normal thread continuation:
+   * sending another turn must never silently move a historical task to the
+   * project selected elsewhere in the app.
+   */
+  allowActiveProjectFallbackForUnboundThread?: boolean
 }
 
 export class ProjectService {
@@ -135,7 +142,10 @@ export class ProjectService {
       return input.routeFallback
     }
 
-    if (input.allowActiveProjectFallback && !input.threadId) {
+    if (
+      input.allowActiveProjectFallback &&
+      (!input.threadId || input.allowActiveProjectFallbackForUnboundThread)
+    ) {
       return this.resolveActiveProjectFallback(state)
     }
 

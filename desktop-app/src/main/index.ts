@@ -28,7 +28,7 @@ import {
   ConversationApiService,
   type ObservedStartedThread
 } from './conversations/ConversationApiService'
-import { installWindowContextMenu } from './contextMenu'
+import { createNativeContextMenuHandler, installWindowContextMenu } from './contextMenu'
 import { createPickLocalContextHandler } from './localContextPicker'
 import { LocalImageCapabilityStore } from './localImageCapabilityStore'
 import { LocalPathCapabilityStore } from './localPathCapabilityStore'
@@ -74,6 +74,10 @@ import { createLocalGitIpcHandlers } from './localGit/localGitIpc'
 import { LocalGitWatchBroker, localGitWatchControlChannels } from './localGit/LocalGitWatchBroker'
 import { invalidateLocalGitWatchCaches } from './localGit/LocalGitWatchInvalidation'
 import { loadDesktopRuntimeConfig } from './runtimeConfig'
+import {
+  registerRightWorkspaceIpc,
+  type RightWorkspaceIpcRegistration
+} from './rightWorkspace/registerRightWorkspaceIpc'
 import { createMainWindowOptions } from './windowOptions'
 import {
   codexChatAttachPayloadSchema,
@@ -108,6 +112,7 @@ import {
   sidebarPreferencesPatchSchema
 } from '../shared/codexIpcApi'
 import { gitIpcChannels } from '../shared/localGitApi'
+import { nativeContextMenuIpcChannels } from '../shared/nativeContextMenuApi'
 import type { ProjectState } from '../shared/projects/projectTypes'
 
 let codexRuntime: CodexChatRuntimeService | undefined
@@ -124,6 +129,7 @@ let codexAppServerConnection: CodexAspSharedConnection | undefined
 let followUpQueue: ConversationFollowUpQueueService | undefined
 let localGitWatchBroker: LocalGitWatchBroker | undefined
 let gitHostRegistry: GitHostRegistry | undefined
+let rightWorkspaceIpc: RightWorkspaceIpcRegistration | undefined
 const localImageCapabilities = new LocalImageCapabilityStore()
 const localPathCapabilities = new LocalPathCapabilityStore()
 const convergingConversationThreadIds = new Set<string>()
@@ -319,6 +325,11 @@ function requireComposerContextSearch(): ComposerContextSearchService {
   return composerContextSearch
 }
 
+function requireComposerContextClient(): CodexContextCatalogClient {
+  if (!composerContextClient) throw new Error('Composer context client is not initialized')
+  return composerContextClient
+}
+
 function requireMcpServerStatus(): McpServerStatusService {
   if (!mcpServerStatus) throw new Error('MCP server status service is not initialized')
   return mcpServerStatus
@@ -455,6 +466,17 @@ function createWindow(runtime: CodexChatRuntimeService): void {
     })
   )
   const ownerWebContentsId = mainWindow.webContents.id
+  rightWorkspaceIpc?.attachWindow(mainWindow)
+
+  mainWindow.webContents.on('did-start-loading', () => {
+    rightWorkspaceIpc?.disposeWindow(ownerWebContentsId)
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow.isDestroyed()) rightWorkspaceIpc?.attachWindow(mainWindow)
+  })
+  mainWindow.webContents.on('render-process-gone', () => {
+    rightWorkspaceIpc?.disposeWindow(ownerWebContentsId)
+  })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -478,6 +500,7 @@ function createWindow(runtime: CodexChatRuntimeService): void {
   mainWindow.on('closed', () => {
     unsubscribeApprovals()
     unsubscribeSettledApprovals()
+    rightWorkspaceIpc?.disposeWindow(ownerWebContentsId)
   })
   mainWindow.webContents.once('destroyed', () => {
     void composerContextSearch?.stopOwnedBy(ownerWebContentsId)
@@ -524,6 +547,11 @@ app.whenReady().then(() => {
     commits: new LocalCommitService(localGit, (input) => runtime.generateCommitMessage(input)),
     watchBroker: localGitWatchBroker
   })
+  rightWorkspaceIpc = registerRightWorkspaceIpc({
+    ipcMain,
+    projectService: requireProjectService(),
+    fileSearchProvider: requireComposerContextClient()
+  })
 
   electronApp.setAppUserModelId('com.electron')
   nativeTheme.themeSource = 'system'
@@ -533,6 +561,13 @@ app.whenReady().then(() => {
   app.on('browser-window-focus', () => manager.handleAppEvent({ type: 'foreground' }))
 
   ipcMain.handle('codex:get-status', () => runtime.getStatus())
+  ipcMain.handle(
+    nativeContextMenuIpcChannels.show,
+    createNativeContextMenuHandler(
+      Menu,
+      (event) => BrowserWindow.fromWebContents(event.sender) ?? undefined
+    )
+  )
   ipcMain.handle('codex:list-models', () => runtime.listModels())
   ipcMain.handle('codex:list-mcp-servers', createListMcpServersHandler(requireMcpServerStatus()))
   ipcMain.handle('codex:set-selected-model', (_, payload: unknown) => {
@@ -921,6 +956,7 @@ app.on(
         await composerContextSearch?.shutdown()
       } finally {
         localGitWatchBroker?.dispose()
+        rightWorkspaceIpc?.dispose()
         composerContextChanges?.dispose()
         await Promise.allSettled([
           codexRuntime?.stop(),

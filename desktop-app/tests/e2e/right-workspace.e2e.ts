@@ -1,0 +1,492 @@
+import { execFile as execFileCallback } from 'node:child_process'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
+
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
+import type { ElectronApplication } from 'playwright'
+
+import {
+  attachDiagnostics,
+  cleanupTempDirs,
+  closeApp,
+  collectRendererLogs,
+  launchApp
+} from './support/app'
+import { createLocalProject, sendComposerMessage } from './support/chatActions'
+import { assistantMessageResponse, startMockBackend } from './support/mockBackend'
+
+const execFile = promisify(execFileCallback)
+
+test('RW-E2E-01 opens the four workspace surfaces from a real local conversation', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-right-workspace-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('right-workspace-thread', 'right-workspace-message', 'Thread ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Right workspace ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open the right workspace acceptance test.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await openRightWorkspace(page)
+
+    await expect(page.getByRole('button', { name: 'Open Files', exact: true })).toBeVisible()
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-01-launcher')
+
+    await page.getByRole('button', { name: 'Open Files', exact: true }).click()
+    await expect(page.getByText('只读预览')).toBeVisible()
+    await expect(page.getByRole('tablist', { name: 'Workspace tabs' })).toBeVisible()
+    await expect(page.getByRole('treeitem', { name: 'README.md', exact: true })).toBeVisible()
+    await expect
+      .poll(() =>
+        page
+          .locator('file-tree-container')
+          .evaluate((element) => element.getBoundingClientRect().height)
+      )
+      .toBeGreaterThan(0)
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-03-files')
+
+    await openWorkspaceMenuItem(page, 'Browser')
+    await expect(page.getByRole('textbox', { name: 'Browser address' })).toBeVisible()
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-04-browser-empty')
+
+    await openWorkspaceMenuItem(page, 'Terminal')
+    await expect(page.getByRole('button', { name: '启动终端', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '启动终端', exact: true }).click()
+    await expect(page.locator('.xterm')).toBeVisible()
+    const terminalInput = page.locator('.xterm-helper-textarea')
+    await terminalInput.pressSequentially('printf terminal-ready')
+    await terminalInput.press('Enter')
+    await page.waitForTimeout(250)
+    await expectWorkspaceLayout(page)
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-02-terminal')
+
+    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await expect(page.locator('[data-slot="local-git-review-panel"]')).toBeVisible()
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-05-review')
+
+    await page.setViewportSize({ width: 1_100, height: 800 })
+    await page.getByRole('tab', { name: 'Files', exact: true }).click()
+    await expect(page.getByText('只读预览')).toBeVisible()
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-06-narrow-files')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+test('RW-E2E-02 keeps the shared workspace toggle stable during width transitions', async ({
+  browserName
+}) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({ responses: [] })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await page.waitForTimeout(250)
+
+    const openingSamples = await sampleWorkspaceTransition(page, '打开工作区')
+    expectMonotonicTransitionWidths(openingSamples, 'opening')
+    expectStableTogglePosition(openingSamples)
+
+    const closingSamples = await sampleWorkspaceTransition(page, '关闭工作区')
+    expectMonotonicTransitionWidths(closingSamples, 'closing')
+    expectStableTogglePosition(closingSamples)
+  } finally {
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('RW-E2E-03 moves a workspace tab between the right and bottom panels', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-workspace-panels-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('workspace-panels-thread', 'workspace-panels-message', 'Ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Workspace panels ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open files before moving the tab.')
+    await openRightWorkspace(page)
+    await page.getByRole('button', { name: 'Open Files', exact: true }).click()
+    await expect(page.getByRole('tab', { name: 'Files', exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: '打开底部工作区', exact: true }).click()
+    const bottomPanel = page.locator('[data-slot="bottom-workspace-shell"]')
+    await expect(bottomPanel).toBeVisible()
+    await page.waitForTimeout(250)
+
+    const sourceTab = page.getByRole('tab', { name: 'Files', exact: true })
+    const sourceBox = await sourceTab.boundingBox()
+    const destinationBox = await bottomPanel.boundingBox()
+    if (!sourceBox || !destinationBox) throw new Error('Missing workspace drag targets')
+    await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(
+      destinationBox.x + destinationBox.width / 2,
+      destinationBox.y + destinationBox.height / 2,
+      { steps: 4 }
+    )
+    await page.mouse.up()
+
+    await expect(bottomPanel.getByRole('tab', { name: 'Files', exact: true })).toBeVisible()
+    await expect(page.locator('[data-slot="right-workspace-shell"]').getByRole('tab')).toHaveCount(
+      0
+    )
+
+    await bottomPanel.getByRole('button', { name: 'Open workspace tab', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Browser/ }).click()
+    await expect(bottomPanel.getByRole('tab', { name: 'New tab', exact: true })).toBeVisible()
+    await expect(bottomPanel.getByRole('tab')).toHaveCount(2)
+
+    await bottomPanel.getByRole('button', { name: 'Close Files', exact: true }).click()
+    await expect(bottomPanel.getByRole('tab', { name: 'New tab', exact: true })).toBeVisible()
+    await expect(bottomPanel.getByRole('tab')).toHaveCount(1)
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-07-bottom-panel')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+test('RW-E2E-04 replaces preview file tabs but preserves pinned file tabs', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-workspace-preview-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('workspace-preview-thread', 'workspace-preview-message', 'Ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.setViewportSize({ width: 1_500, height: 900 })
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Workspace preview ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open files for preview replacement.')
+    await openRightWorkspace(page)
+    await page.getByRole('button', { name: 'Open Files', exact: true }).click()
+    await page.getByRole('button', { name: '最大化工作区', exact: true }).click()
+
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const readmeTreeItem = rightPanel.getByRole('treeitem', { name: 'README.md', exact: true })
+    await expect(readmeTreeItem).toBeVisible()
+    await readmeTreeItem.focus()
+    await page.keyboard.press('End')
+    await page.keyboard.press('Enter')
+    await expectWorkspaceTab(rightPanel, 'README.md', { preview: true })
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
+
+    await readmeTreeItem.dblclick()
+    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
+
+    const sourceTreeItem = rightPanel.getByRole('treeitem', { name: 'src', exact: true })
+    await sourceTreeItem.click()
+    await expect(
+      rightPanel.getByRole('treeitem', { name: 'fixture.ts', exact: true })
+    ).toBeVisible()
+    await rightPanel.getByRole('treeitem', { name: 'fixture.ts', exact: true }).click()
+    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
+    await expectWorkspaceTab(rightPanel, 'fixture.ts', { preview: true })
+    await expect(rightPanel.getByRole('tab')).toHaveCount(3)
+    await expect(rightPanel.locator('[data-workspace-code-preview="pierre"]')).toBeVisible()
+    await expect(rightPanel.locator('diffs-container')).toBeVisible()
+
+    await rightPanel.getByRole('treeitem', { name: 'second.ts', exact: true }).click()
+    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
+    await expectWorkspaceTab(rightPanel, 'second.ts', { preview: true })
+    await expect(rightPanel.getByRole('tab', { name: 'fixture.ts', exact: true })).toHaveCount(0)
+    await expect(rightPanel.getByRole('tab')).toHaveCount(3)
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-08-preview-pin')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+test('RW-E2E-05 asks before closing a running terminal from its tab close control', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-terminal-close-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse(
+        'workspace-terminal-close-thread',
+        'workspace-terminal-close-message',
+        'Ready'
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(
+      page,
+      `Workspace terminal close ${Date.now().toString(36)}`,
+      projectRoot
+    )
+    await sendComposerMessage(page, 'Open terminal close guard.')
+    await openRightWorkspace(page)
+
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const firstStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+
+    await openWorkspaceMenuItem(page, 'Browser')
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const closeTerminal = rightPanel.getByRole('button', {
+      name: '关闭Terminal标签页',
+      exact: true
+    })
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
+
+    await closeTerminal.click()
+    await expect(page.getByRole('dialog', { name: '关闭正在运行的终端？' })).toBeVisible()
+    await expect(page.getByText('关闭该标签会终止正在运行的终端进程。')).toBeVisible()
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
+
+    await closeTerminal.click()
+    await page.getByRole('button', { name: '关闭终端', exact: true }).click()
+    await expect(rightPanel.getByRole('tab', { name: 'New tab', exact: true })).toBeVisible()
+    await expect(rightPanel.getByRole('tab')).toHaveCount(1)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+type WorkspaceTransitionSample = {
+  width: number
+  actionSlotWidth: number
+  toggleLeft: number
+  toggleTop: number
+}
+
+async function sampleWorkspaceTransition(
+  page: Page,
+  toggleLabel: string
+): Promise<WorkspaceTransitionSample[]> {
+  return page.evaluate(async (label) => {
+    const toggle = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+    if (!toggle) throw new Error(`Missing workspace toggle: ${label}`)
+
+    toggle.click()
+    const samples: WorkspaceTransitionSample[] = []
+    const startedAt = performance.now()
+
+    await new Promise<void>((resolve) => {
+      const sampleFrame = (): void => {
+        const workspace = document.querySelector<HTMLElement>('[data-slot="right-workspace-shell"]')
+        const currentToggle = document.querySelector<HTMLElement>('[data-slot="workspace-toggle"]')
+        const actionSlot = document.querySelector<HTMLElement>(
+          '[data-slot="workspace-header-actions"] > div'
+        )
+        const toggleBounds = currentToggle?.getBoundingClientRect()
+        samples.push({
+          width: workspace?.getBoundingClientRect().width ?? 0,
+          actionSlotWidth: actionSlot?.getBoundingClientRect().width ?? 0,
+          toggleLeft: toggleBounds?.left ?? 0,
+          toggleTop: toggleBounds?.top ?? 0
+        })
+        if (performance.now() - startedAt >= 320) {
+          resolve()
+          return
+        }
+        window.setTimeout(sampleFrame, 16)
+      }
+      sampleFrame()
+    })
+
+    return samples
+  }, toggleLabel)
+}
+
+function expectMonotonicTransitionWidths(
+  samples: WorkspaceTransitionSample[],
+  direction: 'opening' | 'closing'
+): void {
+  expect(samples.length).toBeGreaterThan(5)
+  expectMonotonicValues(
+    samples.map((sample) => sample.width),
+    direction
+  )
+  expectMonotonicValues(
+    samples.map((sample) => sample.actionSlotWidth),
+    direction
+  )
+}
+
+function expectMonotonicValues(values: number[], direction: 'opening' | 'closing'): void {
+  const subpixelAnimationTolerance = 1
+  for (let index = 1; index < values.length; index += 1) {
+    const previous = values[index - 1]
+    const current = values[index]
+    if (direction === 'opening') {
+      expect(current).toBeGreaterThanOrEqual(previous - subpixelAnimationTolerance)
+    } else {
+      expect(current).toBeLessThanOrEqual(previous + subpixelAnimationTolerance)
+    }
+  }
+}
+
+function expectStableTogglePosition(samples: WorkspaceTransitionSample[]): void {
+  const first = samples[0]
+  for (const sample of samples.slice(1)) {
+    expect(Math.abs(sample.toggleLeft - first.toggleLeft)).toBeLessThanOrEqual(0.5)
+    expect(Math.abs(sample.toggleTop - first.toggleTop)).toBeLessThanOrEqual(0.5)
+  }
+}
+
+async function initializeProject(projectRoot: string): Promise<void> {
+  await mkdir(join(projectRoot, 'src'), { recursive: true })
+  await writeFile(join(projectRoot, 'README.md'), '# Right workspace\n', 'utf8')
+  await writeFile(join(projectRoot, 'src', 'fixture.ts'), 'export const workspace = true\n', 'utf8')
+  await writeFile(join(projectRoot, 'src', 'second.ts'), 'export const second = true\n', 'utf8')
+  await execFile('git', ['init'], { cwd: projectRoot })
+  await execFile('git', ['config', 'user.email', 'e2e@example.test'], { cwd: projectRoot })
+  await execFile('git', ['config', 'user.name', 'E2E'], { cwd: projectRoot })
+  await execFile('git', ['add', '.'], { cwd: projectRoot })
+  await execFile('git', ['commit', '-m', 'initial'], { cwd: projectRoot })
+  await writeFile(
+    join(projectRoot, 'src', 'fixture.ts'),
+    'export const workspace = false\n',
+    'utf8'
+  )
+}
+
+async function openRightWorkspace(page: Page): Promise<void> {
+  const toggle = page.getByRole('button', { name: '打开工作区', exact: true })
+  await expect(toggle).toBeVisible()
+  await toggle.click()
+  await expect(page.getByRole('button', { name: '关闭工作区', exact: true })).toBeVisible()
+}
+
+async function openWorkspaceMenuItem(page: Page, label: string): Promise<void> {
+  const menuTrigger = page.getByRole('button', { name: 'Open workspace tab', exact: true })
+  if (await menuTrigger.isVisible().catch(() => false)) {
+    await menuTrigger.click()
+    await page.getByRole('menuitem', { name: new RegExp(`^${label}`) }).click()
+    return
+  }
+
+  const launcherLabels: Record<string, string> = {
+    Review: '审阅',
+    Terminal: '终端',
+    Browser: '浏览器',
+    Files: 'Open Files'
+  }
+  const launcherLabel = launcherLabels[label] ?? label
+  await page
+    .getByRole('button', {
+      name: label === 'Files' ? launcherLabel : new RegExp(`^${launcherLabel}`)
+    })
+    .click()
+}
+
+async function expectWorkspaceTab(
+  panel: Locator,
+  name: string,
+  options: { preview: boolean }
+): Promise<void> {
+  const tab = panel.getByRole('tab', { name, exact: true })
+  await expect(tab).toBeVisible()
+  await expect(tab).toHaveAttribute('data-workspace-tab', 'true')
+  await expect(tab.locator('xpath=..')).toHaveAttribute('data-preview', String(options.preview))
+}
+
+async function startVisibleTerminalIfAvailable(page: Page): Promise<boolean> {
+  await page.getByRole('button', { name: '启动终端', exact: true }).click()
+  const xterm = page.locator('.xterm')
+  const unavailable = page.getByText(/终端原生模块不可用|无法启动终端/u)
+  return Promise.race([
+    xterm.waitFor({ state: 'visible', timeout: 7_500 }).then(() => true),
+    unavailable.waitFor({ state: 'visible', timeout: 7_500 }).then(() => false)
+  ])
+}
+
+async function expectWorkspaceLayout(page: Page): Promise<void> {
+  const layout = await page.evaluate(() => {
+    const workspace = document.querySelector<HTMLElement>('[data-slot="right-workspace-shell"]')
+    const workspaceRow = document.querySelector<HTMLElement>(
+      '[data-slot="conversation-workspace-row"]'
+    )
+    const thread = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
+    return {
+      workspaceWidth: workspace?.getBoundingClientRect().width ?? 0,
+      workspaceRowWidth: workspaceRow?.getBoundingClientRect().width ?? 0,
+      threadWidth: thread?.getBoundingClientRect().width ?? 0
+    }
+  })
+
+  expect(layout.workspaceWidth).toBeGreaterThan(0)
+  expect(layout.workspaceWidth).toBeLessThanOrEqual(layout.workspaceRowWidth * 0.7 + 1)
+  expect(layout.threadWidth).toBeGreaterThan(300)
+}
+
+async function captureWorkspaceScreenshot(
+  page: Page,
+  testInfo: TestInfo,
+  name: string
+): Promise<void> {
+  const path = testInfo.outputPath(`${name}.png`)
+  await page.screenshot({ path })
+  await testInfo.attach(name, { contentType: 'image/png', path })
+}

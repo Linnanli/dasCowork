@@ -94,8 +94,9 @@ describe('app media request policy', () => {
     [
       { frame: { url: 'http://localhost:5173/chat' }, resourceType: 'image' },
       'http://localhost:5173'
-    ]
-  ] as const)('allows first-party image/media requests', (details, devOrigin) => {
+    ],
+    [{ frame: { url: 'app://-/index.html' }, resourceType: 'subFrame' }, undefined]
+  ] as const)('allows first-party image, media, and PDF frame requests', (details, devOrigin) => {
     expect(isAllowedAppMediaRequest(details, devOrigin)).toBe(true)
   })
 
@@ -104,7 +105,6 @@ describe('app media request policy', () => {
     { frame: { url: 'app://webview/index.html' }, resourceType: 'image' },
     { frame: null, resourceType: 'image' },
     { frame: { url: 'app://-/index.html' }, resourceType: 'mainFrame' },
-    { frame: { url: 'app://-/index.html' }, resourceType: 'subFrame' },
     { frame: { url: 'app://-/index.html' }, resourceType: 'xhr' }
   ])('rejects non-first-party or non-media requests', (details) => {
     expect(isAllowedAppMediaRequest(details)).toBe(false)

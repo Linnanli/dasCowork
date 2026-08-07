@@ -566,6 +566,39 @@ describe('ProjectService', () => {
     ).resolves.toBeNull()
   })
 
+  it('uses the registered active project only when a workspace tool explicitly requests it for an unbound thread', async () => {
+    const { service, readThread } = makeProjectService({
+      activeLocalProjectId: 'p1',
+      localProjects: {
+        p1: {
+          id: 'p1',
+          kind: 'local',
+          name: 'App',
+          hostId: 'local',
+          createdAt: now,
+          updatedAt: now,
+          writableRoots: ['/active/repo']
+        }
+      }
+    })
+    readThread.mockResolvedValueOnce({ thread: { cwd: null } })
+
+    await expect(
+      service.resolveExistingThreadTarget({
+        conversationId: 'c1',
+        threadId: 't1',
+        allowActiveProjectFallback: true,
+        allowActiveProjectFallbackForUnboundThread: true
+      })
+    ).resolves.toMatchObject({
+      hostId: 'local',
+      cwd: '/active/repo',
+      workspaceRoots: ['/active/repo'],
+      workspaceKind: 'project'
+    })
+    expect(readThread).toHaveBeenCalledWith('t1')
+  })
+
   it('uses active project fallback for brand-new home composer state', async () => {
     const { service, readThread } = makeProjectService({
       activeLocalProjectId: 'p1',

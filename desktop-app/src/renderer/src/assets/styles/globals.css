@@ -157,6 +157,7 @@
   body {
     @apply bg-background text-foreground;
     font-size: var(--text-base);
+    font-weight: 445;
   }
   html[data-native-backdrop='true'] body {
     @apply bg-transparent;

@@ -12,8 +12,8 @@ import {
 
 import type { GitRepositoryTarget, LocalGitReviewSource } from '../../../../shared/localGitApi'
 import { Button } from '@/components/ui/button'
+import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { useGitRepository } from './GitRepositoryProvider'
-import { LocalGitReviewPanel } from './LocalGitReviewPanel'
 
 export type LocalGitReviewLastTurn = {
   turnId: string
@@ -38,7 +38,10 @@ export type LocalGitWorkflow = {
 
 type LocalGitReviewContextValue = {
   target?: GitRepositoryTarget
+  source: LocalGitReviewSource
+  lastTurn?: LocalGitReviewLastTurn
   openReview(source?: LocalGitReviewSource, lastTurn?: LocalGitReviewLastTurn): void
+  setReviewSource(source: LocalGitReviewSource): void
   closeReview(): void
   notifyGitOperation(feedback: LocalGitOperationFeedback): void
   startGitWorkflow(target: GitRepositoryTarget, workflow: LocalGitWorkflow): boolean
@@ -49,6 +52,8 @@ type LocalGitReviewContextValue = {
 
 const LocalGitReviewContext = createContext<LocalGitReviewContextValue>({
   openReview: () => undefined,
+  source: { type: 'unstaged' },
+  setReviewSource: () => undefined,
   closeReview: () => undefined,
   notifyGitOperation: () => undefined,
   startGitWorkflow: () => true,
@@ -63,12 +68,11 @@ type RenderedOperationFeedback = LocalGitOperationFeedback & {
 
 export function LocalGitReviewProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { target } = useGitRepository()
-  const [open, setOpen] = useState(false)
+  const workspace = useOptionalRightWorkspace()
   const [source, setSource] = useState<LocalGitReviewSource>({ type: 'unstaged' })
   const [lastTurn, setLastTurn] = useState<LocalGitReviewLastTurn>()
   const [operationFeedbacks, setOperationFeedbacks] = useState<RenderedOperationFeedback[]>([])
   const [gitWorkflows, setGitWorkflows] = useState<Record<string, LocalGitWorkflow>>({})
-  const triggerRef = useRef<HTMLElement | null>(null)
   const feedbackSequenceRef = useRef(0)
   const feedbackTimeoutsRef = useRef<Map<string, number>>(new Map())
   const gitWorkflowsRef = useRef<Record<string, LocalGitWorkflow>>({})
@@ -78,18 +82,22 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
       nextSource: LocalGitReviewSource = { type: 'unstaged' },
       nextLastTurn?: LocalGitReviewLastTurn
     ) => {
-      triggerRef.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null
       setSource(nextSource)
       setLastTurn(nextSource.type === 'last-turn' ? nextLastTurn : undefined)
-      setOpen(true)
+      workspace?.openReview(nextSource)
     },
-    []
+    [workspace]
   )
   const closeReview = useCallback(() => {
-    setOpen(false)
-    window.requestAnimationFrame(() => triggerRef.current?.focus())
-  }, [])
+    workspace?.closeTab('review')
+  }, [workspace])
+  const setReviewSource = useCallback(
+    (nextSource: LocalGitReviewSource) => {
+      setSource(nextSource)
+      workspace?.openReview(nextSource)
+    },
+    [workspace]
+  )
   const dismissGitOperationFeedback = useCallback((key: string) => {
     const timeout = feedbackTimeoutsRef.current.get(key)
     if (timeout !== undefined) {
@@ -156,7 +164,10 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
   const value = useMemo(
     () => ({
       target,
+      source,
+      lastTurn,
       openReview,
+      setReviewSource,
       closeReview,
       notifyGitOperation,
       startGitWorkflow,
@@ -170,54 +181,46 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
       getGitWorkflow,
       notifyGitOperation,
       openReview,
+      lastTurn,
       startGitWorkflow,
       target,
+      source,
+      setReviewSource,
       updateGitWorkflow
     ]
   )
 
   return (
     <LocalGitReviewContext.Provider value={value}>
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {children}
-        <LocalGitReviewPanel
-          open={open}
-          source={source}
-          target={target}
-          lastTurn={lastTurn}
-          onClose={closeReview}
-          onSourceChange={setSource}
-          onGitOperationFeedback={notifyGitOperation}
-        />
-        {operationFeedbacks.length > 0 ? (
-          <div className="fixed right-4 bottom-4 z-50 space-y-2">
-            {operationFeedbacks.map((operationFeedback) => (
-              <div
-                key={operationFeedback.key}
-                data-slot="local-git-operation-toast"
-                role={operationFeedback.tone === 'error' ? 'alert' : 'status'}
-                aria-live={operationFeedback.tone === 'error' ? 'assertive' : 'polite'}
-                className={
-                  operationFeedback.tone === 'error'
-                    ? 'flex max-w-sm items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive shadow-lg'
-                    : 'flex max-w-sm items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm shadow-lg'
-                }
+      {children}
+      {operationFeedbacks.length > 0 ? (
+        <div className="fixed right-4 bottom-4 z-50 space-y-2">
+          {operationFeedbacks.map((operationFeedback) => (
+            <div
+              key={operationFeedback.key}
+              data-slot="local-git-operation-toast"
+              role={operationFeedback.tone === 'error' ? 'alert' : 'status'}
+              aria-live={operationFeedback.tone === 'error' ? 'assertive' : 'polite'}
+              className={
+                operationFeedback.tone === 'error'
+                  ? 'flex max-w-sm items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive shadow-lg'
+                  : 'flex max-w-sm items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm shadow-lg'
+              }
+            >
+              <p className="min-w-0 flex-1">{operationFeedback.message}</p>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                aria-label="Dismiss Git operation feedback"
+                onClick={() => dismissGitOperationFeedback(operationFeedback.key)}
               >
-                <p className="min-w-0 flex-1">{operationFeedback.message}</p>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  aria-label="Dismiss Git operation feedback"
-                  onClick={() => dismissGitOperationFeedback(operationFeedback.key)}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
+                Dismiss
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </LocalGitReviewContext.Provider>
   )
 }

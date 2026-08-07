@@ -43,6 +43,7 @@ export const localMediaMimeTypes: Readonly<Record<string, string>> = {
   '.m4v': 'video/x-m4v',
   '.mov': 'video/quicktime',
   '.mp4': 'video/mp4',
+  '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.tif': 'image/tiff',
@@ -232,7 +233,13 @@ export function isAllowedAppMediaRequest(
   details: AppMediaRequestDetails,
   devRendererOrigin?: string
 ): boolean {
-  if (details.resourceType !== 'image' && details.resourceType !== 'media') return false
+  if (
+    details.resourceType !== 'image' &&
+    details.resourceType !== 'media' &&
+    details.resourceType !== 'subFrame'
+  ) {
+    return false
+  }
   const frameOrigin = frameOriginFromUrl(details.frame?.url)
   return frameOrigin === APP_RENDERER_ORIGIN || frameOrigin === devRendererOrigin
 }

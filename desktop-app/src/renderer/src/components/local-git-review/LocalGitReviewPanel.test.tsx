@@ -144,6 +144,68 @@ describe('LocalGitReviewPanel', () => {
     )
   })
 
+  it('filters the changed-file tree without changing the selected diff', async () => {
+    const getReviewSnapshot = window.desktopApp.git.getReviewSnapshot as ReturnType<typeof vi.fn>
+    getReviewSnapshot.mockResolvedValueOnce({
+      snapshotGeneration: 'search-generation',
+      gitRoot: '/repo',
+      source: { type: 'unstaged' },
+      files: [
+        {
+          path: 'src/a.ts',
+          changeKind: 'modified',
+          revision: 'revision-a',
+          additions: 2,
+          deletions: 1,
+          binary: false,
+          conflicted: false
+        },
+        {
+          path: 'README.md',
+          changeKind: 'modified',
+          revision: 'revision-readme',
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          conflicted: false
+        }
+      ],
+      stagedFileCount: 0,
+      unstagedFileCount: 2,
+      largeDiff: false
+    })
+
+    await act(async () => {
+      root.render(
+        <LocalGitReviewPanel
+          open
+          target={target}
+          source={{ type: 'unstaged' }}
+          onClose={vi.fn()}
+          onSourceChange={vi.fn()}
+        />
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const search = container.querySelector<HTMLInputElement>('[aria-label="Search changed files"]')
+    await act(async () => {
+      if (!search) throw new Error('Expected changed-file search input')
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(search, 'readme')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const visiblePaths = [...container.querySelectorAll('[role="treeitem"]')].map(
+      (element) => element.textContent
+    )
+    expect(visiblePaths).toHaveLength(1)
+    expect(visiblePaths[0]).toContain('README.md')
+    expect(container.querySelector('[data-slot="diff-viewer"]')).not.toBeNull()
+  })
+
   it('P004-EDGE-02 renders an empty repository snapshot and keeps review controls available', async () => {
     const getReviewSnapshot = window.desktopApp.git.getReviewSnapshot as ReturnType<typeof vi.fn>
     const onSourceChange = vi.fn()

@@ -1,0 +1,128 @@
+import { z } from 'zod'
+
+import type {
+  BrowserWorkspaceCreateRequest,
+  BrowserWorkspaceEvent,
+  BrowserWorkspaceListRequest,
+  BrowserWorkspaceListResult,
+  BrowserWorkspaceNavigateRequest,
+  BrowserWorkspaceSetBoundsRequest,
+  BrowserWorkspaceViewRequest,
+  BrowserWorkspaceViewSnapshot
+} from './browserWorkspaceApi'
+import type {
+  FileWorkspaceListDirectoryRequest,
+  FileWorkspaceListDirectoryResult,
+  FileWorkspaceMetadataRequest,
+  FileWorkspaceMetadataResult,
+  FileWorkspaceReadFileRequest,
+  FileWorkspaceReadFileResult,
+  FileWorkspaceEvent,
+  FileWorkspaceSearchRequest,
+  FileWorkspaceSearchResult,
+  FileWorkspaceSearchSessionEvent,
+  FileWorkspaceSearchSessionStartRequest,
+  FileWorkspaceSearchSessionStartResult,
+  FileWorkspaceSearchSessionStopRequest,
+  FileWorkspaceSearchSessionUpdateRequest
+} from './fileWorkspaceApi'
+import { gitConversationTargetSchema, type GitConversationTarget } from './localGitApi'
+import type {
+  TerminalWorkspaceCreateRequest,
+  TerminalWorkspaceEvent,
+  TerminalWorkspaceKillRequest,
+  TerminalWorkspaceListRequest,
+  TerminalWorkspaceListResult,
+  TerminalWorkspaceResizeRequest,
+  TerminalWorkspaceSessionSnapshot,
+  TerminalWorkspaceWriteRequest
+} from './terminalWorkspaceApi'
+
+const workspaceIdSchema = z.string().min(1).max(256)
+
+export const rightWorkspaceIpcChannels = {
+  disposeWorkspace: 'right-workspace:dispose-workspace',
+  prepareFileRoot: 'right-workspace:files:prepare-root',
+  listDirectory: 'right-workspace:files:list-directory',
+  metadata: 'right-workspace:files:metadata',
+  readFile: 'right-workspace:files:read-file',
+  searchFiles: 'right-workspace:files:search',
+  startFileSearch: 'right-workspace:files:search-start',
+  updateFileSearch: 'right-workspace:files:search-update',
+  stopFileSearch: 'right-workspace:files:search-stop',
+  fileSearchEvent: 'right-workspace:files:search-event',
+  openWithSystem: 'right-workspace:files:open-with-system',
+  fileEvent: 'right-workspace:files:event'
+} as const
+
+export const rightWorkspaceDisposeRequestSchema = z
+  .object({ version: z.literal(1), workspaceId: workspaceIdSchema })
+  .strict()
+export type RightWorkspaceDisposeRequest = z.infer<typeof rightWorkspaceDisposeRequestSchema>
+
+export const rightWorkspacePrepareFileRootRequestSchema = z
+  .object({
+    workspaceId: workspaceIdSchema,
+    target: gitConversationTargetSchema
+  })
+  .strict()
+export type RightWorkspacePrepareFileRootRequest = z.infer<
+  typeof rightWorkspacePrepareFileRootRequestSchema
+>
+
+export const rightWorkspacePrepareFileRootResultSchema = z
+  .object({ rootId: workspaceIdSchema, label: z.string().min(1).max(1024) })
+  .strict()
+export type RightWorkspacePrepareFileRootResult = z.infer<
+  typeof rightWorkspacePrepareFileRootResultSchema
+>
+
+export type DesktopRightWorkspaceApi = {
+  dispose(input: RightWorkspaceDisposeRequest): Promise<void>
+  files: {
+    prepareRoot(
+      input: RightWorkspacePrepareFileRootRequest
+    ): Promise<RightWorkspacePrepareFileRootResult>
+    listDirectory(
+      input: FileWorkspaceListDirectoryRequest
+    ): Promise<FileWorkspaceListDirectoryResult>
+    metadata(input: FileWorkspaceMetadataRequest): Promise<FileWorkspaceMetadataResult>
+    readFile(input: FileWorkspaceReadFileRequest): Promise<FileWorkspaceReadFileResult>
+    search(input: FileWorkspaceSearchRequest): Promise<FileWorkspaceSearchResult>
+    startSearch(
+      input: FileWorkspaceSearchSessionStartRequest
+    ): Promise<FileWorkspaceSearchSessionStartResult>
+    updateSearch(input: FileWorkspaceSearchSessionUpdateRequest): Promise<void>
+    stopSearch(input: FileWorkspaceSearchSessionStopRequest): Promise<void>
+    onSearchEvent(callback: (event: FileWorkspaceSearchSessionEvent) => void): () => void
+    openWithSystem(input: FileWorkspaceMetadataRequest): Promise<void>
+    onEvent(callback: (event: FileWorkspaceEvent) => void): () => void
+  }
+  terminal: {
+    create(input: TerminalWorkspaceCreateRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    write(input: TerminalWorkspaceWriteRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    resize(input: TerminalWorkspaceResizeRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    kill(input: TerminalWorkspaceKillRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    list(input: TerminalWorkspaceListRequest): Promise<TerminalWorkspaceListResult>
+    onEvent(callback: (event: TerminalWorkspaceEvent) => void): () => void
+  }
+  browser: {
+    create(input: BrowserWorkspaceCreateRequest): Promise<BrowserWorkspaceViewSnapshot>
+    navigate(input: BrowserWorkspaceNavigateRequest): Promise<BrowserWorkspaceViewSnapshot>
+    setBounds(input: BrowserWorkspaceSetBoundsRequest): Promise<BrowserWorkspaceViewSnapshot>
+    goBack(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    goForward(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    reload(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    stop(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    show(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    hide(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    destroy(input: BrowserWorkspaceViewRequest): Promise<BrowserWorkspaceViewSnapshot>
+    list(input: BrowserWorkspaceListRequest): Promise<BrowserWorkspaceListResult>
+    onEvent(callback: (event: BrowserWorkspaceEvent) => void): () => void
+  }
+}
+
+export type RightWorkspaceOwner = {
+  workspaceId: string
+  target: GitConversationTarget
+}

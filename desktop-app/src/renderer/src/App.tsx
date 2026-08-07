@@ -40,6 +40,23 @@ import {
 } from '@/components/local-git-review/GitRepositoryProvider'
 import { LocalBranchSwitcher } from '@/components/local-git-review/LocalBranchSwitcher'
 import { LocalGitReviewProvider } from '@/components/local-git-review/LocalGitReviewProvider'
+import {
+  RightWorkspaceProvider,
+  WorkspaceLauncher,
+  useRightWorkspace
+} from '@/components/right-workspace'
+import {
+  adjacentWorkspaceTabId,
+  createWorkspaceContentRegistry,
+  isWorkspaceEditableTarget,
+  useWorkspaceContainer,
+  WorkspacePanelController,
+  WorkspacePanelShell,
+  type WorkspaceOpenOptions,
+  type WorkspaceOpenTarget,
+  type WorkspacePanelId,
+  type WorkspaceTabRecord
+} from '@/components/workspace-container'
 import { ConversationTurnErrorBoundary } from '@/components/conversation/ConversationTurnErrorBoundary'
 import { ConversationRecoveryStatus } from '@/components/conversation/ConversationRecoveryStatus'
 import { WorkspaceRecoveryBanner } from '@/components/conversation/WorkspaceRecoveryBanner'
@@ -81,10 +98,15 @@ import {
   FileIcon,
   FolderIcon,
   MessageSquareIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   PackageIcon,
   PanelLeftIcon,
+  PanelBottomCloseIcon,
+  PanelBottomOpenIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
   PencilIcon,
-  PlusIcon,
   PuzzleIcon,
   QuoteIcon,
   SparklesIcon,
@@ -174,6 +196,7 @@ import type {
   QueuedUserMessageSnapshotInput
 } from '../../shared/codexFollowUpApi'
 import type { ProjectSelection } from '../../shared/projects/projectTypes'
+import type { GitConversationTarget } from '../../shared/localGitApi'
 import { extractVisibleUserRequest } from '../../shared/userRequestEnvelope'
 import type { ModelOption } from './components/assistant-ui'
 import {
@@ -209,7 +232,11 @@ type CodexSidebarProps = {
 type HeaderProps = {
   activeConversation?: ActiveConversationContext
   sidebarCollapsed: boolean
-  onToggleSidebar: () => void
+}
+
+type SidebarHeaderSlotProps = {
+  collapsed: boolean
+  onToggle: () => void
 }
 
 type ComposerProps = {
@@ -292,7 +319,12 @@ type RenderTargetScrollEventDetail = {
 const streamdownPlugins = { code, math, mermaid, cjk }
 
 const sidebarBaseClass =
-  'hidden h-full shrink-0 flex-col overflow-hidden transition-all duration-200 md:flex'
+  'hidden h-full shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none md:flex'
+
+const expandedSidebarWidth = 260
+const collapsedSidebarHeaderSlotWidth = 48
+const conversationHeaderPadding = 16
+const collapsedConversationHeaderPadding = collapsedSidebarHeaderSlotWidth + 8
 
 const nativeBackdropSurfaceClass =
   'bg-background/50 bg-clip-padding backdrop-blur-xl [@media(prefers-reduced-transparency:reduce)]:bg-background [@media(prefers-reduced-transparency:reduce)]:backdrop-blur-none dark:bg-background/30'
@@ -539,14 +571,34 @@ function App(): React.JSX.Element {
     },
     [openConversation]
   )
+  const gitRepositoryIdentity = useMemo(
+    () => ({
+      conversationId: activeConversation?.conversationId ?? activeEntry.context.conversationId,
+      ...((activeConversation?.threadId ?? activeEntry.context.threadId)
+        ? { threadId: activeConversation?.threadId ?? activeEntry.context.threadId }
+        : {})
+    }),
+    [
+      activeConversation?.conversationId,
+      activeConversation?.threadId,
+      activeEntry.context.conversationId,
+      activeEntry.context.threadId
+    ]
+  )
+  const preSendProjectKey =
+    activeConversation?.threadId || activeEntry.context.threadId
+      ? undefined
+      : JSON.stringify(storedProjectSelection ?? null)
+  const workspaceConversationId = activeEntry.localId
 
   return (
     <main
       className={cn(
-        'flex h-screen w-full text-foreground',
+        'relative flex h-screen w-full text-foreground',
         nativeBackdrop ? 'bg-background/10 dark:bg-background/10' : 'bg-muted/30'
       )}
     >
+      <SidebarHeaderSlot collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
       <CodexSidebar
         collapsed={sidebarCollapsed}
         nativeBackdrop={nativeBackdrop}
@@ -554,42 +606,55 @@ function App(): React.JSX.Element {
         conversationState={conversationState}
         onNewChat={handleStartNewConversation}
       />
-      <section
-        data-slot="app-main-section"
-        className={cn(
-          'flex min-w-0 flex-1 flex-col overflow-hidden p-2 transition-[padding] duration-200',
-          nativeBackdrop && nativeBackdropSurfaceClass,
-          !sidebarCollapsed && 'md:pl-0'
-        )}
-      >
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
-          <ActiveConversationPane
-            key={activeEntry.localId}
-            activeConversation={activeConversation}
-            entry={activeEntry}
-            approvalRequests={visibleApprovalRequests}
-            hasBlockingRequest={visibleApprovalRequests.length > 0}
-            models={models}
-            selectedModelId={selectedModelId}
-            modelSelectionError={modelSelectionError}
-            onDraftChange={setActiveDraft}
-            onDraftAttachmentsChange={setActiveDraftAttachments}
-            onRetryLoad={() => {
-              void openConversation({ conversationId: activeEntry.localId })
-            }}
-            onOpenConversation={handleOpenConversation}
-            onScrollSnapshotChange={setActiveScroll}
-            onSelectedModelChange={handleSelectedModelChange}
-            onCreateNewTask={handleStartNewConversation}
-            onRejectApproval={rejectServerRequest}
-            onSnoozeApproval={snoozeServerRequest}
-            onRespondApproval={respondToServerRequest}
-            projectState={projectState}
-            sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={toggleSidebar}
-          />
-        </div>
-      </section>
+      <RightWorkspaceProvider key={workspaceConversationId} projectScope={workspaceConversationId}>
+        <GitRepositoryProvider
+          identity={gitRepositoryIdentity}
+          preSendProjectKey={preSendProjectKey}
+        >
+          <LocalGitReviewProvider>
+            <section
+              data-slot="app-main-section"
+              className={cn(
+                'relative flex min-w-0 flex-1 overflow-hidden',
+                nativeBackdrop && nativeBackdropSurfaceClass
+              )}
+            >
+              <WorkspaceHeaderActions />
+              <ConversationWorkspaceLayout
+                target={gitRepositoryIdentity}
+                workspaceId={`conversation:${workspaceConversationId}`}
+              >
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
+                  <ActiveConversationPane
+                    key={activeEntry.localId}
+                    activeConversation={activeConversation}
+                    entry={activeEntry}
+                    approvalRequests={visibleApprovalRequests}
+                    hasBlockingRequest={visibleApprovalRequests.length > 0}
+                    models={models}
+                    selectedModelId={selectedModelId}
+                    modelSelectionError={modelSelectionError}
+                    onDraftChange={setActiveDraft}
+                    onDraftAttachmentsChange={setActiveDraftAttachments}
+                    onRetryLoad={() => {
+                      void openConversation({ conversationId: activeEntry.localId })
+                    }}
+                    onOpenConversation={handleOpenConversation}
+                    onScrollSnapshotChange={setActiveScroll}
+                    onSelectedModelChange={handleSelectedModelChange}
+                    onCreateNewTask={handleStartNewConversation}
+                    onRejectApproval={rejectServerRequest}
+                    onSnoozeApproval={snoozeServerRequest}
+                    onRespondApproval={respondToServerRequest}
+                    projectState={projectState}
+                    sidebarCollapsed={sidebarCollapsed}
+                  />
+                </div>
+              </ConversationWorkspaceLayout>
+            </section>
+          </LocalGitReviewProvider>
+        </GitRepositoryProvider>
+      </RightWorkspaceProvider>
     </main>
   )
 }
@@ -613,8 +678,7 @@ function ActiveConversationPane({
   onSnoozeApproval,
   onRespondApproval,
   projectState,
-  sidebarCollapsed,
-  onToggleSidebar
+  sidebarCollapsed
 }: {
   activeConversation: ActiveConversationContext | undefined
   entry: ConversationChatEntry
@@ -638,7 +702,6 @@ function ActiveConversationPane({
   ) => Promise<void>
   projectState: ProjectStateController
   sidebarCollapsed: boolean
-  onToggleSidebar: () => void
 }): React.JSX.Element {
   const reloadInFlight = useRef<{ entryId: string; request: symbol } | null>(null)
   const runtime = useExternalStoreRuntime<ConversationTranscriptMessage>({
@@ -699,24 +762,6 @@ function ActiveConversationPane({
     },
     [entry, followUps]
   )
-  const gitRepositoryIdentity = useMemo(
-    () => ({
-      conversationId: activeConversation?.conversationId ?? entry.context.conversationId,
-      ...((activeConversation?.threadId ?? entry.context.threadId)
-        ? { threadId: activeConversation?.threadId ?? entry.context.threadId }
-        : {})
-    }),
-    [
-      activeConversation?.conversationId,
-      activeConversation?.threadId,
-      entry.context.conversationId,
-      entry.context.threadId
-    ]
-  )
-  const preSendProjectKey =
-    activeConversation?.threadId || entry.context.threadId
-      ? undefined
-      : JSON.stringify(projectState.state?.activeProjectSelection ?? null)
   const startCodeReview = useCallback(
     async (prompt: string): Promise<void> => {
       await sendCodeReviewMessage(entry.controller, prompt)
@@ -734,42 +779,279 @@ function ActiveConversationPane({
         onDraftAttachmentsChange={onDraftAttachmentsChange}
       />
       <ConversationFocusBridge entryId={entry.localId} />
-      <Header
+      <Header activeConversation={activeConversation} sidebarCollapsed={sidebarCollapsed} />
+      <ChatThread
         activeConversation={activeConversation}
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={onToggleSidebar}
+        approvalRequests={approvalRequests}
+        disabled={!entry.loaded}
+        followUps={followUps}
+        hasBlockingRequest={hasBlockingRequest}
+        loading={entry.status === 'loading'}
+        loadError={!entry.loaded ? entry.error : undefined}
+        models={models}
+        selectedModelId={selectedModelId}
+        modelSelectionError={modelSelectionError}
+        onSteerFollowUp={steerFollowUp}
+        onRetryLoad={onRetryLoad}
+        onOpenConversation={onOpenConversation}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+        onSelectedModelChange={onSelectedModelChange}
+        onCreateNewTask={onCreateNewTask}
+        onStartCodeReview={startCodeReview}
+        onRejectApproval={onRejectApproval}
+        onSnoozeApproval={onSnoozeApproval}
+        onRespondApproval={onRespondApproval}
+        projectState={projectState}
+        scrollSnapshot={entry.scroll}
+        recoveryPhase={entry.recoveryPhase}
+        recoveryError={entry.recoveryError}
       />
-      <GitRepositoryProvider identity={gitRepositoryIdentity} preSendProjectKey={preSendProjectKey}>
-        <LocalGitReviewProvider>
-          <ChatThread
-            activeConversation={activeConversation}
-            approvalRequests={approvalRequests}
-            disabled={!entry.loaded}
-            followUps={followUps}
-            hasBlockingRequest={hasBlockingRequest}
-            loading={entry.status === 'loading'}
-            loadError={!entry.loaded ? entry.error : undefined}
-            models={models}
-            selectedModelId={selectedModelId}
-            modelSelectionError={modelSelectionError}
-            onSteerFollowUp={steerFollowUp}
-            onRetryLoad={onRetryLoad}
-            onOpenConversation={onOpenConversation}
-            onScrollSnapshotChange={onScrollSnapshotChange}
-            onSelectedModelChange={onSelectedModelChange}
-            onCreateNewTask={onCreateNewTask}
-            onStartCodeReview={startCodeReview}
-            onRejectApproval={onRejectApproval}
-            onSnoozeApproval={onSnoozeApproval}
-            onRespondApproval={onRespondApproval}
-            projectState={projectState}
-            scrollSnapshot={entry.scroll}
-            recoveryPhase={entry.recoveryPhase}
-            recoveryError={entry.recoveryError}
-          />
-        </LocalGitReviewProvider>
-      </GitRepositoryProvider>
     </AssistantRuntimeProvider>
+  )
+}
+
+function ConversationWorkspaceLayout({
+  children,
+  target,
+  workspaceId
+}: {
+  children: ReactNode
+  target: GitConversationTarget
+  workspaceId: string
+}): React.JSX.Element {
+  const container = useWorkspaceContainer()
+  const registry = useMemo(() => createWorkspaceContentRegistry(), [])
+  const terminalCloseDialog = useTerminalCloseDialog()
+  const controller = new WorkspacePanelController({
+    getState: () => container.state,
+    dispatch: container.dispatch,
+    registry,
+    workspaceId,
+    confirmTerminalClose: terminalCloseDialog.confirm
+  })
+  useWorkspaceShortcuts(container, controller)
+
+  useEffect(() => {
+    return () => {
+      // Some renderer-only test harnesses deliberately omit desktop-only APIs.
+      // The production preload always exposes this bridge.
+      void window.desktopApp.workspace?.dispose({ version: 1, workspaceId })
+    }
+  }, [workspaceId])
+
+  const renderPanel = (panelId: WorkspacePanelId): React.JSX.Element => {
+    const panel = container.state.panels[panelId]
+    const tabs = container.panelTabs(panelId)
+    return (
+      <WorkspacePanelShell
+        panelId={panelId}
+        panel={panel}
+        tabs={tabs}
+        renderLauncher={() => (
+          <WorkspaceLauncher
+            onOpen={(openTarget) => void controller.open(openTarget, { panelId })}
+          />
+        )}
+        renderTab={(tab) =>
+          tab ? (
+            <WorkspacePreviewBoundary
+              tab={tab}
+              onPin={() => container.dispatch({ type: 'pin-tab', tabId: tab.id })}
+            >
+              {registry.render(tab, {
+                panelId,
+                panel,
+                workspaceId,
+                target,
+                runtime: container.tabRuntime(tab.id),
+                openTarget: (openTarget: WorkspaceOpenTarget, options: WorkspaceOpenOptions = {}) =>
+                  void controller.open(openTarget, { ...options, panelId }),
+                setRuntime: (tabId, runtime) =>
+                  container.dispatch({ type: 'set-tab-runtime', tabId, runtime })
+              })}
+            </WorkspacePreviewBoundary>
+          ) : null
+        }
+        onActivate={(tabId) => void controller.activate(panelId, tabId)}
+        onClose={(tabId) => void controller.close(panelId, tabId)}
+        onCloseOther={(tabId) => void controller.closeOther(panelId, tabId)}
+        onCloseToRight={(tabId) => void controller.closeToRight(panelId, tabId)}
+        onPin={(tabId) => container.dispatch({ type: 'pin-tab', tabId })}
+        onOpen={(openTarget) => void controller.open(openTarget, { panelId })}
+        onMove={(sourcePanelId, destinationPanelId, tabId, insertAfterTabId) =>
+          void controller.move(sourcePanelId, destinationPanelId, tabId, insertAfterTabId)
+        }
+        onSetSize={(size) => container.dispatch({ type: 'set-panel-size', panelId, size })}
+        onSetOpen={(isOpen) => container.dispatch({ type: 'set-panel-open', panelId, isOpen })}
+        onFocus={(focusedPanelId) =>
+          container.dispatch({ type: 'set-last-focused-panel', panelId: focusedPanelId })
+        }
+        onOverlayVisibilityChange={(visible) =>
+          setPanelBrowserVisibility(container, panelId, visible)
+        }
+      />
+    )
+  }
+
+  return (
+    <>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div data-slot="conversation-workspace-row" className="flex min-h-0 min-w-0 flex-1">
+          {children}
+          {renderPanel('right')}
+        </div>
+        {renderPanel('bottom')}
+      </div>
+      <WorkspaceCloseGuardDialog
+        tabs={terminalCloseDialog.tabs}
+        onDecision={terminalCloseDialog.decide}
+      />
+    </>
+  )
+}
+
+function useWorkspaceShortcuts(
+  container: ReturnType<typeof useWorkspaceContainer>,
+  controller: WorkspacePanelController
+): void {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || isWorkspaceEditableTarget(event.target)) return
+      const panelId = container.state.lastFocusedPanelId
+      const panel = container.state.panels[panelId]
+      const open = (target: WorkspaceOpenTarget): void => {
+        event.preventDefault()
+        void controller.open(target, { panelId })
+      }
+      if (event.metaKey && !event.ctrlKey && !event.altKey) {
+        switch (event.key.toLowerCase()) {
+          case 'r':
+            open({ type: 'review' })
+            return
+          case 't':
+            open({ type: 'terminal' })
+            return
+          case 'b':
+            open({ type: 'browser' })
+            return
+          case 'w':
+            if (panel.activeTabId) {
+              event.preventDefault()
+              void controller.close(panelId, panel.activeTabId)
+            }
+            return
+        }
+      }
+      if (!event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.key !== 'PageUp' && event.key !== 'PageDown') return
+      const adjacent = adjacentWorkspaceTabId(
+        panel.tabIds,
+        panel.activeTabId,
+        event.key === 'PageUp' ? -1 : 1
+      )
+      if (!adjacent) return
+      event.preventDefault()
+      void controller.activate(panelId, adjacent)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [container, controller])
+}
+
+export function WorkspacePreviewBoundary({
+  children,
+  onPin,
+  tab
+}: {
+  children: ReactNode
+  onPin(): void
+  tab: WorkspaceTabRecord
+}): React.JSX.Element {
+  const pinIfContentInteraction = (target: EventTarget | null): void => {
+    if (!tab.isPreview) return
+    if (!(target instanceof Element) || target.closest('[data-tab-preview-pin-exempt]')) return
+    onPin()
+  }
+  return (
+    <div
+      className="h-full"
+      {...(tab.isPreview ? { 'data-workspace-preview': 'true' } : {})}
+      onKeyDownCapture={
+        tab.isPreview ? (event) => pinIfContentInteraction(event.target) : undefined
+      }
+      onPointerDownCapture={
+        tab.isPreview ? (event) => pinIfContentInteraction(event.target) : undefined
+      }
+    >
+      {children}
+    </div>
+  )
+}
+
+function setPanelBrowserVisibility(
+  container: ReturnType<typeof useWorkspaceContainer>,
+  panelId: WorkspacePanelId,
+  visible: boolean
+): void {
+  const tab = container.activeTab(panelId)
+  const viewId = tab?.kind === 'browser' ? container.tabRuntime(tab.id)?.browserViewId : undefined
+  if (typeof viewId !== 'string') return
+  void window.desktopApp.workspace.browser[visible ? 'hide' : 'show']({ version: 1, viewId })
+}
+
+function useTerminalCloseDialog(): {
+  tabs: readonly WorkspaceTabRecord[]
+  confirm(tabs: readonly WorkspaceTabRecord[]): Promise<boolean>
+  decide(confirmed: boolean): void
+} {
+  const [tabs, setTabs] = useState<readonly WorkspaceTabRecord[]>([])
+  const resolveRef = useRef<((confirmed: boolean) => void) | undefined>(undefined)
+  const confirm = useCallback(
+    (nextTabs: readonly WorkspaceTabRecord[]) =>
+      new Promise<boolean>((resolve) => {
+        resolveRef.current = resolve
+        setTabs(nextTabs)
+      }),
+    []
+  )
+  const decide = useCallback((confirmed: boolean) => {
+    resolveRef.current?.(confirmed)
+    resolveRef.current = undefined
+    setTabs([])
+  }, [])
+  useEffect(() => () => resolveRef.current?.(false), [])
+  return { tabs, confirm, decide }
+}
+
+function WorkspaceCloseGuardDialog({
+  tabs,
+  onDecision
+}: {
+  tabs: readonly WorkspaceTabRecord[]
+  onDecision(confirmed: boolean): void
+}): React.JSX.Element {
+  const open = tabs.length > 0
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onDecision(false)}>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>关闭正在运行的终端？</DialogTitle>
+          <DialogDescription>
+            {tabs.length === 1
+              ? '关闭该标签会终止正在运行的终端进程。'
+              : `关闭这 ${tabs.length} 个标签会终止其中正在运行的终端进程。`}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onDecision(false)}>
+            取消
+          </Button>
+          <Button type="button" variant="destructive" onClick={() => onDecision(true)}>
+            关闭终端
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -783,38 +1065,59 @@ function CodexSidebar({
   return (
     <aside
       data-slot="codex-sidebar"
+      aria-hidden={collapsed}
+      inert={collapsed}
       className={cn(
         sidebarBaseClass,
         nativeBackdrop && nativeBackdropSurfaceClass,
-        nativeBackdrop && sidebarGlassClass,
-        collapsed ? 'w-12' : 'w-65'
+        nativeBackdrop && sidebarGlassClass
       )}
+      style={{ width: collapsed ? 0 : expandedSidebarWidth }}
     >
-      {collapsed ? (
-        <div className="flex flex-col items-center gap-1">
-          <div className="mt-2 flex h-12 shrink-0 items-center justify-center">
-            <BrandMark />
-          </div>
-          <IconButton className="size-8" label="新对话" title="新对话" onClick={onNewChat}>
-            <PlusIcon className="size-4" />
-          </IconButton>
-        </div>
-      ) : (
-        <>
-          <div className="mt-2 flex h-12 shrink-0 items-center px-4">
-            <Logo />
-          </div>
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            <SidebarRoot
-              nativeBackdrop={nativeBackdrop}
-              projectState={projectState}
-              conversationState={conversationState}
-              onNewChat={onNewChat}
-            />
-          </div>
-        </>
-      )}
+      <div className="relative min-h-0 flex-1 overflow-hidden pt-14">
+        <SidebarRoot
+          nativeBackdrop={nativeBackdrop}
+          projectState={projectState}
+          conversationState={conversationState}
+          onNewChat={onNewChat}
+        />
+      </div>
     </aside>
+  )
+}
+
+function SidebarHeaderSlot({ collapsed, onToggle }: SidebarHeaderSlotProps): React.JSX.Element {
+  const toggleLabel = collapsed ? '显示侧栏' : '隐藏侧栏'
+
+  return (
+    <div
+      data-slot="sidebar-header-slot"
+      className="pointer-events-none absolute top-0 left-0 z-30 hidden h-12 items-center overflow-hidden px-2 transition-[width] duration-200 ease-out motion-reduce:transition-none md:flex"
+      style={{
+        width: collapsed ? collapsedSidebarHeaderSlotWidth : expandedSidebarWidth,
+        minWidth: collapsedSidebarHeaderSlotWidth
+      }}
+    >
+      <div
+        aria-hidden={collapsed}
+        className={cn(
+          'absolute left-2 min-w-0 transition-opacity duration-150 motion-reduce:transition-none',
+          collapsed ? 'opacity-0' : 'opacity-100'
+        )}
+      >
+        <Logo />
+      </div>
+      <IconButton
+        data-slot="sidebar-toggle"
+        className="pointer-events-auto ml-auto hidden md:grid"
+        label={toggleLabel}
+        title={toggleLabel}
+        style={{ viewTransitionName: 'sidebar-trigger' }}
+        onClick={onToggle}
+      >
+        <PanelLeftIcon className="size-4" />
+      </IconButton>
+    </div>
   )
 }
 
@@ -835,27 +1138,90 @@ function BrandMark(): React.JSX.Element {
   )
 }
 
-function Header({
-  activeConversation,
-  sidebarCollapsed,
-  onToggleSidebar
-}: HeaderProps): React.JSX.Element {
-  const toggleLabel = sidebarCollapsed ? '显示侧栏' : '隐藏侧栏'
+function Header({ activeConversation, sidebarCollapsed }: HeaderProps): React.JSX.Element {
+  const { state: workspaceState } = useRightWorkspace()
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 px-4">
-      <IconButton
-        className="hidden md:grid"
-        label={toggleLabel}
-        title={toggleLabel}
-        onClick={onToggleSidebar}
-      >
-        <PanelLeftIcon className="size-4" />
-      </IconButton>
+    <header
+      className="flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-200 ease-out motion-reduce:transition-none"
+      style={{
+        paddingLeft: sidebarCollapsed
+          ? collapsedConversationHeaderPadding
+          : conversationHeaderPadding,
+        paddingRight: workspaceState.isOpen
+          ? conversationHeaderPadding
+          : collapsedConversationHeaderPadding
+      }}
+    >
       <ConversationContextText activeConversation={activeConversation} />
       {!activeConversation ? <ThreadTitle /> : null}
-      <div className="ml-auto" />
     </header>
+  )
+}
+
+function WorkspaceHeaderActions(): React.JSX.Element {
+  const { collapse, restore, state, toggleMaximized } = useRightWorkspace()
+  const container = useWorkspaceContainer()
+  const toggleLabel = state.isOpen ? '关闭工作区' : '打开工作区'
+  const maximizeLabel = state.isMaximized ? '恢复工作区宽度' : '最大化工作区'
+  const bottomOpen = container.state.panels.bottom.isOpen
+  const bottomToggleLabel = bottomOpen ? '关闭底部工作区' : '打开底部工作区'
+
+  return (
+    <div
+      data-slot="workspace-header-actions"
+      className="absolute top-2 right-2 z-50 flex items-center"
+    >
+      <div
+        aria-hidden={!state.isOpen}
+        inert={!state.isOpen}
+        className="flex justify-end overflow-hidden transition-[width,opacity] duration-200 ease-out motion-reduce:transition-none"
+        style={{ width: state.isOpen ? 40 : 0, opacity: state.isOpen ? 1 : 0 }}
+      >
+        <IconButton label={maximizeLabel} title={maximizeLabel} onClick={toggleMaximized}>
+          {state.isMaximized ? (
+            <Minimize2Icon className="size-4" />
+          ) : (
+            <Maximize2Icon className="size-4" />
+          )}
+        </IconButton>
+      </div>
+      <IconButton
+        label={bottomToggleLabel}
+        title={bottomToggleLabel}
+        onClick={() =>
+          container.dispatch({ type: 'set-panel-open', panelId: 'bottom', isOpen: !bottomOpen })
+        }
+      >
+        {bottomOpen ? (
+          <PanelBottomCloseIcon className="size-4" />
+        ) : (
+          <PanelBottomOpenIcon className="size-4" />
+        )}
+      </IconButton>
+      <IconButton
+        data-slot="workspace-toggle"
+        label={toggleLabel}
+        title={toggleLabel}
+        style={{ viewTransitionName: 'workspace-trigger' }}
+        onClick={state.isOpen ? collapse : restore}
+      >
+        <span className="relative size-4" aria-hidden="true">
+          <PanelRightOpenIcon
+            className={cn(
+              'absolute inset-0 size-4 transition-opacity duration-150 motion-reduce:transition-none',
+              state.isOpen ? 'opacity-0' : 'opacity-100'
+            )}
+          />
+          <PanelRightCloseIcon
+            className={cn(
+              'absolute inset-0 size-4 transition-opacity duration-150 motion-reduce:transition-none',
+              state.isOpen ? 'opacity-100' : 'opacity-0'
+            )}
+          />
+        </span>
+      </IconButton>
+    </div>
   )
 }
 
@@ -1002,7 +1368,7 @@ function ChatThread({
   return (
     <ComposerContextIdentityProvider index={composerContextCatalog.identityIndex}>
       <ThreadPrimitive.Root
-        className="aui-root aui-thread-root @container flex h-full min-h-0 flex-1 flex-col bg-background"
+        className="aui-root aui-thread-root @container flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background"
         style={{
           ['--thread-max-width' as string]: '48rem',
           ['--composer-padding' as string]: '8px'
