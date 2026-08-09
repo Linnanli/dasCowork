@@ -1,4 +1,5 @@
 import { FolderTreeIcon, LoaderCircleIcon, RefreshCwIcon, SearchIcon } from 'lucide-react'
+import { getFiletypeFromFileName, getHighlighterOptions, preloadHighlighter } from '@pierre/diffs'
 import { File as PierreFile, type FileOptions } from '@pierre/diffs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Streamdown } from 'streamdown'
@@ -524,7 +525,7 @@ function FilePreview({
         </div>
       )
     }
-    return <CodePreview path={path} text={content.text} />
+    return <CodePreview key={path} path={path} text={content.text} />
   }
   if (content.kind === 'media') {
     if (content.mediaType === 'application/pdf') {
@@ -550,7 +551,46 @@ function FilePreview({
 }
 
 function CodePreview({ path, text }: { path: string; text: string }): React.JSX.Element {
+  const [highlighterStatus, setHighlighterStatus] = useState<'loading' | 'ready' | 'failed'>(
+    'loading'
+  )
   const file = useMemo(() => ({ name: path, contents: text }), [path, text])
+
+  useEffect(() => {
+    let active = true
+    const highlighterOptions = getHighlighterOptions(
+      getFiletypeFromFileName(path),
+      workspaceFilePreviewOptions
+    )
+    void preloadHighlighter(highlighterOptions).then(
+      () => {
+        if (active) setHighlighterStatus('ready')
+      },
+      () => {
+        if (active) setHighlighterStatus('failed')
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [path])
+
+  if (highlighterStatus === 'loading') {
+    return (
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <LoaderCircleIcon className="size-4 animate-spin" />
+        正在准备代码预览
+      </div>
+    )
+  }
+
+  if (highlighterStatus === 'failed') {
+    return (
+      <pre className="min-w-0 flex-1 overflow-auto bg-background p-4 font-mono text-xs leading-5 whitespace-pre">
+        <code>{text}</code>
+      </pre>
+    )
+  }
 
   return (
     <div

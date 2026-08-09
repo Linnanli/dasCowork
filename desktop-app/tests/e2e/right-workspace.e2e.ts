@@ -361,7 +361,7 @@ test('RW-E2E-08 isolates output between multiple terminal sessions', async ({
   }
 })
 
-test('RW-E2E-04 replaces preview file tabs but preserves pinned file tabs', async ({
+test('RW-E2E-04 replaces the empty Files tab, then reuses preview file tabs', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -389,35 +389,29 @@ test('RW-E2E-04 replaces preview file tabs but preserves pinned file tabs', asyn
     await page.getByRole('button', { name: '最大化工作区', exact: true }).click()
 
     const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
-    const readmeTreeItem = rightPanel.getByRole('treeitem', { name: 'README.md', exact: true })
-    await expect(readmeTreeItem).toBeVisible()
-    await readmeTreeItem.focus()
-    await page.keyboard.press('End')
-    await page.keyboard.press('Enter')
-    await expectWorkspaceTab(rightPanel, 'README.md', { preview: true })
-    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
-
-    await readmeTreeItem.dblclick()
-    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
-    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
-
     const sourceTreeItem = rightPanel.getByRole('treeitem', { name: 'src', exact: true })
     await sourceTreeItem.click()
-    await expect(
-      rightPanel.getByRole('treeitem', { name: 'fixture.ts', exact: true })
-    ).toBeVisible()
-    await rightPanel.getByRole('treeitem', { name: 'fixture.ts', exact: true }).click()
-    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
-    await expectWorkspaceTab(rightPanel, 'fixture.ts', { preview: true })
-    await expect(rightPanel.getByRole('tab')).toHaveCount(3)
+    const fixtureTreeItem = rightPanel.getByRole('treeitem', { name: 'fixture.ts', exact: true })
+    await expect(fixtureTreeItem).toBeVisible()
+    await fixtureTreeItem.click()
+    await expectWorkspaceTab(rightPanel, 'fixture.ts', { preview: false })
+    await expect(rightPanel.getByRole('tab', { name: 'Files', exact: true })).toHaveCount(0)
+    await expect(rightPanel.getByRole('tab')).toHaveCount(1)
     await expect(rightPanel.locator('[data-workspace-code-preview="pierre"]')).toBeVisible()
-    await expect(rightPanel.locator('diffs-container')).toBeVisible()
+    await expect(rightPanel.locator('diffs-container pre')).toContainText(
+      'export const workspace = false'
+    )
 
     await rightPanel.getByRole('treeitem', { name: 'second.ts', exact: true }).click()
-    await expectWorkspaceTab(rightPanel, 'README.md', { preview: false })
+    await expectWorkspaceTab(rightPanel, 'fixture.ts', { preview: false })
     await expectWorkspaceTab(rightPanel, 'second.ts', { preview: true })
-    await expect(rightPanel.getByRole('tab', { name: 'fixture.ts', exact: true })).toHaveCount(0)
-    await expect(rightPanel.getByRole('tab')).toHaveCount(3)
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
+
+    await rightPanel.getByRole('treeitem', { name: 'README.md', exact: true }).click()
+    await expectWorkspaceTab(rightPanel, 'fixture.ts', { preview: false })
+    await expectWorkspaceTab(rightPanel, 'README.md', { preview: true })
+    await expect(rightPanel.getByRole('tab', { name: 'second.ts', exact: true })).toHaveCount(0)
+    await expect(rightPanel.getByRole('tab')).toHaveCount(2)
     await captureWorkspaceScreenshot(page, testInfo, 'RW-08-preview-pin')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)

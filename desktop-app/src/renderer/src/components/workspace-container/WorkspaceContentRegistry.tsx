@@ -13,7 +13,11 @@ import {
 } from '../right-workspace/terminal/terminalSessionStore'
 import { refitTerminalWorkspace } from '../right-workspace/terminal/terminalWorkspaceMove'
 import type { RightWorkspaceTab } from '../right-workspace/workspaceState'
-import type { WorkspaceOpenOptions, WorkspaceOpenTarget } from './workspaceOpenTargets'
+import type {
+  WorkspaceOpenMode,
+  WorkspaceOpenOptions,
+  WorkspaceOpenTarget
+} from './workspaceOpenTargets'
 import type {
   WorkspacePanelId,
   WorkspacePanelState,
@@ -120,10 +124,7 @@ export function createWorkspaceContentRegistry(): WorkspaceContentRegistry {
           onOpenFile={(relativePath, title, mode = 'preview') =>
             context.openTarget(
               { type: 'file', relativePath, title },
-              {
-                panelId: context.panelId,
-                mode
-              }
+              fileOpenOptions(tab, context.panelId, mode)
             )
           }
         />
@@ -192,6 +193,17 @@ function asFileTab(tab: WorkspaceTabRecord): Extract<RightWorkspaceTab, { type: 
     title: tab.title,
     relativePath: typeof tab.props.relativePath === 'string' ? tab.props.relativePath : ''
   }
+}
+
+function fileOpenOptions(
+  tab: WorkspaceTabRecord,
+  panelId: WorkspacePanelId,
+  mode: WorkspaceOpenMode
+): WorkspaceOpenOptions {
+  if (typeof tab.props.relativePath === 'string' && tab.props.relativePath) {
+    return { panelId, mode }
+  }
+  return { panelId, mode: 'pinned', replaceTabId: tab.id }
 }
 
 function asTerminalTab(tab: WorkspaceTabRecord): Extract<RightWorkspaceTab, { type: 'terminal' }> {

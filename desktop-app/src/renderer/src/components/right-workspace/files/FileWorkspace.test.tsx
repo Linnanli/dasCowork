@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,6 +19,20 @@ describe('FileWorkspace', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {
+          return undefined
+        }
+        unobserve(): void {
+          return undefined
+        }
+        disconnect(): void {
+          return undefined
+        }
+      }
+    )
     vi.stubGlobal('desktopApp', {
       workspace: {
         files: {
@@ -339,15 +353,21 @@ describe('FileWorkspace', () => {
     }
 
     await act(async () => {
-      root.render(<FileWorkspace {...selectedFileProps} />)
+      root.render(
+        <StrictMode>
+          <FileWorkspace {...selectedFileProps} />
+        </StrictMode>
+      )
       await Promise.resolve()
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
     await vi.waitFor(() => {
       const preview = container.querySelector('[data-workspace-code-preview="pierre"]')
+      const diffsContainer = preview?.querySelector('diffs-container')
       expect(preview).not.toBeNull()
-      expect(preview?.querySelector('diffs-container')).not.toBeNull()
+      expect(diffsContainer?.shadowRoot?.querySelector('pre')).not.toBeNull()
+      expect(diffsContainer?.shadowRoot?.textContent).toContain('export const value = 1')
       expect(container.querySelector('.cm-editor')).toBeNull()
     })
   })

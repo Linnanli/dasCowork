@@ -89,7 +89,7 @@ describe('WorkspaceContentRegistry terminal lifecycle', () => {
 })
 
 describe('WorkspaceContentRegistry file tabs', () => {
-  it('keeps the Files explorer open when it opens a preview file', () => {
+  it('replaces the empty Files explorer with the first selected file', () => {
     const openTarget = vi.fn()
     const rendered = createWorkspaceContentRegistry().render(fileTab('files:explorer', ''), {
       ...renderContext(openTarget),
@@ -108,6 +108,31 @@ describe('WorkspaceContentRegistry file tabs', () => {
 
     expect(openTarget).toHaveBeenCalledWith(
       { type: 'file', relativePath: 'README.md', title: 'README.md' },
+      { panelId: 'right', mode: 'pinned', replaceTabId: 'files:explorer' }
+    )
+  })
+
+  it('keeps preview behavior when an open file selects another file', () => {
+    const openTarget = vi.fn()
+    const rendered = createWorkspaceContentRegistry().render(
+      fileTab('file:README.md', 'README.md'),
+      {
+        ...renderContext(openTarget),
+        panelId: 'right'
+      }
+    )
+
+    if (
+      !isValidElement<{
+        onOpenFile(relativePath: string, title: string, mode?: 'preview' | 'pinned'): void
+      }>(rendered)
+    ) {
+      throw new Error('Expected a file workspace element.')
+    }
+    rendered.props.onOpenFile('package.json', 'package.json')
+
+    expect(openTarget).toHaveBeenCalledWith(
+      { type: 'file', relativePath: 'package.json', title: 'package.json' },
       { panelId: 'right', mode: 'preview' }
     )
   })
