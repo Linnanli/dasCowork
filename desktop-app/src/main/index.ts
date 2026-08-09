@@ -70,6 +70,8 @@ import { LocalCommitService } from './localGit/LocalCommitService'
 import { GitManager } from './localGit/GitManager'
 import { GitHostRegistry } from './localGit/GitHostRegistry'
 import { GitRepositoryTargetResolver } from './localGit/GitRepositoryTargetResolver'
+import { CodexHostConnectionRegistry } from './hosts/CodexHostConnectionRegistry'
+import { TerminalBackendFactory } from './terminal/TerminalBackendFactory'
 import { createLocalGitIpcHandlers } from './localGit/localGitIpc'
 import { LocalGitWatchBroker, localGitWatchControlChannels } from './localGit/LocalGitWatchBroker'
 import { invalidateLocalGitWatchCaches } from './localGit/LocalGitWatchInvalidation'
@@ -129,6 +131,7 @@ let codexAppServerConnection: CodexAspSharedConnection | undefined
 let followUpQueue: ConversationFollowUpQueueService | undefined
 let localGitWatchBroker: LocalGitWatchBroker | undefined
 let gitHostRegistry: GitHostRegistry | undefined
+let codexHostConnectionRegistry: CodexHostConnectionRegistry | undefined
 let rightWorkspaceIpc: RightWorkspaceIpcRegistration | undefined
 const localImageCapabilities = new LocalImageCapabilityStore()
 const localPathCapabilities = new LocalPathCapabilityStore()
@@ -175,7 +178,9 @@ function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexC
     threadClient,
     projectStore: projectRuntimeServices.projectStore,
     waitForConversationSettlement: (conversationId) =>
-      codexRuntime?.waitForConversationSettlement(conversationId) ?? Promise.resolve()
+      codexRuntime?.waitForConversationSettlement(conversationId) ?? Promise.resolve(),
+    onConversationArchived: (conversationId) =>
+      rightWorkspaceIpc?.terminalManager.closeForConversation(conversationId) ?? Promise.resolve()
   })
   const liveAgents = new LiveAgentRegistry(threadClient)
   const agentRoles = new LocalAgentRoleCatalog({
@@ -262,7 +267,11 @@ function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexC
         sectionIds: ['agents'],
         scope: { threadId: event.threadId }
       })
-    }
+    },
+    onThreadBound: (conversationId, threadId) =>
+      rightWorkspaceIpc?.terminalManager.bindThread(conversationId, threadId),
+    readThreadTerminal: (threadId) =>
+      rightWorkspaceIpc?.terminalManager.readThreadTerminal(threadId) ?? { terminalAttached: false }
   })
 }
 
@@ -469,7 +478,7 @@ function createWindow(runtime: CodexChatRuntimeService): void {
   rightWorkspaceIpc?.attachWindow(mainWindow)
 
   mainWindow.webContents.on('did-start-loading', () => {
-    rightWorkspaceIpc?.disposeWindow(ownerWebContentsId)
+    rightWorkspaceIpc?.detachWindow(ownerWebContentsId)
   })
   mainWindow.webContents.on('did-finish-load', () => {
     if (!mainWindow.isDestroyed()) rightWorkspaceIpc?.attachWindow(mainWindow)
@@ -528,6 +537,10 @@ app.whenReady().then(() => {
   })
   const manager = new GitManager()
   gitHostRegistry = hosts
+  const terminalHosts = new CodexHostConnectionRegistry({
+    remoteCodexCommand: runtimeConfig.remoteCodexCommand
+  })
+  codexHostConnectionRegistry = terminalHosts
   const runtime = createCodexRuntime(hosts, manager)
   codexRuntime = runtime
   const targetResolver = new GitRepositoryTargetResolver({
@@ -550,7 +563,9 @@ app.whenReady().then(() => {
   rightWorkspaceIpc = registerRightWorkspaceIpc({
     ipcMain,
     projectService: requireProjectService(),
-    fileSearchProvider: requireComposerContextClient()
+    fileSearchProvider: requireComposerContextClient(),
+    terminalBackendFactory: new TerminalBackendFactory(terminalHosts),
+    terminalCommand: runtimeConfig.terminalCommand
   })
 
   electronApp.setAppUserModelId('com.electron')
@@ -843,6 +858,7 @@ app.whenReady().then(() => {
     const port = event.ports[0]
     if (!port) return
     const { request, streamId } = codexChatStartPayloadSchema.parse(payload)
+    rightWorkspaceIpc?.terminalManager.bindConversationOwner(request.chatId, event.sender.id)
     port.once('close', () => {
       runtime.handleChatStreamPortClosed(request.chatId, streamId)
     })
@@ -961,7 +977,8 @@ app.on(
         await Promise.allSettled([
           codexRuntime?.stop(),
           composerContextClient?.shutdown(),
-          gitHostRegistry?.shutdown()
+          gitHostRegistry?.shutdown(),
+          codexHostConnectionRegistry?.shutdown()
         ])
         await codexAppServerConnection?.shutdown()
       }

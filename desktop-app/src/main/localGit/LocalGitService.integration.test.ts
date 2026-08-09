@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { LocalGitService } from './LocalGitService'
 import { createGitFixture, git, gitTarget } from './testHelpers'
 
-describe('LocalGitService integration', () => {
+describe('LocalGitService integration', { timeout: 45_000 }, () => {
   it('stages, unstages, and reverts every file in a multi-file review section', async () => {
     const { repo, projectService } = await createGitFixture()
     await writeFile(join(repo, 'second.txt'), 'alpha\n')

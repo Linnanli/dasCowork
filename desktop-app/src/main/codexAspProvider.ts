@@ -5,12 +5,14 @@ import {
   type CodexProvider,
   type CodexProviderSettings,
   type CommandApprovalHandler,
+  type DynamicToolDefinition,
   type FileChangeApprovalHandler,
   type PermissionsApprovalHandler,
   StdioTransport
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { CodexAppServerLaunchOptions } from './codexAppServerLaunch'
+import { readThreadTerminalToolResult, type ThreadTerminalReader } from './terminal/readThreadTerminalTool'
 
 type CodexApprovalSettings = NonNullable<CodexProviderSettings['approvals']>
 type ToolUserInputHandler = NonNullable<CodexApprovalSettings['onToolUserInput']>
@@ -31,6 +33,7 @@ export type CodexAspProviderSettingsInput = {
   onPermissionsApproval?: PermissionsApprovalHandler
   onToolUserInput: ToolUserInputHandler
   onElicitation: ElicitationHandler
+  readThreadTerminal?: ThreadTerminalReader
   connection?: CodexAspSharedConnection
 }
 
@@ -94,6 +97,13 @@ export function createCodexAspProviderSettings(
       onToolUserInput: input.onToolUserInput,
       onElicitation: input.onElicitation
     },
+    ...(input.readThreadTerminal
+      ? {
+          tools: {
+            read_thread_terminal: createReadThreadTerminalTool(input.readThreadTerminal)
+          }
+        }
+      : {}),
     toolTimeoutMs: 120_000,
     interruptTimeoutMs: 10_000,
     debug:
@@ -105,6 +115,27 @@ export function createCodexAspProviderSettings(
             }
           }
         : undefined
+  }
+}
+
+export function createReadThreadTerminalTool(
+  readThreadTerminal: NonNullable<CodexAspProviderSettingsInput['readThreadTerminal']>
+): DynamicToolDefinition {
+  return {
+    description:
+      'Read the bounded terminal output associated with the current task. Use it only when terminal state is needed to continue the task.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false
+    },
+    execute: async (_args, context) => {
+      const snapshot = await readThreadTerminalToolResult(readThreadTerminal, context.threadId)
+      return {
+        success: true,
+        contentItems: [{ type: 'inputText', text: JSON.stringify(snapshot) }]
+      }
+    }
   }
 }
 

@@ -41,6 +41,7 @@ import {
   type CodexAppServerLaunchOptions
 } from './codexAppServerLaunch'
 import { createCodexAspProvider, type CodexAspSharedConnection } from './codexAspProvider'
+import type { ThreadTerminalReader } from './terminal/readThreadTerminalTool'
 import type { ModelCatalogService } from './modelCatalogService'
 import type { ProjectStoreLike, ProjectServiceLike } from './threads/startConversation'
 import {
@@ -199,6 +200,8 @@ export type CodexChatRuntimeServiceOptions = {
   projectStore?: ProjectStoreLike
   streamText?: StreamTextLike
   onAgentLifecycle?: (event: CodexAgentLifecycleEvent) => void | Promise<void>
+  onThreadBound?: (conversationId: string, threadId: string) => void | Promise<void>
+  readThreadTerminal?: ThreadTerminalReader
   onTurnCompleted?: () => void
   followUpQueue?: ConversationFollowUpQueueService
   steerConfirmationTimeoutMs?: number
@@ -244,6 +247,7 @@ export class CodexChatRuntimeService {
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
+  private readonly onThreadBound: ((conversationId: string, threadId: string) => void | Promise<void>) | undefined
   private readonly onTurnCompleted: (() => void) | undefined
   private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly steerConfirmationTimeoutMs: number
@@ -280,6 +284,7 @@ export class CodexChatRuntimeService {
       })
     this.streamText = options.streamText ?? defaultStreamText
     this.onAgentLifecycle = options.onAgentLifecycle
+    this.onThreadBound = options.onThreadBound
     this.onTurnCompleted = options.onTurnCompleted
     this.followUpQueue = options.followUpQueue
     this.steerConfirmationTimeoutMs = Math.max(
@@ -319,7 +324,8 @@ export class CodexChatRuntimeService {
       onFileChangeApproval: this.handleFileChangeApproval,
       onPermissionsApproval: this.handlePermissionsApproval,
       onToolUserInput: this.handleToolUserInput,
-      onElicitation: this.handleElicitation
+      onElicitation: this.handleElicitation,
+      readThreadTerminal: options.readThreadTerminal
     })
     this.status = {
       state: 'stopped',
@@ -645,6 +651,7 @@ export class CodexChatRuntimeService {
               )
               if (startsFreshTerminalRetry) persistOrNormalizeProjectAssignment(thread.threadId)
               else await persistStartedProjectAssignment(thread.threadId)
+              await this.onThreadBound?.(activeRun.conversationId, thread.threadId)
               await callbacks?.onThreadIdAvailable?.(thread.threadId, startedThread)
               this.migrateActiveFollowUpClaims(activeRun, thread.threadId)
               if (threadIdChanged) {
@@ -784,6 +791,7 @@ export class CodexChatRuntimeService {
             persistOrNormalizeProjectAssignment(threadId)
           }
           if (threadIdChanged) {
+            await this.onThreadBound?.(activeRun.conversationId, threadId!)
             await callbacks?.onThreadIdAvailable?.(threadId!)
             if (
               this.postStreamEvent(activeRun, port, { type: 'thread-bound', threadId: threadId! })

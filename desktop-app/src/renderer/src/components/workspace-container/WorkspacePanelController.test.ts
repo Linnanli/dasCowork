@@ -44,14 +44,36 @@ const filesExplorer = (): WorkspaceTabRecord => ({
 })
 
 describe('WorkspacePanelController', () => {
-  it('does not commit a bulk close when the one confirmation is cancelled', async () => {
-    let state = openedTerminalState()
-    state = workspaceContainerReducer(state, {
-      type: 'set-tab-runtime',
-      tabId: 'terminal:two',
-      runtime: { terminalSessionId: 'pty-2' }
+  it('opens an explicitly targeted terminal in the bottom panel', async () => {
+    const store = createStore(createWorkspaceContainerState())
+    const controller = new WorkspacePanelController({
+      ...store,
+      registry: new WorkspaceContentRegistry(),
+      workspaceId: 'conversation:one'
     })
+
+    await controller.open({ type: 'terminal', id: 'terminal:bottom' }, { panelId: 'bottom' })
+
+    const state = store.getState()
+    expect(state.panels.bottom.tabIds).toEqual(['terminal:bottom'])
+    expect(state.panels.bottom.isOpen).toBe(true)
+    expect(state.panels.right.tabIds).toEqual([])
+    expect(state.lastFocusedPanelId).toBe('bottom')
+  })
+
+  it('does not commit a bulk close when the one confirmation is cancelled', async () => {
+    const state = openedTerminalState()
     const store = createStore(state)
+    vi.stubGlobal('desktopApp', {
+      workspace: {
+        terminal: {
+          list: vi.fn(async () => ({
+            version: 2,
+            sessions: [sampleSession('one'), sampleSession('two')]
+          }))
+        }
+      }
+    })
     const close = vi.fn()
     const controller = new WorkspacePanelController({
       ...store,
@@ -249,12 +271,12 @@ describe('WorkspacePanelController', () => {
     )
   })
 
-  it('moves a terminal without calling its close lifecycle or losing its runtime id', async () => {
+  it('moves a terminal without calling its close lifecycle or losing unrelated runtime state', async () => {
     let state = openedTerminalState()
     state = workspaceContainerReducer(state, {
       type: 'set-tab-runtime',
       tabId: 'terminal:one',
-      runtime: { terminalSessionId: 'pty-1' }
+      runtime: { browserViewId: 'view-1' }
     })
     const close = vi.fn()
     const move = vi.fn()
@@ -273,9 +295,32 @@ describe('WorkspacePanelController', () => {
     await controller.move('right', 'bottom', 'terminal:one')
 
     expect(store.getState().panels.bottom.tabIds).toEqual(['terminal:one'])
-    expect(store.getState().runtime['terminal:one']).toEqual({ terminalSessionId: 'pty-1' })
+    expect(store.getState().runtime['terminal:one']).toEqual({ browserViewId: 'view-1' })
     expect(close).not.toHaveBeenCalled()
     expect(move).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses v2 terminal list and stable tab session ids for the running close guard', async () => {
+    const list = vi.fn(async () => ({
+      version: 2,
+      sessions: [sampleSession('one'), sampleSession('two')]
+    }))
+    vi.stubGlobal('desktopApp', { workspace: { terminal: { list } } })
+    const store = createStore(openedTerminalState())
+    const confirmTerminalClose = vi.fn(async () => false)
+    const controller = new WorkspacePanelController({
+      ...store,
+      registry: new WorkspaceContentRegistry().register({ kind: 'terminal', render: () => null }),
+      workspaceId: 'conversation:one',
+      confirmTerminalClose
+    })
+
+    await controller.closeOther('right', 'terminal:one')
+
+    expect(list).toHaveBeenCalledWith({ version: 2, workspaceId: 'conversation:one' })
+    expect(confirmTerminalClose).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'terminal:two' })
+    ])
   })
 
   it('runs deactivate before state change cleanup and activate after active tab changes', async () => {
@@ -395,4 +440,11 @@ function openedTerminalState(): WorkspaceContainerState {
     panelId: 'right',
     tab: terminal('terminal:two')
   })
+}
+
+function sampleSession(sessionId: string): {
+  sessionId: string
+  status: 'running'
+} {
+  return { sessionId, status: 'running' }
 }

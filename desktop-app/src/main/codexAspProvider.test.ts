@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createCodexAspProviderSettings } from './codexAspProvider'
 
@@ -85,5 +85,37 @@ describe('createCodexAspProviderSettings', () => {
     expect(settings.transportFactory).toBe(transportFactory)
     expect(settings.transport).toBeUndefined()
     expect(settings.persistent).toBeUndefined()
+  })
+
+  it('advertises a bounded read_thread_terminal dynamic tool when the desktop runtime supplies one', async () => {
+    const readThreadTerminal = vi.fn(async () => ({
+      terminalAttached: true,
+      sessionId: 'terminal-1',
+      output: 'last 16 KB only',
+      truncated: true
+    }))
+    const settings = createCodexAspProviderSettings({
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      cwd: '/repo',
+      onCommandApproval: () => 'accept' as const,
+      onFileChangeApproval: () => 'accept' as const,
+      onToolUserInput: async () => ({ answers: {} }),
+      onElicitation: async () => ({ action: 'accept' as const, content: null, _meta: null }),
+      readThreadTerminal
+    })
+
+    const tool = settings.tools?.read_thread_terminal
+    expect(tool).toMatchObject({
+      inputSchema: { type: 'object', additionalProperties: false }
+    })
+    await expect(tool?.execute({}, { threadId: 'thread-1', toolName: 'read_thread_terminal' })).resolves.toEqual({
+      success: true,
+      contentItems: [{ type: 'inputText', text: expect.stringContaining('last 16 KB only') }]
+    })
+    expect(readThreadTerminal).toHaveBeenCalledWith('thread-1')
   })
 })

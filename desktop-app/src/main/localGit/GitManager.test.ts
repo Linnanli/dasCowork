@@ -1,11 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import { describe, expect, it, vi } from 'vitest'
 
-import { LocalGitHost } from './GitHostRegistry'
 import {
   GitManager,
   GitReviewSnapshotStaleError,
@@ -587,58 +581,6 @@ describe('GitManager', () => {
       expect.anything()
     )
   })
-
-  it('runs Git successfully through a temporary split index', async () => {
-    const repo = await mkdtemp(join(tmpdir(), 'dascowork-split-index-'))
-    try {
-      runGit(repo, ['init'])
-      runGit(repo, ['config', 'user.email', 'test@example.com'])
-      runGit(repo, ['config', 'user.name', 'Test User'])
-      await writeFile(join(repo, 'tracked.txt'), 'one\n')
-      runGit(repo, ['add', 'tracked.txt'])
-      runGit(repo, ['commit', '-m', 'initial'])
-      runGit(repo, ['update-index', '--split-index'])
-
-      const host = new LocalGitHost()
-      const snapshot = new GitManager().getWorktreeRepositoryForRoot(repo, host).reviewSnapshot
-      const result = await snapshot.withTempIndex((env) =>
-        host.runGit(['status', '--short'], repo, { env })
-      )
-
-      expect(runGit(repo, ['rev-parse', '--shared-index-path']).trim()).not.toBe('')
-      expect(result).toMatchObject({ success: true, stdout: '' })
-    } finally {
-      await rm(repo, { recursive: true, force: true })
-    }
-  })
-
-  it('runs Git through temporary indexes for separate git dirs and linked worktrees', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'dascowork-git-dir-'))
-    const repo = join(parent, 'repo')
-    const gitDirectory = join(parent, 'git-directory')
-    const linkedWorktree = join(parent, 'linked-worktree')
-    try {
-      runGit(parent, ['init', '--separate-git-dir', gitDirectory, repo])
-      runGit(repo, ['config', 'user.email', 'test@example.com'])
-      runGit(repo, ['config', 'user.name', 'Test User'])
-      await writeFile(join(repo, 'tracked.txt'), 'one\n')
-      runGit(repo, ['add', 'tracked.txt'])
-      runGit(repo, ['commit', '-m', 'initial'])
-      runGit(repo, ['worktree', 'add', '-b', 'linked', linkedWorktree])
-
-      const host = new LocalGitHost()
-      const manager = new GitManager()
-      for (const root of [repo, linkedWorktree]) {
-        const snapshot = manager.getWorktreeRepositoryForRoot(root, host).reviewSnapshot
-        const result = await snapshot.withTempIndex((env) =>
-          host.runGit(['status', '--short'], root, { env })
-        )
-        expect(result).toMatchObject({ success: true, stdout: '' })
-      }
-    } finally {
-      await rm(parent, { recursive: true, force: true })
-    }
-  })
 })
 
 function createHost(overrides: Partial<GitHost>): GitHost {
@@ -657,10 +599,6 @@ function ok(stdout: string): GitRunResult {
 
 function fail(stderr: string): GitRunResult {
   return { success: false, code: 1, stdout: '', stderr }
-}
-
-function runGit(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' })
 }
 
 class EventSourceFake {

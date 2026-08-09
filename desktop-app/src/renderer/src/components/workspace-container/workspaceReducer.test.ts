@@ -114,7 +114,7 @@ describe('workspaceContainerReducer', () => {
     state = reduce(state, {
       type: 'set-tab-runtime',
       tabId: 'terminal-1',
-      runtime: { terminalSessionId: 'pty-123' }
+      runtime: { browserViewId: 'view-123' }
     })
     state = reduce(state, {
       type: 'move-tab',
@@ -125,7 +125,7 @@ describe('workspaceContainerReducer', () => {
 
     expect(state.panels.right.tabIds).toEqual([])
     expect(state.panels.bottom).toMatchObject({ isOpen: true, activeTabId: 'terminal-1' })
-    expect(state.runtime['terminal-1']).toEqual({ terminalSessionId: 'pty-123' })
+    expect(state.runtime['terminal-1']).toEqual({ browserViewId: 'view-123' })
   })
 
   it('rejects a move into a panel that already contains the same id', () => {
@@ -147,6 +147,27 @@ describe('workspaceContainerReducer', () => {
     const bottom = reduce(right, { type: 'toggle-panel-maximized', panelId: 'bottom' })
     expect(bottom.panels.right.isMaximized).toBe(false)
     expect(bottom.panels.bottom.isMaximized).toBe(true)
+  })
+
+  it('updates a tab title without touching runtime state', () => {
+    let state = reduce(createWorkspaceContainerState(), {
+      type: 'open-tab',
+      panelId: 'right',
+      tab: file('terminal:one')
+    })
+    state = reduce(state, {
+      type: 'set-tab-runtime',
+      tabId: 'terminal:one',
+      runtime: { browserViewId: 'view-1' }
+    })
+    state = reduce(state, {
+      type: 'set-tab-title',
+      tabId: 'terminal:one',
+      title: 'zsh'
+    })
+
+    expect(state.tabs['terminal:one'].title).toBe('zsh')
+    expect(state.runtime['terminal:one']).toEqual({ browserViewId: 'view-1' })
   })
 })
 

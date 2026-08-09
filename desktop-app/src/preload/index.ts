@@ -54,12 +54,18 @@ import {
   type DesktopNativeContextMenuApi
 } from '../shared/nativeContextMenuApi'
 import {
+  terminalWorkspaceAttachRequestSchema,
+  terminalWorkspaceCloseRequestSchema,
   terminalWorkspaceCreateRequestSchema,
+  terminalWorkspaceDetachRequestSchema,
   terminalWorkspaceEventSchema,
   terminalWorkspaceIpcChannels,
-  terminalWorkspaceKillRequestSchema,
   terminalWorkspaceListRequestSchema,
   terminalWorkspaceResizeRequestSchema,
+  terminalWorkspaceRestartRequestSchema,
+  terminalWorkspaceRunActionRequestSchema,
+  terminalWorkspaceSetTitleRequestSchema,
+  terminalWorkspaceSnapshotRequestSchema,
   terminalWorkspaceWriteRequestSchema
 } from '../shared/terminalWorkspaceApi'
 import {
@@ -492,6 +498,16 @@ const desktopRightWorkspace: DesktopRightWorkspaceApi = {
         terminalWorkspaceIpcChannels.create,
         parseWorkspacePayload(terminalWorkspaceCreateRequestSchema, input)
       ),
+    attach: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.attach,
+        parseWorkspacePayload(terminalWorkspaceAttachRequestSchema, input)
+      ),
+    detach: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.detach,
+        parseWorkspacePayload(terminalWorkspaceDetachRequestSchema, input)
+      ),
     write: (input) =>
       ipcRenderer.invoke(
         terminalWorkspaceIpcChannels.write,
@@ -502,16 +518,37 @@ const desktopRightWorkspace: DesktopRightWorkspaceApi = {
         terminalWorkspaceIpcChannels.resize,
         parseWorkspacePayload(terminalWorkspaceResizeRequestSchema, input)
       ),
-    kill: (input) =>
+    setTitle: (input) =>
       ipcRenderer.invoke(
-        terminalWorkspaceIpcChannels.kill,
-        parseWorkspacePayload(terminalWorkspaceKillRequestSchema, input)
+        terminalWorkspaceIpcChannels.setTitle,
+        parseWorkspacePayload(terminalWorkspaceSetTitleRequestSchema, input)
+      ),
+    runAction: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.runAction,
+        parseWorkspacePayload(terminalWorkspaceRunActionRequestSchema, input)
+      ),
+    restart: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.restart,
+        parseWorkspacePayload(terminalWorkspaceRestartRequestSchema, input)
+      ),
+    close: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.close,
+        parseWorkspacePayload(terminalWorkspaceCloseRequestSchema, input)
       ),
     list: (input) =>
       ipcRenderer.invoke(
         terminalWorkspaceIpcChannels.list,
         parseWorkspacePayload(terminalWorkspaceListRequestSchema, input)
       ),
+    snapshot: (input) =>
+      ipcRenderer.invoke(
+        terminalWorkspaceIpcChannels.snapshot,
+        parseWorkspacePayload(terminalWorkspaceSnapshotRequestSchema, input)
+      ),
+    listShells: () => ipcRenderer.invoke(terminalWorkspaceIpcChannels.listShells),
     onEvent: (callback) =>
       subscribeWorkspaceEvent(
         terminalWorkspaceIpcChannels.event,

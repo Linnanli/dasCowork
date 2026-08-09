@@ -46,6 +46,10 @@ import {
   useRightWorkspace
 } from '@/components/right-workspace'
 import {
+  CLEAR_ACTIVE_TERMINAL_EVENT,
+  clearActiveTerminalView
+} from '@/components/right-workspace/terminal/terminalActiveView'
+import {
   adjacentWorkspaceTabId,
   createWorkspaceContentRegistry,
   isWorkspaceEditableTarget,
@@ -362,6 +366,48 @@ function clearActiveConversationId(): void {
   }
 }
 
+function workspaceScopeForEntry(
+  entry: ConversationChatEntry,
+  activeConversation: ActiveConversationContext | undefined
+): string {
+  return (
+    activeConversation?.threadId ??
+    entry.context.threadId ??
+    activeConversation?.conversationId ??
+    entry.context.conversationId ??
+    entry.localId
+  )
+}
+
+function workspaceFallbackScopesForEntry(
+  entry: ConversationChatEntry,
+  activeConversation: ActiveConversationContext | undefined,
+  currentScope: string
+): readonly string[] {
+  return uniqueWorkspaceScopes(
+    [
+      activeConversation?.conversationId,
+      entry.context.conversationId,
+      activeConversation?.threadId,
+      entry.context.threadId,
+      entry.localId
+    ],
+    currentScope
+  )
+}
+
+function uniqueWorkspaceScopes(
+  candidates: readonly (string | undefined)[],
+  currentScope: string
+): readonly string[] {
+  const seen = new Set([currentScope])
+  return candidates.filter((candidate): candidate is string => {
+    if (!candidate || seen.has(candidate)) return false
+    seen.add(candidate)
+    return true
+  })
+}
+
 async function runTranscriptAction(
   controller: ConversationTranscriptController,
   action: () => Promise<void>
@@ -589,7 +635,12 @@ function App(): React.JSX.Element {
     activeConversation?.threadId || activeEntry.context.threadId
       ? undefined
       : JSON.stringify(storedProjectSelection ?? null)
-  const workspaceConversationId = activeEntry.localId
+  const workspaceProjectScope = workspaceScopeForEntry(activeEntry, activeConversation)
+  const fallbackWorkspaceProjectScopes = workspaceFallbackScopesForEntry(
+    activeEntry,
+    activeConversation,
+    workspaceProjectScope
+  )
 
   return (
     <main
@@ -606,7 +657,11 @@ function App(): React.JSX.Element {
         conversationState={conversationState}
         onNewChat={handleStartNewConversation}
       />
-      <RightWorkspaceProvider key={workspaceConversationId} projectScope={workspaceConversationId}>
+      <RightWorkspaceProvider
+        key={workspaceProjectScope}
+        projectScope={workspaceProjectScope}
+        fallbackProjectScopes={fallbackWorkspaceProjectScopes}
+      >
         <GitRepositoryProvider
           identity={gitRepositoryIdentity}
           preSendProjectKey={preSendProjectKey}
@@ -619,10 +674,9 @@ function App(): React.JSX.Element {
                 nativeBackdrop && nativeBackdropSurfaceClass
               )}
             >
-              <WorkspaceHeaderActions />
               <ConversationWorkspaceLayout
                 target={gitRepositoryIdentity}
-                workspaceId={`conversation:${workspaceConversationId}`}
+                workspaceId={`conversation:${workspaceProjectScope}`}
               >
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
                   <ActiveConversationPane
@@ -832,6 +886,14 @@ function ConversationWorkspaceLayout({
   useWorkspaceShortcuts(container, controller)
 
   useEffect(() => {
+    const clearFocusedTerminal = (): void => {
+      clearActiveTerminalView()
+    }
+    window.addEventListener(CLEAR_ACTIVE_TERMINAL_EVENT, clearFocusedTerminal)
+    return () => window.removeEventListener(CLEAR_ACTIVE_TERMINAL_EVENT, clearFocusedTerminal)
+  }, [])
+
+  useEffect(() => {
     return () => {
       // Some renderer-only test harnesses deliberately omit desktop-only APIs.
       // The production preload always exposes this bridge.
@@ -866,6 +928,8 @@ function ConversationWorkspaceLayout({
                 runtime: container.tabRuntime(tab.id),
                 openTarget: (openTarget: WorkspaceOpenTarget, options: WorkspaceOpenOptions = {}) =>
                   void controller.open(openTarget, { ...options, panelId }),
+                setTabTitle: (tabId, title) =>
+                  container.dispatch({ type: 'set-tab-title', tabId, title }),
                 setRuntime: (tabId, runtime) =>
                   container.dispatch({ type: 'set-tab-runtime', tabId, runtime })
               })}
@@ -895,6 +959,9 @@ function ConversationWorkspaceLayout({
 
   return (
     <>
+      <WorkspaceHeaderActions
+        onOpenBottomTerminal={() => void controller.open({ type: 'terminal' }, { panelId: 'bottom' })}
+      />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div data-slot="conversation-workspace-row" className="flex min-h-0 min-w-0 flex-1">
           {children}
@@ -919,9 +986,9 @@ function useWorkspaceShortcuts(
       if (event.defaultPrevented || isWorkspaceEditableTarget(event.target)) return
       const panelId = container.state.lastFocusedPanelId
       const panel = container.state.panels[panelId]
-      const open = (target: WorkspaceOpenTarget): void => {
+      const open = (target: WorkspaceOpenTarget, options: WorkspaceOpenOptions = {}): void => {
         event.preventDefault()
-        void controller.open(target, { panelId })
+        void controller.open(target, { ...options, panelId: options.panelId ?? panelId })
       }
       if (event.metaKey && !event.ctrlKey && !event.altKey) {
         switch (event.key.toLowerCase()) {
@@ -929,7 +996,7 @@ function useWorkspaceShortcuts(
             open({ type: 'review' })
             return
           case 't':
-            open({ type: 'terminal' })
+            open({ type: 'terminal' }, { panelId: 'bottom' })
             return
           case 'b':
             open({ type: 'browser' })
@@ -1159,13 +1226,28 @@ function Header({ activeConversation, sidebarCollapsed }: HeaderProps): React.JS
   )
 }
 
-function WorkspaceHeaderActions(): React.JSX.Element {
+function WorkspaceHeaderActions({
+  onOpenBottomTerminal
+}: {
+  onOpenBottomTerminal(): void
+}): React.JSX.Element {
   const { collapse, restore, state, toggleMaximized } = useRightWorkspace()
   const container = useWorkspaceContainer()
   const toggleLabel = state.isOpen ? '关闭工作区' : '打开工作区'
   const maximizeLabel = state.isMaximized ? '恢复工作区宽度' : '最大化工作区'
   const bottomOpen = container.state.panels.bottom.isOpen
   const bottomToggleLabel = bottomOpen ? '关闭底部工作区' : '打开底部工作区'
+  const toggleBottomWorkspace = (): void => {
+    if (bottomOpen) {
+      container.dispatch({ type: 'set-panel-open', panelId: 'bottom', isOpen: false })
+      return
+    }
+    if (container.state.panels.bottom.tabIds.length === 0) {
+      onOpenBottomTerminal()
+      return
+    }
+    container.dispatch({ type: 'set-panel-open', panelId: 'bottom', isOpen: true })
+  }
 
   return (
     <div
@@ -1189,9 +1271,7 @@ function WorkspaceHeaderActions(): React.JSX.Element {
       <IconButton
         label={bottomToggleLabel}
         title={bottomToggleLabel}
-        onClick={() =>
-          container.dispatch({ type: 'set-panel-open', panelId: 'bottom', isOpen: !bottomOpen })
-        }
+        onClick={toggleBottomWorkspace}
       >
         {bottomOpen ? (
           <PanelBottomCloseIcon className="size-4" />

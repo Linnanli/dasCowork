@@ -6,7 +6,6 @@ import {
   shell
 } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
-import { createRequire } from 'node:module'
 import { basename, sep } from 'node:path'
 
 import {
@@ -35,14 +34,24 @@ import {
 } from '../../shared/rightWorkspaceApi'
 import {
   terminalWorkspaceIpcChannels,
+  terminalWorkspaceAttachRequestSchema,
   terminalWorkspaceCreateRequestSchema,
-  terminalWorkspaceKillRequestSchema,
+  terminalWorkspaceCloseRequestSchema,
+  terminalWorkspaceDetachRequestSchema,
   terminalWorkspaceListRequestSchema,
   terminalWorkspaceResizeRequestSchema,
-  terminalWorkspaceWriteRequestSchema,
-  type TerminalWorkspaceEvent
+  terminalWorkspaceRestartRequestSchema,
+  terminalWorkspaceRunActionRequestSchema,
+  terminalWorkspaceSetTitleRequestSchema,
+  terminalWorkspaceSnapshotRequestSchema,
+  terminalWorkspaceWriteRequestSchema
 } from '../../shared/terminalWorkspaceApi'
 import type { ProjectService } from '../projects/ProjectService'
+import { LocalPtyTerminalBackend } from '../terminal/LocalPtyTerminalBackend'
+import { TerminalBackendFactory } from '../terminal/TerminalBackendFactory'
+import { TerminalSessionManager } from '../terminal/TerminalSessionManager'
+import { commandForTerminalAction } from '../terminal/terminalCommand'
+import { terminalEnvironment } from '../terminal/terminalEnvironment'
 import {
   BrowserWorkspaceService,
   type BrowserWorkspaceHostAdapter,
@@ -52,44 +61,49 @@ import {
   FileWorkspaceService,
   type FileWorkspacePathSearchProviderLike
 } from './FileWorkspaceService'
-import {
-  TerminalWorkspaceService,
-  type SpawnTerminalAdapter,
-  type TerminalProcessAdapter
-} from './TerminalWorkspaceService'
 
 type WorkspaceRoot = { path: string; label: string }
-
-const requireNodeModule = createRequire(__filename)
 
 type WindowWorkspaceServices = {
   window: BrowserWindow
   roots: Map<string, WorkspaceRoot>
   rootWatchers: Map<string, FSWatcher>
   files: FileWorkspaceService
-  terminal: TerminalWorkspaceService
   browser: BrowserWorkspaceService
   dispose(): void
 }
 
 export type RightWorkspaceIpcRegistration = {
   attachWindow(window: BrowserWindow): void
+  detachWindow(webContentsId: number): void
   disposeWindow(webContentsId: number): void
   dispose(): void
+  terminalManager: TerminalSessionManager
 }
 
 export function registerRightWorkspaceIpc({
   ipcMain,
   projectService,
   fileSearchProvider,
-  spawnTerminal = spawnNodePty
+  terminalBackendFactory,
+  terminalCommand,
+  terminalManager = createTerminalSessionManager(projectService, terminalBackendFactory, terminalCommand)
 }: {
   ipcMain: IpcMain
   projectService: ProjectService
   fileSearchProvider: FileWorkspacePathSearchProviderLike
-  spawnTerminal?: SpawnTerminalAdapter
+  terminalBackendFactory?: Pick<TerminalBackendFactory, 'create'>
+  terminalCommand?: string
+  terminalManager?: TerminalSessionManager
 }): RightWorkspaceIpcRegistration {
   const servicesByOwner = new Map<number, WindowWorkspaceServices>()
+  const removeTerminalListener = terminalManager.onEvent((event) => {
+    const sessionId = event.type === 'data' ? event.sessionId : event.session.sessionId
+    const services = servicesByOwner.get(terminalManager.ownerForSession(sessionId) ?? -1)
+    if (services && !services.window.isDestroyed()) {
+      services.window.webContents.send(terminalWorkspaceIpcChannels.event, event)
+    }
+  })
 
   const requireServices = (event: IpcMainInvokeEvent): WindowWorkspaceServices => {
     const services = servicesByOwner.get(event.sender.id)
@@ -124,7 +138,6 @@ export function registerRightWorkspaceIpc({
   ipcMain.handle(rightWorkspaceIpcChannels.disposeWorkspace, async (event, payload: unknown) => {
     const request = rightWorkspaceDisposeRequestSchema.parse(payload)
     const services = requireServices(event)
-    services.terminal.disposeWorkspace(request.workspaceId)
     services.browser.disposeWorkspace(request.workspaceId)
     await services.files.stopSearchSessionsForRoot(request.workspaceId)
     services.roots.delete(request.workspaceId)
@@ -174,23 +187,62 @@ export function registerRightWorkspaceIpc({
 
   ipcMain.handle(terminalWorkspaceIpcChannels.create, (event, payload: unknown) => {
     const request = terminalWorkspaceCreateRequestSchema.parse(payload)
-    return requireOwnedRoot(event, request.workspaceId).terminal.create(request)
+    requireServices(event)
+    return terminalManager.create(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.attach, (event, payload: unknown) => {
+    const request = terminalWorkspaceAttachRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.attach(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.detach, (event, payload: unknown) => {
+    const request = terminalWorkspaceDetachRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.detach(request, event.sender.id)
   })
   ipcMain.handle(terminalWorkspaceIpcChannels.write, (event, payload: unknown) => {
     const request = terminalWorkspaceWriteRequestSchema.parse(payload)
-    return requireServices(event).terminal.write(request)
+    requireServices(event)
+    return terminalManager.write(request, event.sender.id)
   })
   ipcMain.handle(terminalWorkspaceIpcChannels.resize, (event, payload: unknown) => {
     const request = terminalWorkspaceResizeRequestSchema.parse(payload)
-    return requireServices(event).terminal.resize(request)
+    requireServices(event)
+    return terminalManager.resize(request, event.sender.id)
   })
-  ipcMain.handle(terminalWorkspaceIpcChannels.kill, (event, payload: unknown) => {
-    const request = terminalWorkspaceKillRequestSchema.parse(payload)
-    return requireServices(event).terminal.kill(request)
+  ipcMain.handle(terminalWorkspaceIpcChannels.setTitle, (event, payload: unknown) => {
+    const request = terminalWorkspaceSetTitleRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.setTitle(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.runAction, (event, payload: unknown) => {
+    const request = terminalWorkspaceRunActionRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.runAction(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.restart, (event, payload: unknown) => {
+    const request = terminalWorkspaceRestartRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.restart(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.close, (event, payload: unknown) => {
+    const request = terminalWorkspaceCloseRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.close(request, event.sender.id)
   })
   ipcMain.handle(terminalWorkspaceIpcChannels.list, (event, payload: unknown) => {
     const request = terminalWorkspaceListRequestSchema.parse(payload)
-    return requireServices(event).terminal.list(request)
+    requireServices(event)
+    return terminalManager.list(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.snapshot, (event, payload: unknown) => {
+    const request = terminalWorkspaceSnapshotRequestSchema.parse(payload)
+    requireServices(event)
+    return terminalManager.getSnapshot(request, event.sender.id)
+  })
+  ipcMain.handle(terminalWorkspaceIpcChannels.listShells, (event) => {
+    requireServices(event)
+    return terminalManager.listShells()
   })
 
   ipcMain.handle(browserWorkspaceIpcChannels.create, (event, payload: unknown) => {
@@ -237,19 +289,30 @@ export function registerRightWorkspaceIpc({
       const ownerId = window.webContents.id
       const existing = servicesByOwner.get(ownerId)
       existing?.dispose()
-      servicesByOwner.set(ownerId, createWindowServices(window, fileSearchProvider, spawnTerminal))
+      servicesByOwner.set(ownerId, createWindowServices(window, fileSearchProvider))
+    },
+    detachWindow(webContentsId) {
+      const services = servicesByOwner.get(webContentsId)
+      if (services) {
+        services.dispose()
+        servicesByOwner.delete(webContentsId)
+      }
+      terminalManager.detachOwner(webContentsId)
     },
     disposeWindow(webContentsId) {
       const services = servicesByOwner.get(webContentsId)
-      if (!services) return
-      services.dispose()
+      services?.dispose()
       servicesByOwner.delete(webContentsId)
+      terminalManager.detachOwner(webContentsId)
+      void terminalManager.closeOwner(webContentsId)
     },
     dispose() {
+      removeTerminalListener()
       for (const [ownerId, services] of servicesByOwner) {
         services.dispose()
         servicesByOwner.delete(ownerId)
       }
+      void terminalManager.dispose()
       for (const channel of Object.values({
         ...rightWorkspaceIpcChannels,
         ...terminalWorkspaceIpcChannels,
@@ -257,14 +320,53 @@ export function registerRightWorkspaceIpc({
       })) {
         ipcMain.removeHandler(channel)
       }
-    }
+    },
+    terminalManager
   }
+}
+
+function createTerminalSessionManager(
+  projectService: ProjectService,
+  terminalBackendFactory?: Pick<TerminalBackendFactory, 'create'>,
+  appTerminalCommand?: string
+): TerminalSessionManager {
+  return new TerminalSessionManager({
+    resolveExecutionTarget: async (target) => {
+      const resolved = await projectService.resolveExistingThreadTarget({
+        conversationId: target.conversationId,
+        threadId: target.threadId,
+        allowActiveProjectFallback: true,
+        allowActiveProjectFallbackForUnboundThread: true
+      })
+      if (!resolved?.cwd || !resolved.hostId) throw new Error('This task does not have a workspace available.')
+      return {
+        hostId: resolved.hostId,
+        cwd: resolved.cwd,
+        ...(resolved.terminalCommand ? { terminalCommand: resolved.terminalCommand } : {})
+      }
+    },
+    ...(appTerminalCommand ? { appTerminalCommand } : {}),
+    createBackend: (input) => {
+      if (terminalBackendFactory) return terminalBackendFactory.create(input)
+      if (input.target.hostId !== 'local') throw new Error('Remote terminal support is not configured for this host.')
+      const command = input.actionCommand
+        ? commandForTerminalAction(input.shell, input.actionCommand)
+        : input.shell
+      return new LocalPtyTerminalBackend({
+        shell: command.shell,
+        args: command.args,
+        cwd: input.target.cwd,
+        env: terminalEnvironment(),
+        cols: input.cols,
+        rows: input.rows
+      })
+    }
+  })
 }
 
 function createWindowServices(
   window: BrowserWindow,
-  fileSearchProvider: FileWorkspacePathSearchProviderLike,
-  spawnTerminal: SpawnTerminalAdapter
+  fileSearchProvider: FileWorkspacePathSearchProviderLike
 ): WindowWorkspaceServices {
   const roots = new Map<string, WorkspaceRoot>()
   const rootWatchers = new Map<string, FSWatcher>()
@@ -272,20 +374,7 @@ function createWindowServices(
     resolveRoot: async (rootId) => roots.get(rootId)?.path ?? null,
     pathSearch: fileSearchProvider
   })
-  const terminal = new TerminalWorkspaceService({
-    spawnTerminal,
-    resolveStartOptions: (workspaceId) => {
-      const root = roots.get(workspaceId)
-      if (!root) throw new Error('Workspace root is unavailable')
-      return terminalStartOptions(root.path)
-    }
-  })
   const browser = new BrowserWorkspaceService({ host: createBrowserHost(window) })
-
-  const sendTerminalEvent = (event: TerminalWorkspaceEvent): void => {
-    if (!window.isDestroyed()) window.webContents.send(terminalWorkspaceIpcChannels.event, event)
-  }
-  const removeTerminalListener = terminal.onEvent(sendTerminalEvent)
   const removeBrowserListener = browser.onEvent((event) => {
     if (!window.isDestroyed()) window.webContents.send(browserWorkspaceIpcChannels.event, event)
   })
@@ -295,12 +384,9 @@ function createWindowServices(
     roots,
     rootWatchers,
     files,
-    terminal,
     browser,
     dispose() {
-      removeTerminalListener()
       removeBrowserListener()
-      terminal.dispose()
       browser.dispose()
       void files.dispose()
       for (const watcher of rootWatchers.values()) watcher.close()
@@ -361,93 +447,6 @@ function toWorkspaceRelativePath(filename: string | Buffer | null): string | und
   return fileWorkspaceRelativePathSchema.safeParse(value).success ? value : undefined
 }
 
-function terminalStartOptions(cwd: string): {
-  shell: string
-  args: string[]
-  cwd: string
-  env: Record<string, string>
-} {
-  const shell =
-    process.platform === 'win32'
-      ? (process.env.ComSpec ?? 'cmd.exe')
-      : (process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'))
-  const env = pickTerminalEnvironment(process.env)
-  return {
-    shell,
-    args: process.platform === 'win32' ? [] : ['-l'],
-    cwd,
-    env: { ...env, TERM: 'xterm-256color' }
-  }
-}
-
-function pickTerminalEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
-  const allowed = [
-    'HOME',
-    'LANG',
-    'LC_ALL',
-    'LOGNAME',
-    'PATH',
-    'SHELL',
-    'TERM_PROGRAM',
-    'TMPDIR',
-    'USER'
-  ]
-  return Object.fromEntries(
-    allowed.flatMap((key) => (environment[key] ? [[key, environment[key]!]] : []))
-  )
-}
-
-function spawnNodePty(input: {
-  shell?: string
-  args: string[]
-  cwd?: string
-  env?: Record<string, string>
-  cols: number
-  rows: number
-}): TerminalProcessAdapter {
-  let pty: {
-    spawn(
-      file: string,
-      args: string[],
-      options: {
-        cwd?: string
-        env?: Record<string, string>
-        cols: number
-        rows: number
-        name: string
-      }
-    ): {
-      write(data: string): void
-      resize(cols: number, rows: number): void
-      kill(): void
-      onData(listener: (data: string) => void): void
-      onExit(listener: (event: { exitCode: number; signal?: number }) => void): void
-    }
-  }
-  try {
-    // node-pty is intentionally loaded in the main process only. Electron-builder packages this native module.
-    pty = requireNodeModule('node-pty') as typeof pty
-  } catch (error) {
-    throw new Error(
-      `Terminal support is unavailable because node-pty could not be loaded: ${error instanceof Error ? error.message : String(error)}`
-    )
-  }
-  const process = pty.spawn(input.shell ?? '/bin/sh', input.args, {
-    cwd: input.cwd,
-    env: input.env,
-    cols: input.cols,
-    rows: input.rows,
-    name: 'xterm-256color'
-  })
-  return {
-    write: (data) => process.write(data),
-    resize: (cols, rows) => process.resize(cols, rows),
-    kill: () => process.kill(),
-    onData: (listener) => process.onData(listener),
-    onExit: (listener) =>
-      process.onExit((event) => listener(event.exitCode, event.signal?.toString() ?? null))
-  }
-}
 
 function createBrowserHost(window: BrowserWindow): BrowserWorkspaceHostAdapter {
   const nativeViews = new WeakMap<BrowserWorkspaceViewAdapter, WebContentsView>()

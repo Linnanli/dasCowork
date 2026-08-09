@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   TERMINAL_WORKSPACE_API_VERSION,
+  terminalWorkspaceAttachRequestSchema,
   terminalWorkspaceCreateRequestSchema,
   terminalWorkspaceEventSchema,
   terminalWorkspaceResizeRequestSchema,
+  terminalWorkspaceRestartRequestSchema,
   terminalWorkspaceWriteRequestSchema
 } from './terminalWorkspaceApi'
 
@@ -13,9 +15,22 @@ describe('terminal workspace API schemas', () => {
     expect(
       terminalWorkspaceCreateRequestSchema.safeParse({
         version: TERMINAL_WORKSPACE_API_VERSION,
+        sessionId: 'terminal-1',
         workspaceId: 'workspace-1',
+        target: { conversationId: 'conversation-1' },
         cols: 120,
         rows: 40
+      }).success
+    ).toBe(true)
+
+    expect(
+      terminalWorkspaceAttachRequestSchema.safeParse({
+        version: TERMINAL_WORKSPACE_API_VERSION,
+        sessionId: 'terminal-1',
+        workspaceId: 'workspace-1',
+        target: { conversationId: 'conversation-1' },
+        viewId: 'view-1',
+        forceCwdSync: true
       }).success
     ).toBe(true)
 
@@ -35,13 +50,24 @@ describe('terminal workspace API schemas', () => {
         rows: 30
       }).success
     ).toBe(true)
+
+    expect(
+      terminalWorkspaceRestartRequestSchema.safeParse({
+        version: TERMINAL_WORKSPACE_API_VERSION,
+        sessionId: 'terminal-1',
+        target: { conversationId: 'conversation-1' },
+        reason: 'retry'
+      }).success
+    ).toBe(true)
   })
 
   it('rejects renderer supplied process-control extras', () => {
     expect(
       terminalWorkspaceCreateRequestSchema.safeParse({
         version: TERMINAL_WORKSPACE_API_VERSION,
+        sessionId: 'terminal-1',
         workspaceId: 'workspace-1',
+        target: { conversationId: 'conversation-1' },
         cwd: '/repo',
         shell: '/bin/zsh',
         args: ['-lc', 'rm -rf .'],
@@ -66,6 +92,7 @@ describe('terminal workspace API schemas', () => {
         type: 'data',
         sessionId: 'terminal-1',
         data: 'hello',
+        sequence: 0,
         rawBuffer: Buffer.from('secret')
       }).success
     ).toBe(false)

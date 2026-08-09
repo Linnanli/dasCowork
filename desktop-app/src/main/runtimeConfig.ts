@@ -3,6 +3,7 @@ export type DesktopRuntimeConfig = {
   adminBackendModelUserId?: string
   adminBackendModelCacheTtlMs?: number
   remoteCodexCommand?: string
+  terminalCommand?: string
 }
 
 export function loadDesktopRuntimeConfig(env: NodeJS.ProcessEnv): DesktopRuntimeConfig {
@@ -10,16 +11,21 @@ export function loadDesktopRuntimeConfig(env: NodeJS.ProcessEnv): DesktopRuntime
   const adminBackendModelUserId = env['ADMIN_BACKEND_MODEL_USER_ID']?.trim()
   const adminBackendModelCacheTtlMs = parsePositiveInteger(env['ADMIN_BACKEND_MODEL_CACHE_TTL_MS'])
   const remoteCodexCommand = parseRemoteCodexCommand(env['DASCOWORK_REMOTE_CODEX_COMMAND'])
+  const terminalCommand = parseTerminalCommand(env['DASCOWORK_TERMINAL_COMMAND'])
 
   if (!adminBackendUrl) {
-    return remoteCodexCommand ? { remoteCodexCommand } : {}
+    return {
+      ...(remoteCodexCommand ? { remoteCodexCommand } : {}),
+      ...(terminalCommand ? { terminalCommand } : {})
+    }
   }
 
   return {
     adminBackendUrl,
     ...(adminBackendModelUserId ? { adminBackendModelUserId } : {}),
     ...(adminBackendModelCacheTtlMs ? { adminBackendModelCacheTtlMs } : {}),
-    ...(remoteCodexCommand ? { remoteCodexCommand } : {})
+    ...(remoteCodexCommand ? { remoteCodexCommand } : {}),
+    ...(terminalCommand ? { terminalCommand } : {})
   }
 }
 
@@ -32,6 +38,14 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
 }
 
 function parseRemoteCodexCommand(value: string | undefined): string | undefined {
+  return parseExecutableCommand(value, 'DASCOWORK_REMOTE_CODEX_COMMAND')
+}
+
+function parseTerminalCommand(value: string | undefined): string | undefined {
+  return parseExecutableCommand(value, 'DASCOWORK_TERMINAL_COMMAND')
+}
+
+function parseExecutableCommand(value: string | undefined, variable: string): string | undefined {
   const trimmed = value?.trim()
   if (!trimmed) return undefined
   if (
@@ -40,7 +54,7 @@ function parseRemoteCodexCommand(value: string | undefined): string | undefined 
     (!trimmed.startsWith('/') && !/^[A-Za-z0-9._+-]+$/u.test(trimmed))
   ) {
     throw new Error(
-      'DASCOWORK_REMOTE_CODEX_COMMAND must be an executable name or absolute POSIX path'
+      `${variable} must be an executable name or absolute POSIX path`
     )
   }
   return trimmed

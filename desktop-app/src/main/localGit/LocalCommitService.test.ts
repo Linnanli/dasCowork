@@ -25,12 +25,13 @@ describe('LocalCommitService', () => {
   })
 
   it('reports a generation failure when no commit message generator is available', async () => {
-    const { repo, projectService } = await createGitFixture()
-    await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
-    const localGit = new LocalGitService({ projectService })
+    const target = gitTarget('/repo')
+    const localGit = {
+      resolveTrustedRepository: vi.fn(async () => ({ target, repository: {} }))
+    } as unknown as LocalGitService
     await expect(
       new LocalCommitService(localGit).commit({
-        target: gitTarget(repo),
+        target,
         message: '',
         includeUnstaged: true
       })
@@ -63,19 +64,24 @@ describe('LocalCommitService', () => {
     const { repo, projectService } = await createGitFixture()
     const localGit = new LocalGitService({ projectService })
     let resolveMessage!: (message: string) => void
-    const generateMessage = vi.fn(
-      () =>
-        new Promise<string>((resolve) => {
-          resolveMessage = resolve
-        })
-    )
+    let notifyGeneratorStarted!: () => void
+    const generatorStarted = new Promise<void>((resolve) => {
+      notifyGeneratorStarted = resolve
+    })
+    const generateMessage = vi.fn(() => {
+      notifyGeneratorStarted()
+      return new Promise<string>((resolve) => {
+        resolveMessage = resolve
+      })
+    })
 
     const committing = new LocalCommitService(localGit, generateMessage).commit({
       target: gitTarget(repo),
       message: '',
       includeUnstaged: true
     })
-    await vi.waitFor(() => expect(generateMessage).toHaveBeenCalledOnce())
+    await generatorStarted
+    expect(generateMessage).toHaveBeenCalledOnce()
 
     await writeFile(join(repo, 'tracked.txt'), 'latest tracked bytes\n')
     await writeFile(join(repo, 'added-during-generation.txt'), 'latest untracked bytes\n')
@@ -109,19 +115,24 @@ describe('LocalCommitService', () => {
     const { repo, projectService } = await createGitFixture()
     const localGit = new LocalGitService({ projectService })
     let resolveMessage!: (message: string) => void
-    const generateMessage = vi.fn(
-      () =>
-        new Promise<string>((resolve) => {
-          resolveMessage = resolve
-        })
-    )
+    let notifyGeneratorStarted!: () => void
+    const generatorStarted = new Promise<void>((resolve) => {
+      notifyGeneratorStarted = resolve
+    })
+    const generateMessage = vi.fn(() => {
+      notifyGeneratorStarted()
+      return new Promise<string>((resolve) => {
+        resolveMessage = resolve
+      })
+    })
 
     const committing = new LocalCommitService(localGit, generateMessage).commit({
       target: gitTarget(repo),
       message: '',
       includeUnstaged: false
     })
-    await vi.waitFor(() => expect(generateMessage).toHaveBeenCalledOnce())
+    await generatorStarted
+    expect(generateMessage).toHaveBeenCalledOnce()
     await writeFile(join(repo, 'tracked.txt'), 'staged during generation\n')
     git(repo, ['add', 'tracked.txt'])
     resolveMessage('Commit current index')

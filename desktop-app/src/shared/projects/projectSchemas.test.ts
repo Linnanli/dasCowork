@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { projectCreateBlankPayloadSchema, projectSelectionSchema } from './projectSchemas'
+import {
+  projectCreateBlankPayloadSchema,
+  projectCreateRemotePayloadSchema,
+  projectSelectionSchema
+} from './projectSchemas'
 
 describe('project selection schema', () => {
   it('accepts local, remote, path, and projectless selections', () => {
@@ -89,6 +93,27 @@ describe('blank project payload schema', () => {
       projectCreateBlankPayloadSchema.safeParse({
         operationId: 'not-a-uuid',
         name: 'New App'
+      }).success
+    ).toBe(false)
+  })
+})
+
+describe('remote terminal command schema', () => {
+  it('accepts a main-validated host terminal command and rejects command lines', () => {
+    expect(
+      projectCreateRemotePayloadSchema.parse({
+        hostId: 'build-host',
+        label: 'Build host',
+        remotePath: '/srv/app',
+        terminalCommand: '/bin/zsh'
+      }).terminalCommand
+    ).toBe('/bin/zsh')
+    expect(
+      projectCreateRemotePayloadSchema.safeParse({
+        hostId: 'build-host',
+        label: 'Build host',
+        remotePath: '/srv/app',
+        terminalCommand: 'zsh -l'
       }).success
     ).toBe(false)
   })

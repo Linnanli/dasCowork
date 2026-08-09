@@ -154,6 +154,7 @@ export class ProjectApiService {
     hostId: string
     label: string
     remotePath: string
+    terminalCommand?: string
   }): Promise<RemoteProject> {
     const remotePath = normalizeRemoteProjectPath(input.remotePath)
     await this.dependencies.validateRemoteRoot?.(input.hostId, remotePath)
@@ -165,6 +166,7 @@ export class ProjectApiService {
       hostId: input.hostId,
       label: input.label.trim(),
       remotePath,
+      ...(input.terminalCommand ? { terminalCommand: input.terminalCommand.trim() } : {}),
       createdAt: now,
       updatedAt: now
     }

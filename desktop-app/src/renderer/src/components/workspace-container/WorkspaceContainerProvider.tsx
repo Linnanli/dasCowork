@@ -28,13 +28,15 @@ const WorkspaceContainerContext = createContext<WorkspaceContainerContextValue |
 
 export function WorkspaceContainerProvider({
   children,
+  fallbackProjectScopes = [],
   projectScope
 }: {
   children: ReactNode
+  fallbackProjectScopes?: readonly string[]
   projectScope: string
 }): React.JSX.Element {
   const [state, dispatch] = useReducer(workspaceContainerReducer, projectScope, (scope) =>
-    loadWorkspaceContainerState(browserStorage(), scope)
+    loadWorkspaceContainerState(browserStorage(), scope, fallbackProjectScopes)
   )
 
   useEffect(() => {

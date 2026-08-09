@@ -29,7 +29,7 @@ type RightWorkspaceContextValue = {
   reorderTabs(tabIds: string[]): void
   setTabRuntime(
     tabId: string,
-    runtime: { terminalSessionId?: string; browserViewId?: string; title?: string }
+    runtime: { browserViewId?: string; title?: string }
   ): void
   activeTab?: RightWorkspaceTab
 }
@@ -38,13 +38,18 @@ const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(n
 
 export function RightWorkspaceProvider({
   children,
+  fallbackProjectScopes,
   projectScope
 }: {
   children: ReactNode
+  fallbackProjectScopes?: readonly string[]
   projectScope: string
 }): React.JSX.Element {
   return (
-    <WorkspaceContainerProvider projectScope={projectScope}>
+    <WorkspaceContainerProvider
+      projectScope={projectScope}
+      fallbackProjectScopes={fallbackProjectScopes}
+    >
       <RightWorkspaceBridge>{children}</RightWorkspaceBridge>
     </WorkspaceContainerProvider>
   )
@@ -152,9 +157,7 @@ function toRightWorkspaceTab(
       return {
         id: tab.id,
         type: 'terminal',
-        title: tab.title,
-        terminalSessionId:
-          typeof runtime?.terminalSessionId === 'string' ? runtime.terminalSessionId : undefined
+        title: tab.title
       }
     case 'browser':
       return {

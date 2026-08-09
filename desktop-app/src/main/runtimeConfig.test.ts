@@ -42,6 +42,12 @@ describe('loadDesktopRuntimeConfig', () => {
     ).toEqual({ remoteCodexCommand: '/opt/codex/bin/codex' })
   })
 
+  it('loads a main-owned integrated terminal command', () => {
+    expect(loadDesktopRuntimeConfig({ DASCOWORK_TERMINAL_COMMAND: ' /bin/fish ' })).toEqual({
+      terminalCommand: '/bin/fish'
+    })
+  })
+
   it('rejects multiline remote Codex commands', () => {
     expect(() =>
       loadDesktopRuntimeConfig({
@@ -56,5 +62,11 @@ describe('loadDesktopRuntimeConfig', () => {
         DASCOWORK_REMOTE_CODEX_COMMAND: './bin/codex'
       })
     ).toThrow('must be an executable name or absolute POSIX path')
+  })
+
+  it('rejects multiline terminal commands', () => {
+    expect(() => loadDesktopRuntimeConfig({ DASCOWORK_TERMINAL_COMMAND: 'zsh\necho unsafe' })).toThrow(
+      'DASCOWORK_TERMINAL_COMMAND must be an executable name or absolute POSIX path'
+    )
   })
 })

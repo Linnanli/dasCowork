@@ -7,6 +7,10 @@ import { repositionBrowserWorkspaceView } from '../right-workspace/browser/brows
 import { FileWorkspace } from '../right-workspace/files/FileWorkspace'
 import { ReviewWorkspace } from '../right-workspace/review/ReviewWorkspace'
 import { TerminalWorkspace } from '../right-workspace/terminal/TerminalWorkspace'
+import {
+  closeTerminalSession,
+  terminalSessionIdFromTabId
+} from '../right-workspace/terminal/terminalSessionStore'
 import { refitTerminalWorkspace } from '../right-workspace/terminal/terminalWorkspaceMove'
 import type { RightWorkspaceTab } from '../right-workspace/workspaceState'
 import type { WorkspaceOpenOptions, WorkspaceOpenTarget } from './workspaceOpenTargets'
@@ -24,6 +28,7 @@ export type WorkspaceContentRenderContext = {
   target?: GitConversationTarget
   runtime: WorkspaceTabRuntime | undefined
   openTarget(target: WorkspaceOpenTarget, options?: WorkspaceOpenOptions): void
+  setTabTitle(tabId: string, title: string): void
   setRuntime(tabId: string, runtime: WorkspaceTabRuntime): void
 }
 
@@ -128,18 +133,19 @@ export function createWorkspaceContentRegistry(): WorkspaceContentRegistry {
       kind: 'terminal',
       render: (tab, context) => (
         <TerminalWorkspace
-          tab={asTerminalTab(tab, context.runtime)}
+          tab={asTerminalTab(tab)}
           workspaceId={context.workspaceId}
           target={context.target}
-          onRuntimeChange={(runtime) => context.setRuntime(tab.id, runtime)}
+          onTitleChange={(title) => context.setTabTitle(tab.id, title)}
+          onOpenTerminal={() =>
+            context.openTarget({ type: 'terminal' }, { panelId: context.panelId })
+          }
         />
       ),
-      onClose: (_tab, context) => {
-        const sessionId = context.runtime?.terminalSessionId
-        if (typeof sessionId !== 'string') return
-        return window.desktopApp.workspace.terminal
-          .kill({ version: 1, sessionId })
-          .then(() => undefined)
+      onClose: (tab) => {
+        const sessionId = terminalSessionIdFromTabId(tab.id)
+        if (!sessionId) return
+        return closeTerminalSession(sessionId)
       },
       onMove: (tab) => refitTerminalWorkspace(tab.id)
     })
@@ -188,16 +194,11 @@ function asFileTab(tab: WorkspaceTabRecord): Extract<RightWorkspaceTab, { type: 
   }
 }
 
-function asTerminalTab(
-  tab: WorkspaceTabRecord,
-  runtime: WorkspaceTabRuntime | undefined
-): Extract<RightWorkspaceTab, { type: 'terminal' }> {
+function asTerminalTab(tab: WorkspaceTabRecord): Extract<RightWorkspaceTab, { type: 'terminal' }> {
   return {
     id: tab.id,
     type: 'terminal',
-    title: tab.title,
-    terminalSessionId:
-      typeof runtime?.terminalSessionId === 'string' ? runtime.terminalSessionId : undefined
+    title: tab.title
   }
 }
 

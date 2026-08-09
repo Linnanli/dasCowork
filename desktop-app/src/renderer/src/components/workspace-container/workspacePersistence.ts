@@ -21,11 +21,16 @@ export function legacyRightWorkspaceStorageKey(scope: string): string {
 
 export function loadWorkspaceContainerState(
   storage: WorkspaceStorage | undefined,
-  scope: string
+  scope: string,
+  fallbackScopes: readonly string[] = []
 ): WorkspaceContainerState {
   if (!storage) return createWorkspaceContainerState()
-  const current = safelyParse(storage.getItem(workspaceContainerStorageKey(scope)))
-  if (current) return restoreV2(current)
+  const current = loadCurrentStorageState(storage, scope)
+  if (current) return current
+  for (const fallbackScope of uniqueScopes(fallbackScopes, scope)) {
+    const fallback = loadFallbackStorageState(storage, fallbackScope)
+    if (fallback) return fallback
+  }
   return migrateLegacyRightWorkspace(
     safelyParse(storage.getItem(legacyRightWorkspaceStorageKey(scope)))
   )
@@ -69,6 +74,32 @@ function restoreV2(value: unknown): WorkspaceContainerState {
     tabs,
     lastFocusedPanelId: value.lastFocusedPanelId === 'bottom' ? 'bottom' : 'right'
   })
+}
+
+function loadCurrentStorageState(
+  storage: WorkspaceStorage,
+  scope: string
+): WorkspaceContainerState | undefined {
+  const raw = storage.getItem(workspaceContainerStorageKey(scope))
+  return raw ? restoreV2(safelyParse(raw)) : undefined
+}
+
+function loadFallbackStorageState(
+  storage: WorkspaceStorage,
+  scope: string
+): WorkspaceContainerState | undefined {
+  const current = loadCurrentStorageState(storage, scope)
+  if (current && hasWorkspaceStateToRestore(current)) return current
+  const legacy = migrateLegacyRightWorkspace(
+    safelyParse(storage.getItem(legacyRightWorkspaceStorageKey(scope)))
+  )
+  return hasWorkspaceStateToRestore(legacy) ? legacy : undefined
+}
+
+function hasWorkspaceStateToRestore(state: WorkspaceContainerState): boolean {
+  return (
+    Object.keys(state.tabs).length > 0 || state.panels.right.isOpen || state.panels.bottom.isOpen
+  )
 }
 
 function migrateLegacyRightWorkspace(value: unknown): WorkspaceContainerState {
@@ -202,6 +233,17 @@ function uniqueStrings(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((candidate): candidate is string => typeof candidate === 'string'))]
     : []
+}
+
+function uniqueScopes(scopes: readonly string[], currentScope: string): string[] {
+  const current = normalizedScope(currentScope)
+  return [
+    ...new Set(
+      scopes
+        .map((scope) => normalizedScope(scope))
+        .filter((scope) => scope.length > 0 && scope !== current)
+    )
+  ]
 }
 
 function finiteNumber(value: unknown, fallback: number): number {

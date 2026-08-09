@@ -65,13 +65,12 @@ test('RW-E2E-01 opens the four workspace surfaces from a real local conversation
     await captureWorkspaceScreenshot(page, testInfo, 'RW-04-browser-empty')
 
     await openWorkspaceMenuItem(page, 'Terminal')
-    await expect(page.getByRole('button', { name: '启动终端', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '启动终端', exact: true }).click()
     await expect(page.locator('.xterm')).toBeVisible()
     const terminalInput = page.locator('.xterm-helper-textarea')
-    await terminalInput.pressSequentially('printf terminal-ready')
-    await terminalInput.press('Enter')
-    await page.waitForTimeout(250)
+    await terminalInput.focus()
+    await page.keyboard.type('printf terminal-ready')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.xterm')).toContainText('terminal-ready')
     await expectWorkspaceLayout(page)
     await captureWorkspaceScreenshot(page, testInfo, 'RW-02-terminal')
 
@@ -119,15 +118,15 @@ test('RW-E2E-02 keeps the shared workspace toggle stable during width transition
   }
 })
 
-test('RW-E2E-03 moves a workspace tab between the right and bottom panels', async ({
+test('RW-E2E-03 keeps a terminal session alive when its tab moves between panels', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
-  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-workspace-panels-'))
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-terminal-panels-'))
   const backend = await startMockBackend({
     responses: [
-      assistantMessageResponse('workspace-panels-thread', 'workspace-panels-message', 'Ready')
+      assistantMessageResponse('terminal-panels-thread', 'terminal-panels-message', 'Ready')
     ]
   })
   const logs: string[] = []
@@ -139,44 +138,221 @@ test('RW-E2E-03 moves a workspace tab between the right and bottom panels', asyn
     const page = await app.firstWindow()
     await page.evaluate(() => window.localStorage.clear())
     collectRendererLogs(page, logs)
-    await createLocalProject(page, `Workspace panels ${Date.now().toString(36)}`, projectRoot)
-    await sendComposerMessage(page, 'Open files before moving the tab.')
+    await createLocalProject(page, `Terminal panels ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open terminal before moving the tab.')
     await openRightWorkspace(page)
-    await page.getByRole('button', { name: 'Open Files', exact: true }).click()
-    await expect(page.getByRole('tab', { name: 'Files', exact: true })).toBeVisible()
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const firstStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const terminalSessionId = await activeTerminalSessionId(rightPanel)
+
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_03_BEFORE_MOVE')
+    await expectTerminalSnapshot(page, terminalSessionId, ['RW_E2E_03_BEFORE_MOVE'])
 
     await page.getByRole('button', { name: '打开底部工作区', exact: true }).click()
     const bottomPanel = page.locator('[data-slot="bottom-workspace-shell"]')
     await expect(bottomPanel).toBeVisible()
     await page.waitForTimeout(250)
 
-    const sourceTab = page.getByRole('tab', { name: 'Files', exact: true })
-    const sourceBox = await sourceTab.boundingBox()
-    const destinationBox = await bottomPanel.boundingBox()
-    if (!sourceBox || !destinationBox) throw new Error('Missing workspace drag targets')
-    await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(
-      destinationBox.x + destinationBox.width / 2,
-      destinationBox.y + destinationBox.height / 2,
-      { steps: 4 }
+    await dragActiveTabToPanel(page, rightPanel, bottomPanel)
+    await expect(
+      bottomPanel.locator(`[role="tab"][data-workspace-tab-id="terminal:${terminalSessionId}"]`)
+    ).toBeVisible()
+    await expect(rightPanel.getByRole('tab')).toHaveCount(0)
+    expect(await activeTerminalSessionId(bottomPanel)).toBe(terminalSessionId)
+    await expectTerminalSnapshot(page, terminalSessionId, ['RW_E2E_03_BEFORE_MOVE'])
+
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_03_AFTER_BOTTOM_MOVE')
+    await expectTerminalSnapshot(page, terminalSessionId, [
+      'RW_E2E_03_BEFORE_MOVE',
+      'RW_E2E_03_AFTER_BOTTOM_MOVE'
+    ])
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-07-terminal-panel-move')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+test('RW-E2E-06 restores the same terminal session and tail after renderer reload', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-terminal-reload-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('terminal-reload-thread', 'terminal-reload-message', 'Ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    let page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Terminal reload ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open terminal before reloading the renderer.')
+    await openRightWorkspace(page)
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const firstStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const terminalSessionId = await activeTerminalSessionId(rightPanel)
+
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_06_BEFORE_RELOAD')
+    await expectTerminalSnapshot(page, terminalSessionId, ['RW_E2E_06_BEFORE_RELOAD'])
+
+    await page.reload()
+    page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await expect(page.locator('[data-slot="right-workspace-shell"]')).toBeVisible()
+    await expect(
+      page.locator(`[role="tab"][data-workspace-tab-id="terminal:${terminalSessionId}"]`)
+    ).toBeVisible()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await expectTerminalSnapshot(page, terminalSessionId, ['RW_E2E_06_BEFORE_RELOAD'])
+
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_06_AFTER_RELOAD')
+    await expectTerminalSnapshot(page, terminalSessionId, [
+      'RW_E2E_06_BEFORE_RELOAD',
+      'RW_E2E_06_AFTER_RELOAD'
+    ])
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-09-terminal-reload')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
+test('RW-E2E-07 keeps task A terminal output continuous after switching A to B and back', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-terminal-task-switch-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('terminal-task-a-thread', 'terminal-task-a-message', 'Task A ready'),
+      assistantMessageResponse('terminal-task-b-thread', 'terminal-task-b-message', 'Task B ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Terminal task switch ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Task A terminal continuity.')
+    await expect(page.getByRole('button', { name: /Task A terminal continuity/u })).toBeVisible()
+    await openRightWorkspace(page)
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const firstStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const taskASessionId = await activeTerminalSessionId(rightPanel)
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_07_TASK_A_FIRST')
+    await expectTerminalSnapshot(page, taskASessionId, ['RW_E2E_07_TASK_A_FIRST'])
+
+    await page.getByRole('button', { name: '新对话', exact: true }).click()
+    await expect(page.getByRole('button', { name: /Task A terminal continuity/u })).toBeVisible()
+    await sendComposerMessage(page, 'Task B terminal continuity.')
+    await expect(page.getByRole('button', { name: /Task B terminal continuity/u })).toBeVisible()
+    await openRightWorkspace(page)
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const secondStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!secondStarted, 'Terminal native module is unavailable in this E2E environment')
+    const taskBSessionId = await activeTerminalSessionId(rightPanel)
+    expect(taskBSessionId).not.toBe(taskASessionId)
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_07_TASK_B_ONLY')
+    await expectTerminalSnapshot(page, taskBSessionId, ['RW_E2E_07_TASK_B_ONLY'])
+
+    await page.getByRole('button', { name: /Task A terminal continuity/u }).click()
+    await expect(
+      page.locator(`[role="tab"][data-workspace-tab-id="terminal:${taskASessionId}"]`)
+    ).toBeVisible()
+    await expectTerminalSnapshot(
+      page,
+      taskASessionId,
+      ['RW_E2E_07_TASK_A_FIRST'],
+      ['RW_E2E_07_TASK_B_ONLY']
     )
-    await page.mouse.up()
-
-    await expect(bottomPanel.getByRole('tab', { name: 'Files', exact: true })).toBeVisible()
-    await expect(page.locator('[data-slot="right-workspace-shell"]').getByRole('tab')).toHaveCount(
-      0
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_07_TASK_A_SECOND')
+    await expectTerminalSnapshot(
+      page,
+      taskASessionId,
+      ['RW_E2E_07_TASK_A_FIRST', 'RW_E2E_07_TASK_A_SECOND'],
+      ['RW_E2E_07_TASK_B_ONLY']
     )
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-10-terminal-task-switch')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
 
-    await bottomPanel.getByRole('button', { name: 'Open workspace tab', exact: true }).click()
-    await page.getByRole('menuitem', { name: /^Browser/ }).click()
-    await expect(bottomPanel.getByRole('tab', { name: 'New tab', exact: true })).toBeVisible()
-    await expect(bottomPanel.getByRole('tab')).toHaveCount(2)
+test('RW-E2E-08 isolates output between multiple terminal sessions', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
-    await bottomPanel.getByRole('button', { name: 'Close Files', exact: true }).click()
-    await expect(bottomPanel.getByRole('tab', { name: 'New tab', exact: true })).toBeVisible()
-    await expect(bottomPanel.getByRole('tab')).toHaveCount(1)
-    await captureWorkspaceScreenshot(page, testInfo, 'RW-07-bottom-panel')
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-terminal-isolation-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('terminal-isolation-thread', 'terminal-isolation-message', 'Ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeProject(projectRoot)
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    await page.evaluate(() => window.localStorage.clear())
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `Terminal isolation ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open isolated terminals.')
+    await openRightWorkspace(page)
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const firstStarted = await startVisibleTerminalIfAvailable(page)
+    test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+    const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
+    const firstSessionId = await activeTerminalSessionId(rightPanel)
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_08_FIRST_ONLY')
+    await expectTerminalSnapshot(page, firstSessionId, ['RW_E2E_08_FIRST_ONLY'])
+
+    await openWorkspaceMenuItem(page, 'Terminal')
+    const secondSessionId = await waitForActiveTerminalSessionChange(rightPanel, firstSessionId)
+    expect(secondSessionId).not.toBe(firstSessionId)
+    await typeVisibleTerminalCommand(page, 'echo RW_E2E_08_SECOND_ONLY')
+    await expectTerminalSnapshot(
+      page,
+      secondSessionId,
+      ['RW_E2E_08_SECOND_ONLY'],
+      ['RW_E2E_08_FIRST_ONLY']
+    )
+    await expectTerminalSnapshot(
+      page,
+      firstSessionId,
+      ['RW_E2E_08_FIRST_ONLY'],
+      ['RW_E2E_08_SECOND_ONLY']
+    )
+    await captureWorkspaceScreenshot(page, testInfo, 'RW-11-terminal-isolation')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -286,13 +462,24 @@ test('RW-E2E-05 asks before closing a running terminal from its tab close contro
     await openWorkspaceMenuItem(page, 'Terminal')
     const firstStarted = await startVisibleTerminalIfAvailable(page)
     test.skip(!firstStarted, 'Terminal native module is unavailable in this E2E environment')
+    const terminalTabId = await page
+      .locator('[data-slot="right-workspace-shell"] [role="tab"][aria-selected="true"]')
+      .getAttribute('data-workspace-tab-id')
+    if (!terminalTabId) throw new Error('Missing terminal tab id')
 
     await openWorkspaceMenuItem(page, 'Browser')
     const rightPanel = page.locator('[data-slot="right-workspace-shell"]')
-    const closeTerminal = rightPanel.getByRole('button', {
-      name: '关闭Terminal标签页',
-      exact: true
-    })
+    const terminalCloseLabel = await rightPanel
+      .locator(`[data-workspace-tab-id="${terminalTabId}"]`)
+      .first()
+      .evaluate((tab) => {
+        const label = tab.parentElement
+          ?.querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')
+          ?.getAttribute('aria-label')
+        if (!label) throw new Error('Missing terminal tab close control')
+        return label
+      })
+    const closeTerminal = rightPanel.getByRole('button', { name: terminalCloseLabel, exact: true })
     await expect(rightPanel.getByRole('tab')).toHaveCount(2)
 
     await closeTerminal.click()
@@ -413,10 +600,11 @@ async function initializeProject(projectRoot: string): Promise<void> {
 }
 
 async function openRightWorkspace(page: Page): Promise<void> {
-  const toggle = page.getByRole('button', { name: '打开工作区', exact: true })
-  await expect(toggle).toBeVisible()
-  await toggle.click()
-  await expect(page.getByRole('button', { name: '关闭工作区', exact: true })).toBeVisible()
+  const closeToggle = page.getByRole('button', { name: '关闭工作区', exact: true })
+  const openToggle = page.getByRole('button', { name: '打开工作区', exact: true })
+  await expect(openToggle).toBeVisible()
+  await openToggle.click()
+  await expect(closeToggle).toBeVisible()
 }
 
 async function openWorkspaceMenuItem(page: Page, label: string): Promise<void> {
@@ -453,13 +641,87 @@ async function expectWorkspaceTab(
 }
 
 async function startVisibleTerminalIfAvailable(page: Page): Promise<boolean> {
-  await page.getByRole('button', { name: '启动终端', exact: true }).click()
   const xterm = page.locator('.xterm')
-  const unavailable = page.getByText(/终端原生模块不可用|无法启动终端/u)
+  const unavailable = page.getByText(/终端原生模块不可用|无法启动终端|node-pty/u)
   return Promise.race([
     xterm.waitFor({ state: 'visible', timeout: 7_500 }).then(() => true),
     unavailable.waitFor({ state: 'visible', timeout: 7_500 }).then(() => false)
   ])
+}
+
+async function activeTerminalSessionId(panel: Locator): Promise<string> {
+  const tabId = await panel
+    .locator('[role="tab"][aria-selected="true"][data-workspace-tab-id^="terminal:"]')
+    .getAttribute('data-workspace-tab-id')
+  if (!tabId?.startsWith('terminal:')) throw new Error('Missing active terminal tab id')
+  return tabId.slice('terminal:'.length)
+}
+
+async function waitForActiveTerminalSessionChange(
+  panel: Locator,
+  previousSessionId: string
+): Promise<string> {
+  await expect
+    .poll(async () => activeTerminalSessionId(panel), { timeout: 10_000 })
+    .not.toBe(previousSessionId)
+  return activeTerminalSessionId(panel)
+}
+
+async function typeVisibleTerminalCommand(page: Page, command: string): Promise<void> {
+  const terminalInput = page.locator('.xterm-helper-textarea').last()
+  await terminalInput.focus()
+  await page.keyboard.type(command)
+  await page.keyboard.press('Enter')
+}
+
+async function expectTerminalSnapshot(
+  page: Page,
+  sessionId: string,
+  expectedFragments: string[],
+  forbiddenFragments: string[] = []
+): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async (id) => {
+          const snapshot = await window.desktopApp.workspace.terminal.snapshot({
+            version: 2,
+            sessionId: id
+          })
+          return snapshot.output
+        }, sessionId),
+      { timeout: 10_000 }
+    )
+    .toEqual(expect.stringContaining(expectedFragments.at(-1) ?? ''))
+
+  const output = await page.evaluate(async (id) => {
+    const snapshot = await window.desktopApp.workspace.terminal.snapshot({
+      version: 2,
+      sessionId: id
+    })
+    return snapshot.output
+  }, sessionId)
+  for (const fragment of expectedFragments) expect(output).toContain(fragment)
+  for (const fragment of forbiddenFragments) expect(output).not.toContain(fragment)
+}
+
+async function dragActiveTabToPanel(
+  page: Page,
+  sourcePanel: Locator,
+  destinationPanel: Locator
+): Promise<void> {
+  const sourceTab = sourcePanel.locator('[role="tab"][aria-selected="true"]').first()
+  const sourceBox = await sourceTab.boundingBox()
+  const destinationBox = await destinationPanel.boundingBox()
+  if (!sourceBox || !destinationBox) throw new Error('Missing workspace drag targets')
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(
+    destinationBox.x + destinationBox.width / 2,
+    destinationBox.y + destinationBox.height / 2,
+    { steps: 6 }
+  )
+  await page.mouse.up()
 }
 
 async function expectWorkspaceLayout(page: Page): Promise<void> {

@@ -423,12 +423,18 @@ describe('LocalGitService', () => {
   })
 
   it('rejects review writes from immutable comparison sources', async () => {
-    const { repo, projectService } = await createGitFixture()
-    const service = new LocalGitService({ projectService })
+    const target = gitTarget('/repo')
+    const service = new LocalGitService({
+      targetResolver: {
+        assertRepository: async () => {
+          throw new Error('immutable review writes must not resolve a repository')
+        }
+      } as unknown as GitRepositoryTargetResolver
+    })
 
     await expect(
       service.mutateReview({
-        target: gitTarget(repo),
+        target,
         source: { type: 'commit', commitSha: 'a'.repeat(40) },
         snapshotGeneration: 'snapshot',
         action: 'revert',

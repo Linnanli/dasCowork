@@ -47,7 +47,20 @@ export const projectCreateRemotePayloadSchema = z.object({
     .refine(
       (path) => path.startsWith('/') && !path.includes('\0') && !/[\r\n]/u.test(path),
       'Remote project path must be an absolute POSIX path'
+    ),
+  terminalCommand: z
+    .string()
+    .trim()
+    .min(1)
+    .max(1024)
+    .refine(
+      (command) =>
+        !command.includes('\0') &&
+        !/[\r\n]/u.test(command) &&
+        (command.startsWith('/') || /^[A-Za-z0-9._+-]+$/u.test(command)),
+      'Terminal command must be an executable name or absolute POSIX path'
     )
+    .optional()
 })
 
 export const projectRenamePayloadSchema = z.discriminatedUnion('projectKind', [

@@ -181,9 +181,11 @@ describe('ConversationApiService', () => {
 
   it('refreshes after archive, unarchive, and rename actions', async () => {
     const threadClient = createClient()
+    const onConversationArchived = vi.fn()
     const service = new ConversationApiService({
       threadClient,
-      projectStore: { getState: async () => baseProjectState }
+      projectStore: { getState: async () => baseProjectState },
+      onConversationArchived
     })
 
     await service.archiveConversation({ conversationId: 'thread-local' })
@@ -191,6 +193,7 @@ describe('ConversationApiService', () => {
     await service.renameConversation({ conversationId: 'thread-local', title: 'New name' })
 
     expect(threadClient.archiveThread).toHaveBeenCalledWith('thread-local')
+    expect(onConversationArchived).toHaveBeenCalledWith('thread-local')
     expect(threadClient.unarchiveThread).toHaveBeenCalledWith('thread-local')
     expect(threadClient.renameThread).toHaveBeenCalledWith('thread-local', 'New name')
     expect(threadClient.listThreads).toHaveBeenCalledTimes(3)

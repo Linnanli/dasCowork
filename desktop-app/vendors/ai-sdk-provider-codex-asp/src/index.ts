@@ -109,6 +109,13 @@ export type {
 } from "./model";
 export { CodexLanguageModel } from "./model";
 export { PACKAGE_NAME, PACKAGE_VERSION } from "./package-info";
+export type {
+    CodexProcessSession,
+    CodexProcessSessionClientSettings,
+    CodexProcessSessionExit,
+    CodexProcessSessionSpawnOptions,
+} from "./process-session-client";
+export { CodexProcessSessionClient, createCodexProcessSessionClient } from "./process-session-client";
 export type { CodexEventMapperInput, CodexEventMapperOptions } from "./protocol/event-mapper";
 export type { CodexExistingTurnRecoveryState } from "./protocol/event-mapper";
 export { CodexEventMapper } from "./protocol/event-mapper";

@@ -65,6 +65,8 @@ export type ThreadProjectAssignment =
 export type ResolvedExecutionTarget = {
   hostId: string
   cwd: string | null
+  /** Main-validated project/host shell override; never supplied by a terminal renderer request. */
+  terminalCommand?: string
   workspaceRoots: string[]
   workspaceKind: WorkspaceKind
   projectAssignment?: ThreadProjectAssignment
@@ -96,6 +98,7 @@ export type RemoteProject = {
   hostId: string
   label: string
   remotePath: string
+  terminalCommand?: string
   createdAt: string
   updatedAt: string
 }

@@ -26,7 +26,6 @@ export type RightWorkspaceTab =
       type: 'terminal'
       title: string
       label?: string
-      terminalSessionId?: string
     }
   | {
       id: string
@@ -73,7 +72,6 @@ export type RightWorkspaceAction =
   | {
       type: 'set-tab-runtime'
       tabId: string
-      terminalSessionId?: string
       browserViewId?: string
       title?: string
     }
@@ -179,7 +177,6 @@ export function rightWorkspaceReducer(
           if (tab.type === 'terminal') {
             return {
               ...tab,
-              ...(action.terminalSessionId ? { terminalSessionId: action.terminalSessionId } : {}),
               ...(action.title ? { title: action.title } : {})
             }
           }

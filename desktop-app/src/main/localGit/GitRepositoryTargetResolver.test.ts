@@ -1,28 +1,26 @@
-import { mkdir, mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import { describe, expect, it } from 'vitest'
 
 import type { ProjectService } from '../projects/ProjectService'
 import { GitHostRegistry } from './GitHostRegistry'
 import { GitManager, type GitHost, type GitRunResult } from './GitManager'
 import { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
-import { createGitFixture } from './testHelpers'
 
 describe('GitRepositoryTargetResolver', () => {
   it('uses the active project only for a pre-send conversation', async () => {
-    const { repo } = await createGitFixture()
+    const repo = '/repo'
     let receivedInput: Parameters<ProjectService['resolveExistingThreadTarget']>[0] | undefined
-    const resolver = createResolver(async (input) => {
-      receivedInput = input
-      return {
-        hostId: 'local',
-        cwd: repo,
-        workspaceRoots: [repo],
-        workspaceKind: 'project'
-      }
-    }, new GitHostRegistry())
+    const resolver = createResolver(
+      async (input) => {
+        receivedInput = input
+        return {
+          hostId: 'local',
+          cwd: repo,
+          workspaceRoots: [repo],
+          workspaceKind: 'project'
+        }
+      },
+      new TestHostRegistry(createLocalHost(repo))
+    )
 
     await resolver.resolve({ conversationId: 'new-conversation' })
     expect(receivedInput).toMatchObject({
@@ -39,9 +37,8 @@ describe('GitRepositoryTargetResolver', () => {
   })
 
   it('discovers a repository from a trusted nested historical cwd', async () => {
-    const { repo } = await createGitFixture()
-    const nested = join(repo, 'src', 'feature')
-    await mkdir(nested, { recursive: true })
+    const repo = '/repo'
+    const nested = '/repo/src/feature'
     const resolver = createResolver(
       async () => ({
         hostId: 'local',
@@ -54,7 +51,7 @@ describe('GitRepositoryTargetResolver', () => {
           cwd: nested
         }
       }),
-      new GitHostRegistry()
+      new TestHostRegistry(createLocalHost(repo))
     )
 
     await expect(
@@ -72,7 +69,7 @@ describe('GitRepositoryTargetResolver', () => {
   })
 
   it('P004-EDGE-01 returns unavailable instead of throwing for a non-repository cwd', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'dascowork-non-git-'))
+    const cwd = '/not-a-repository'
     const resolver = createResolver(
       async () => ({
         hostId: 'local',
@@ -80,7 +77,7 @@ describe('GitRepositoryTargetResolver', () => {
         workspaceRoots: [cwd],
         workspaceKind: 'project'
       }),
-      new GitHostRegistry()
+      new TestHostRegistry(createLocalHost('/repo', { notRepository: true }))
     )
 
     await expect(resolver.resolve({ conversationId: 'conversation' })).resolves.toMatchObject({
@@ -102,7 +99,7 @@ describe('GitRepositoryTargetResolver', () => {
       overrides: { gitRoot: '/tmp/forged' }
     }
   ])('rejects a renderer target whose $label was forged', async ({ overrides }) => {
-    const { repo } = await createGitFixture()
+    const repo = '/repo'
     const resolver = createResolver(
       async () => ({
         hostId: 'local',
@@ -115,7 +112,7 @@ describe('GitRepositoryTargetResolver', () => {
           cwd: repo
         }
       }),
-      new GitHostRegistry()
+      new TestHostRegistry(createLocalHost(repo))
     )
 
     await expect(
@@ -229,14 +226,41 @@ class TestHostRegistry extends GitHostRegistry {
 }
 
 function createRemoteHost(id: string, root: string): GitHost {
-  return {
+  return createHost({
     id,
+    root,
     isLocal: false,
+    expectedCwd: /\/packages\/app$/u
+  })
+}
+
+function createLocalHost(root: string, options: { notRepository?: boolean } = {}): GitHost {
+  return createHost({ id: 'local', root, isLocal: true, ...options })
+}
+
+function createHost(options: {
+  id: string
+  root: string
+  isLocal: boolean
+  expectedCwd?: RegExp
+  notRepository?: boolean
+}): GitHost {
+  return {
+    id: options.id,
+    isLocal: options.isLocal,
     platformFamily: 'posix',
     async runGit(args, cwd): Promise<GitRunResult> {
       if (args.join(' ') === 'rev-parse --show-toplevel') {
-        expect(cwd).toMatch(/\/packages\/app$/u)
-        return { success: true, code: 0, stdout: `${root}\n`, stderr: '' }
+        if (options.expectedCwd) expect(cwd).toMatch(options.expectedCwd)
+        if (options.notRepository) {
+          return {
+            success: false,
+            code: 128,
+            stdout: '',
+            stderr: 'fatal: not a git repository (or any of the parent directories): .git'
+          }
+        }
+        return { success: true, code: 0, stdout: `${options.root}\n`, stderr: '' }
       }
       return { success: false, code: 1, stdout: '', stderr: 'unexpected command' }
     }

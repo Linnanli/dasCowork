@@ -80,6 +80,7 @@ export type WorkspaceContainerAction =
   | { type: 'set-panel-open'; panelId: WorkspacePanelId; isOpen: boolean }
   | { type: 'set-panel-size'; panelId: WorkspacePanelId; size: number }
   | { type: 'toggle-panel-maximized'; panelId: WorkspacePanelId }
+  | { type: 'set-tab-title'; tabId: string; title: string }
   | { type: 'set-tab-runtime'; tabId: string; runtime: WorkspaceTabRuntime }
   | { type: 'clear-tab-runtime'; tabId: string }
   | { type: 'set-last-focused-panel'; panelId: WorkspacePanelId }

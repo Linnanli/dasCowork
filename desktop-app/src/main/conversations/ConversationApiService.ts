@@ -33,6 +33,7 @@ export type ConversationApiServiceOptions = {
   threadClient: ConversationThreadClientLike
   projectStore: ConversationProjectStoreLike
   waitForConversationSettlement?: (conversationId: string) => Promise<void>
+  onConversationArchived?: (conversationId: string) => Promise<void> | void
 }
 
 export type ObservedStartedThread = {
@@ -214,6 +215,7 @@ export class ConversationApiService {
     input: SidebarConversationActionPayload
   ): Promise<SidebarConversationListState> {
     await this.options.threadClient.archiveThread(input.conversationId)
+    await this.options.onConversationArchived?.(input.conversationId)
     this.observedStartedThreads.delete(input.conversationId)
     this.observedStartedThreadAssignments.delete(input.conversationId)
     this.observedStartedThreadOrigins.delete(input.conversationId)

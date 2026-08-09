@@ -776,6 +776,10 @@ vi.mock('@streamdown/cjk', () => ({
   cjk: { plugin: 'cjk' }
 }))
 
+vi.mock('@/components/right-workspace/terminal/TerminalWorkspace', () => ({
+  TerminalWorkspace: () => <div data-slot="terminal-workspace" />
+}))
+
 vi.mock('@/components/ui/avatar', () => ({
   Avatar: ({ children, className }: { children?: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
@@ -1979,6 +1983,25 @@ describe('App composer', () => {
 
     expect(secondaryActionSlot?.style.width).toBe('0px')
     expect(container.querySelectorAll('[data-slot="workspace-toggle"]')).toHaveLength(1)
+  })
+
+  it('opens a terminal tab when the empty bottom workspace is opened', async () => {
+    await act(async () => {
+      root.render(<App />)
+    })
+
+    const openBottomWorkspace = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开底部工作区"]'
+    )
+    await act(async () => {
+      openBottomWorkspace?.click()
+      await Promise.resolve()
+    })
+
+    const bottomWorkspace = container.querySelector('[data-slot="bottom-workspace-shell"]')
+    expect(bottomWorkspace).not.toBeNull()
+    expect(bottomWorkspace?.querySelector('[data-slot="terminal-workspace"]')).not.toBeNull()
+    expect(bottomWorkspace?.querySelector('[role="tab"]')?.textContent).toContain('Terminal')
   })
 
   it('restores each conversation\'s saved right-workspace open state when switching back', async () => {

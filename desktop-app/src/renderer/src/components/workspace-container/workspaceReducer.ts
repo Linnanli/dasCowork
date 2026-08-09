@@ -75,6 +75,8 @@ export function workspaceContainerReducer(
         : state
     case 'toggle-panel-maximized':
       return togglePanelMaximized(state, action.panelId)
+    case 'set-tab-title':
+      return setTabTitle(state, action.tabId, action.title)
     case 'set-tab-runtime':
       return state.tabs[action.tabId]
         ? {
@@ -332,6 +334,17 @@ function togglePanelMaximized(
       )
     }
   }
+}
+
+function setTabTitle(
+  state: WorkspaceContainerState,
+  tabId: string,
+  title: string
+): WorkspaceContainerState {
+  const tab = state.tabs[tabId]
+  const nextTitle = title.trim()
+  if (!tab || !nextTitle || tab.title === nextTitle) return state
+  return { ...state, tabs: { ...state.tabs, [tabId]: { ...tab, title: nextTitle } } }
 }
 
 function updatePanel(

@@ -9,6 +9,7 @@ import type {
 } from './WorkspaceContentRegistry'
 import { createWorkspaceDescriptor } from './workspaceOpenTargets'
 import { reorderTabAfter } from './workspaceDragGeometry'
+import { terminalSessionIdFromTabId } from '../right-workspace/terminal/terminalSessionStore'
 import type { WorkspaceOpenOptions, WorkspaceOpenTarget } from './workspaceOpenTargets'
 import type {
   WorkspaceContainerAction,
@@ -190,8 +191,7 @@ export class WorkspacePanelController {
 
   private async confirmClose(tabs: readonly WorkspaceTabRecord[]): Promise<boolean> {
     const terminalTabs = tabs.filter((tab) => {
-      const runtime = this.dependencies.getState().runtime[tab.id]
-      return tab.kind === 'terminal' && typeof runtime?.terminalSessionId === 'string'
+      return tab.kind === 'terminal' && Boolean(terminalSessionIdFromTabId(tab.id))
     })
     if (!terminalTabs.length) return true
     const runningTerminalTabs = await this.runningTerminalTabs(terminalTabs)
@@ -206,15 +206,15 @@ export class WorkspacePanelController {
     const terminal = window.desktopApp?.workspace?.terminal
     if (!terminal) return terminalTabs
     try {
-      const listed = await terminal.list({ version: 1, workspaceId: this.dependencies.workspaceId })
+      const listed = await terminal.list({ version: 2, workspaceId: this.dependencies.workspaceId })
       const runningSessionIds = new Set(
         listed.sessions
           .filter((session) => session.status !== 'exited')
           .map((session) => session.sessionId)
       )
       return terminalTabs.filter((tab) => {
-        const sessionId = this.dependencies.getState().runtime[tab.id]?.terminalSessionId
-        return typeof sessionId === 'string' && runningSessionIds.has(sessionId)
+        const sessionId = terminalSessionIdFromTabId(tab.id)
+        return Boolean(sessionId && runningSessionIds.has(sessionId))
       })
     } catch {
       // The close guard remains conservative when the session query cannot complete.

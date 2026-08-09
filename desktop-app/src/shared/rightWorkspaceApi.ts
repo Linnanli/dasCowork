@@ -28,13 +28,21 @@ import type {
 } from './fileWorkspaceApi'
 import { gitConversationTargetSchema, type GitConversationTarget } from './localGitApi'
 import type {
+  TerminalWorkspaceAck,
+  TerminalWorkspaceAttachRequest,
+  TerminalWorkspaceCloseRequest,
   TerminalWorkspaceCreateRequest,
+  TerminalWorkspaceDetachRequest,
   TerminalWorkspaceEvent,
-  TerminalWorkspaceKillRequest,
   TerminalWorkspaceListRequest,
   TerminalWorkspaceListResult,
   TerminalWorkspaceResizeRequest,
+  TerminalWorkspaceRestartRequest,
+  TerminalWorkspaceRunActionRequest,
   TerminalWorkspaceSessionSnapshot,
+  TerminalWorkspaceSetTitleRequest,
+  TerminalWorkspaceSnapshot,
+  TerminalWorkspaceSnapshotRequest,
   TerminalWorkspaceWriteRequest
 } from './terminalWorkspaceApi'
 
@@ -100,10 +108,17 @@ export type DesktopRightWorkspaceApi = {
   }
   terminal: {
     create(input: TerminalWorkspaceCreateRequest): Promise<TerminalWorkspaceSessionSnapshot>
-    write(input: TerminalWorkspaceWriteRequest): Promise<TerminalWorkspaceSessionSnapshot>
-    resize(input: TerminalWorkspaceResizeRequest): Promise<TerminalWorkspaceSessionSnapshot>
-    kill(input: TerminalWorkspaceKillRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    attach(input: TerminalWorkspaceAttachRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    detach(input: TerminalWorkspaceDetachRequest): Promise<TerminalWorkspaceAck>
+    write(input: TerminalWorkspaceWriteRequest): Promise<TerminalWorkspaceAck>
+    resize(input: TerminalWorkspaceResizeRequest): Promise<TerminalWorkspaceAck>
+    setTitle(input: TerminalWorkspaceSetTitleRequest): Promise<TerminalWorkspaceAck>
+    runAction(input: TerminalWorkspaceRunActionRequest): Promise<TerminalWorkspaceAck>
+    restart(input: TerminalWorkspaceRestartRequest): Promise<TerminalWorkspaceSessionSnapshot>
+    close(input: TerminalWorkspaceCloseRequest): Promise<TerminalWorkspaceSessionSnapshot>
     list(input: TerminalWorkspaceListRequest): Promise<TerminalWorkspaceListResult>
+    snapshot(input: TerminalWorkspaceSnapshotRequest): Promise<TerminalWorkspaceSnapshot>
+    listShells(): Promise<import('./terminalWorkspaceApi').TerminalWorkspaceShellOption[]>
     onEvent(callback: (event: TerminalWorkspaceEvent) => void): () => void
   }
   browser: {

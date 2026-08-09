@@ -209,6 +209,7 @@ export class ProjectService {
     return {
       hostId: project.hostId,
       cwd: project.remotePath,
+      ...(project.terminalCommand ? { terminalCommand: project.terminalCommand } : {}),
       workspaceRoots: [project.remotePath],
       workspaceKind: 'project',
       projectAssignment: {

@@ -339,6 +339,21 @@ function parseRemoteStat(
 }
 
 function createSshCommandClient(hostId: string, remoteCodexCommand: string): CodexCommandClient {
+  return new CodexCommandClient({
+    transport: createSshCodexAppServerTransport(hostId, remoteCodexCommand),
+    experimentalApi: true,
+    clientInfo: {
+      name: 'dascowork_git',
+      title: 'dasCowork Git',
+      version: '1.0.0'
+    }
+  })
+}
+
+export function createSshCodexAppServerTransport(hostId: string, remoteCodexCommand: string): {
+  type: 'stdio'
+  stdio: { command: string; args: string[] }
+} {
   assertSafeSshAlias(hostId)
   assertSafeRemoteExecutable(remoteCodexCommand)
   const remoteCommand = [
@@ -348,21 +363,7 @@ function createSshCommandClient(hostId: string, remoteCodexCommand: string): Cod
     '--listen',
     'stdio://'
   ].join(' ')
-  return new CodexCommandClient({
-    transport: {
-      type: 'stdio',
-      stdio: {
-        command: 'ssh',
-        args: [hostId, remoteCommand]
-      }
-    },
-    experimentalApi: true,
-    clientInfo: {
-      name: 'dascowork_git',
-      title: 'dasCowork Git',
-      version: '1.0.0'
-    }
-  })
+  return { type: 'stdio', stdio: { command: 'ssh', args: [hostId, remoteCommand] } }
 }
 
 function runLocalCommand(
@@ -471,13 +472,13 @@ function isReadOnlyGitCommand(args: readonly string[]): boolean {
   return !(subcommand === 'config' && args.some((arg) => /^--?(add|replace-all|unset)/u.test(arg)))
 }
 
-function assertSafeSshAlias(hostId: string): void {
+export function assertSafeSshAlias(hostId: string): void {
   if (!hostId || hostId.startsWith('-') || !SSH_ALIAS_PATTERN.test(hostId)) {
     throw new Error(`Invalid SSH host alias: ${hostId}`)
   }
 }
 
-function assertSafeRemoteExecutable(command: string): void {
+export function assertSafeRemoteExecutable(command: string): void {
   if (
     !command ||
     command.includes('\0') ||
