@@ -52,12 +52,18 @@ import type {
   LocalGitListCommitsRequest,
   LocalGitGetSummaryRequest,
   LocalGitGetFileDiffRequest,
+  LocalGitGetReviewApplyCommandRequest,
+  LocalGitGetReviewFileContentRequest,
+  LocalGitReviewApplyCommand,
+  LocalGitReviewSearchResult,
+  LocalGitReviewFileContent,
   LocalGitMutationResult,
   LocalGitMergeBase,
   LocalGitResolveMergeBaseRequest,
   LocalGitReviewMutationRequest,
   LocalGitReviewFilesRefresh,
   LocalGitReviewSnapshot,
+  LocalGitSearchReviewRequest,
   LocalGitSummary,
   TurnPatchRequest
 } from './localGitApi'
@@ -617,6 +623,13 @@ export type DesktopGitApi = {
   getReviewSnapshot(input: LocalGitGetReviewSnapshotRequest): Promise<LocalGitReviewSnapshot>
   refreshReviewFiles(input: LocalGitRefreshReviewFilesRequest): Promise<LocalGitReviewFilesRefresh>
   getFileDiff(input: LocalGitGetFileDiffRequest): Promise<LocalGitFileDiff>
+  getReviewApplyCommand(
+    input: LocalGitGetReviewApplyCommandRequest
+  ): Promise<LocalGitReviewApplyCommand>
+  getReviewFileContent(
+    input: LocalGitGetReviewFileContentRequest
+  ): Promise<LocalGitReviewFileContent>
+  searchReview(input: LocalGitSearchReviewRequest): Promise<LocalGitReviewSearchResult>
   applyReviewAction(input: LocalGitReviewMutationRequest): Promise<LocalGitMutationResult>
   applyTurnPatch(input: TurnPatchRequest): Promise<LocalGitMutationResult>
   listBranches(input: LocalGitBranchRequest): Promise<LocalBranchSummary>

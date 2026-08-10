@@ -83,6 +83,118 @@ describe('localGitIpc', () => {
     ).rejects.toThrow()
   })
 
+  it('parses bounded review search requests before reaching the service', async () => {
+    const searchReview = vi.fn(async () => ({
+      snapshotGeneration: 'generation',
+      source: { type: 'unstaged' },
+      items: [],
+      totalMatches: 0,
+      isCapped: false
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { searchReview } as never
+    })
+    const request = {
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: 'generation',
+      query: 'needle'
+    }
+
+    await handlers.searchReview(undefined, request)
+
+    expect(searchReview).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.searchReview(undefined, {
+        ...request,
+        source: { type: 'range', base: 'main' },
+        args: ['diff']
+      })
+    ).rejects.toThrow()
+  })
+
+  it('forwards only fixed diff display options', async () => {
+    const getFileDiff = vi.fn(async (request) => ({
+      snapshotGeneration: request.snapshotGeneration,
+      file: request.file,
+      diff: '',
+      truncated: false,
+      binary: false,
+      conflicted: false
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { getFileDiff } as never
+    })
+    const request = {
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: 'generation',
+      file: { path: 'src/index.ts', revision: 'revision' },
+      options: { ignoreWhitespace: true, fullFiles: true }
+    }
+
+    await handlers.getFileDiff(undefined, request)
+
+    expect(getFileDiff).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.getFileDiff(undefined, {
+        ...request,
+        options: { ...request.options, args: ['--binary'] }
+      })
+    ).rejects.toThrow()
+  })
+
+  it('validates and forwards snapshot-bound apply-command requests', async () => {
+    const getReviewApplyCommand = vi.fn(async (request) => ({
+      snapshotGeneration: request.snapshotGeneration,
+      source: request.source,
+      command: "git apply - <<'PATCH'\ndiff --git a/a b/a\nPATCH"
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { getReviewApplyCommand } as never
+    })
+    const request = {
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: 'generation'
+    }
+
+    await handlers.getReviewApplyCommand(undefined, request)
+
+    expect(getReviewApplyCommand).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.getReviewApplyCommand(undefined, { ...request, args: ['diff'] })
+    ).rejects.toThrow()
+  })
+
+  it('allows only signed rich preview file content requests', async () => {
+    const getReviewFileContent = vi.fn(async () => ({
+      status: 'text',
+      mimeType: 'text/markdown',
+      text: '# Preview'
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { getReviewFileContent } as never
+    })
+    const request = {
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: 'generation',
+      file: { path: 'docs/readme.md', revision: 'revision' },
+      side: 'after'
+    }
+
+    await handlers.getReviewFileContent(undefined, request)
+
+    expect(getReviewFileContent).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.getReviewFileContent(undefined, {
+        ...request,
+        file: { path: '../outside.md', revision: 'revision' }
+      })
+    ).rejects.toThrow()
+  })
+
   it('parses a safe base branch before resolving its merge base', async () => {
     const resolveMergeBase = vi.fn(async () => ({ mergeBase: 'a'.repeat(40) }))
     const localGit = {

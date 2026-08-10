@@ -75,7 +75,7 @@ test('RW-E2E-01 opens the four workspace surfaces from a real local conversation
     await captureWorkspaceScreenshot(page, testInfo, 'RW-02-terminal')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    await expect(page.locator('[data-slot="local-git-review-panel"]')).toBeVisible()
+    await expect(page.locator('[data-slot="review-workspace"]')).toBeVisible()
     await captureWorkspaceScreenshot(page, testInfo, 'RW-05-review')
 
     await page.setViewportSize({ width: 1_100, height: 800 })

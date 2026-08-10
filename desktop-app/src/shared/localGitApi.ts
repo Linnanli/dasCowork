@@ -5,6 +5,8 @@ export const LOCAL_GIT_TURN_PATCH_MAX_BATCHES = 100
 export const LOCAL_GIT_REVIEW_MUTATION_MAX_FILES = 500
 export const LOCAL_GIT_REVIEW_REFRESH_MAX_FILES = LOCAL_GIT_REVIEW_MUTATION_MAX_FILES * 2
 export const LOCAL_GIT_COMMIT_MESSAGE_MAX_CHARACTERS = 16_000
+export const LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS = 250
+export const LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES = 5 * 1024 * 1024
 
 const textEncoder = new TextEncoder()
 
@@ -220,10 +222,130 @@ export const localGitGetFileDiffRequestSchema = z
       path: true,
       previousPath: true,
       revision: true
-    })
+    }),
+    options: z
+      .object({
+        ignoreWhitespace: z.boolean(),
+        fullFiles: z.boolean()
+      })
+      .strict()
+      .optional()
   })
   .strict()
 export type LocalGitGetFileDiffRequest = z.infer<typeof localGitGetFileDiffRequestSchema>
+
+export const localGitGetReviewApplyCommandRequestSchema = z
+  .object({
+    target: gitRepositoryTargetSchema,
+    source: localGitReviewSourceSchema,
+    snapshotGeneration: snapshotGenerationSchema
+  })
+  .strict()
+export type LocalGitGetReviewApplyCommandRequest = z.infer<
+  typeof localGitGetReviewApplyCommandRequestSchema
+>
+
+export const localGitReviewApplyCommandSchema = z
+  .object({
+    snapshotGeneration: snapshotGenerationSchema,
+    source: localGitReviewSourceSchema,
+    command: z
+      .string()
+      .min(1)
+      .max(LOCAL_GIT_PATCH_MAX_CHARACTERS + 2048)
+  })
+  .strict()
+export type LocalGitReviewApplyCommand = z.infer<typeof localGitReviewApplyCommandSchema>
+
+export const localGitSearchReviewRequestSchema = z
+  .object({
+    target: gitRepositoryTargetSchema,
+    source: localGitReviewSourceSchema,
+    snapshotGeneration: snapshotGenerationSchema,
+    query: z.string().trim().max(255)
+  })
+  .strict()
+export type LocalGitSearchReviewRequest = z.infer<typeof localGitSearchReviewRequestSchema>
+
+export const localGitReviewSearchItemSchema = z
+  .object({
+    path: repoRelativePathSchema,
+    hunkId: z.union([z.literal('path'), z.string().min(1).max(2_000)]),
+    side: z.enum(['deletions', 'additions']),
+    lineStart: z.number().int().nonnegative(),
+    lineEnd: z.number().int().nonnegative(),
+    patchOffset: z.number().int().nonnegative(),
+    snippet: z
+      .object({
+        before: z.string().max(1_000),
+        match: z.string().max(1_000),
+        after: z.string().max(1_000)
+      })
+      .strict()
+  })
+  .strict()
+export type LocalGitReviewSearchItem = z.infer<typeof localGitReviewSearchItemSchema>
+
+export const localGitReviewSearchResultSchema = z
+  .object({
+    snapshotGeneration: snapshotGenerationSchema,
+    source: localGitReviewSourceSchema,
+    items: z.array(localGitReviewSearchItemSchema).max(LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS),
+    totalMatches: z.number().int().nonnegative(),
+    isCapped: z.boolean()
+  })
+  .strict()
+export type LocalGitReviewSearchResult = z.infer<typeof localGitReviewSearchResultSchema>
+
+export const localGitReviewContentSideSchema = z.enum(['before', 'after'])
+export type LocalGitReviewContentSide = z.infer<typeof localGitReviewContentSideSchema>
+
+export const localGitGetReviewFileContentRequestSchema = z
+  .object({
+    target: gitRepositoryTargetSchema,
+    source: localGitReviewSourceSchema,
+    snapshotGeneration: snapshotGenerationSchema,
+    file: localGitReviewFileSchema.pick({
+      path: true,
+      previousPath: true,
+      revision: true
+    }),
+    side: localGitReviewContentSideSchema
+  })
+  .strict()
+export type LocalGitGetReviewFileContentRequest = z.infer<
+  typeof localGitGetReviewFileContentRequestSchema
+>
+
+export const localGitReviewFileContentSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('text'),
+      mimeType: z.string().min(1).max(255),
+      text: z.string().max(LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES)
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('media'),
+      mimeType: z.string().min(1).max(255),
+      base64: z
+        .string()
+        .min(1)
+        .max(Math.ceil((LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES * 4) / 3))
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('too-large'),
+      maxBytes: z.number().int().positive(),
+      size: z.number().int().nonnegative().optional()
+    })
+    .strict(),
+  z.object({ status: z.literal('unsupported'), reason: z.string().min(1).max(500) }).strict(),
+  z.object({ status: z.literal('stale') }).strict()
+])
+export type LocalGitReviewFileContent = z.infer<typeof localGitReviewFileContentSchema>
 
 export const localGitFileDiffSchema = z
   .object({
@@ -521,6 +643,9 @@ export const gitIpcChannels = {
   getReviewSnapshot: 'git:get-review-snapshot',
   refreshReviewFiles: 'git:refresh-review-files',
   getFileDiff: 'git:get-file-diff',
+  getReviewApplyCommand: 'git:get-review-apply-command',
+  getReviewFileContent: 'git:get-review-file-content',
+  searchReview: 'git:search-review',
   applyReviewAction: 'git:apply-review-action',
   applyTurnPatch: 'git:apply-turn-patch',
   listBranches: 'git:list-branches',

@@ -77,10 +77,13 @@ import {
   localGitCheckoutBranchRequestSchema,
   localGitCreateBranchRequestSchema,
   localGitGetFileDiffRequestSchema,
+  localGitGetReviewApplyCommandRequestSchema,
+  localGitGetReviewFileContentRequestSchema,
   localGitGetReviewSnapshotRequestSchema,
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
+  localGitSearchReviewRequestSchema,
   localGitReviewMutationRequestSchema,
   localCommitRequestSchema,
   localGitResolveMergeBaseRequestSchema,
@@ -372,6 +375,21 @@ const desktopGit: DesktopGitApi = {
     ipcRenderer.invoke(
       gitIpcChannels.getFileDiff,
       parseGitPayload(localGitGetFileDiffRequestSchema, input)
+    ),
+  getReviewApplyCommand: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getReviewApplyCommand,
+      parseGitPayload(localGitGetReviewApplyCommandRequestSchema, input)
+    ),
+  getReviewFileContent: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getReviewFileContent,
+      parseGitPayload(localGitGetReviewFileContentRequestSchema, input)
+    ),
+  searchReview: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.searchReview,
+      parseGitPayload(localGitSearchReviewRequestSchema, input)
     ),
   applyReviewAction: (input) =>
     ipcRenderer.invoke(

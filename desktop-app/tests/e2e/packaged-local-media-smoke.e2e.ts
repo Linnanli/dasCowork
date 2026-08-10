@@ -1,6 +1,8 @@
+import { execFile as execFileCallback } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { expect, test, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 
@@ -11,6 +13,7 @@ import { assistantMessageResponse } from './support/mockBackend'
 import { startMockBackend, type MockBackend } from './support/mockBackend'
 
 const packagedExecutable = process.env.DASCOWORK_PACKAGED_APP_EXECUTABLE
+const execFile = promisify(execFileCallback)
 
 test.describe('packaged local media smoke', () => {
   test.skip(!packagedExecutable, 'run through npm run test:e2e:packaged')
@@ -90,7 +93,59 @@ test.describe('packaged local media smoke', () => {
     await typeVisibleTerminalCommand(page, 'echo PACKAGED_NODE_PTY_ABI_OK')
     await expectTerminalSnapshot(page, terminalSessionId, ['PACKAGED_NODE_PTY_ABI_OK'])
   })
+
+  test('renders a local PDF review preview with the packaged PDF.js worker', async () => {
+    backend = await startMockBackend({
+      responses: [assistantMessageResponse('packaged-pdf-thread', 'packaged-pdf-message', 'Ready')]
+    })
+    tempDir = await mkdtemp(join(tmpdir(), 'dascowork-packaged-pdf-review-'))
+    const projectRoot = join(tempDir, 'project')
+    await mkdir(projectRoot, { recursive: true })
+    await execFile('git', ['init'], { cwd: projectRoot })
+    await execFile('git', ['config', 'user.email', 'packaged@example.test'], { cwd: projectRoot })
+    await execFile('git', ['config', 'user.name', 'Packaged Smoke'], { cwd: projectRoot })
+    await writeFile(join(projectRoot, 'tracked.txt'), 'initial\n', 'utf8')
+    await execFile('git', ['add', 'tracked.txt'], { cwd: projectRoot })
+    await execFile('git', ['commit', '-m', 'initial'], { cwd: projectRoot })
+    await writeFile(join(projectRoot, 'preview.pdf'), onePagePdf())
+
+    app = await launchApp(backend, [], {
+      executablePath: packagedExecutable,
+      args: [],
+      cwd: process.cwd()
+    })
+    const page = await app.firstWindow()
+    await createLocalProject(page, `Packaged PDF ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open the packaged PDF review preview.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Ready')
+
+    await page.locator('[data-slot="conversation-changes-row"]').click()
+    const review = page.locator('[data-slot="review-workspace"]')
+    await expect(review).toContainText('preview.pdf')
+    await review.getByRole('button', { name: '审阅选项', exact: true }).click()
+    await page.getByRole('menuitem', { name: '富预览（Markdown、图片和 PDF）', exact: true }).click()
+    await expect(review.locator('.react-pdf__Page__canvas')).toBeVisible()
+  })
 })
+
+function onePagePdf(): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>'
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets = [0]
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf, 'binary'))
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`
+  }
+  const xrefOffset = Buffer.byteLength(pdf, 'binary')
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  pdf += offsets.slice(1).map((offset) => `${offset.toString().padStart(10, '0')} 00000 n \n`).join('')
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  return Buffer.from(pdf, 'binary')
+}
 
 async function openRightWorkspace(page: Page): Promise<void> {
   const toggle = page.getByRole('button', { name: '打开工作区', exact: true })

@@ -63,6 +63,37 @@ describe('reviewSnapshot', () => {
     expect(branch.files).toMatchObject([{ path: 'tracked.txt', additions: 1 }])
   })
 
+  it('maps fixed diff display options to whitespace filtering and full-file context', async () => {
+    const { repo } = await createGitFixture()
+    const original = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n') + '\n'
+    await writeFile(join(repo, 'options.txt'), original)
+    git(repo, ['add', 'options.txt'])
+    git(repo, ['commit', '-m', 'add diff options fixture'])
+
+    await writeFile(join(repo, 'options.txt'), original.replace('line 10', 'line    10'))
+    await expect(
+      getDiffForSource({ gitRoot: repo, source: { type: 'unstaged' }, path: 'options.txt' })
+    ).resolves.toContain('-line 10')
+    await expect(
+      getDiffForSource({
+        gitRoot: repo,
+        source: { type: 'unstaged' },
+        path: 'options.txt',
+        options: { ignoreWhitespace: true, fullFiles: false }
+      })
+    ).resolves.toBe('')
+
+    await writeFile(join(repo, 'options.txt'), original.replace('line 10', 'changed 10'))
+    const fullDiff = await getDiffForSource({
+      gitRoot: repo,
+      source: { type: 'unstaged' },
+      path: 'options.txt',
+      options: { ignoreWhitespace: false, fullFiles: true }
+    })
+    expect(fullDiff).toContain(' line 1')
+    expect(fullDiff).toContain(' line 20')
+  })
+
   it('P004-EDGE-04 reports a pure rename with its original path even when Git rename detection is disabled', async () => {
     const { repo } = await createGitFixture()
     git(repo, ['config', 'diff.renames', 'false'])

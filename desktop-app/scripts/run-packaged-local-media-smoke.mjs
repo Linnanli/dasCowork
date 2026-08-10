@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 const appRoot = resolve(import.meta.dirname, '..')
 
 run('npm', ['run', 'build'])
+run('npm', ['run', 'verify:pdf-worker-bundle'])
 run('npx', ['electron-builder', '--dir'])
 
 const executable = packagedExecutable(join(appRoot, 'dist'))

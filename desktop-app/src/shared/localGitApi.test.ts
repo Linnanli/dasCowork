@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   LOCAL_GIT_PATCH_MAX_CHARACTERS,
+  LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS,
   gitConversationTargetSchema,
   gitIpcChannels,
   gitRepositoryTargetSchema,
@@ -13,13 +14,20 @@ import {
   localGitBranchSearchRequestSchema,
   localGitChangeEventSchema,
   localGitCreateBranchRequestSchema,
+  localGitGetFileDiffRequestSchema,
+  localGitGetReviewApplyCommandRequestSchema,
   localGitGetReviewSnapshotRequestSchema,
+  localGitGetReviewFileContentRequestSchema,
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
   localGitMutationResultSchema,
+  localGitReviewApplyCommandSchema,
   localGitReviewMutationRequestSchema,
+  localGitReviewSearchResultSchema,
+  localGitReviewFileContentSchema,
   localGitReviewSnapshotSchema,
+  localGitSearchReviewRequestSchema,
   turnPatchRequestSchema
 } from './localGitApi'
 
@@ -310,6 +318,153 @@ describe('local git API schemas', () => {
         conflictedPaths: []
       }).success
     ).toBe(false)
+  })
+
+  it('accepts only fixed review diff options and snapshot-bound apply-command requests', () => {
+    const file = { path: 'src/index.ts', revision: 'rev-1' }
+    expect(
+      localGitGetFileDiffRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file,
+        options: { ignoreWhitespace: true, fullFiles: true }
+      }).success
+    ).toBe(true)
+    expect(
+      localGitGetFileDiffRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file,
+        options: { ignoreWhitespace: true, fullFiles: false, args: ['--binary'] }
+      }).success
+    ).toBe(false)
+
+    const request = { target, source, snapshotGeneration: 'generation-1' }
+    expect(localGitGetReviewApplyCommandRequestSchema.safeParse(request).success).toBe(true)
+    expect(
+      localGitGetReviewApplyCommandRequestSchema.safeParse({ ...request, args: ['diff'] }).success
+    ).toBe(false)
+    expect(
+      localGitReviewApplyCommandSchema.safeParse({
+        snapshotGeneration: 'generation-1',
+        source,
+        command: "git apply - <<'PATCH'\ndiff --git a/a b/a\nPATCH"
+      }).success
+    ).toBe(true)
+  })
+
+  it('validates bounded review search requests and structured match results', () => {
+    expect(
+      localGitSearchReviewRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        query: 'needle'
+      }).success
+    ).toBe(true)
+    expect(
+      localGitSearchReviewRequestSchema.safeParse({
+        target,
+        source: { type: 'range', base: 'main' },
+        snapshotGeneration: 'generation-1',
+        query: 'needle',
+        args: ['diff']
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewSearchResultSchema.safeParse({
+        snapshotGeneration: 'generation-1',
+        source,
+        items: [
+          {
+            path: 'src/index.ts',
+            hunkId: '@@ -1 +1 @@',
+            side: 'additions',
+            lineStart: 1,
+            lineEnd: 1,
+            patchOffset: 42,
+            snippet: { before: 'before', match: '+needle', after: 'after' }
+          },
+          {
+            path: 'src/index.ts',
+            hunkId: 'path',
+            side: 'additions',
+            lineStart: 0,
+            lineEnd: 0,
+            patchOffset: 0,
+            snippet: { before: '', match: 'src/index.ts', after: '' }
+          }
+        ],
+        totalMatches: 2,
+        isCapped: false
+      }).success
+    ).toBe(true)
+    expect(
+      localGitReviewSearchResultSchema.safeParse({
+        snapshotGeneration: 'generation-1',
+        source,
+        items: Array.from({ length: LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS + 1 }, (_, index) => ({
+          path: `src/${index}.ts`,
+          hunkId: 'path',
+          side: 'additions',
+          lineStart: 0,
+          lineEnd: 0,
+          patchOffset: index,
+          snippet: { before: '', match: 'src', after: '' }
+        })),
+        totalMatches: LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS + 1,
+        isCapped: true
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewSearchResultSchema.safeParse({
+        snapshotGeneration: 'generation-1',
+        source,
+        items: [
+          {
+            path: 'src/index.ts',
+            hunkId: '@@ -1 +1 @@',
+            lineStart: 1,
+            lineEnd: 1,
+            patchOffset: 0,
+            snippet: { before: '', match: '+needle', after: '' }
+          }
+        ],
+        totalMatches: 1,
+        isCapped: false
+      }).success
+    ).toBe(false)
+  })
+
+  it('only permits snapshot-bound rich preview content requests', () => {
+    expect(
+      localGitGetReviewFileContentRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file: { path: 'docs/readme.md', revision: 'revision-1' },
+        side: 'after'
+      }).success
+    ).toBe(true)
+    expect(
+      localGitGetReviewFileContentRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file: { path: '../private.md', revision: 'revision-1' },
+        side: 'after',
+        ref: 'HEAD:private.md'
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewFileContentSchema.safeParse({
+        status: 'media',
+        mimeType: 'image/png',
+        base64: 'aGVsbG8='
+      }).success
+    ).toBe(true)
   })
 
   it('validates branch and subscription result contracts', () => {

@@ -15,6 +15,7 @@
     "test:e2e:stability": "npm run build && playwright test --grep '(@terminal-failure|@recovery|@approval-retry)' --repeat-each=10 --workers=1 --retries=0",
     "test:e2e:dev-llm": "node scripts/run-dev-llm-smoke.mjs",
     "test:e2e:release-llm": "node scripts/run-release-llm-smoke.mjs",
+    "verify:pdf-worker-bundle": "node scripts/verify-pdf-worker-bundle.mjs",
     "test:e2e:packaged": "node scripts/run-packaged-local-media-smoke.mjs",
     "pretest": "npm run build:codex-asp-provider",
     "pretypecheck": "npm run build:codex-asp-provider",
@@ -45,6 +46,8 @@
     "@xterm/xterm": "5.5.0",
     "ai": "^6.0.213",
     "node-pty": "1.1.0",
+    "pdfjs-dist": "5.4.296",
+    "react-pdf": "10.4.1",
     "smol-toml": "^1.5.2",
     "zod": "^4.1.8",
     "zustand": "^5.0.14"

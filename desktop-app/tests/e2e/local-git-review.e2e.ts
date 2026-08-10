@@ -57,32 +57,28 @@ test('P004-E2E-01 opens the real unstaged review panel from Changes', async ({
     await expect(changes).toBeEnabled()
     await expect(changes).toContainText('+1')
     await changes.click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    const panel = reviewWorkspace(page)
     await expect(panel).toBeVisible()
-    await expect(panel).toContainText('Unstaged')
+    await expect(panel).toContainText('未提交')
     await expect(panel).toContainText('notes.txt')
     await expect(panel).toContainText('after')
-    await panel.getByRole('button', { name: 'Review options', exact: true }).click()
-    await expect(page.getByRole('menuitem', { name: 'Copy git apply command' })).toBeVisible()
+    await panel.getByRole('button', { name: '审阅选项', exact: true }).click()
+    await expect(page.getByRole('menuitem', { name: '按词高亮', exact: true })).toBeVisible()
     await page.keyboard.press('Escape')
-    await panel.getByRole('button', { name: 'Unstaged', exact: true }).focus()
-    await page.keyboard.press('ArrowRight')
-    await expect(panel.getByRole('button', { name: 'Staged', exact: true })).toBeFocused()
 
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
-    await expect(panel).toContainText('No staged changes')
+    await selectReviewSource(page, '已暂存')
+    await expect(panel).toContainText('No changes to review.')
 
-    await panel.getByRole('button', { name: 'Commit', exact: true }).click()
-    const commitPicker = page.getByRole('listbox', { name: 'Choose a commit' })
-    await expect(commitPicker).toContainText('initial')
-    await commitPicker.getByRole('option').first().click()
-    await expect(panel).toContainText('Commit')
+    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
+    const initialCommit = page.getByRole('menuitem').filter({ hasText: 'initial' }).first()
+    await expect(initialCommit).toBeVisible()
+    await initialCommit.click()
+    await expect(panel).toContainText('已提交')
     await expect(panel).toContainText('notes.txt')
 
-    await panel.getByRole('button', { name: 'Branch', exact: true }).click()
-    const branchPicker = page.getByRole('listbox', { name: 'Choose a base branch' })
-    await branchPicker.getByRole('option', { name: initialBranch }).click()
-    await expect(panel).toContainText('Branch')
+    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
+    await page.getByRole('menuitem', { name: initialBranch, exact: true }).click()
+    await expect(panel).toContainText(`分支 ${initialBranch}`)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -119,9 +115,9 @@ test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review sna
     const changes = page.locator('[data-slot="conversation-changes-row"]')
     await expect(changes).toContainText('+1')
     await changes.click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    const panel = reviewWorkspace(page)
     await expect(panel).toContainText('new-file.txt')
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    await panel.getByRole('button', { name: '暂存文件', exact: true }).click()
     await expect
       .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
       .toBe('new-file.txt')
@@ -195,8 +191,8 @@ test('P004-E2E-12/P004-EDGE-02 opens an empty repository without a HEAD commit',
     const changes = page.locator('[data-slot="conversation-changes-row"]')
     await expect(changes).toBeEnabled()
     await changes.click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
-    await expect(panel).toContainText('No unstaged changes')
+    const panel = reviewWorkspace(page)
+    await expect(panel).toContainText('No changes to review.')
     await expect(panel.getByRole('button', { name: 'Refresh changes' })).toBeEnabled()
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
@@ -236,9 +232,9 @@ test('P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    const panel = reviewWorkspace(page)
     await expect(panel).toContainText('image.bin')
-    await expect(panel).toContainText('Binary file cannot be displayed.')
+    await expect(panel).toContainText('二进制文件暂不支持文本预览。')
 
     await execFile('git', ['checkout', '--', 'image.bin'], { cwd: projectRoot })
     await execFile('git', ['mv', 'notes.txt', 'renamed-notes.txt'], { cwd: projectRoot })
@@ -256,15 +252,14 @@ test('P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-
       ['update-index', '--add', '--cacheinfo', `160000,${head},vendor/submodule`],
       { cwd: projectRoot }
     )
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
+    await selectReviewSource(page, '已暂存')
     await expect(panel).toContainText('renamed-notes.txt')
-    await expect(panel).toContainText('Renamed from notes.txt')
+    await expect(panel).toContainText('来自 notes.txt')
     await expect(panel).toContainText('copied-notes.txt')
-    await expect(panel).toContainText('Copied from notes.txt')
+    await expect(panel).toContainText('已复制')
     await expect(panel).toContainText('typed.txt')
-    await expect(panel).toContainText('type change')
-    await panel.getByRole('button', { name: /vendor\/submodule/ }).click()
-    await expect(panel).toContainText('Subproject commit')
+    await expect(panel).toContainText('类型已变更')
+    await expect(panel).toContainText('vendor/submodule')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -299,9 +294,9 @@ test('P004-E2E-12 displays the large-diff file summary before rendering a select
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    const panel = reviewWorkspace(page)
     await expect(panel).toContainText('large.txt')
-    await expect(panel).toContainText('Diff too large to display. Select a file.')
+    await expect(panel).toContainText('差异内容过大，暂不渲染完整文本。')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -336,28 +331,28 @@ test('P004-E2E-02/P004-E2E-03 stages, unstages, and safely reverts a real workin
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
-    await expect(panel.getByRole('button', { name: 'Stage', exact: true })).toBeVisible()
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    const panel = reviewWorkspace(page)
+    await expect(panel.getByRole('button', { name: '暂存文件', exact: true })).toBeVisible()
+    await panel.getByRole('button', { name: '暂存文件', exact: true }).click()
     await expect
       .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
       .toBe('notes.txt')
 
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
+    await selectReviewSource(page, '已暂存')
     await expect(panel).toContainText('notes.txt')
-    await panel.getByRole('button', { name: 'Unstage', exact: true }).click()
+    await panel.getByRole('button', { name: '取消暂存文件', exact: true }).click()
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
 
-    await panel.getByRole('button', { name: 'Unstaged', exact: true }).click()
-    await expect(panel.getByRole('button', { name: 'Revert', exact: true })).toBeVisible()
-    await panel.getByRole('button', { name: 'Revert', exact: true }).click()
+    await selectReviewSource(page, '未暂存')
+    await expect(panel.getByRole('button', { name: 'Revert file changes', exact: true })).toBeVisible()
+    await panel.getByRole('button', { name: 'Revert file changes', exact: true }).click()
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toContainText('Revert changes?')
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).toContainText('还原文件更改？')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await expect.poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8')).toBe('after\n')
 
-    await panel.getByRole('button', { name: 'Revert', exact: true }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Revert', exact: true }).click()
+    await panel.getByRole('button', { name: 'Revert file changes', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '还原', exact: true }).click()
     await expect.poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8')).toBe('before\n')
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
@@ -395,14 +390,14 @@ test('P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful in
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
-    await expect(panel.getByRole('button', { name: 'Revert', exact: true })).toBeVisible()
-    await panel.getByRole('button', { name: 'Revert', exact: true }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Revert', exact: true }).click()
+    const panel = reviewWorkspace(page)
+    await selectReviewSource(page, '已暂存')
+    await expect(panel.getByRole('button', { name: 'Revert file changes', exact: true })).toBeVisible()
+    await panel.getByRole('button', { name: 'Revert file changes', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '还原', exact: true }).click()
 
-    await expect(panel.getByRole('status')).toContainText('Applied: notes.txt')
-    await expect(panel.getByRole('status')).toContainText('Conflicts: notes.txt')
+    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText('已应用：notes.txt')
+    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText('冲突：notes.txt')
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
     await expect
       .poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8'))
@@ -479,11 +474,9 @@ test('P004-E2E-04/P004-E2E-13 undoes then reapplies a completed turn patch in a 
       .toBe('after from turn\n')
 
     await turnCardHeader.getByRole('button', { name: '审核', exact: true }).click()
-    const reviewPanel = page.locator('[data-slot="local-git-review-panel"]')
+    const reviewPanel = reviewWorkspace(page)
     await expect(reviewPanel).toBeVisible()
-    await expect(
-      reviewPanel.getByRole('button', { name: 'Last turn', exact: true })
-    ).toHaveAttribute('aria-pressed', 'true')
+    await expect(reviewPanel).toContainText('上一轮')
 
     await turnCard.getByRole('button', { name: '撤销', exact: true }).click()
     await expect(turnCard.getByRole('button', { name: '重新应用', exact: true })).toBeEnabled()
@@ -1000,18 +993,18 @@ test('P004-E2E-15 runs remote branch, review, stage, and commit actions through 
     const changes = page.locator('[data-slot="conversation-changes-row"]')
     await expect(changes).toContainText('+1')
     await changes.click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
-    await expect(panel).toContainText('Unstaged')
+    const panel = reviewWorkspace(page)
+    await expect(panel).toContainText('未提交')
     await expect(panel).toContainText('remote review change')
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    await panel.getByRole('button', { name: '暂存文件', exact: true }).click()
     await expect
       .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
       .toBe('notes.txt')
-    await panel.getByRole('button', { name: 'Staged', exact: true }).click()
-    await panel.getByRole('button', { name: 'Unstage', exact: true }).click()
+    await selectReviewSource(page, '已暂存')
+    await panel.getByRole('button', { name: '取消暂存文件', exact: true }).click()
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
-    await panel.getByRole('button', { name: 'Unstaged', exact: true }).click()
-    await panel.getByRole('button', { name: 'Stage', exact: true }).click()
+    await selectReviewSource(page, '未暂存')
+    await panel.getByRole('button', { name: '暂存文件', exact: true }).click()
     await expect
       .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
       .toBe('notes.txt')
@@ -1067,15 +1060,15 @@ test('P004-E2E-17 recovers remote review data after a post-success transport clo
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await page.locator('[data-slot="conversation-changes-row"]').click()
-    const panel = page.locator('[data-slot="local-git-review-panel"]')
+    const panel = reviewWorkspace(page)
     await expect(panel).toContainText('remote retry change')
 
     await writeFile(crashControlPath, 'crash the next remote command\n', 'utf8')
-    await panel.getByRole('button', { name: 'Branch', exact: true }).click()
-    await expect(panel.getByRole('alert')).toBeVisible()
-    await panel.getByRole('button', { name: 'Retry', exact: true }).click()
-    const branchPicker = page.getByRole('listbox', { name: 'Choose a base branch' })
-    await expect(branchPicker.getByRole('option', { name: originalBranch })).toBeVisible()
+    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
+    await expect(page.getByText(/无法读取提交或分支来源/)).toBeVisible()
+    await page.getByText(/重试/).click()
+    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
+    await expect(page.getByRole('menuitem', { name: originalBranch, exact: true })).toBeVisible()
     await expect
       .poll(() => readFile(sshLogPath, 'utf8').then((log) => log.trim().split('\n').length))
       .toBeGreaterThanOrEqual(2)
@@ -1086,6 +1079,15 @@ test('P004-E2E-17 recovers remote review data after a post-success transport clo
     await cleanupTempDirs([projectRoot, fakeSshDirectory])
   }
 })
+
+function reviewWorkspace(page: Page): Locator {
+  return page.locator('[data-slot="review-workspace"]')
+}
+
+async function selectReviewSource(page: Page, label: string): Promise<void> {
+  await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+}
 
 async function initializeGitRepository(projectRoot: string): Promise<void> {
   await execFile('git', ['init'], { cwd: projectRoot })

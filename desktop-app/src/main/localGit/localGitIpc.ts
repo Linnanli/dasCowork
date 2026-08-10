@@ -6,12 +6,15 @@ import {
   localGitCheckoutBranchRequestSchema,
   localGitCreateBranchRequestSchema,
   localGitGetFileDiffRequestSchema,
+  localGitGetReviewApplyCommandRequestSchema,
+  localGitGetReviewFileContentRequestSchema,
   localGitGetReviewSnapshotRequestSchema,
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
   localGitReviewMutationRequestSchema,
   localGitResolveMergeBaseRequestSchema,
+  localGitSearchReviewRequestSchema,
   turnPatchRequestSchema
 } from '../../shared/localGitApi'
 import { LocalBranchService } from './LocalBranchService'
@@ -28,6 +31,9 @@ export type LocalGitIpcHandlers = {
   getReviewSnapshot(_event: unknown, payload: unknown): Promise<unknown>
   refreshReviewFiles(_event: unknown, payload: unknown): Promise<unknown>
   getFileDiff(_event: unknown, payload: unknown): Promise<unknown>
+  getReviewApplyCommand(_event: unknown, payload: unknown): Promise<unknown>
+  getReviewFileContent(_event: unknown, payload: unknown): Promise<unknown>
+  searchReview(_event: unknown, payload: unknown): Promise<unknown>
   applyReviewAction(_event: unknown, payload: unknown): Promise<unknown>
   applyTurnPatch(_event: unknown, payload: unknown): Promise<unknown>
   listBranches(_event: unknown, payload: unknown): Promise<unknown>
@@ -83,6 +89,21 @@ export function createLocalGitIpcHandlers({
       const request = localGitGetFileDiffRequestSchema.parse(payload)
       observeTarget(request.target)
       return localGit.getFileDiff(request)
+    },
+    getReviewApplyCommand: async (_event, payload) => {
+      const request = localGitGetReviewApplyCommandRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return localGit.getReviewApplyCommand(request)
+    },
+    getReviewFileContent: async (_event, payload) => {
+      const request = localGitGetReviewFileContentRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return localGit.getReviewFileContent(request)
+    },
+    searchReview: async (_event, payload) => {
+      const request = localGitSearchReviewRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return localGit.searchReview(request)
     },
     applyReviewAction: async (_event, payload) => {
       const request = localGitReviewMutationRequestSchema.parse(payload)

@@ -17,6 +17,13 @@ export type GitRunResult = {
   stderr: string
 }
 
+export type GitBytesResult = {
+  success: boolean
+  code: number | null
+  stdout: Uint8Array
+  stderr: string
+}
+
 export type GitRunOptions = {
   input?: string
   timeoutMs?: number
@@ -29,6 +36,9 @@ export type GitHost = {
   id: string
   isLocal: boolean
   runGit(args: readonly string[], cwd: string, options?: GitRunOptions): Promise<GitRunResult>
+  runGitBytes?(args: readonly string[], cwd: string, options?: GitRunOptions): Promise<GitBytesResult>
+  readFileBytes?(path: string, options?: { maxBytes?: number; signal?: AbortSignal }): Promise<Uint8Array>
+  realpathFile?(path: string, options?: { signal?: AbortSignal }): Promise<string>
   createTempDirectory?(prefix: string, options?: { signal?: AbortSignal }): Promise<string>
   copyFile?(source: string, destination: string, options?: { signal?: AbortSignal }): Promise<void>
   remove?(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>

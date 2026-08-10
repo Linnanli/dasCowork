@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -7,7 +7,10 @@ import { GitManager, type GitHost, type GitRunResult } from './GitManager'
 import type { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
 import { LocalGitService } from './LocalGitService'
 import { git, createGitFixture, gitTarget } from './testHelpers'
-import { LOCAL_GIT_PATCH_MAX_CHARACTERS } from '../../shared/localGitApi'
+import {
+  LOCAL_GIT_PATCH_MAX_CHARACTERS,
+  LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES
+} from '../../shared/localGitApi'
 
 describe('LocalGitService', () => {
   it('creates a trusted unstaged snapshot and stages only with matching revisions', async () => {
@@ -31,6 +34,131 @@ describe('LocalGitService', () => {
 
     expect(result.status).toBe('success')
     expect(git(repo, ['diff', '--cached', '--name-only']).trim()).toBe('tracked.txt')
+  })
+
+  it('reads Markdown preview content through a signed review snapshot', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'notes.md'), '# Signed preview\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'notes.md')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision },
+        side: 'after'
+      })
+    ).resolves.toEqual({ status: 'text', mimeType: 'text/markdown', text: '# Signed preview\n' })
+
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: 'not-the-signed-revision' },
+        side: 'after'
+      })
+    ).resolves.toEqual({ status: 'stale' })
+  })
+
+  it('exports a stable git apply command from the signed review snapshot', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+
+    const result = await service.getReviewApplyCommand({
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: snapshot.snapshotGeneration
+    })
+
+    expect(result.snapshotGeneration).toBe(snapshot.snapshotGeneration)
+    expect(result.source).toEqual({ type: 'unstaged' })
+    expect(result.command).toMatch(
+      /^git apply --whitespace=nowarn - <<'CODEX_REVIEW_PATCH_[A-F0-9]+'/u
+    )
+    expect(result.command).toContain('diff --git a/tracked.txt b/tracked.txt')
+    expect(result.command).toContain('+two')
+  })
+
+  it('returns raw image bytes as a bounded media payload instead of decoding binary content as text', async () => {
+    const { repo, projectService } = await createGitFixture()
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 255])
+    await writeFile(join(repo, 'preview.png'), bytes)
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'preview.png')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision },
+        side: 'after'
+      })
+    ).resolves.toEqual({ status: 'media', mimeType: 'image/png', base64: bytes.toString('base64') })
+  })
+
+  it('bounds worktree rich-preview reads before encoding media or text', async () => {
+    const { repo, projectService } = await createGitFixture()
+    const initialContent = `${'a'.repeat(4096)}\n`.repeat(
+      Math.ceil((LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES + 2) / 4097)
+    )
+    const changedContent = `b${initialContent.slice(1)}`
+    await writeFile(join(repo, 'large.md'), initialContent)
+    git(repo, ['add', 'large.md'])
+    git(repo, ['commit', '-m', 'add large preview fixture'])
+    await writeFile(join(repo, 'large.md'), changedContent)
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'large.md')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision },
+        side: 'after'
+      })
+    ).resolves.toEqual({ status: 'too-large', maxBytes: LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES })
+  })
+
+  it('does not follow worktree preview symlinks outside the repository', async () => {
+    const { repo, projectService } = await createGitFixture()
+    const outside = join(repo, '..', 'outside-preview.md')
+    await writeFile(outside, '# Private content\n')
+    await symlink(outside, join(repo, 'outside-link.md'))
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'outside-link.md')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision },
+        side: 'after'
+      })
+    ).resolves.toEqual({
+      status: 'unsupported',
+      reason: '当前审阅来源没有可读取的文件内容。'
+    })
   })
 
   it('refreshes only written review paths while preserving untouched files in the next snapshot', async () => {
@@ -253,6 +381,137 @@ describe('LocalGitService', () => {
         file: { path: 'tracked.txt', revision: snapshot.files[0].revision }
       })
     ).rejects.toThrow('stale-snapshot')
+    await expect(
+      service.searchReview({
+        target: gitTarget(repo),
+        source: { type: 'staged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'two'
+      })
+    ).rejects.toThrow('stale-snapshot')
+  })
+
+  it('returns an identity-preserving empty review search result without resolving Git', async () => {
+    const target = gitTarget('/repo')
+    const service = new LocalGitService({
+      targetResolver: {
+        assertRepository: async () => {
+          throw new Error('empty query must not resolve a repository')
+        }
+      } as unknown as GitRepositoryTargetResolver
+    })
+
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: 'generation',
+        query: '   '
+      })
+    ).resolves.toEqual({
+      snapshotGeneration: 'generation',
+      source: { type: 'unstaged' },
+      items: [],
+      totalMatches: 0,
+      isCapped: false
+    })
+  })
+
+  it('searches review patches with structured locations while ignoring generated paths', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await mkdir(join(repo, 'src'), { recursive: true })
+    await mkdir(join(repo, 'dist'), { recursive: true })
+    await writeFile(join(repo, 'src', 'main.ts'), 'const value = "needle"\n')
+    await writeFile(join(repo, 'dist', 'generated.js'), 'const value = "needle"\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'needle'
+      })
+    ).resolves.toMatchObject({
+      snapshotGeneration: snapshot.snapshotGeneration,
+      source: { type: 'unstaged' },
+      totalMatches: 1,
+      isCapped: false,
+      items: [
+        {
+          path: 'src/main.ts',
+          side: 'additions',
+          lineStart: 1,
+          lineEnd: 1,
+          snippet: { match: '+const value = "needle"' }
+        }
+      ]
+    })
+  })
+
+  it('reports deletion and addition search matches with their own line coordinates', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'needle old\nsecond\n')
+    git(repo, ['add', 'tracked.txt'])
+    git(repo, ['commit', '-m', 'add search side fixture'])
+    await writeFile(join(repo, 'tracked.txt'), 'replacement\nsecond\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'needle'
+      })
+    ).resolves.toMatchObject({
+      items: [{ path: 'tracked.txt', side: 'deletions', lineStart: 1, lineEnd: 1 }]
+    })
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'replacement'
+      })
+    ).resolves.toMatchObject({
+      items: [{ path: 'tracked.txt', side: 'additions', lineStart: 1, lineEnd: 1 }]
+    })
+  })
+
+  it('caps review search results at the shared limit while preserving total matches', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(
+      join(repo, 'tracked.txt'),
+      Array.from({ length: 260 }, (_, index) => `needle ${index}`).join('\n') + '\n'
+    )
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'needle'
+      })
+    ).resolves.toMatchObject({
+      totalMatches: 260,
+      isCapped: true,
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          path: 'tracked.txt',
+          hunkId: expect.stringContaining('@@'),
+          patchOffset: expect.any(Number),
+          snippet: expect.objectContaining({ match: expect.stringContaining('needle') })
+        })
+      ])
+    })
   })
 
   it('stages an untracked file from the signed review snapshot', async () => {

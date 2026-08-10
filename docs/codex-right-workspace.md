@@ -38,7 +38,19 @@ Browser tab 在 Main 使用隔离的 `WebContentsView` 和非默认 session。�
 
 ## Review 与可访问性
 
-现有 Git Review 迁入统一工作区，仍支持来源切换、刷新、diff、暂存、取消暂存、恢复和 turn patch。Diff 保持在左、变更文件树在右；文件树带搜索、`tree/treeitem` 语义和选中状态。统一标签栏使用 `tablist/tab/tabpanel`，支持方向键、Home/End 和 Escape 关闭 `+` 菜单。
+Review 将所有变更堆叠为一条纵向 diff 流，文本差异使用 `@pierre/diffs`，变更文件树使用 `@pierre/trees`。`未提交` 只在 Renderer 并行组合 staged/unstaged 快照；每个 section 保留原始 source、generation 和 revision，所有写操作仍通过 Main 校验。
+
+- 来源菜单支持上一轮、未提交、未暂存、已暂存、提交和分支；提交/分支列表可搜索，不能加载时可重试。
+- 文件树在右侧，支持本地筛选、宽度拖动、窄屏自动折叠、右键复制路径和工作树文件能力校验后的预览/系统打开。
+- 跳转到文件、树筛选、`Cmd/Ctrl+F` 内容搜索是三个独立状态。内容搜索经过带上限的 typed Git IPC，切换来源或 generation 后丢弃旧结果。
+- 分支对比可将文件标为已查看；标记按仓库、来源、文件路径和完整 revision 集合隔离。
+- 暂存、取消暂存、还原支持 section、file 和 hunk。还原首次要求确认；本地提交成功后刷新快照。真实 push/认证/PR 不在此范围。
+
+### 富预览
+
+Markdown、PNG、JPEG、GIF、WebP 和 PDF 可预览。内容经 shared schema、preload、Main 和 `LocalGitService` 校验 source、snapshot generation 和 file revision；历史来源与不支持二进制字节传输的远程 host 不会回退读取当前本地文件。工作树读取在 Main 限制为 5 MiB，并解析真实路径后拒绝仓库外目标，避免 symlink 越界读取。
+
+PDF 固定版本为 `react-pdf` `10.4.1` 与 `pdfjs-dist` `5.4.296`。worker 从 `pdfjs-dist/build/pdf.worker.min.mjs` 经 Vite 的 `new URL(..., import.meta.url)` 打包为本地资源。生产构建必须通过 `npm --prefix desktop-app run verify:pdf-worker-bundle`；升级两者前需要重新确认 React-PDF/PDF.js 兼容性并运行 `npm --prefix desktop-app run test:e2e:packaged`，其中会启动打包应用并渲染真实的本地 PDF 审阅预览。
 
 ## 验证
 
@@ -50,6 +62,8 @@ npm --prefix desktop-app run typecheck:web
 npx --prefix desktop-app vitest run src/main/rightWorkspace src/renderer/src/components/right-workspace
 npx --prefix desktop-app playwright test tests/e2e/right-workspace.e2e.ts --reporter=line
 npm --prefix desktop-app exec electron-vite build
+npm --prefix desktop-app run verify:pdf-worker-bundle
+npm --prefix desktop-app run test:e2e:packaged
 ```
 
-端到端用例创建临时本地 Git 项目，从真实会话依次打开 Files、Browser、Terminal 和 Review，并保存桌面与窄宽度截图作为回归证据。
+端到端用例创建临时本地 Git 项目，从真实会话依次打开 Files、Browser、Terminal 和 Review，并保存桌面与窄宽度截图作为回归证据。参考 Review 截图、裁剪信息和 SHA-256 保存在 `desktop-app/tests/e2e/fixtures/review/screenshots/`，不依赖临时剪贴板路径。

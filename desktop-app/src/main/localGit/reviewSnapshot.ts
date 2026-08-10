@@ -148,19 +148,22 @@ export async function computeFileRevision({
 export async function getDiffForSource({
   gitRoot,
   source,
-  path
+  path,
+  options
 }: {
   gitRoot: GitExecutionTarget
   source: LocalGitReviewSource
   path?: string
+  options?: { ignoreWhitespace: boolean; fullFiles: boolean }
 }): Promise<string> {
+  const displayArgs = reviewDiffDisplayArgs(options)
   const pathArgs = path ? ['--', path] : []
-  const diffArgs = diffArgsForSource(source, ['--binary', ...pathArgs])
+  const diffArgs = diffArgsForSource(source, ['--binary', ...displayArgs, ...pathArgs])
   const trackedDiff = (
     await runSourceDiff(
       gitRoot,
       'diff',
-      [JSON.stringify(source), path ?? 'all'],
+      [JSON.stringify(source), path ?? 'all', ...displayArgs],
       diffArgs,
       path ? [path] : undefined
     )
@@ -171,8 +174,44 @@ export async function getDiffForSource({
   const untrackedDiffs = await Promise.all(
     untrackedPaths.map(async (untrackedPath) => {
       if (!(await isUntrackedPath(gitRoot, untrackedPath))) return ''
-      return untrackedDiff(gitRoot, untrackedPath, ['--binary'])
+      return untrackedDiff(gitRoot, untrackedPath, ['--binary', ...displayArgs])
     })
+  )
+  return [trackedDiff, ...untrackedDiffs].filter(Boolean).join('\n')
+}
+
+function reviewDiffDisplayArgs(
+  options: { ignoreWhitespace: boolean; fullFiles: boolean } | undefined
+): string[] {
+  if (!options) return []
+  return [
+    ...(options.ignoreWhitespace ? ['--ignore-all-space'] : []),
+    ...(options.fullFiles ? ['--unified=2147483647'] : [])
+  ]
+}
+
+export async function getSearchDiffForSource({
+  gitRoot,
+  source
+}: {
+  gitRoot: GitExecutionTarget
+  source: LocalGitReviewSource
+}): Promise<string> {
+  if (source.type === 'last-turn') return ''
+  const trackedDiff = (
+    await runSourceDiff(
+      gitRoot,
+      'search-diff',
+      [JSON.stringify(source)],
+      diffArgsForSource(source, ['--unified=3'])
+    )
+  ).stdout
+  if (source.type !== 'unstaged') return trackedDiff
+
+  const untrackedDiffs = await Promise.all(
+    (await listUntrackedPaths(gitRoot)).map((untrackedPath) =>
+      untrackedDiff(gitRoot, untrackedPath, ['--unified=3'])
+    )
   )
   return [trackedDiff, ...untrackedDiffs].filter(Boolean).join('\n')
 }

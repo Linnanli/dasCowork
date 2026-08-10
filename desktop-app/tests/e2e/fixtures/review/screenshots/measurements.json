@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "capturedAt": "2026-08-09",
+  "theme": "dark",
+  "deviceScaleFactor": 2,
+  "fontFamily": "system-ui",
+  "notes": [
+    "These are the supplied reference captures. Their physical pixel dimensions differ from the filename requested by the plan; the recorded dimensions and SHA-256 values are authoritative.",
+    "Crop boxes are expressed in physical image pixels and isolate stable geometry for later Playwright visual comparisons."
+  ],
+  "screenshots": {
+    "collapsedTree": {
+      "file": "codex-review-collapsed-tree-dark-1460x2048.png",
+      "sha256": "55217a548b3394262c948ac26cf9262966d24472067a5cea29b690dff62532c9",
+      "pixelSize": { "width": 1462, "height": 1600 },
+      "cropBoxes": {
+        "toolbar": { "x": 0, "y": 0, "width": 1462, "height": 86 },
+        "fileRows": { "x": 0, "y": 86, "width": 964, "height": 200 },
+        "fileTree": { "x": 964, "y": 86, "width": 498, "height": 470 }
+      }
+    },
+    "sourceMenu": {
+      "file": "codex-review-source-menu-dark-1460x2048.png",
+      "sha256": "15ac50b618b3aadd3dacd518e1ebdabef2aaf6705e9a7feb921d9a29e74309bc",
+      "pixelSize": { "width": 1460, "height": 1780 },
+      "cropBoxes": {
+        "toolbar": { "x": 0, "y": 0, "width": 1460, "height": 86 },
+        "sourceMenu": { "x": 18, "y": 18, "width": 398, "height": 452 },
+        "fileTree": { "x": 956, "y": 86, "width": 504, "height": 470 }
+      }
+    }
+  },
+  "keyMeasurements": {
+    "toolbarHeight": 86,
+    "fileTreeLeft": 964,
+    "fileTreeWidth": 498,
+    "fileRowHeight": 66,
+    "treeSearchHeight": 56
+  }
+}

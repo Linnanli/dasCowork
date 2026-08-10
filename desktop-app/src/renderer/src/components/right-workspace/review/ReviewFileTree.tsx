@@ -1,0 +1,251 @@
+import { FileTree, useFileTree } from '@pierre/trees/react'
+import { SearchIcon } from 'lucide-react'
+import { useEffect, useMemo, useRef } from 'react'
+
+import { Input } from '@/components/ui/input'
+import { useOptionalRightWorkspace } from '@/components/right-workspace'
+import { cn } from '@/lib/utils'
+import { FILE_WORKSPACE_API_VERSION } from '../../../../../shared/fileWorkspaceApi'
+import {
+  buildReviewFileTreeModel,
+  filterReviewGroups
+} from './reviewFileTreeModel'
+import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
+
+const reviewFileTreeUnsafeCss = `
+:host {
+  --tree-bg: transparent;
+  --tree-fg: var(--foreground);
+  --tree-muted-fg: var(--muted-foreground);
+  --tree-hover-bg: var(--accent);
+  --tree-selected-bg: color-mix(in srgb, var(--accent) 70%, transparent);
+  --tree-font-size: 12px;
+}
+`
+
+type Props = {
+  controller: ReviewWorkspaceController
+}
+
+export function ReviewFileTree({ controller }: Props): React.JSX.Element | null {
+  const workspace = useOptionalRightWorkspace()
+  const callbacksRef = useRef({ controller })
+  const filteredGroups = useMemo(
+    () =>
+      filterReviewGroups(
+        controller.loadState.status === 'ready' ? controller.loadState.groups : [],
+        controller.preferences.treeFilter
+      ),
+    [controller.loadState, controller.preferences.treeFilter]
+  )
+  const treeModel = useMemo(() => buildReviewFileTreeModel(filteredGroups), [filteredGroups])
+  const initialSelectedPaths = useMemo(
+    () => (controller.selectedPath ? [controller.selectedPath] : []),
+    // Selection is synchronized after construction.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+  const canOpenWorktreeFile =
+    controller.displaySource.type === 'uncommitted' ||
+    controller.displaySource.type === 'unstaged' ||
+    controller.displaySource.type === 'staged'
+  const treeOptions = useMemo(
+    () => ({
+      composition: {
+        contextMenu: {
+          enabled: true,
+          onOpen: (
+            item: { kind: 'directory' | 'file'; name: string; path: string },
+            context: { close(): void }
+          ) => {
+            context.close()
+            if (item.kind !== 'file') return
+            void showNativeReviewFileMenu({
+              path: item.path,
+              name: item.name,
+              target: controller.target,
+              canOpenWorktreeFile,
+              openFile: workspace?.openFile
+            })
+          },
+          triggerMode: 'right-click' as const
+        }
+      },
+      fileTreeSearchMode: 'hide-non-matches' as const,
+      flattenEmptyDirectories: true,
+      gitStatus: treeModel.gitStatus,
+      icons: { colored: true, set: 'complete' as const },
+      id: 'review-file-tree',
+      initialSelectedPaths,
+      itemHeight: 29,
+      onSelectionChange: (paths: readonly string[]) => {
+        const selected = paths.at(-1)
+        if (!selected || selected.endsWith('/')) return
+        callbacksRef.current.controller.setSelectedPath(selected)
+        document.querySelector(`[data-review-path="${cssEscape(selected)}"]`)?.scrollIntoView({
+          block: 'start'
+        })
+      },
+      paths: treeModel.paths,
+      renderRowDecoration: ({ item }) => {
+        const group = treeModel.entriesByTreePath.get(item.path)?.group
+        return group && callbacksRef.current.controller.isViewed(group)
+          ? { text: '已查看', title: '此文件已标记为查看' }
+          : null
+      },
+      renaming: false,
+      search: false,
+      stickyFolders: true,
+      unsafeCSS: reviewFileTreeUnsafeCss
+    }),
+    [canOpenWorktreeFile, controller.target, initialSelectedPaths, treeModel, workspace?.openFile]
+  )
+  const { model } = useFileTree({
+    ...treeOptions
+  })
+
+  useEffect(() => {
+    callbacksRef.current = { controller }
+  }, [controller])
+
+  useEffect(() => {
+    model.resetPaths(treeModel.paths)
+    model.setGitStatus(treeModel.gitStatus)
+  }, [model, treeModel.gitStatus, treeModel.paths])
+
+  useEffect(() => {
+    const selectedPath = controller.activePath
+    if (!selectedPath) return
+    const frame = window.requestAnimationFrame(() => {
+      const item = model.getItem(selectedPath)
+      if (item) {
+        item.select()
+        model.scrollToPath(selectedPath, { focus: false, offset: 'nearest' })
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [controller.activePath, model, treeModel.paths])
+
+  if (!controller.treeVisible) return null
+
+  return (
+    <aside
+      aria-label="Review file tree"
+      className="relative flex min-h-0 shrink-0 flex-col border-l bg-background"
+      style={{ width: controller.preferences.treeWidth }}
+    >
+      <div
+        role="separator"
+        aria-label="调整文件树宽度"
+        aria-orientation="vertical"
+        className="absolute -left-1 z-10 h-full w-2 cursor-col-resize touch-none"
+        onPointerDown={(event) => startResize(event, controller)}
+      />
+      <div className="border-b p-2">
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="筛选文件"
+            className="h-7 pl-7 text-xs"
+            placeholder="筛选文件..."
+            value={controller.preferences.treeFilter}
+            onChange={(event) => controller.setTreeFilter(event.currentTarget.value)}
+          />
+        </div>
+      </div>
+      <FileTree
+        model={model}
+        className={cn('min-h-0 flex-1 text-xs')}
+        data-review-file-tree="true"
+      />
+    </aside>
+  )
+}
+
+async function showNativeReviewFileMenu({
+  path,
+  name,
+  target,
+  canOpenWorktreeFile,
+  openFile
+}: {
+  path: string
+  name: string
+  target: ReviewWorkspaceController['target']
+  canOpenWorktreeFile: boolean
+  openFile?: (relativePath: string, title?: string) => void
+}): Promise<void> {
+  const capability = canOpenWorktreeFile && target ? await verifyCurrentWorktreeFile(target, path) : undefined
+  const enabled = Boolean(capability && openFile)
+  const action = await window.desktopApp.nativeContextMenu.show([
+    { id: 'preview', label: '预览', type: 'action', enabled },
+    { id: 'open-pinned', label: '固定打开', type: 'action', enabled },
+    { type: 'separator' },
+    { id: 'copy-relative-path', label: '复制相对路径', type: 'action' },
+    { id: 'open-with-system', label: '使用系统应用打开', type: 'action', enabled }
+  ])
+  if (action === 'copy-relative-path') {
+    await navigator.clipboard.writeText(path).catch(() => undefined)
+    return
+  }
+  if (action === 'preview' || action === 'open-pinned') {
+    openFile?.(path, name)
+    return
+  }
+  if (action === 'open-with-system' && capability) {
+    await window.desktopApp.workspace.files.openWithSystem({
+      version: FILE_WORKSPACE_API_VERSION,
+      rootId: capability.rootId,
+      path
+    })
+  }
+}
+
+async function verifyCurrentWorktreeFile(
+  target: NonNullable<ReviewWorkspaceController['target']>,
+  path: string
+): Promise<{ rootId: string } | undefined> {
+  try {
+    const root = await window.desktopApp.workspace.files.prepareRoot({
+      workspaceId: 'review-context-menu',
+      target: {
+        conversationId: target.conversationId,
+        ...(target.threadId ? { threadId: target.threadId } : {})
+      }
+    })
+    const metadata = await window.desktopApp.workspace.files.metadata({
+      version: FILE_WORKSPACE_API_VERSION,
+      rootId: root.rootId,
+      path
+    })
+    return metadata.entry.kind === 'file' ? { rootId: root.rootId } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function startResize(event: React.PointerEvent<HTMLDivElement>, controller: ReviewWorkspaceController): void {
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = controller.preferences.treeWidth
+  const pointerId = event.pointerId
+  const element = event.currentTarget
+  element.setPointerCapture(pointerId)
+  const onPointerMove = (moveEvent: PointerEvent): void => {
+    controller.setTreeWidth(startWidth - (moveEvent.clientX - startX))
+  }
+  const stop = (): void => {
+    window.removeEventListener('pointermove', onPointerMove)
+    window.removeEventListener('pointerup', stop)
+    window.removeEventListener('pointercancel', stop)
+  }
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', stop, { once: true })
+  window.addEventListener('pointercancel', stop, { once: true })
+}
+
+function cssEscape(value: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : value.replace(/"/gu, '\\"')
+}

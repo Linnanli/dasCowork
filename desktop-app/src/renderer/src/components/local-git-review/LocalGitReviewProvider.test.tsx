@@ -16,10 +16,6 @@ vi.mock('./GitRepositoryProvider', () => ({
   useGitRepository: () => ({ target })
 }))
 
-vi.mock('./LocalGitReviewPanel', () => ({
-  LocalGitReviewPanel: () => null
-}))
-
 import { LocalGitReviewProvider, useLocalGitReview } from './LocalGitReviewProvider'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true

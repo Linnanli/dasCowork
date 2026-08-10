@@ -118,7 +118,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-02 returns an empty snapshot for a repository without a HEAD commit", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-02 renders an empty repository snapshot and keeps review controls available", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-02 renders an empty repository snapshot and keeps review controls available", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-02 opens an empty repository without a HEAD commit", "layer": "mock-e2e"}
         ]
       },
@@ -139,7 +139,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-04 reports a pure rename with its original path even when Git rename detection is disabled", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
         ]
       },
@@ -150,7 +150,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
         ]
       },
@@ -161,7 +161,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
         ]
       },
@@ -172,7 +172,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 classifies staged copies, type changes, binary files, and gitlinks", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
         ]
       },
@@ -183,7 +183,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/LocalGitService.integration.test.ts", "testName": "P004-EDGE-08/P004-EDGE-09/P004-EDGE-13 safely unstages a gitlink and reports a partial staged revert without overwriting drift", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08 identifies binary, renamed, copied, type-changed, and gitlink files in the real review panel", "layer": "mock-e2e"}
         ]
       },
@@ -194,7 +194,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/LocalGitService.test.ts", "testName": "P004-EDGE-09/P004-EDGE-10 rejects review mutation after the file revision drifts", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the panel, and does not retry the write", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the review, and does not retry the write", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
         ]
       },
@@ -205,7 +205,7 @@
         "requiredLayer": ["integration", "desktop-unit"],
         "evidence": [
           {"file": "src/main/localGit/LocalGitService.test.ts", "testName": "P004-EDGE-09/P004-EDGE-10 rejects review mutation after the file revision drifts", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the panel, and does not retry the write", "layer": "desktop-unit"}
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-09/P004-EDGE-10 rejects a stale mutation, refreshes the review, and does not retry the write", "layer": "desktop-unit"}
         ]
       },
       {
@@ -226,7 +226,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/reviewSnapshot.test.ts", "testName": "P004-EDGE-12 marks an unresolved merge as conflicted", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
         ]
       },
@@ -237,7 +237,7 @@
         "requiredLayer": ["integration", "desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/LocalGitService.integration.test.ts", "testName": "P004-EDGE-08/P004-EDGE-09/P004-EDGE-13 safely unstages a gitlink and reports a partial staged revert without overwriting drift", "layer": "integration"},
-          {"file": "src/renderer/src/components/local-git-review/LocalGitReviewPanel.test.tsx", "testName": "P004-EDGE-13 keeps partial-success feedback and conflict paths visible after refreshing the snapshot", "layer": "desktop-unit"},
+          {"file": "src/renderer/src/components/right-workspace/review/ReviewWorkspace.test.tsx", "testName": "P004-EDGE-13 keeps partial-success feedback with applied and conflict paths", "layer": "desktop-unit"},
           {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful index revert and shows a worktree conflict", "layer": "mock-e2e"}
         ]
       }

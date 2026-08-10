@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { copyFile, mkdtemp, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdtemp, open, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, posix } from 'node:path'
 
@@ -9,7 +9,7 @@ import {
   type CodexCommandExecResult
 } from '@janole/ai-sdk-provider-codex-asp'
 
-import type { GitHost, GitRunOptions, GitRunResult } from './GitManager'
+import type { GitBytesResult, GitHost, GitRunOptions, GitRunResult } from './GitManager'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -91,6 +91,32 @@ export class LocalGitHost implements GitHost {
 
   runGit(args: readonly string[], cwd: string, options: GitRunOptions = {}): Promise<GitRunResult> {
     return runLocalCommand(['git', ...args], cwd, options)
+  }
+
+  runGitBytes(args: readonly string[], cwd: string, options: GitRunOptions = {}): Promise<GitBytesResult> {
+    return runLocalCommandBytes(['git', ...args], cwd, options)
+  }
+
+  async readFileBytes(
+    path: string,
+    options: { maxBytes?: number; signal?: AbortSignal } = {}
+  ): Promise<Uint8Array> {
+    options.signal?.throwIfAborted()
+    if (options.maxBytes === undefined) return readFile(path)
+    const file = await open(path, 'r')
+    try {
+      options.signal?.throwIfAborted()
+      const buffer = Buffer.allocUnsafe(options.maxBytes)
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+      return buffer.subarray(0, bytesRead)
+    } finally {
+      await file.close()
+    }
+  }
+
+  async realpathFile(path: string, options: { signal?: AbortSignal } = {}): Promise<string> {
+    options.signal?.throwIfAborted()
+    return realpath(path)
   }
 
   createTempDirectory(prefix: string, options: { signal?: AbortSignal } = {}): Promise<string> {
@@ -446,6 +472,89 @@ function runLocalCommand(
       })
     )
 
+    options.signal?.addEventListener('abort', abort, { once: true })
+    if (options.signal?.aborted) {
+      abort()
+      return
+    }
+    child.stdin.end(options.input)
+  })
+}
+
+function runLocalCommandBytes(
+  command: readonly string[],
+  cwd: string,
+  options: GitRunOptions
+): Promise<GitBytesResult> {
+  const [executable, ...args] = command
+  if (!executable) {
+    return Promise.resolve({ success: false, code: null, stdout: new Uint8Array(), stderr: 'Empty command' })
+  }
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
+  return new Promise((resolveResult) => {
+    const child = spawn(executable, args, {
+      cwd,
+      env: {
+        ...process.env,
+        LC_MESSAGES: 'C',
+        LANGUAGE: 'C',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_OPTIONAL_LOCKS: '0',
+        ...options.env
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
+    })
+    const chunks: Buffer[] = []
+    let stderr = ''
+    let outputBytes = 0
+    let settled = false
+    const finish = (result: GitBytesResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      options.signal?.removeEventListener('abort', abort)
+      resolveResult(result)
+    }
+    const abort = (): void => {
+      child.kill('SIGKILL')
+      finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git process aborted' })
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish({
+        success: false,
+        code: null,
+        stdout: Buffer.concat(chunks),
+        stderr: `git process timed out after ${String(timeoutMs)}ms`
+      })
+    }, timeoutMs)
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (settled) return
+      outputBytes += chunk.length
+      if (outputBytes > maxOutputBytes) {
+        child.kill('SIGKILL')
+        finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git output exceeded limit' })
+        return
+      }
+      chunks.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (settled) return
+      stderr += chunk.toString('utf8')
+      outputBytes += chunk.length
+      if (outputBytes > maxOutputBytes) {
+        child.kill('SIGKILL')
+        finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git output exceeded limit' })
+      }
+    })
+    child.on('error', (error) =>
+      finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: error.message })
+    )
+    child.on('close', (code) =>
+      finish({ success: code === 0, code, stdout: Buffer.concat(chunks), stderr })
+    )
     options.signal?.addEventListener('abort', abort, { once: true })
     if (options.signal?.aborted) {
       abort()

@@ -3,9 +3,9 @@
 ## Source of truth
 
 - Status: Active
-- Last refreshed: 2026-08-04
+- Last refreshed: 2026-08-09
 - Primary product surfaces: Electron desktop shell, conversation view, composer, project sidebar, and the right-side Review/Terminal/Browser/Files workspace.
-- Evidence reviewed: `AGENTS.md`, `.omx/plans/projectless-composer-project-picker-plan.md`, `.omx/plans/p0-06-approval-and-structured-input-parity.md`, `.omx/plans/app-server-approval-pending-full-parity-plan.md`, `.omx/plans/codex-right-workspace-implementation-plan.md`, `docs/design/codex-right-workspace-ui-spec.svg`, `desktop-app/src/renderer/src/App.tsx`, `desktop-app/src/renderer/src/assets/styles/globals.css`, `desktop-app/src/renderer/src/components/local-git-review/`, `desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx`, `desktop-app/src/renderer/src/components/assistant-ui/composer-add-context-popover.tsx`, `desktop-app/src/renderer/src/projects/ComposerProjectCard.tsx`, the user-provided Codex right-workspace screenshots, the v2 request contracts in `codex/codex-rs/app-server-protocol/src/protocol/`, and corresponding surfaces in `reference-projects/codex-electron-26.707.72221-beautified`, `reference-projects/openwork`, and `reference-projects/AionUi`.
+- Evidence reviewed: `AGENTS.md`, `.omx/plans/projectless-composer-project-picker-plan.md`, `.omx/plans/p0-06-approval-and-structured-input-parity.md`, `.omx/plans/app-server-approval-pending-full-parity-plan.md`, `.omx/plans/codex-right-workspace-implementation-plan.md`, `docs/design/codex-right-workspace-ui-spec.svg`, `desktop-app/src/renderer/src/App.tsx`, `desktop-app/src/renderer/src/assets/styles/globals.css`, `desktop-app/src/renderer/src/components/local-git-review/`, `desktop-app/src/renderer/src/components/right-workspace/files/`, `desktop-app/src/renderer/src/components/assistant-ui/server-request-panel.tsx`, `desktop-app/src/renderer/src/components/assistant-ui/composer-add-context-popover.tsx`, `desktop-app/src/renderer/src/projects/ComposerProjectCard.tsx`, the user-provided Review screenshots `codex-clipboard-08b95ec2-f405-405a-90ed-c89612cd6655.png` and `codex-clipboard-20d0b46c-e54b-41ac-b8ee-ecde288056ec.png`, the v2 request contracts in `codex/codex-rs/app-server-protocol/src/protocol/`, and corresponding surfaces in `reference-projects/codex-electron-26.707.72221-beautified`, `reference-projects/openwork`, and `reference-projects/AionUi`.
 
 ## Brand
 
@@ -75,7 +75,9 @@
 
 - Existing components to reuse: `Button`, `Popover`, `Command`, assistant-ui composer controls, the
   `aui-composer-context-panel` visual pattern, the shared `ServerRequestPanel` card shell, existing Git review
-  services/`DiffViewer`, semantic tokens, and shared scroll/focus primitives.
+  services, `@pierre/diffs`, `@pierre/trees`, the Files-workspace preview primitives, semantic tokens, and shared
+  scroll/focus primitives. The assistant-message `DiffViewer` remains for its current consumers; the Review
+  workspace uses Pierre's diff renderer instead of extending that custom parser.
 - New/changed components: On unbound drafts, the Composer project picker follows the same panel, section-label,
   and list-row styling as `aui-composer-context-panel`; approval requests use a shared footer card shell
   across command, file, network, permission, tool-input, and MCP request types. Permission details are shared
@@ -110,7 +112,8 @@
 - Layout adaptations: Floating panels must remain inside collision padding and scroll internally when height is constrained;
   approval cards fill the thread content width up to 48rem, cap command content at 320px and file lists at 200px,
   and stack action buttons below a 448px request-card container. The right workspace defaults to 560px, clamps to
-  360px–`min(960px, 70vw)`, hides the Files tree below 720px pane width, and hides the Review tree below 760px.
+  360px–`min(960px, 70vw)`, hides the Files tree below 720px pane width, and collapses the Review tree below 760px.
+  At wider Review widths, the tree defaults to 32% and is user-resizable from 200px up to 60% of the workspace.
 - Touch/hover differences: Desktop hover is enhanced, but click and keyboard interaction remain complete.
 
 ## Right workspace visual contract
@@ -135,6 +138,60 @@
   horizontal midpoint to resolve before/after placement. Never interpret a gap in a non-empty strip as the first slot.
   Escape, window blur, lost pointer capture, pointer cancellation, and leaving the window all cancel the interaction and
   remove every drag layer immediately.
+
+## Review workspace contract
+
+- Source header: The left side starts with a compact source selector, then aggregate additions/deletions. The selector
+  order is `上一轮`, `未提交`, `未暂存`, `已暂存`, separator, `已提交`, `分支`. `已提交` and `分支` open bounded searchable
+  secondary lists and retain loading, empty, error, and retry states. The supplied screenshot is authoritative for the
+  combined `未提交` entry even though the inspected 26.707 bundle exposes staged and unstaged as separate backend sources.
+- Header controls: The right side contains refresh/more options, split/unified mode, expand/collapse all, changed-file
+  search/jump, rich-preview settings, the show/hide-files toggle, and the commit control. Every icon has a tooltip,
+  accessible name, pressed state when applicable, and a stable disabled state while its capability is unavailable.
+- Search boundaries: Header “jump to file” fuzzy-matches the current changed-file paths and scrolls locally; the right-tree
+  “filter files” field only hides tree nodes; `Cmd/Ctrl+F` searches paths and patch hunks through the current Review
+  snapshot. These are three separate states. Review content search is capped at 250 returned matches, exposes the total
+  and capped state, ignores generated files, and discards results when source/generation changes.
+- Diff surface: Changed files render as one vertically scrollable stack. Each file keeps a sticky/collapsible 42px header
+  with file icon, elided parent path, readable file name, additions/deletions, binary/conflict state, and file actions.
+  Text patches render through `@pierre/diffs` with unified/split, wrap/scroll, word-diff, whitespace, hunk separator,
+  full-file, and expand/collapse preferences. A tree selection scrolls to the matching file; scrolling the stack updates
+  tree selection. Large reviews switch to an explicit single-file loading mode instead of eagerly rendering every patch.
+- Combined uncommitted source: `未提交` is a renderer composition of the existing staged and unstaged snapshots. A path
+  present in both appears once in the tree and one file group in the stack, but retains separate staged/unstaged sections,
+  snapshot generations, revisions, and mutation targets. Renderer aggregation must never manufacture one unsafe patch.
+- Changed-file tree: Use `@pierre/trees` with flattened single-child directories, colored file icons, Git status,
+  29–32px rows, rounded selected rows, directory expansion, local filter search, and a resize handle on the left edge.
+  The tree stays on the right, defaults to 32%, clamps to 200px–60%, remembers width/visibility, and collapses behind the
+  toolbar toggle below 760px rather than squeezing the diff below a readable width.
+- Tree actions and viewed state: A file context menu always copies the repository-relative path. Files-workspace preview,
+  pinned open, and system “Open with” are capability-gated to a verified current-worktree file; a historical source with
+  no current file keeps only copy-path enabled instead of opening unrelated disk content.
+  In branch comparison, file headers with stable revisions can be marked viewed/unviewed. The marker is scoped by
+  repository, source, path, and the complete section revision set; any revision change resets the file to unviewed and
+  the tree exposes the same state without color alone. Other sources do not display a non-functional viewed action.
+- Rich preview: Show the option only for Markdown, supported images, and PDF. Markdown reuses the application's safe
+  Markdown renderer, images use a native `<img>`, and PDF uses a PDF.js-backed viewer when strict reference parity is
+  implemented. Review content is read from the selected Git snapshot/blob through Main/preload with byte and MIME limits;
+  historical content must not be approximated by the current working-tree file. Other binary, audio, video, archive,
+  gitlink, and unknown types receive a specific unsupported/binary state and fall back to their diff summary. Last-turn
+  preview also falls back to its patch unless an immutable Git object can be validated for that turn.
+- PDF dependency gate: Before production PDF UI is written, validate an exact compatible `react-pdf`/`pdfjs-dist` pair
+  against the repository's Electron, Vite, React, ESM, and CSP setup. Pin both exact versions, bundle the worker locally,
+  and require development, production-build, and offline packaged-app smoke tests; no CDN worker URL is allowed.
+- Primary action boundary: The toolbar mirrors the compact `提交或推送` control. Existing local commit behavior may be
+  wired into it. Network push, remote authentication, and pull-request creation are separate capabilities and must not be
+  implied by an enabled button until their Main-process contracts exist.
+- Empty/error/loading states: Preserve the toolbar and pane geometry while refreshing. Provide source-specific empty copy,
+  inline retry, stale-snapshot recovery, binary/conflict/rename/type-change states, and a visible large-diff explanation.
+  The last successfully loaded stack remains visible during background refresh and becomes non-mutating when stale.
+- Visual measurements: In the supplied dark screenshots, the toolbar and file headers share compact one-row density,
+  separators are 1px semantic borders, tree search has an approximately 36px control height, selected tree rows use a
+  rounded muted surface, and content remains edge-to-edge without nested cards or shadows.
+- Visual baseline storage: Persist the two supplied 1460×2048 dark references under
+  `desktop-app/tests/e2e/fixtures/review/screenshots/` as `codex-review-collapsed-tree-dark-1460x2048.png` and
+  `codex-review-source-menu-dark-1460x2048.png`. A sibling `measurements.json` records SHA-256, viewport, DPR, fonts,
+  crop boxes, and key measurements so tests never depend on temporary clipboard paths.
 
 ## Interaction states
 
@@ -172,7 +229,12 @@
 - Framework/styling system: React, assistant-ui, Radix/shadcn primitives, Tailwind CSS v4, and semantic theme tokens.
 - Design-token constraints: Reuse existing semantic tokens and composer patterns before adding raw colors or new layers.
 - Performance constraints: Keep filtering local and avoid filesystem/network work in renderer presentation code.
+- Review performance constraints: Fetch patches lazily with bounded concurrency, cache by source + snapshot generation +
+  file revision, cancel/ignore stale work on source changes, and use single-file mode for service-declared large reviews.
 - Compatibility constraints: Renderer accesses desktop capabilities only through the preload bridge; do not modify Codex app-server.
+- Review dependency constraints: `@pierre/diffs` and `@pierre/trees` are the canonical diff/tree components. Markdown and
+  image previews reuse current application primitives. Add `react-pdf`/`pdfjs-dist` only as the explicit PDF parity slice,
+  with a pinned worker configuration and packaged-build test; do not add a generic binary-viewer dependency.
 - Workspace visual constraint: Product code must implement the dimensions, content order, and adaptive tree behavior in
   the right-workspace visual contract; static SVG hex values are illustrative and must map to semantic theme tokens.
 - Approval-shell constraint: Every approval and pending-request type enters through `ServerRequestPanel` and reuses
@@ -188,3 +250,4 @@
 ## Open questions
 
 - [ ] Whether all composer-attached floating panels should share a dedicated reusable primitive after more than two consumers need the pattern.
+- [ ] Whether authenticated `git push` should become part of the Review toolbar milestone or remain a separately approved remote-Git capability; until resolved, the control must not promise a working push.

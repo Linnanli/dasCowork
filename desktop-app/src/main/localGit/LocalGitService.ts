@@ -4,11 +4,12 @@ import { posix, relative, resolve, win32 } from 'node:path'
 import type { ProjectService } from '../projects/ProjectService'
 import {
   LOCAL_GIT_PATCH_MAX_CHARACTERS,
+  LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS,
   LOCAL_GIT_TURN_PATCH_MAX_BATCHES
 } from '../../shared/localGitApi'
 import { applyGitPatch } from './applyPatch'
 import { isGitCliError, runCachedGitRead, runGit } from './gitCli'
-import { GitManager, type WorktreeRepository } from './GitManager'
+import { GitManager, GitReviewSnapshotStaleError, type WorktreeRepository } from './GitManager'
 import { GitHostRegistry } from './GitHostRegistry'
 import {
   GitRepositoryTargetResolver,
@@ -19,11 +20,13 @@ import {
   computeWorkspaceStateHash,
   createReviewSnapshot,
   getDiffForSource,
+  getSearchDiffForSource,
   InMemorySnapshotGenerationStore,
   listReviewFiles,
   type SnapshotGenerationRecord,
   type SnapshotGenerationStore
 } from './reviewSnapshot'
+import { readReviewFileContent } from './reviewFileContent'
 import {
   assertSafeRepoRelativePath,
   extractFilePatch,
@@ -36,9 +39,15 @@ import type {
   LocalGitRefreshReviewFilesRequest,
   LocalGitMergeBase,
   LocalGitReviewFile,
+  LocalGitGetReviewApplyCommandRequest,
+  LocalGitGetReviewFileContentRequest,
+  LocalGitReviewApplyCommand,
+  LocalGitReviewFileContent,
   LocalGitReviewFilesRefresh,
   LocalGitReviewMutationRequest,
+  LocalGitReviewSearchResult,
   LocalGitReviewSnapshot,
+  LocalGitSearchReviewRequest,
   LocalGitSummary,
   LocalGitTarget,
   TurnPatchRequest
@@ -216,6 +225,7 @@ export class LocalGitService {
     source: LocalGitReviewSnapshot['source']
     snapshotGeneration: string
     file: { path: string; previousPath?: string; revision: string }
+    options?: { ignoreWhitespace: boolean; fullFiles: boolean }
   }): Promise<{
     snapshotGeneration: string
     file: LocalGitReviewFile
@@ -250,7 +260,8 @@ export class LocalGitService {
       diff: await getDiffForSource({
         gitRoot: repository,
         source: input.source,
-        path: input.file.path
+        path: input.file.path,
+        options: input.options
       })
     }))
     if (currentRevision !== input.file.revision) throw new Error('stale-snapshot')
@@ -262,6 +273,108 @@ export class LocalGitService {
       truncated,
       binary: file.binary,
       conflicted: file.conflicted
+    }
+  }
+
+  async getReviewApplyCommand(
+    input: LocalGitGetReviewApplyCommandRequest
+  ): Promise<LocalGitReviewApplyCommand> {
+    if (input.source.type === 'last-turn') {
+      throw new Error('上一轮没有可验证的完整 Git patch。')
+    }
+    const { repository } = await this.resolveTrustedRepository(input.target)
+    const record = this.snapshots.get(input.snapshotGeneration)
+    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
+    if (
+      !record ||
+      record.gitRoot !== repository.root ||
+      !reviewGeneration ||
+      reviewGeneration.hostId !== repository.host.id ||
+      !sameReviewSource(record.source, input.source)
+    ) {
+      throw new Error('stale-snapshot')
+    }
+    const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
+    const patch = await snapshot.read(() =>
+      getDiffForSource({ gitRoot: repository, source: input.source })
+    )
+    if (!patch.trim()) throw new Error('当前来源没有可导出的 patch。')
+    if (patch.length > LOCAL_GIT_PATCH_MAX_CHARACTERS) {
+      throw new Error('完整 patch 超出安全导出上限。')
+    }
+    validateGitPatch(patch)
+    return {
+      snapshotGeneration: input.snapshotGeneration,
+      source: input.source,
+      command: reviewApplyCommand(patch)
+    }
+  }
+
+  async searchReview(input: LocalGitSearchReviewRequest): Promise<LocalGitReviewSearchResult> {
+    const query = input.query.trim()
+    if (!query) return emptyReviewSearchResult(input)
+    const { repository } = await this.resolveTrustedRepository(input.target)
+    const record = this.snapshots.get(input.snapshotGeneration)
+    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
+    if (
+      !record ||
+      record.gitRoot !== repository.root ||
+      !reviewGeneration ||
+      reviewGeneration.hostId !== repository.host.id ||
+      !sameReviewSource(record.source, input.source)
+    ) {
+      throw new Error('stale-snapshot')
+    }
+    const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
+    const searchablePaths = new Set(
+      [...record.files.values()]
+        .filter((file) => !file.binary && !isGeneratedReviewPath(file.path))
+        .map((file) => file.path)
+    )
+    const diff = await snapshot.read(() =>
+      getSearchDiffForSource({ gitRoot: repository, source: input.source })
+    )
+    return searchReviewDiff(diff, query, searchablePaths, input)
+  }
+
+  async getReviewFileContent(
+    input: LocalGitGetReviewFileContentRequest
+  ): Promise<LocalGitReviewFileContent> {
+    if (input.source.type === 'last-turn') {
+      return { status: 'unsupported', reason: '上一轮没有可验证的文件内容。' }
+    }
+    const source = input.source
+    const { repository } = await this.resolveTrustedRepository(input.target)
+    const record = this.snapshots.get(input.snapshotGeneration)
+    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
+    const file = record?.files.get(input.file.path)
+    if (
+      !record ||
+      record.gitRoot !== repository.root ||
+      !reviewGeneration ||
+      reviewGeneration.hostId !== repository.host.id ||
+      !sameReviewSource(record.source, input.source) ||
+      !file ||
+      file.revision !== input.file.revision
+    ) {
+      return { status: 'stale' }
+    }
+    try {
+      const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
+      return await snapshot.read(async () => {
+        const currentRevision = await computeFileRevision({
+          gitRoot: repository,
+          source,
+          path: file.path
+        })
+        if (currentRevision !== file.revision) return { status: 'stale' }
+        return readReviewFileContent({ repository, source, file, side: input.side })
+      })
+    } catch (error) {
+      if (error instanceof GitReviewSnapshotStaleError) {
+        return { status: 'stale' }
+      }
+      throw error
     }
   }
 
@@ -526,6 +639,210 @@ function mergeRefreshedReviewFiles(
   return [...nextFiles.values()].sort((left, right) => left.path.localeCompare(right.path))
 }
 
+function emptyReviewSearchResult(
+  input: Pick<LocalGitSearchReviewRequest, 'snapshotGeneration' | 'source'>
+): LocalGitReviewSearchResult {
+  return {
+    snapshotGeneration: input.snapshotGeneration,
+    source: input.source,
+    items: [],
+    totalMatches: 0,
+    isCapped: false
+  }
+}
+
+function searchReviewDiff(
+  diff: string,
+  query: string,
+  searchablePaths: ReadonlySet<string>,
+  identity: Pick<LocalGitSearchReviewRequest, 'snapshotGeneration' | 'source'>
+): LocalGitReviewSearchResult {
+  const normalizedQuery = query.toLocaleLowerCase()
+  const items: LocalGitReviewSearchResult['items'] = []
+  let totalMatches = 0
+  let currentPath: string | undefined
+  let currentHunk: SearchHunk | undefined
+  let nextDeletionLine = 0
+  let nextAdditionLine = 0
+  let patchOffset = 0
+  let pathMatchEmitted = false
+
+  for (const line of diff.split(/\r?\n/u)) {
+    const linePatchOffset = patchOffset
+    patchOffset += line.length + 1
+    const diffPath = parseDiffGitPath(line)
+    if (diffPath) {
+      currentPath = diffPath
+      currentHunk = undefined
+      pathMatchEmitted = false
+      if (
+        searchablePaths.has(currentPath) &&
+        currentPath.toLocaleLowerCase().includes(normalizedQuery)
+      ) {
+        totalMatches = pushReviewSearchItem(items, totalMatches, {
+          path: currentPath,
+          hunkId: 'path',
+          side: 'additions',
+          lineStart: 0,
+          lineEnd: 0,
+          patchOffset: linePatchOffset,
+          snippet: { before: '', match: currentPath.slice(0, 1_000), after: '' }
+        })
+        pathMatchEmitted = true
+      }
+      continue
+    }
+    const nextPath = parseDiffNewPath(line)
+    if (nextPath) {
+      currentPath = nextPath
+      if (
+        !pathMatchEmitted &&
+        searchablePaths.has(currentPath) &&
+        currentPath.toLocaleLowerCase().includes(normalizedQuery)
+      ) {
+        totalMatches = pushReviewSearchItem(items, totalMatches, {
+          path: currentPath,
+          hunkId: 'path',
+          side: 'additions',
+          lineStart: 0,
+          lineEnd: 0,
+          patchOffset: linePatchOffset,
+          snippet: { before: '', match: currentPath.slice(0, 1_000), after: '' }
+        })
+        pathMatchEmitted = true
+      }
+      continue
+    }
+    if (line.startsWith('@@')) {
+      currentHunk = { header: line, lines: [] }
+      const starts = parseHunkStarts(line)
+      nextDeletionLine = starts.deletions
+      nextAdditionLine = starts.additions
+      continue
+    }
+    if (!currentPath || !currentHunk || !searchablePaths.has(currentPath)) {
+      continue
+    }
+    if (!line.startsWith('-') && !line.startsWith('+') && !line.startsWith(' ')) continue
+    const side = line.startsWith('-') ? 'deletions' : 'additions'
+    const lineStart = side === 'deletions' ? nextDeletionLine : nextAdditionLine
+    const lineEnd = lineStart
+    currentHunk.lines.push({ text: line, lineStart, lineEnd, patchOffset: linePatchOffset })
+    if (line.toLocaleLowerCase().includes(normalizedQuery)) {
+      totalMatches = pushReviewSearchItem(items, totalMatches, {
+        path: currentPath,
+        hunkId: currentHunk.header.slice(0, 2_000),
+        side,
+        lineStart,
+        lineEnd,
+        patchOffset: linePatchOffset,
+        snippet: createReviewSearchSnippet(currentHunk.lines, currentHunk.lines.length - 1)
+      })
+    }
+    if (!line.startsWith('+')) nextDeletionLine += 1
+    if (!line.startsWith('-')) nextAdditionLine += 1
+  }
+
+  return {
+    snapshotGeneration: identity.snapshotGeneration,
+    source: identity.source,
+    items,
+    totalMatches,
+    isCapped: totalMatches > LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS
+  }
+}
+
+type SearchHunk = {
+  header: string
+  lines: SearchHunkLine[]
+}
+
+type SearchHunkLine = {
+  text: string
+  lineStart: number
+  lineEnd: number
+  patchOffset: number
+}
+
+function pushReviewSearchItem(
+  items: LocalGitReviewSearchResult['items'],
+  totalMatches: number,
+  item: LocalGitReviewSearchResult['items'][number]
+): number {
+  const nextTotal = totalMatches + 1
+  if (items.length < LOCAL_GIT_REVIEW_SEARCH_MAX_RESULTS) items.push(item)
+  return nextTotal
+}
+
+function createReviewSearchSnippet(
+  lines: readonly SearchHunkLine[],
+  matchIndex: number
+): LocalGitReviewSearchResult['items'][number]['snippet'] {
+  const start = Math.max(0, matchIndex - 2)
+  const end = Math.min(lines.length, matchIndex + 3)
+  return {
+    before: lines
+      .slice(start, matchIndex)
+      .map((line) => line.text)
+      .join('\n')
+      .slice(0, 1_000),
+    match: (lines[matchIndex]?.text ?? '').slice(0, 1_000),
+    after: lines
+      .slice(matchIndex + 1, end)
+      .map((line) => line.text)
+      .join('\n')
+      .slice(0, 1_000)
+  }
+}
+
+function parseHunkStarts(header: string): { deletions: number; additions: number } {
+  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(header)
+  return {
+    deletions: match ? Number(match[1]) : 0,
+    additions: match ? Number(match[2]) : 0
+  }
+}
+
+function parseDiffGitPath(line: string): string | undefined {
+  const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line)
+  if (!match) return undefined
+  return unquoteGitDiffPath(match[2])
+}
+
+function parseDiffNewPath(line: string): string | undefined {
+  if (!line.startsWith('+++ b/')) return undefined
+  return unquoteGitDiffPath(line.slice('+++ b/'.length))
+}
+
+function unquoteGitDiffPath(path: string): string {
+  return path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path
+}
+
+function isGeneratedReviewPath(path: string): boolean {
+  const segments = path.split('/')
+  if (
+    segments.some((segment) =>
+      [
+        '.next',
+        '.nuxt',
+        '.parcel-cache',
+        '.svelte-kit',
+        '.turbo',
+        '.vite',
+        'build',
+        'coverage',
+        'dist',
+        'node_modules',
+        'out',
+        'target'
+      ].includes(segment)
+    )
+  ) {
+    return true
+  }
+  return /\.(?:bundle|chunk|min)\.(?:css|js|mjs|cjs)$/iu.test(path)
+}
+
 function sameReviewSource(
   left: LocalGitReviewSnapshot['source'],
   right: LocalGitReviewSnapshot['source']
@@ -783,4 +1100,11 @@ function unsupportedReviewMutationResult(): LocalGitMutationResult {
 
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex')
+}
+
+function reviewApplyCommand(patch: string): string {
+  let delimiter = `CODEX_REVIEW_PATCH_${sha256(patch).slice(0, 16).toUpperCase()}`
+  while (patch.split(/\r?\n/u).includes(delimiter)) delimiter += '_X'
+  const normalizedPatch = patch.endsWith('\n') ? patch : `${patch}\n`
+  return `git apply --whitespace=nowarn - <<'${delimiter}'\n${normalizedPatch}${delimiter}`
 }
