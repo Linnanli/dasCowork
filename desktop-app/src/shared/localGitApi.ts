@@ -317,6 +317,43 @@ export type LocalGitGetReviewFileContentRequest = z.infer<
   typeof localGitGetReviewFileContentRequestSchema
 >
 
+/**
+ * Requests both sides of a snapshot-bound text diff.  The renderer uses these
+ * complete files to expose collapsed unchanged regions without trusting a
+ * mutable working tree read.
+ */
+export const localGitGetReviewDiffFileContentsRequestSchema = z
+  .object({
+    target: gitRepositoryTargetSchema,
+    source: localGitReviewSourceSchema,
+    snapshotGeneration: snapshotGenerationSchema,
+    file: localGitReviewFileSchema.pick({
+      path: true,
+      previousPath: true,
+      revision: true
+    })
+  })
+  .strict()
+export type LocalGitGetReviewDiffFileContentsRequest = z.infer<
+  typeof localGitGetReviewDiffFileContentsRequestSchema
+>
+
+/**
+ * Reconstructs the full before/after text for one persisted completed-turn
+ * patch. Main resolves the authoritative diff by thread and turn id; the
+ * renderer only selects a file from that trusted patch.
+ */
+export const localGitGetTurnDiffFileContentsRequestSchema = z
+  .object({
+    target: gitRepositoryTargetSchema,
+    turnId: nonEmptyIdSchema,
+    path: repoRelativePathSchema,
+  })
+  .strict()
+export type LocalGitGetTurnDiffFileContentsRequest = z.infer<
+  typeof localGitGetTurnDiffFileContentsRequestSchema
+>
+
 export const localGitReviewFileContentSchema = z.discriminatedUnion('status', [
   z
     .object({
@@ -346,6 +383,26 @@ export const localGitReviewFileContentSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('stale') }).strict()
 ])
 export type LocalGitReviewFileContent = z.infer<typeof localGitReviewFileContentSchema>
+
+export const localGitReviewDiffFileContentsSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('text'),
+      before: z.string().max(LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES),
+      after: z.string().max(LOCAL_GIT_REVIEW_CONTENT_MAX_BYTES)
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('too-large'),
+      maxBytes: z.number().int().positive(),
+      size: z.number().int().nonnegative().optional()
+    })
+    .strict(),
+  z.object({ status: z.literal('unsupported'), reason: z.string().min(1).max(500) }).strict(),
+  z.object({ status: z.literal('stale') }).strict()
+])
+export type LocalGitReviewDiffFileContents = z.infer<typeof localGitReviewDiffFileContentsSchema>
 
 export const localGitFileDiffSchema = z
   .object({
@@ -645,6 +702,8 @@ export const gitIpcChannels = {
   getFileDiff: 'git:get-file-diff',
   getReviewApplyCommand: 'git:get-review-apply-command',
   getReviewFileContent: 'git:get-review-file-content',
+  getReviewDiffFileContents: 'git:get-review-diff-file-contents',
+  getTurnDiffFileContents: 'git:get-turn-diff-file-contents',
   searchReview: 'git:search-review',
   applyReviewAction: 'git:apply-review-action',
   applyTurnPatch: 'git:apply-turn-patch',

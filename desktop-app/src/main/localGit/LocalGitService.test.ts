@@ -1,7 +1,7 @@
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { GitManager, type GitHost, type GitRunResult } from './GitManager'
 import type { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
@@ -65,6 +65,84 @@ describe('LocalGitService', () => {
       })
     ).resolves.toEqual({ status: 'stale' })
   })
+
+  it('reads both signed source-file revisions for expandable unchanged diff context', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'source.ts'), 'const value = 1\nconst stable = true\n')
+    git(repo, ['add', 'source.ts'])
+    git(repo, ['commit', '-m', 'add source file'])
+    await writeFile(join(repo, 'source.ts'), 'const value = 2\nconst stable = true\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'source.ts')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getReviewDiffFileContents({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision }
+      })
+    ).resolves.toEqual({
+      status: 'text',
+      before: 'const value = 1\nconst stable = true\n',
+      after: 'const value = 2\nconst stable = true\n'
+    })
+
+    await expect(
+      service.getReviewDiffFileContents({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: 'not-the-signed-revision' }
+      })
+    ).resolves.toEqual({ status: 'stale' })
+  })
+
+  it('reconstructs expandable context for a completed-turn patch that still matches the worktree', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'source.ts'), 'const value = 1\nconst stable = true\n')
+    git(repo, ['add', 'source.ts'])
+    git(repo, ['commit', '-m', 'add source file'])
+    await writeFile(join(repo, 'source.ts'), 'const value = 2\nconst stable = true\n')
+    const diff = git(repo, ['diff', '--', 'source.ts'])
+    const turnDiffStore = {
+      read: vi.fn(async (threadId: string, turnId: string) =>
+        threadId === 'thread1' && turnId === 'turn-1' ? diff : undefined
+      )
+    }
+    const service = new LocalGitService({ projectService, turnDiffStore })
+
+    await expect(
+      service.getTurnDiffFileContents({
+        target: gitTarget(repo, 'thread1', 'thread1'),
+        turnId: 'turn-1',
+        path: 'source.ts'
+      })
+    ).resolves.toEqual({
+      status: 'text',
+      before: 'const value = 1\nconst stable = true\n',
+      after: 'const value = 2\nconst stable = true\n'
+    })
+    expect(turnDiffStore.read).toHaveBeenCalledWith('thread1', 'turn-1')
+
+    await expect(
+      service.getTurnDiffFileContents({
+        target: gitTarget(repo, 'thread1', 'thread1'),
+        turnId: 'missing-turn',
+        path: 'source.ts'
+      })
+    ).resolves.toMatchObject({ status: 'unsupported' })
+    await expect(
+      service.getTurnDiffFileContents({
+        target: gitTarget(repo, 'thread1', 'thread1'),
+        turnId: 'turn-1',
+        path: 'unrelated.ts'
+      })
+    ).resolves.toMatchObject({ status: 'unsupported' })
+  }, 15_000)
 
   it('exports a stable git apply command from the signed review snapshot', async () => {
     const { repo, projectService } = await createGitFixture()

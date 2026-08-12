@@ -53,10 +53,13 @@ import type {
   LocalGitGetSummaryRequest,
   LocalGitGetFileDiffRequest,
   LocalGitGetReviewApplyCommandRequest,
+  LocalGitGetReviewDiffFileContentsRequest,
   LocalGitGetReviewFileContentRequest,
+  LocalGitGetTurnDiffFileContentsRequest,
   LocalGitReviewApplyCommand,
   LocalGitReviewSearchResult,
   LocalGitReviewFileContent,
+  LocalGitReviewDiffFileContents,
   LocalGitMutationResult,
   LocalGitMergeBase,
   LocalGitResolveMergeBaseRequest,
@@ -626,6 +629,12 @@ export type DesktopGitApi = {
   getReviewApplyCommand(
     input: LocalGitGetReviewApplyCommandRequest
   ): Promise<LocalGitReviewApplyCommand>
+  getReviewDiffFileContents(
+    input: LocalGitGetReviewDiffFileContentsRequest
+  ): Promise<LocalGitReviewDiffFileContents>
+  getTurnDiffFileContents(
+    input: LocalGitGetTurnDiffFileContentsRequest
+  ): Promise<LocalGitReviewDiffFileContents>
   getReviewFileContent(
     input: LocalGitGetReviewFileContentRequest
   ): Promise<LocalGitReviewFileContent>

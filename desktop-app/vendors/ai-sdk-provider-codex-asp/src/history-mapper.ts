@@ -44,6 +44,8 @@ type CodexHistorySourceMessageMetadata = {
 export type CodexTurnForUi = Pick<Turn, "id" | "durationMs"> &
   Partial<Omit<Turn, "id" | "durationMs" | "items">> & {
       items: readonly CodexRenderableThreadItem[]
+      /** Final live turn diff persisted by the desktop host. Empty means the turn ended with no changes. */
+      diff?: string
   };
 
 export type CodexThreadForUi = Pick<Thread, "id"> & {
@@ -224,7 +226,9 @@ function mergeMessageMetadata(
 function turnDiffPartForTurn(turn: CodexTurnForUi, cwd?: string): DynamicToolUiPart | null
 {
     const batches = fileChangeDiffBatchesForOrderedItems(turn.items, cwd);
-    const diff = unifiedDiffForFileChangeBatches(batches);
+    const diff = typeof turn.diff === "string"
+        ? turn.diff
+        : unifiedDiffForFileChangeBatches(batches);
     if (!diff)
     {
         return null;

@@ -136,6 +136,11 @@ type RuntimeStreamTextInput = {
   startFreshTerminalRetry?: boolean
   onThreadStarted?: (thread: { threadId: string; threadPath?: string }) => void | Promise<void>
   onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void | Promise<void>
+  onTurnDiffUpdated?: (event: {
+    threadId: string
+    turnId: string
+    diff: string
+  }) => void | Promise<void>
   onSessionCreated?: (session: CodexSession) => void
   onExistingTurnRecoveryState?: (
     state: NonNullable<RuntimeStreamTextInput['existingTurnRecoveryState']>
@@ -1101,6 +1106,61 @@ describe('CodexChatRuntimeService', () => {
           }
         }
       }
+    })
+  })
+
+  it('persists the final net turn diff when the turn completes', async () => {
+    const port = new FakePort()
+    const turnDiffStore = { save: vi.fn(async () => undefined) }
+    const finalDiff = 'diff --git a/kept.ts b/kept.ts\n+kept\n'
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      turnDiffStore,
+      streamText: async (input: RuntimeStreamTextInput) => {
+        input.onSessionCreated?.(
+          activeSession('thread-final-diff', 'turn-final-diff', async () => undefined)
+        )
+        await input.onTurnLifecycle?.({
+          type: 'turn-started',
+          sequence: 1,
+          threadId: 'thread-final-diff',
+          turnId: 'turn-final-diff'
+        })
+        await input.onTurnDiffUpdated?.({
+          threadId: 'thread-final-diff',
+          turnId: 'turn-final-diff',
+          diff: 'diff --git a/restored.ts b/restored.ts\n+temporary\n'
+        })
+        await input.onTurnDiffUpdated?.({
+          threadId: 'thread-final-diff',
+          turnId: 'turn-final-diff',
+          diff: finalDiff
+        })
+        await input.onTurnLifecycle?.({
+          type: 'turn-completed',
+          sequence: 2,
+          threadId: 'thread-final-diff',
+          turnId: 'turn-final-diff',
+          outcome: 'completed'
+        })
+        return { toUIMessageStream: () => emptyUiMessageStream() }
+      }
+    })
+
+    await service.startChatStream(
+      { chatId: 'chat-final-diff', trigger: 'submit-message', messages: [], modelId: 'gpt-test' },
+      port
+    )
+
+    expect(turnDiffStore.save).toHaveBeenCalledWith({
+      threadId: 'thread-final-diff',
+      turnId: 'turn-final-diff',
+      diff: finalDiff
     })
   })
 

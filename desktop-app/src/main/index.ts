@@ -24,6 +24,7 @@ import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { createCodexAspSharedConnection, type CodexAspSharedConnection } from './codexAspProvider'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
 import { AppServerThreadClient } from './conversations/AppServerThreadClient'
+import { TurnDiffStore } from './conversations/TurnDiffStore'
 import {
   ConversationApiService,
   type ObservedStartedThread
@@ -143,7 +144,11 @@ const e2eDocumentsPath = process.env.DASCOWORK_E2E_DOCUMENTS_DIR?.trim()
 if (e2eDocumentsPath) app.setPath('documents', e2eDocumentsPath)
 registerAppSchemePrivileges(protocol)
 
-function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexChatRuntimeService {
+function createCodexRuntime(
+  hosts: GitHostRegistry,
+  manager: GitManager,
+  turnDiffStore: TurnDiffStore
+): CodexChatRuntimeService {
   const launch = resolveCodexAppServerLaunchOptions({
     env: process.env,
     isPackaged: app.isPackaged,
@@ -173,7 +178,7 @@ function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexC
   projectApi = projectRuntimeServices.projectApi
   projectService = projectRuntimeServices.projectService
   workspaceRecovery = projectRuntimeServices.workspaceRecovery
-  const threadClient = new AppServerThreadClient({ historyClient })
+  const threadClient = new AppServerThreadClient({ historyClient, turnDiffStore })
   conversationApi = new ConversationApiService({
     threadClient,
     projectStore: projectRuntimeServices.projectStore,
@@ -259,6 +264,7 @@ function createCodexRuntime(hosts: GitHostRegistry, manager: GitManager): CodexC
     modelCatalog: createModelCatalogService(loadDesktopRuntimeConfig(process.env)),
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore,
+    turnDiffStore,
     followUpQueue,
     onTurnCompleted: () => manager.handleAppEvent({ type: 'turnComplete' }),
     onAgentLifecycle: (event) => {
@@ -541,14 +547,15 @@ app.whenReady().then(() => {
     remoteCodexCommand: runtimeConfig.remoteCodexCommand
   })
   codexHostConnectionRegistry = terminalHosts
-  const runtime = createCodexRuntime(hosts, manager)
+  const turnDiffStore = new TurnDiffStore(join(app.getPath('userData'), 'turn-diffs'))
+  const runtime = createCodexRuntime(hosts, manager, turnDiffStore)
   codexRuntime = runtime
   const targetResolver = new GitRepositoryTargetResolver({
     projectService: requireProjectService(),
     gitManager: manager,
     hosts
   })
-  const localGit = new LocalGitService({ targetResolver })
+  const localGit = new LocalGitService({ targetResolver, turnDiffStore })
   localGitWatchBroker = new LocalGitWatchBroker({
     getState: (target) => localGit.getWatchState(target),
     onRepositoryChange: (target, event) =>
@@ -609,6 +616,11 @@ app.whenReady().then(() => {
   ipcMain.handle(gitIpcChannels.refreshReviewFiles, localGitHandlers.refreshReviewFiles)
   ipcMain.handle(gitIpcChannels.getFileDiff, localGitHandlers.getFileDiff)
   ipcMain.handle(gitIpcChannels.getReviewApplyCommand, localGitHandlers.getReviewApplyCommand)
+  ipcMain.handle(
+    gitIpcChannels.getReviewDiffFileContents,
+    localGitHandlers.getReviewDiffFileContents
+  )
+  ipcMain.handle(gitIpcChannels.getTurnDiffFileContents, localGitHandlers.getTurnDiffFileContents)
   ipcMain.handle(gitIpcChannels.getReviewFileContent, localGitHandlers.getReviewFileContent)
   ipcMain.handle(gitIpcChannels.searchReview, localGitHandlers.searchReview)
   ipcMain.handle(gitIpcChannels.applyReviewAction, localGitHandlers.applyReviewAction)

@@ -379,6 +379,14 @@ class TurnLifecycleTransport extends ScriptedTransport
                 },
             });
             this.emitMessage({
+                method: "turn/diff/updated",
+                params: {
+                    threadId: "thr_1",
+                    turnId: "turn_lifecycle",
+                    diff: "diff --git a/final.ts b/final.ts\n+final\n",
+                },
+            });
+            this.emitMessage({
                 method: "turn/completed",
                 params: {
                     threadId: "thr_1",
@@ -1368,6 +1376,29 @@ describe("CodexLanguageModel.doStream", () =>
                 outcome: "completed",
             },
         ]);
+    });
+
+    it("delivers the complete live turn diff to the host callback", async () =>
+    {
+        const transport = new TurnLifecycleTransport();
+        const onTurnDiffUpdated = vi.fn();
+        const provider = createCodexAppServer({
+            transportFactory: () => transport,
+            clientInfo: { name: "test-client", version: "1.0.0" },
+            experimentalApi: true,
+        });
+
+        const { stream } = await provider.languageModel("gpt-5.5").doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+            providerOptions: codexCallOptions({ onTurnDiffUpdated }),
+        });
+        await readAll(stream);
+
+        expect(onTurnDiffUpdated).toHaveBeenCalledWith({
+            threadId: "thr_1",
+            turnId: "turn_lifecycle",
+            diff: "diff --git a/final.ts b/final.ts\n+final\n",
+        });
     });
 
     it("calls onThreadStarted after thread/start and before the first turn/start", async () =>

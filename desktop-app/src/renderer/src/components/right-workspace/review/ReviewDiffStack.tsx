@@ -91,8 +91,8 @@ function ReadyReviewDiffStack({
     )
   }
   return (
-    <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto px-3 py-3">
-      <div className="mx-auto flex max-w-5xl flex-col gap-3">
+    <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto">
+      <div className="flex flex-col gap-3">
         {groups.map((group) => (
           <ReviewFileBlock key={group.path} controller={controller} group={group} />
         ))}

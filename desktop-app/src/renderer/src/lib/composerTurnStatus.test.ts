@@ -91,6 +91,55 @@ describe('buildComposerDiffStatus', () => {
     })
   })
 
+  it('merges repeated unified-diff sections for the same path', () => {
+    const diff = [
+      'diff --git a/src/created.ts b/src/created.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/src/created.ts',
+      '@@ -0,0 +1 @@',
+      '+temporary',
+      'diff --git a/src/created.ts b/src/created.ts',
+      '--- a/src/created.ts',
+      '+++ b/src/created.ts',
+      '@@ -1 +1 @@',
+      '-temporary',
+      '+final'
+    ].join('\n')
+
+    const files = parseTurnDiffFiles({ diff })
+
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatchObject({ path: 'src/created.ts', added: 2, removed: 1 })
+    expect(buildComposerDiffStatus({ diff })).toEqual({
+      filesChanged: 1,
+      additions: 2,
+      deletions: 1
+    })
+  })
+
+  it('sorts changed files by path like the live turn diff tracker', () => {
+    const diff = [
+      'diff --git a/z-last.ts b/z-last.ts',
+      '--- a/z-last.ts',
+      '+++ b/z-last.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      'diff --git a/a-first.ts b/a-first.ts',
+      '--- a/a-first.ts',
+      '+++ b/a-first.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new'
+    ].join('\n')
+
+    expect(parseTurnDiffFiles({ diff }).map((file) => file.path)).toEqual([
+      'a-first.ts',
+      'z-last.ts'
+    ])
+  })
+
   it('uses explicit file statistics and falls back to each file patch', () => {
     const item = {
       changes: [

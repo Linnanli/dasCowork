@@ -141,21 +141,23 @@ export function parseTurnDiffFiles(item: AnyRecord): TurnDiffFile[] {
     return unifiedDiff?.trim() ? parseUnifiedDiffFiles(unifiedDiff, stringValue(item.path)) : []
   }
 
-  return explicitFiles.map((file, index) => {
-    const record = recordValue(file)
-    const diff = stringValue(record?.diff) ?? stringValue(record?.patch)
-    const lineCounts = countTurnDiffLines(diff)
-    return {
-      path:
-        stringValue(record?.path) ??
-        stringValue(record?.file) ??
-        stringValue(record?.filename) ??
-        `文件 ${index + 1}`,
-      diff,
-      added: nonNegativeNumber(record?.added ?? record?.additions) ?? lineCounts.added,
-      removed: nonNegativeNumber(record?.removed ?? record?.deletions) ?? lineCounts.removed
-    }
-  })
+  return explicitFiles
+    .map((file, index) => {
+      const record = recordValue(file)
+      const diff = stringValue(record?.diff) ?? stringValue(record?.patch)
+      const lineCounts = countTurnDiffLines(diff)
+      return {
+        path:
+          stringValue(record?.path) ??
+          stringValue(record?.file) ??
+          stringValue(record?.filename) ??
+          `文件 ${index + 1}`,
+        diff,
+        added: nonNegativeNumber(record?.added ?? record?.additions) ?? lineCounts.added,
+        removed: nonNegativeNumber(record?.removed ?? record?.deletions) ?? lineCounts.removed
+      }
+    })
+    .sort(compareTurnDiffFiles)
 }
 
 export function turnDiffLineTotals(files: readonly TurnDiffFile[]): {
@@ -240,15 +242,25 @@ function currentPlanStepIndex(steps: readonly ComposerPlanStep[]): number {
 }
 
 function parseUnifiedDiffFiles(diff: string, fallbackPath: string | undefined): TurnDiffFile[] {
-  const files: TurnDiffFile[] = []
+  const files = new Map<string, TurnDiffFile>()
   let current: { path?: string; lines: string[] } | undefined
+  let sectionIndex = 0
 
   const flush = (): void => {
     if (!current) return
     const fileDiff = current.lines.join('\n')
     const lineCounts = countTurnDiffLines(fileDiff)
-    files.push({
-      path: current.path ?? fallbackPath ?? `diff-${files.length + 1}`,
+    const path = current.path ?? fallbackPath ?? `diff-${sectionIndex + 1}`
+    sectionIndex += 1
+    const existing = files.get(path)
+    if (existing) {
+      existing.diff = existing.diff ? `${existing.diff}\n${fileDiff}` : fileDiff
+      existing.added += lineCounts.added
+      existing.removed += lineCounts.removed
+      return
+    }
+    files.set(path, {
+      path,
       diff: fileDiff,
       added: lineCounts.added,
       removed: lineCounts.removed
@@ -270,7 +282,12 @@ function parseUnifiedDiffFiles(diff: string, fallbackPath: string | undefined): 
   }
 
   flush()
-  return files
+  return [...files.values()].sort(compareTurnDiffFiles)
+}
+
+function compareTurnDiffFiles(left: TurnDiffFile, right: TurnDiffFile): number {
+  if (left.path === right.path) return 0
+  return left.path < right.path ? -1 : 1
 }
 
 function arrayValue(value: unknown): readonly unknown[] {

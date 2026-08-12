@@ -1,4 +1,12 @@
-import { ChevronDownIcon, ChevronRightIcon, RotateCcwIcon } from 'lucide-react'
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  MinusIcon,
+  PlusIcon,
+  Undo2Icon
+} from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -11,10 +19,11 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
-import type { LocalGitChangeKind } from '../../../../../shared/localGitApi'
-import { groupKey, sectionActionForSource, sectionLabel } from './reviewWorkspaceModel'
+import { useOptionalRightWorkspace } from '@/components/right-workspace'
+import { groupKey, sectionActionForSource, sectionLabel, sourceLabel } from './reviewWorkspaceModel'
 import { ReviewFileDiff } from './ReviewFileDiff'
+import { ReviewDiffLoadingSkeleton } from './ReviewDiffLoadingSkeleton'
+import { ReviewFileTypeIcon } from './ReviewFileTypeIcon'
 import { ReviewRichPreview } from './ReviewRichPreview'
 import type {
   ReviewFileGroup,
@@ -30,70 +39,118 @@ type Props = {
 export function ReviewFileBlock({ controller, group }: Props): React.JSX.Element {
   const key = groupKey(group)
   const collapsed = controller.preferences.collapsedKeys.includes(key)
+  const workspace = useOptionalRightWorkspace()
   const [pendingRevert, setPendingRevert] = useState<
     { section: Extract<ReviewFileSection, { kind: 'snapshot' }>; hunkIndex?: number } | undefined
   >(undefined)
+  const requestRevert = (
+    section: Extract<ReviewFileSection, { kind: 'snapshot' }>,
+    hunkIndex?: number
+  ): void => {
+    if (controller.preferences.skipRevertConfirmation) {
+      if (hunkIndex === undefined) controller.applyFileAction(group, section, 'revert')
+      else controller.applyHunkAction(group, section, 'revert', hunkIndex)
+    } else {
+      setPendingRevert({ section, hunkIndex })
+    }
+  }
 
   return (
     <section
       data-review-path={group.path}
-      className={cn(
-        'rounded-md border bg-background',
-        controller.selectedPath === group.path && 'ring-1 ring-ring/35'
-      )}
+      className={controller.selectedPath === group.path ? 'ring-1 ring-ring/35' : undefined}
     >
-      <div className="flex min-h-10 items-center gap-2 border-b bg-muted/25 px-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label={collapsed ? 'Expand file diff' : 'Collapse file diff'}
-          aria-expanded={!collapsed}
-          onClick={() => controller.setCollapsed(key, !collapsed)}
-        >
-          {collapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
-        </Button>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium">{group.path}</div>
-          {group.previousPath ? (
-            <div className="truncate text-[11px] text-muted-foreground">
-              来自 {group.previousPath}
+      <div
+        data-review-file-header
+        className="group/diff-header flex min-h-10 items-center gap-2 border-b bg-muted/25 px-2 hover:bg-muted/40"
+      >
+        <ReviewFileTypeIcon path={group.path} />
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div className="min-w-0">
+            <div
+              data-review-file-name
+              className="truncate text-xs font-medium [direction:rtl]"
+              title={group.path}
+            >
+              <span className="[direction:ltr] [unicode-bidi:plaintext]">{group.path}</span>
             </div>
-          ) : null}
-        </div>
-        <div className="shrink-0 text-xs tabular-nums">
-          <span className="text-emerald-600">+{group.additions}</span>{' '}
-          <span className="text-destructive">-{group.deletions}</span>
-        </div>
-        {controller.displaySource.type === 'branch' ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            aria-pressed={controller.isViewed(group)}
-            onClick={() => controller.setViewed(group, !controller.isViewed(group))}
+            {group.previousPath ? (
+              <div
+                className="truncate text-[11px] text-muted-foreground [direction:rtl]"
+                title={group.previousPath}
+              >
+                来自 {group.previousPath}
+              </div>
+            ) : null}
+          </div>
+          <div className="shrink-0 text-xs tabular-nums">
+            <span className="text-emerald-600">+{group.additions}</span>{' '}
+            <span className="text-destructive">-{group.deletions}</span>
+          </div>
+          <div
+            data-review-file-header-actions
+            className="flex shrink-0 items-center opacity-0 transition-opacity duration-200 group-hover/diff-header:opacity-100 group-has-[:focus-visible]/diff-header:opacity-100"
           >
-            {controller.isViewed(group) ? '已查看' : '标为已查看'}
-          </Button>
-        ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="复制文件路径"
+              title="复制文件路径"
+              onClick={() => void navigator.clipboard.writeText(group.path).catch(() => undefined)}
+            >
+              <CopyIcon />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={collapsed ? '展开文件差异' : '收起文件差异'}
+              title={collapsed ? '展开文件差异' : '收起文件差异'}
+              aria-expanded={!collapsed}
+              onClick={() => controller.setCollapsed(key, !collapsed)}
+            >
+              {collapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="在工作区中打开文件"
+              title="在工作区中打开文件"
+              disabled={!workspace}
+              onClick={() => workspace?.openFile(group.path, basename(group.path))}
+            >
+              <ExternalLinkIcon />
+            </Button>
+          </div>
+        </div>
+        <div
+          data-review-file-header-operation-actions
+          role="toolbar"
+          aria-label="文件操作"
+          className="ml-auto flex shrink-0 items-center gap-1"
+        >
+          {group.sections.map((section) => (
+            <ReviewSectionFileActions
+              key={section.key}
+              controller={controller}
+              group={group}
+              section={section}
+              onRequestRevert={requestRevert}
+            />
+          ))}
+        </div>
       </div>
       {collapsed ? null : (
-        <div className="space-y-3 p-2">
+        <div className="space-y-3">
           {group.sections.map((section) => (
             <ReviewSection
               key={section.key}
               controller={controller}
               group={group}
               section={section}
-              onRequestRevert={(snapshotSection, hunkIndex) => {
-                if (controller.preferences.skipRevertConfirmation) {
-                  if (hunkIndex === undefined)
-                    controller.applyFileAction(group, snapshotSection, 'revert')
-                  else controller.applyHunkAction(group, snapshotSection, 'revert', hunkIndex)
-                } else {
-                  setPendingRevert({ section: snapshotSection, hunkIndex })
-                }
-              }}
+              onRequestRevert={requestRevert}
             />
           ))}
         </div>
@@ -155,6 +212,62 @@ export function ReviewFileBlock({ controller, group }: Props): React.JSX.Element
   )
 }
 
+function ReviewSectionFileActions({
+  controller,
+  group,
+  section,
+  onRequestRevert
+}: {
+  controller: ReviewWorkspaceController
+  group: ReviewFileGroup
+  section: ReviewFileSection
+  onRequestRevert(
+    section: Extract<ReviewFileSection, { kind: 'snapshot' }>,
+    hunkIndex?: number
+  ): void
+}): React.JSX.Element | null {
+  if (section.kind !== 'snapshot') return null
+
+  const sourceAction = sectionActionForSource(section.backendSource)
+  const actionSourceLabel = sourceLabel(section.backendSource)
+  const fileActionLabel = sourceAction === 'stage' ? '暂存未暂存文件' : '取消暂存已暂存文件'
+  const fileActionTitle = sourceAction === 'stage' ? '暂存文件' : '对文件取消暂存'
+  const revertActionLabel = `还原${actionSourceLabel}文件更改`
+  const showDestructiveFileActions = controller.displaySource.type !== 'uncommitted'
+  const showSourceAction = sourceAction === 'stage' || showDestructiveFileActions
+
+  return (
+    <>
+      {showSourceAction && sourceAction ? (
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          aria-label={fileActionLabel}
+          title={fileActionTitle}
+          disabled={controller.isMutationDisabled(section, 'file')}
+          onClick={() => controller.applyFileAction(group, section, sourceAction)}
+        >
+          {sourceAction === 'stage' ? <PlusIcon /> : <MinusIcon />}
+        </Button>
+      ) : null}
+      {showDestructiveFileActions ? (
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          aria-label={revertActionLabel}
+          title="还原文件"
+          disabled={controller.isMutationDisabled(section, 'file')}
+          onClick={() => onRequestRevert(section)}
+        >
+          <Undo2Icon />
+        </Button>
+      ) : null}
+    </>
+  )
+}
+
 function ReviewSection({
   controller,
   group,
@@ -187,83 +300,19 @@ function ReviewSection({
     )
   }
 
-  const sourceAction =
-    section.kind === 'snapshot' ? sectionActionForSource(section.backendSource) : undefined
-  const loadedDiff = section.loadState.status === 'ready' ? section.loadState.diff : undefined
-  const hunkCount = loadedDiff?.diff.match(/^@@/gmu)?.length ?? 0
   const activeMatch = currentSearchMatch(controller, section)
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-          {sectionLabel(section)}
-        </span>
-        <div className="min-w-0 flex-1" />
-        <span className="text-[11px] text-muted-foreground">
-          {changeKindLabel(section.file.changeKind)}
-        </span>
-        {sourceAction ? (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            disabled={controller.isMutationDisabled(section, 'file')}
-            onClick={() => controller.applyFileAction(group, section, sourceAction)}
-          >
-            {sourceAction === 'stage' ? '暂存文件' : '取消暂存文件'}
-          </Button>
-        ) : null}
-        {section.kind === 'snapshot' ? (
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            aria-label="Revert file changes"
-            title="Revert"
-            disabled={controller.isMutationDisabled(section, 'file')}
-            onClick={() => onRequestRevert(section)}
-          >
-            <RotateCcwIcon />
-          </Button>
-        ) : null}
-      </div>
-      <SectionDiff controller={controller} section={section} activeMatch={activeMatch} />
+      <SectionDiff
+        controller={controller}
+        group={group}
+        section={section}
+        activeMatch={activeMatch}
+        onRequestRevert={onRequestRevert}
+      />
       {section.kind === 'snapshot' && controller.selectedPath === group.path ? (
         <ReviewRichPreview controller={controller} section={section} />
-      ) : null}
-      {section.kind === 'snapshot' && hunkCount > 0 ? (
-        <div className="flex flex-wrap gap-1" aria-label="区块操作">
-          {Array.from({ length: hunkCount }, (_, hunkIndex) => (
-            <div key={hunkIndex} className="flex items-center gap-1">
-              {sourceAction ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  disabled={controller.isMutationDisabled(section, 'hunk', hunkIndex)}
-                  onClick={() =>
-                    controller.applyHunkAction(group, section, sourceAction, hunkIndex)
-                  }
-                >
-                  {sourceAction === 'stage' ? '暂存' : '取消暂存'}区块 {hunkIndex + 1}
-                </Button>
-              ) : null}
-              {section.backendSource.type === 'staged' ||
-              section.backendSource.type === 'unstaged' ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  disabled={controller.isMutationDisabled(section, 'hunk', hunkIndex)}
-                  onClick={() => onRequestRevert(section, hunkIndex)}
-                >
-                  还原区块 {hunkIndex + 1}
-                </Button>
-              ) : null}
-            </div>
-          ))}
-        </div>
       ) : null}
     </div>
   )
@@ -272,19 +321,22 @@ function ReviewSection({
 function SectionDiff({
   activeMatch,
   controller,
+  group,
+  onRequestRevert,
   section
 }: {
   activeMatch?: ReviewWorkspaceController['search']['matches'][number]['item']
   controller: ReviewWorkspaceController
+  group: ReviewFileGroup
+  onRequestRevert(
+    section: Extract<ReviewFileSection, { kind: 'snapshot' }>,
+    hunkIndex?: number
+  ): void
   section: Exclude<ReviewFileSection, { kind: 'partial-error' }>
 }): React.JSX.Element | null {
   if (section.loadState.status === 'idle') return null
   if (section.loadState.status === 'loading') {
-    return (
-      <div className="rounded-md border bg-muted/20 px-3 py-5 text-center text-xs text-muted-foreground">
-        Loading diff...
-      </div>
-    )
+    return <ReviewDiffLoadingSkeleton />
   }
   if (section.loadState.status === 'error') {
     return (
@@ -301,12 +353,55 @@ function SectionDiff({
         {summary}
       </div>
     )
+
+  const sourceAction =
+    section.kind === 'snapshot' ? sectionActionForSource(section.backendSource) : undefined
+  const canRevertHunk =
+    section.kind === 'snapshot' &&
+    (section.backendSource.type === 'staged' || section.backendSource.type === 'unstaged')
+
   return (
     <ReviewFileDiff
       cacheKey={section.key}
       diff={section.loadState.diff.diff}
       preferences={controller.preferences}
       activeMatch={activeMatch}
+      hunkActions={
+        section.kind === 'snapshot' && (sourceAction || canRevertHunk)
+          ? {
+              action: sourceAction,
+              isDisabled: (hunkIndex) => controller.isMutationDisabled(section, 'hunk', hunkIndex),
+              onAction: sourceAction
+                ? (hunkIndex) => controller.applyHunkAction(group, section, sourceAction, hunkIndex)
+                : undefined,
+              onRevert: canRevertHunk
+                ? (hunkIndex) => onRequestRevert(section, hunkIndex)
+                : undefined
+            }
+          : undefined
+      }
+      fullContentRequest={
+        section.kind === 'snapshot' && controller.target
+          ? {
+              kind: 'snapshot',
+              target: controller.target,
+              source: section.backendSource,
+              snapshotGeneration: section.snapshotGeneration,
+              file: {
+                path: section.file.path,
+                ...(section.file.previousPath ? { previousPath: section.file.previousPath } : {}),
+                revision: section.file.revision
+              }
+            }
+          : section.kind === 'turn' && controller.target && section.loadState.status === 'ready'
+            ? {
+                kind: 'turn',
+                target: controller.target,
+                turnId: section.backendSource.turnId,
+                path: section.file.path
+              }
+            : undefined
+      }
     />
   )
 }
@@ -331,23 +426,7 @@ function currentSearchMatch(
   return match?.sectionKey === section.key ? match.item : undefined
 }
 
-function changeKindLabel(changeKind: LocalGitChangeKind): string {
-  switch (changeKind) {
-    case 'added':
-      return '新增'
-    case 'deleted':
-      return '已删除'
-    case 'renamed':
-      return '已重命名'
-    case 'copied':
-      return '已复制'
-    case 'type-change':
-      return '类型已变更'
-    case 'unmerged':
-      return '存在冲突'
-    case 'modified':
-      return '已修改'
-    default:
-      return '已变更'
-  }
+function basename(path: string): string {
+  const segments = path.split('/')
+  return segments.at(-1) ?? path
 }

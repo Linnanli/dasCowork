@@ -195,6 +195,56 @@ describe('localGitIpc', () => {
     ).rejects.toThrow()
   })
 
+  it('allows only signed full-diff file content requests', async () => {
+    const getReviewDiffFileContents = vi.fn(async () => ({
+      status: 'text',
+      before: 'before\n',
+      after: 'after\n'
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { getReviewDiffFileContents } as never
+    })
+    const request = {
+      target,
+      source: { type: 'unstaged' },
+      snapshotGeneration: 'generation',
+      file: { path: 'src/index.ts', revision: 'revision' }
+    }
+
+    await handlers.getReviewDiffFileContents(undefined, request)
+
+    expect(getReviewDiffFileContents).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.getReviewDiffFileContents(undefined, {
+        ...request,
+        file: { path: '../outside.ts', revision: 'revision' }
+      })
+    ).rejects.toThrow()
+  })
+
+  it('allows a repository-relative completed-turn patch request', async () => {
+    const getTurnDiffFileContents = vi.fn(async () => ({
+      status: 'text',
+      before: 'before\n',
+      after: 'after\n'
+    }))
+    const handlers = createLocalGitIpcHandlers({
+      localGit: { getTurnDiffFileContents } as never
+    })
+    const request = {
+      target,
+      turnId: 'turn-1',
+      path: 'src/index.ts'
+    }
+
+    await handlers.getTurnDiffFileContents(undefined, request)
+
+    expect(getTurnDiffFileContents).toHaveBeenCalledWith(request)
+    await expect(
+      handlers.getTurnDiffFileContents(undefined, { ...request, path: '../outside.ts' })
+    ).rejects.toThrow()
+  })
+
   it('parses a safe base branch before resolving its merge base', async () => {
     const resolveMergeBase = vi.fn(async () => ({ mergeBase: 'a'.repeat(40) }))
     const localGit = {

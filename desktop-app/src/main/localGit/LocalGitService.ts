@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { posix, relative, resolve, win32 } from 'node:path'
 
+import type { TurnDiffStoreLookup } from '../conversations/TurnDiffStore'
 import type { ProjectService } from '../projects/ProjectService'
 import {
   LOCAL_GIT_PATCH_MAX_CHARACTERS,
@@ -26,7 +27,11 @@ import {
   type SnapshotGenerationRecord,
   type SnapshotGenerationStore
 } from './reviewSnapshot'
-import { readReviewFileContent } from './reviewFileContent'
+import {
+  readReviewDiffFileContents,
+  readReviewFileContent,
+  readReviewTurnDiffFileContents
+} from './reviewFileContent'
 import {
   assertSafeRepoRelativePath,
   extractFilePatch,
@@ -41,8 +46,11 @@ import type {
   LocalGitReviewFile,
   LocalGitGetReviewApplyCommandRequest,
   LocalGitGetReviewFileContentRequest,
+  LocalGitGetReviewDiffFileContentsRequest,
+  LocalGitGetTurnDiffFileContentsRequest,
   LocalGitReviewApplyCommand,
   LocalGitReviewFileContent,
+  LocalGitReviewDiffFileContents,
   LocalGitReviewFilesRefresh,
   LocalGitReviewMutationRequest,
   LocalGitReviewSearchResult,
@@ -58,14 +66,17 @@ const maxTurnPatchBytes = LOCAL_GIT_PATCH_MAX_CHARACTERS
 export class LocalGitService {
   private readonly snapshots: SnapshotGenerationStore
   private readonly targetResolver: GitRepositoryTargetResolver
+  private readonly turnDiffStore: TurnDiffStoreLookup | undefined
   private readonly reviewGenerations = new Map<string, { hostId: string; generation: number }>()
 
   constructor(options: {
     projectService?: ProjectService
     targetResolver?: GitRepositoryTargetResolver
     snapshots?: SnapshotGenerationStore
+    turnDiffStore?: TurnDiffStoreLookup
   }) {
     this.snapshots = options.snapshots ?? new InMemorySnapshotGenerationStore()
+    this.turnDiffStore = options.turnDiffStore
     if (options.targetResolver) {
       this.targetResolver = options.targetResolver
     } else if (options.projectService) {
@@ -376,6 +387,70 @@ export class LocalGitService {
       }
       throw error
     }
+  }
+
+  async getReviewDiffFileContents(
+    input: LocalGitGetReviewDiffFileContentsRequest
+  ): Promise<LocalGitReviewDiffFileContents> {
+    if (input.source.type === 'last-turn') {
+      return { status: 'unsupported', reason: '上一轮没有可验证的完整文件内容。' }
+    }
+    const source = input.source
+    const { repository } = await this.resolveTrustedRepository(input.target)
+    const record = this.snapshots.get(input.snapshotGeneration)
+    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
+    const file = record?.files.get(input.file.path)
+    if (
+      !record ||
+      record.gitRoot !== repository.root ||
+      !reviewGeneration ||
+      reviewGeneration.hostId !== repository.host.id ||
+      !sameReviewSource(record.source, input.source) ||
+      !file ||
+      file.revision !== input.file.revision
+    ) {
+      return { status: 'stale' }
+    }
+    try {
+      const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
+      return await snapshot.read(async () => {
+        const currentRevision = await computeFileRevision({
+          gitRoot: repository,
+          source,
+          path: file.path
+        })
+        if (currentRevision !== file.revision) return { status: 'stale' }
+        return readReviewDiffFileContents({ repository, source, file })
+      })
+    } catch (error) {
+      if (error instanceof GitReviewSnapshotStaleError) {
+        return { status: 'stale' }
+      }
+      throw error
+    }
+  }
+
+  async getTurnDiffFileContents(
+    input: LocalGitGetTurnDiffFileContentsRequest
+  ): Promise<LocalGitReviewDiffFileContents> {
+    const { repository, target } = await this.resolveTrustedRepository(input.target)
+    const threadId = target.threadId
+    if (!this.turnDiffStore || !threadId) {
+      return { status: 'unsupported', reason: '无法验证上一轮差异所属的任务。' }
+    }
+
+    const turnDiff = await this.turnDiffStore.read(threadId, input.turnId)
+    if (turnDiff === undefined) {
+      return { status: 'unsupported', reason: '找不到可信的上一轮差异。' }
+    }
+
+    let fileDiff: string
+    try {
+      fileDiff = extractFilePatch(turnDiff, input.path)
+    } catch {
+      return { status: 'unsupported', reason: '上一轮差异中没有这个文件。' }
+    }
+    return readReviewTurnDiffFileContents({ repository, path: input.path, diff: fileDiff })
   }
 
   async mutateReview(input: LocalGitReviewMutationRequest): Promise<LocalGitMutationResult> {

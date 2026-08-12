@@ -105,6 +105,7 @@ export type {
     CodexLanguageModelSettings,
     CodexModelConfig,
     CodexThreadDefaults,
+    CodexTurnDiffUpdatedEvent,
     CodexTurnLifecycleEvent,
 } from "./model";
 export { CodexLanguageModel } from "./model";

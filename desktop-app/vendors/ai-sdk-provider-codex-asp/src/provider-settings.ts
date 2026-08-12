@@ -150,6 +150,12 @@ export type CodexTurnLifecycleEvent =
       error?: string
   };
 
+export type CodexTurnDiffUpdatedEvent = {
+    threadId: string
+    turnId: string
+    diff: string
+};
+
 /**
  * Per-call overrides passed via `providerOptions[CODEX_PROVIDER_ID]` in
  * `streamText()` / `generateText()`. Values here take precedence over
@@ -205,6 +211,8 @@ export interface CodexCallOptions {
    * turn. Callback failures do not fail the model stream.
    */
     onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void | Promise<void>
+    /** Receives the latest complete turn-level unified diff. Callback failures do not fail the model stream. */
+    onTurnDiffUpdated?: (event: CodexTurnDiffUpdatedEvent) => void | Promise<void>
 
     // — Turn-level —
 

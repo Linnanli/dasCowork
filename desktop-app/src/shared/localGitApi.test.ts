@@ -16,6 +16,8 @@ import {
   localGitCreateBranchRequestSchema,
   localGitGetFileDiffRequestSchema,
   localGitGetReviewApplyCommandRequestSchema,
+  localGitGetReviewDiffFileContentsRequestSchema,
+  localGitGetTurnDiffFileContentsRequestSchema,
   localGitGetReviewSnapshotRequestSchema,
   localGitGetReviewFileContentRequestSchema,
   localGitRefreshReviewFilesRequestSchema,
@@ -26,6 +28,7 @@ import {
   localGitReviewMutationRequestSchema,
   localGitReviewSearchResultSchema,
   localGitReviewFileContentSchema,
+  localGitReviewDiffFileContentsSchema,
   localGitReviewSnapshotSchema,
   localGitSearchReviewRequestSchema,
   turnPatchRequestSchema
@@ -340,6 +343,52 @@ describe('local git API schemas', () => {
         options: { ignoreWhitespace: true, fullFiles: false, args: ['--binary'] }
       }).success
     ).toBe(false)
+
+    expect(
+      localGitGetReviewDiffFileContentsRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file
+      }).success
+    ).toBe(true)
+    expect(
+      localGitGetReviewDiffFileContentsRequestSchema.safeParse({
+        target,
+        source,
+        snapshotGeneration: 'generation-1',
+        file: { ...file, path: '../outside.ts' }
+      }).success
+    ).toBe(false)
+    expect(
+      localGitGetTurnDiffFileContentsRequestSchema.safeParse({
+        target,
+        turnId: 'turn-1',
+        path: 'src/index.ts'
+      }).success
+    ).toBe(true)
+    expect(
+      localGitGetTurnDiffFileContentsRequestSchema.safeParse({
+        target,
+        turnId: 'turn-1',
+        path: 'src/index.ts',
+        diff: '@@ -1,0 +1,0 @@\n'
+      }).success
+    ).toBe(false)
+    expect(
+      localGitGetTurnDiffFileContentsRequestSchema.safeParse({
+        target,
+        turnId: 'turn-1',
+        path: '../outside.ts'
+      }).success
+    ).toBe(false)
+    expect(
+      localGitReviewDiffFileContentsSchema.safeParse({
+        status: 'text',
+        before: 'before\n',
+        after: 'after\n'
+      }).success
+    ).toBe(true)
 
     const request = { target, source, snapshotGeneration: 'generation-1' }
     expect(localGitGetReviewApplyCommandRequestSchema.safeParse(request).success).toBe(true)

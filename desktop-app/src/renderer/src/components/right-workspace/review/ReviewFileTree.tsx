@@ -6,10 +6,7 @@ import { Input } from '@/components/ui/input'
 import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { cn } from '@/lib/utils'
 import { FILE_WORKSPACE_API_VERSION } from '../../../../../shared/fileWorkspaceApi'
-import {
-  buildReviewFileTreeModel,
-  filterReviewGroups
-} from './reviewFileTreeModel'
+import { buildReviewFileTreeModel, filterReviewGroups } from './reviewFileTreeModel'
 import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 
 const reviewFileTreeUnsafeCss = `
@@ -39,6 +36,10 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
     [controller.loadState, controller.preferences.treeFilter]
   )
   const treeModel = useMemo(() => buildReviewFileTreeModel(filteredGroups), [filteredGroups])
+  const initialExpandedPaths = useMemo(
+    () => treeModel.paths.filter((path) => path.endsWith('/')),
+    [treeModel.paths]
+  )
   const initialSelectedPaths = useMemo(
     () => (controller.selectedPath ? [controller.selectedPath] : []),
     // Selection is synchronized after construction.
@@ -60,12 +61,19 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
           ) => {
             context.close()
             if (item.kind !== 'file') return
+            const group = treeModel.entriesByTreePath.get(item.path)?.group
+            const reviewController = callbacksRef.current.controller
             void showNativeReviewFileMenu({
               path: item.path,
               name: item.name,
               target: controller.target,
               canOpenWorktreeFile,
-              openFile: workspace?.openFile
+              openFile: workspace?.openFile,
+              toggleViewed:
+                group && reviewController.displaySource.type === 'branch'
+                  ? () => reviewController.setViewed(group, !reviewController.isViewed(group))
+                  : undefined,
+              viewed: group ? reviewController.isViewed(group) : false
             })
           },
           triggerMode: 'right-click' as const
@@ -76,6 +84,7 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
       gitStatus: treeModel.gitStatus,
       icons: { colored: true, set: 'complete' as const },
       id: 'review-file-tree',
+      initialExpandedPaths,
       initialSelectedPaths,
       itemHeight: 29,
       onSelectionChange: (paths: readonly string[]) => {
@@ -98,7 +107,14 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
       stickyFolders: true,
       unsafeCSS: reviewFileTreeUnsafeCss
     }),
-    [canOpenWorktreeFile, controller.target, initialSelectedPaths, treeModel, workspace?.openFile]
+    [
+      canOpenWorktreeFile,
+      controller.target,
+      initialExpandedPaths,
+      initialSelectedPaths,
+      treeModel,
+      workspace?.openFile
+    ]
   )
   const { model } = useFileTree({
     ...treeOptions
@@ -109,9 +125,9 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
   }, [controller])
 
   useEffect(() => {
-    model.resetPaths(treeModel.paths)
+    model.resetPaths(treeModel.paths, { initialExpandedPaths })
     model.setGitStatus(treeModel.gitStatus)
-  }, [model, treeModel.gitStatus, treeModel.paths])
+  }, [initialExpandedPaths, model, treeModel.gitStatus, treeModel.paths])
 
   useEffect(() => {
     const selectedPath = controller.activePath
@@ -167,22 +183,37 @@ async function showNativeReviewFileMenu({
   name,
   target,
   canOpenWorktreeFile,
-  openFile
+  openFile,
+  toggleViewed,
+  viewed
 }: {
   path: string
   name: string
   target: ReviewWorkspaceController['target']
   canOpenWorktreeFile: boolean
   openFile?: (relativePath: string, title?: string) => void
+  toggleViewed?: () => void
+  viewed: boolean
 }): Promise<void> {
-  const capability = canOpenWorktreeFile && target ? await verifyCurrentWorktreeFile(target, path) : undefined
+  const capability =
+    canOpenWorktreeFile && target ? await verifyCurrentWorktreeFile(target, path) : undefined
   const enabled = Boolean(capability && openFile)
   const action = await window.desktopApp.nativeContextMenu.show([
     { id: 'preview', label: '预览', type: 'action', enabled },
     { id: 'open-pinned', label: '固定打开', type: 'action', enabled },
     { type: 'separator' },
     { id: 'copy-relative-path', label: '复制相对路径', type: 'action' },
-    { id: 'open-with-system', label: '使用系统应用打开', type: 'action', enabled }
+    { id: 'open-with-system', label: '使用系统应用打开', type: 'action', enabled },
+    ...(toggleViewed
+      ? [
+          { type: 'separator' as const },
+          {
+            id: 'toggle-viewed',
+            label: viewed ? '标为未查看' : '标为已查看',
+            type: 'action' as const
+          }
+        ]
+      : [])
   ])
   if (action === 'copy-relative-path') {
     await navigator.clipboard.writeText(path).catch(() => undefined)
@@ -198,7 +229,9 @@ async function showNativeReviewFileMenu({
       rootId: capability.rootId,
       path
     })
+    return
   }
+  if (action === 'toggle-viewed') toggleViewed?.()
 }
 
 async function verifyCurrentWorktreeFile(
@@ -224,7 +257,10 @@ async function verifyCurrentWorktreeFile(
   }
 }
 
-function startResize(event: React.PointerEvent<HTMLDivElement>, controller: ReviewWorkspaceController): void {
+function startResize(
+  event: React.PointerEvent<HTMLDivElement>,
+  controller: ReviewWorkspaceController
+): void {
   event.preventDefault()
   const startX = event.clientX
   const startWidth = controller.preferences.treeWidth

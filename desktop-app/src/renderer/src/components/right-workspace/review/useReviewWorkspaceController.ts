@@ -413,7 +413,7 @@ export function useReviewWorkspaceController({
         )
       }))
     )
-  }, [preferences.fullFiles, preferences.ignoreWhitespace, replaceGroups])
+  }, [preferences.ignoreWhitespace, replaceGroups])
 
   const loadSectionDiff = useCallback(
     (sectionKey: string) => {
@@ -454,7 +454,10 @@ export function useReviewWorkspaceController({
             file: fileTarget(section.file),
             options: {
               ignoreWhitespace: preferences.ignoreWhitespace,
-              fullFiles: preferences.fullFiles
+              // Complete before/after files are loaded on demand by the diff
+              // component, so this patch can remain bounded even when the user
+              // chooses to show every unchanged line.
+              fullFiles: false
             }
           })
           .then((diff) => {
@@ -484,7 +487,7 @@ export function useReviewWorkspaceController({
       pendingDiffLoadsRef.current.set(sectionKey, task)
       runNextDiffLoad(activeDiffLoadsRef, pendingDiffLoadsRef)
     },
-    [preferences.fullFiles, preferences.ignoreWhitespace, replaceSection, target]
+    [preferences.ignoreWhitespace, replaceSection, target]
   )
 
   useEffect(() => {

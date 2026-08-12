@@ -7,7 +7,9 @@ import {
   localGitCreateBranchRequestSchema,
   localGitGetFileDiffRequestSchema,
   localGitGetReviewApplyCommandRequestSchema,
+  localGitGetReviewDiffFileContentsRequestSchema,
   localGitGetReviewFileContentRequestSchema,
+  localGitGetTurnDiffFileContentsRequestSchema,
   localGitGetReviewSnapshotRequestSchema,
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
@@ -32,6 +34,8 @@ export type LocalGitIpcHandlers = {
   refreshReviewFiles(_event: unknown, payload: unknown): Promise<unknown>
   getFileDiff(_event: unknown, payload: unknown): Promise<unknown>
   getReviewApplyCommand(_event: unknown, payload: unknown): Promise<unknown>
+  getReviewDiffFileContents(_event: unknown, payload: unknown): Promise<unknown>
+  getTurnDiffFileContents(_event: unknown, payload: unknown): Promise<unknown>
   getReviewFileContent(_event: unknown, payload: unknown): Promise<unknown>
   searchReview(_event: unknown, payload: unknown): Promise<unknown>
   applyReviewAction(_event: unknown, payload: unknown): Promise<unknown>
@@ -94,6 +98,16 @@ export function createLocalGitIpcHandlers({
       const request = localGitGetReviewApplyCommandRequestSchema.parse(payload)
       observeTarget(request.target)
       return localGit.getReviewApplyCommand(request)
+    },
+    getReviewDiffFileContents: async (_event, payload) => {
+      const request = localGitGetReviewDiffFileContentsRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return localGit.getReviewDiffFileContents(request)
+    },
+    getTurnDiffFileContents: async (_event, payload) => {
+      const request = localGitGetTurnDiffFileContentsRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return localGit.getTurnDiffFileContents(request)
     },
     getReviewFileContent: async (_event, payload) => {
       const request = localGitGetReviewFileContentRequestSchema.parse(payload)

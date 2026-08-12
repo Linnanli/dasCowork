@@ -8,6 +8,7 @@ import {
 import type { UIMessage } from 'ai'
 
 import type { CodexAppServerLaunchOptions } from '../codexAppServerLaunch'
+import type { TurnDiffStoreReader } from './TurnDiffStore'
 
 type AppServerHistoryThread = CodexThreadForUi & {
   id: string
@@ -56,6 +57,7 @@ export type AppServerThreadClientOptions = {
   launch?: CodexAppServerLaunchOptions
   historyClient?: AppServerHistoryClientLike
   createHistoryClient?: () => AppServerHistoryClientLike
+  turnDiffStore?: TurnDiffStoreReader
 }
 
 export class AppServerThreadClient {
@@ -97,7 +99,12 @@ export class AppServerThreadClient {
     return this.withHistoryClient(async (client) => {
       const thread = await client.readThread(threadId, { includeTurns: false })
       const turns = await listAllFullTurns(client, threadId, { limit: input.limit })
-      return toThreadRow({ ...thread, turns }, false, { includeMessages: true })
+      const hydratedTurns = await hydratePersistedTurnDiffs(
+        threadId,
+        turns,
+        this.options.turnDiffStore
+      )
+      return toThreadRow({ ...thread, turns: hydratedTurns }, false, { includeMessages: true })
     })
   }
 
@@ -141,6 +148,23 @@ export class AppServerThreadClient {
       }
     }) satisfies CodexHistoryClient
   }
+}
+
+async function hydratePersistedTurnDiffs(
+  threadId: string,
+  turns: CodexThreadForUi['turns'],
+  store: TurnDiffStoreReader | undefined
+): Promise<CodexThreadForUi['turns']> {
+  if (!store || turns.length === 0) return turns
+
+  const diffs = await store.readMany(
+    threadId,
+    turns.map((turn) => turn.id)
+  )
+  return turns.map((turn) => {
+    const diff = diffs.get(turn.id)
+    return diff === undefined ? turn : { ...turn, diff }
+  })
 }
 
 async function listAllFullTurns(

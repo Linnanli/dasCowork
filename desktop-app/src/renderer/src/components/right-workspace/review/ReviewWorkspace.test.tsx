@@ -27,6 +27,46 @@ const setReviewSource = vi.fn()
 const notifyGitOperation = vi.fn()
 const pierreFileDiffRender = vi.hoisted(() => vi.fn())
 const pierreLineScroll = vi.hoisted(() => vi.fn())
+const pierreProcessFile = vi.hoisted(() =>
+  vi.fn(
+    (
+      diff: string,
+      options?: {
+        oldFile?: { contents: string }
+        newFile?: { contents: string }
+      }
+    ) => {
+      const name = diff.includes('b/src/a.ts') ? 'src/a.ts' : 'README.md'
+      const additionLines = [options?.newFile?.contents ?? 'after\n']
+      const deletionLines = [options?.oldFile?.contents ?? 'before\n']
+      return {
+        name,
+        additionLines,
+        deletionLines,
+        hunks: [
+          {
+            additionStart: 1,
+            additionCount: 1,
+            additionLineIndex: 0,
+            deletionStart: 1,
+            deletionCount: 1,
+            deletionLineIndex: 0,
+            hunkContent: [
+              {
+                type: 'change' as const,
+                additions: 1,
+                deletions: 1,
+                additionLineIndex: 0,
+                deletionLineIndex: 0
+              }
+            ]
+          }
+        ]
+      }
+    }
+  )
+)
+const pierreTreeResetPaths = vi.hoisted(() => vi.fn())
 const scrollIntoView = vi.fn()
 
 vi.mock('@/components/local-git-review/LocalGitReviewProvider', () => ({
@@ -65,7 +105,7 @@ vi.mock('@pierre/diffs/react', () => ({
 }))
 
 vi.mock('@pierre/diffs', () => ({
-  processFile: (diff: string) => ({ name: diff.includes('b/src/a.ts') ? 'src/a.ts' : 'README.md' })
+  processFile: pierreProcessFile
 }))
 
 vi.mock('./ReviewRichPreview', () => ({
@@ -90,7 +130,7 @@ vi.mock('@pierre/trees/react', () => ({
   }) => ({
     model: {
       paths: options.paths,
-      resetPaths: vi.fn(),
+      resetPaths: pierreTreeResetPaths,
       setGitStatus: vi.fn(),
       getItem: vi.fn((path: string) => ({
         select: vi.fn(),
@@ -113,6 +153,8 @@ describe('ReviewWorkspace', () => {
     notifyGitOperation.mockClear()
     pierreFileDiffRender.mockClear()
     pierreLineScroll.mockClear()
+    pierreProcessFile.mockClear()
+    pierreTreeResetPaths.mockClear()
     scrollIntoView.mockClear()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -137,6 +179,11 @@ describe('ReviewWorkspace', () => {
           truncated: false,
           binary: false,
           conflicted: false
+        })),
+        getReviewDiffFileContents: vi.fn(async () => ({
+          status: 'text',
+          before: 'before\n',
+          after: 'after\n'
         })),
         searchReview: vi.fn(async ({ source, snapshotGeneration, query }) => ({
           snapshotGeneration,
@@ -202,6 +249,15 @@ describe('ReviewWorkspace', () => {
     expect(container.textContent).toContain('未提交')
     expect(container.textContent).toContain('src/a.ts')
     expect(container.textContent).toContain('README.md')
+  })
+
+  it('expands review file-tree directories by default', async () => {
+    await renderReview()
+
+    expect(pierreTreeResetPaths).toHaveBeenLastCalledWith(
+      expect.arrayContaining(['README.md', 'src/', 'src/a.ts']),
+      { initialExpandedPaths: ['src/'] }
+    )
   })
 
   it('filters the Pierre tree locally without loading another snapshot', async () => {
@@ -350,16 +406,23 @@ describe('ReviewWorkspace', () => {
     )
   })
 
-  it('re-fetches diffs with the fixed full-file option', async () => {
+  it('keeps diff patches bounded when full-file context is enabled', async () => {
     await renderReview()
-    vi.mocked(window.desktopApp.git.getFileDiff).mockClear()
-
     await selectReviewOption('显示完整文件上下文')
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
-    expect(window.desktopApp.git.getFileDiff).toHaveBeenCalledWith(
-      expect.objectContaining({ options: { ignoreWhitespace: false, fullFiles: true } })
+    expect(
+      vi
+        .mocked(window.desktopApp.git.getFileDiff)
+        .mock.calls.every(([request]) => request.options?.fullFiles === false)
+    ).toBe(true)
+    expect(pierreProcessFile).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        oldFile: expect.objectContaining({ contents: 'before\n' }),
+        newFile: expect.objectContaining({ contents: 'after\n' })
+      })
     )
   })
 
@@ -466,7 +529,7 @@ describe('ReviewWorkspace', () => {
     expect(container.querySelector('[aria-label="Refresh changes"]')).not.toBeNull()
   })
 
-  it('P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 identifies renamed, copied, type-changed, binary, gitlink, and conflicted files', async () => {
+  it('P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 renders file paths and rename origins without section labels', async () => {
     vi.mocked(window.desktopApp.git.getReviewSnapshot).mockImplementation(async ({ source }) => ({
       snapshotGeneration: `${source.type}-generation`,
       gitRoot: '/repo',
@@ -521,12 +584,12 @@ describe('ReviewWorkspace', () => {
     })
 
     expect(container.textContent).toContain('来自 notes.txt')
-    expect(container.textContent).toContain('已重命名')
-    expect(container.textContent).toContain('已复制')
-    expect(container.textContent).toContain('类型已变更')
     expect(container.textContent).toContain('image.bin')
     expect(container.textContent).toContain('vendor/submodule')
-    expect(container.textContent).toContain('存在冲突')
+    expect(container.textContent).not.toContain('已重命名')
+    expect(container.textContent).not.toContain('已复制')
+    expect(container.textContent).not.toContain('类型已变更')
+    expect(container.textContent).not.toContain('存在冲突')
   })
 
   it('locks only the overlapping file while its mutation is pending', async () => {
@@ -546,7 +609,7 @@ describe('ReviewWorkspace', () => {
         })
     )
     await renderReview()
-    const stageButtons = buttonsWithText('暂存文件')
+    const stageButtons = buttonsWithLabel('暂存未暂存文件')
     expect(stageButtons).toHaveLength(2)
 
     await act(async () => {
@@ -583,13 +646,13 @@ describe('ReviewWorkspace', () => {
     )
 
     await act(async () => {
-      buttonWithText('暂存文件')?.click()
+      buttonWithLabel('暂存未暂存文件')?.click()
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 
     expect(window.desktopApp.git.applyReviewAction).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('审阅快照已过期')
-    expect(buttonsWithText('暂存文件').every((button) => button.disabled)).toBe(true)
+    expect(buttonsWithLabel('暂存未暂存文件').every((button) => button.disabled)).toBe(true)
     expect(container.textContent).toContain('src/a.ts')
 
     vi.mocked(window.desktopApp.git.getReviewSnapshot).mockImplementation(async ({ source }) =>
@@ -601,7 +664,7 @@ describe('ReviewWorkspace', () => {
     })
 
     expect(container.textContent).not.toContain('审阅快照已过期')
-    expect(buttonsWithText('暂存文件').some((button) => !button.disabled)).toBe(true)
+    expect(buttonsWithLabel('暂存未暂存文件').some((button) => !button.disabled)).toBe(true)
     expect(window.desktopApp.git.applyReviewAction).toHaveBeenCalledTimes(1)
   })
 
@@ -614,7 +677,7 @@ describe('ReviewWorkspace', () => {
     })
     await renderReview()
 
-    await act(async () => buttonWithText('暂存文件')?.click())
+    await act(async () => buttonWithLabel('暂存未暂存文件')?.click())
     await Promise.resolve()
 
     expect(notifyGitOperation).toHaveBeenCalledWith({
@@ -678,9 +741,13 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
   )
 }
 
-function buttonsWithText(text: string): HTMLButtonElement[] {
+function buttonWithLabel(label: string): HTMLButtonElement | undefined {
+  return buttonsWithLabel(label)[0]
+}
+
+function buttonsWithLabel(label: string): HTMLButtonElement[] {
   return [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
-    (button) => button.textContent?.trim() === text
+    (button) => button.getAttribute('aria-label') === label
   )
 }
 

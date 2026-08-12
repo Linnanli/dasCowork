@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { createSnapshotGroups, displaySourceIdentity, sourceLabel } from './reviewWorkspaceModel'
+import {
+  createLastTurnGroups,
+  createSnapshotGroups,
+  displaySourceIdentity,
+  sourceLabel
+} from './reviewWorkspaceModel'
 import type { ReviewPartialSourceError } from './reviewWorkspaceTypes'
 import type { LocalGitReviewSnapshot } from '../../../../../shared/localGitApi'
 
@@ -43,6 +48,41 @@ describe('reviewWorkspaceModel', () => {
       backendSource: { type: 'staged' },
       message: 'index is locked'
     })
+  })
+
+  it('uses the reference project tree order for stacked diff files', () => {
+    const groups = createSnapshotGroups([
+      snapshot('generation', { type: 'unstaged' }, 'src/file10.ts', 'file10', 1, 0),
+      snapshot('generation', { type: 'unstaged' }, 'src2/index.ts', 'src2', 1, 0),
+      snapshot('generation', { type: 'unstaged' }, 'foo', 'foo', 1, 0),
+      snapshot('generation', { type: 'unstaged' }, 'src/file2.ts', 'file2', 1, 0),
+      snapshot('generation', { type: 'unstaged' }, 'foo/bar.ts', 'foo-bar', 1, 0),
+      snapshot('generation', { type: 'unstaged' }, 'src/a.ts', 'a', 1, 0)
+    ])
+
+    expect(groups.map((group) => group.path)).toEqual([
+      'foo/bar.ts',
+      'src/a.ts',
+      'src/file2.ts',
+      'src/file10.ts',
+      'src2/index.ts',
+      'foo'
+    ])
+  })
+
+  it('applies the same order to previous-turn diffs', () => {
+    const groups = createLastTurnGroups(
+      { type: 'last-turn', turnId: 'turn-1' },
+      {
+        turnId: 'turn-1',
+        files: [
+          { path: 'src/file10.ts', additions: 1, deletions: 0 },
+          { path: 'src/file2.ts', additions: 1, deletions: 0 }
+        ]
+      }
+    )
+
+    expect(groups.map((group) => group.path)).toEqual(['src/file2.ts', 'src/file10.ts'])
   })
 
   it('uses renderer-only uncommitted labels and identities', () => {

@@ -241,6 +241,56 @@ describe('AppServerThreadClient', () => {
     })
   })
 
+  it('hydrates historical messages with the persisted final turn diff', async () => {
+    const historyClient = createHistoryClient([
+      historyThread({
+        id: 'thread-1',
+        cwd: '/repo',
+        turns: [
+          {
+            id: 'turn-1',
+            items: [
+              {
+                id: 'file-1',
+                type: 'fileChange',
+                status: 'completed',
+                changes: [
+                  {
+                    path: 'restored.ts',
+                    kind: { type: 'update', move_path: null },
+                    diff: '@@ -1 +1 @@\n-original\n+temporary\n'
+                  }
+                ]
+              }
+            ],
+            itemsView: 'full',
+            status: 'completed',
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            durationMs: null
+          }
+        ]
+      })
+    ])
+    const turnDiffStore = {
+      readMany: vi.fn(async () => new Map([['turn-1', '']]))
+    }
+    const client = new AppServerThreadClient({ historyClient, turnDiffStore })
+
+    const result = await client.readThreadWithFullTurns('thread-1')
+
+    expect(turnDiffStore.readMany).toHaveBeenCalledWith('thread-1', ['turn-1'])
+    expect(result.messages).toEqual([
+      {
+        id: 'assistant:turn-1:file-1',
+        role: 'assistant',
+        metadata: { codexSource: { turnId: 'turn-1' } },
+        parts: [expect.objectContaining({ toolName: 'codex_file_change' })]
+      }
+    ])
+  })
+
   it('rejects turn pages that are not full item views', async () => {
     const historyClient = createHistoryClient([historyThread({ id: 'thread-1' })])
     vi.mocked(historyClient.listTurns).mockResolvedValue({

@@ -29,6 +29,7 @@ import {
   type CodexSteerErrorCode,
   type CodexSteerResult,
   type CodexTurnLifecycleEvent as ProviderTurnLifecycleEvent,
+  type CodexTurnDiffUpdatedEvent,
   type CommandApprovalHandler,
   type FileChangeApprovalHandler,
   type PermissionsApprovalHandler
@@ -70,6 +71,7 @@ import type { LocalGitTarget } from '../shared/localGitApi'
 import { selectUniqueLegacyCandidate } from '../shared/uniqueLegacyCandidate'
 import { extractVisibleUserRequest } from '../shared/userRequestEnvelope'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
+import type { TurnDiffStoreWriter } from './conversations/TurnDiffStore'
 import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
 import {
   ConversationFollowUpQueueService,
@@ -112,6 +114,7 @@ type StreamTextLike = (input: {
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
+  onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
@@ -150,6 +153,7 @@ type ActiveConversationRun = {
   pendingSteerClaims: Map<string, PendingSteerClaim>
   approvalRequestIds: Set<string>
   lastLifecycleSequence?: number
+  latestTurnDiff?: CodexTurnDiffUpdatedEvent
   lifecycleSettlement: Promise<void>
   streamSettled: Promise<void>
   resolveStreamSettled: () => void
@@ -213,6 +217,7 @@ export type CodexChatRuntimeServiceOptions = {
     threadId: string,
     turnId: string
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
+  turnDiffStore?: TurnDiffStoreWriter
 }
 
 export type CodexChatRunResult = {
@@ -262,6 +267,7 @@ export class CodexChatRuntimeService {
     threadId: string,
     turnId: string
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
+  private readonly turnDiffStore: TurnDiffStoreWriter | undefined
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private readonly recentTerminalRuns = new Map<string, ActiveConversationRun>()
   private acceptingStartAdmissions = true
@@ -301,6 +307,7 @@ export class CodexChatRuntimeService {
     this.modelCatalog = options.modelCatalog
     this.projectService = options.projectService
     this.projectStore = options.projectStore
+    this.turnDiffStore = options.turnDiffStore
     const historyClient = options.connection
       ? createCodexHistoryClient({
           clientInfo: {
@@ -696,6 +703,12 @@ export class CodexChatRuntimeService {
           })
         return activeRun.lifecycleSettlement
       }
+      const onTurnDiffUpdated = (event: CodexTurnDiffUpdatedEvent): void => {
+        if (activeRun.terminalDelivered) return
+        if (activeRun.threadId && activeRun.threadId !== event.threadId) return
+        if (activeRun.turnId && activeRun.turnId !== event.turnId) return
+        activeRun.latestTurnDiff = event
+      }
       const startProviderStream = (
         resumeActiveTurn = false
       ): StreamTextLikeResult | Promise<StreamTextLikeResult> =>
@@ -717,6 +730,7 @@ export class CodexChatRuntimeService {
           onThreadStarted,
           onAgentLifecycle: this.onAgentLifecycle,
           onTurnLifecycle,
+          onTurnDiffUpdated,
           onExistingTurnRecoveryState: (state) => {
             activeRun.existingTurnRecoveryState = state
           },
@@ -1684,6 +1698,7 @@ export class CodexChatRuntimeService {
     }
 
     if (event.type === 'turn-completed') {
+      await this.persistFinalTurnDiff(run, event)
       this.onTurnCompleted?.()
       const providerFailureDetail = providerTurnFailureDetail(event)
       if (event.outcome === 'failed' && providerFailureDetail) {
@@ -1691,6 +1706,28 @@ export class CodexChatRuntimeService {
       }
       this.setCanonicalOutcome(run, event.outcome, 'notification')
       await this.rejectUnacceptedSteerClaims(run, event.turnId, event.outcome)
+    }
+  }
+
+  private async persistFinalTurnDiff(
+    run: ActiveConversationRun,
+    event: Extract<ProviderTurnLifecycleEvent, { type: 'turn-completed' }>
+  ): Promise<void> {
+    const turnDiff = run.latestTurnDiff
+    run.latestTurnDiff = undefined
+    if (
+      !this.turnDiffStore ||
+      !turnDiff ||
+      turnDiff.threadId !== event.threadId ||
+      turnDiff.turnId !== event.turnId
+    ) {
+      return
+    }
+
+    try {
+      await this.turnDiffStore.save(turnDiff)
+    } catch (error) {
+      console.warn('failed to persist final turn diff', error)
     }
   }
 
@@ -2169,6 +2206,7 @@ async function defaultStreamText({
   onThreadStarted,
   onAgentLifecycle,
   onTurnLifecycle,
+  onTurnDiffUpdated,
   onSessionCreated,
   onExistingTurnRecoveryState,
   approvals,
@@ -2187,6 +2225,7 @@ async function defaultStreamText({
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
+  onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
@@ -2209,6 +2248,7 @@ async function defaultStreamText({
       onThreadStarted,
       onAgentLifecycle,
       onTurnLifecycle,
+      onTurnDiffUpdated,
       onSessionCreated,
       onExistingTurnRecoveryState,
       approvals
@@ -2244,6 +2284,7 @@ function codexCallOptionsInput({
   onThreadStarted,
   onAgentLifecycle,
   onTurnLifecycle,
+  onTurnDiffUpdated,
   onSessionCreated,
   onExistingTurnRecoveryState,
   approvals
@@ -2258,6 +2299,7 @@ function codexCallOptionsInput({
   onThreadStarted?: CodexCallOptions['onThreadStarted']
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
+  onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   approvals?: CodexCallOptions['approvals']
@@ -2273,6 +2315,7 @@ function codexCallOptionsInput({
     ...(onThreadStarted ? { onThreadStarted } : {}),
     ...(onAgentLifecycle ? { onAgentLifecycle } : {}),
     ...(onTurnLifecycle ? { onTurnLifecycle } : {}),
+    ...(onTurnDiffUpdated ? { onTurnDiffUpdated } : {}),
     ...(onSessionCreated ? { onSessionCreated } : {}),
     ...(onExistingTurnRecoveryState ? { onExistingTurnRecoveryState } : {}),
     ...(approvals ? { approvals } : {}),

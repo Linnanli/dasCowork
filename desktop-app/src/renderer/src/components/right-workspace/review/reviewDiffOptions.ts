@@ -1,9 +1,9 @@
 import type { FileDiffOptions } from '@pierre/diffs'
 import type { ReviewWorkspacePreferences } from './reviewWorkspaceTypes'
 
-export function reviewDiffOptions(
+export function reviewDiffOptions<LAnnotation = undefined>(
   preferences: Pick<ReviewWorkspacePreferences, 'diffMode' | 'lineDiffType' | 'wrap' | 'fullFiles'>
-): FileDiffOptions<undefined> {
+): FileDiffOptions<LAnnotation> {
   return {
     disableFileHeader: true,
     diffStyle: preferences.diffMode,

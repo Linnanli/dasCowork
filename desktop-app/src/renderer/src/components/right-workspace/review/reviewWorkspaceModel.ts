@@ -1,3 +1,5 @@
+import { prepareFileTreeInput } from '@pierre/trees'
+
 import type {
   LocalGitMutationResult,
   LocalGitReviewFile,
@@ -15,13 +17,13 @@ import type {
   ReviewTreeStatus
 } from './reviewWorkspaceTypes'
 
-const naturalPathCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+const treePathCollisionSuffix = '\u2063'
 
 export function createLastTurnGroups(
   source: Extract<LocalGitReviewSource, { type: 'last-turn' }>,
   lastTurn?: LocalGitReviewLastTurn
 ): ReviewFileGroup[] {
-  return (lastTurn?.files ?? []).map((file) => {
+  const groups: ReviewFileGroup[] = (lastTurn?.files ?? []).map((file) => {
     const reviewFile: LocalGitReviewFile = {
       path: file.path,
       changeKind: 'modified',
@@ -49,6 +51,7 @@ export function createLastTurnGroups(
       treeStatus: 'modified'
     }
   })
+  return sortReviewFileGroupsByReferenceOrder(groups)
 }
 
 export function createSnapshotGroups(
@@ -105,7 +108,20 @@ export function createSnapshotGroups(
       treeStatus: 'modified'
     })
   }
-  return [...groupsByPath.values()].sort((left, right) => naturalPathCollator.compare(left.path, right.path))
+  return sortReviewFileGroupsByReferenceOrder([...groupsByPath.values()])
+}
+
+export function sortReviewFileGroupsByReferenceOrder(
+  groups: readonly ReviewFileGroup[]
+): ReviewFileGroup[] {
+  const treePathsByGroup = createReferenceTreePathMap(groups)
+  const groupsByTreePath = new Map<string, ReviewFileGroup>()
+  for (const group of groups) {
+    groupsByTreePath.set(treePathsByGroup.get(group) ?? group.path, group)
+  }
+  return prepareFileTreeInput([...groupsByTreePath.keys()], { flattenEmptyDirectories: true })
+    .paths.map((treePath) => groupsByTreePath.get(treePath))
+    .filter((group): group is ReviewFileGroup => group !== undefined)
 }
 
 export function displaySourceIdentity(source: ReviewDisplaySource): string {
@@ -245,6 +261,47 @@ function treeStatusPriority(status: ReviewTreeStatus): number {
     case 'untracked':
       return 1
   }
+}
+
+function createReferenceTreePathMap<T extends { path: string }>(
+  entries: readonly T[]
+): Map<T, string> {
+  const directoryPaths = new Set<string>()
+  for (const entry of entries) {
+    const segments = entry.path.split('/')
+    for (let index = 1; index < segments.length; index += 1) {
+      directoryPaths.add(segments.slice(0, index).join('/'))
+    }
+  }
+
+  const originalPaths = new Set(entries.map((entry) => entry.path))
+  const assignedPaths = new Set<string>()
+  const result = new Map<T, string>()
+  const sortedEntries = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (left, right) =>
+        compareRawStrings(left.entry.path, right.entry.path) || left.index - right.index
+    )
+  for (const { entry } of sortedEntries) {
+    let treePath = entry.path
+    if (directoryPaths.has(treePath) || assignedPaths.has(treePath)) {
+      do treePath = `${treePath}${treePathCollisionSuffix}`
+      while (
+        originalPaths.has(treePath) ||
+        directoryPaths.has(treePath) ||
+        assignedPaths.has(treePath)
+      )
+    }
+    result.set(entry, treePath)
+    assignedPaths.add(treePath)
+  }
+  return result
+}
+
+function compareRawStrings(left: string, right: string): number {
+  if (left === right) return 0
+  return left < right ? -1 : 1
 }
 
 function hashText(value: string): string {

@@ -42,6 +42,7 @@ import type {
     CodexCompactionOnResumeContext,
     CodexCustomModelProviderSettings,
     CodexProviderSettings,
+    CodexTurnDiffUpdatedEvent,
     CodexTurnLifecycleEvent,
 } from "./provider-settings";
 import { CodexSessionImpl } from "./session";
@@ -61,6 +62,7 @@ export type {
     CodexCallOptions,
     CodexThreadDefaults,
     CodexTurnDefaults,
+    CodexTurnDiffUpdatedEvent,
     CodexTurnLifecycleEvent,
 } from "./provider-settings";
 
@@ -189,6 +191,59 @@ function notifyTurnLifecycle({
     catch (error)
     {
         debugLog?.("inbound", "onTurnLifecycle:error", {
+            message: errorMessage(error),
+            event,
+        });
+    }
+}
+
+function notifyTurnDiffUpdated({
+    callOptions,
+    debugLog,
+    method,
+    params,
+}: {
+    callOptions: CodexCallOptions | undefined
+    debugLog: DebugLog | undefined
+    method: string
+    params: unknown
+}): void
+{
+    const callback = callOptions?.onTurnDiffUpdated;
+    if (!callback || method !== "turn/diff/updated" || !params || typeof params !== "object")
+    {
+        return;
+    }
+
+    const notification = params as Partial<CodexTurnDiffUpdatedEvent>;
+    if (
+        typeof notification.threadId !== "string" ||
+        typeof notification.turnId !== "string" ||
+        typeof notification.diff !== "string"
+    )
+    {
+        return;
+    }
+
+    const event: CodexTurnDiffUpdatedEvent = {
+        threadId: notification.threadId,
+        turnId: notification.turnId,
+        diff: notification.diff,
+    };
+    try
+    {
+        const result = callback(event);
+        void Promise.resolve(result).catch((error) =>
+        {
+            debugLog?.("inbound", "onTurnDiffUpdated:error", {
+                message: errorMessage(error),
+                event,
+            });
+        });
+    }
+    catch (error)
+    {
+        debugLog?.("inbound", "onTurnDiffUpdated:error", {
             message: errorMessage(error),
             event,
         });
@@ -972,6 +1027,7 @@ export class CodexLanguageModel implements LanguageModelV3
                                     debugLog,
                                     event: turnLifecycleNormalizer.normalize(method, params),
                                 });
+                                notifyTurnDiffUpdated({ callOptions, debugLog, method, params });
                                 const parts = mapper.map({ method, params });
                                 for (const part of parts)
                                 {
@@ -1103,6 +1159,7 @@ export class CodexLanguageModel implements LanguageModelV3
                                 debugLog,
                                 event: turnLifecycleNormalizer.normalize(method, params),
                             });
+                            notifyTurnDiffUpdated({ callOptions, debugLog, method, params });
 
                             const parts = mapper.map({ method, params });
 
@@ -1244,6 +1301,12 @@ export class CodexLanguageModel implements LanguageModelV3
                                     callOptions,
                                     debugLog,
                                     event: turnLifecycleNormalizer.normalize(notification.method, notification.params),
+                                });
+                                notifyTurnDiffUpdated({
+                                    callOptions,
+                                    debugLog,
+                                    method: notification.method,
+                                    params: notification.params,
                                 });
                                 const parts = mapper.map(notification);
                                 for (const part of parts)

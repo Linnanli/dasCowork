@@ -228,6 +228,92 @@ describe("history mapper", () =>
         ]);
     });
 
+    it("prefers the persisted final turn diff over intermediate file-change history", () =>
+    {
+        const fileChange = {
+            type: "fileChange",
+            id: "file_1",
+            status: "completed",
+            changes: [
+                {
+                    path: "kept.ts",
+                    kind: { type: "update", move_path: null },
+                    diff: "@@ -1 +1 @@\n-before\n+after\n",
+                },
+                {
+                    path: "restored.ts",
+                    kind: { type: "update", move_path: null },
+                    diff: "@@ -1 +1 @@\n-original\n+temporary\n",
+                },
+            ],
+        } satisfies Extract<ThreadItem, { type: "fileChange" }>;
+        const finalDiff = [
+            "diff --git a/kept.ts b/kept.ts",
+            "--- a/kept.ts",
+            "+++ b/kept.ts",
+            "@@ -1 +1 @@",
+            "-before",
+            "+after",
+            "",
+        ].join("\n");
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_1",
+                    diff: finalDiff,
+                    items: [fileChange],
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: null,
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        const item = historicalTurnDiffItem(thread);
+        expect(item?.["diff"]).toBe(finalDiff);
+        expect(Array.isArray(item?.["patchBatches"])).toBe(true);
+    });
+
+    it("treats a persisted empty final turn diff as authoritative", () =>
+    {
+        const fileChange = {
+            type: "fileChange",
+            id: "file_1",
+            status: "completed",
+            changes: [
+                {
+                    path: "restored.ts",
+                    kind: { type: "update", move_path: null },
+                    diff: "@@ -1 +1 @@\n-original\n+temporary\n",
+                },
+            ],
+        } satisfies Extract<ThreadItem, { type: "fileChange" }>;
+        const thread = {
+            id: "thr",
+            cwd: "/repo",
+            turns: [
+                {
+                    id: "turn_1",
+                    diff: "",
+                    items: [fileChange],
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: null,
+                },
+            ],
+        } satisfies CodexThreadForUi;
+
+        expect(historicalTurnDiffItem(thread)).toBeUndefined();
+    });
+
     it("coalesces only updates to the same file in the same working directory", () =>
     {
         const change = (diff: string) => ({
@@ -265,6 +351,139 @@ describe("history mapper", () =>
                 "@@ -1 +1 @@",
                 "-before-b",
                 "+after-b",
+                "",
+            ].join("\n"),
+        );
+    });
+
+    it("rebuilds the net diff when an added file is edited again", () =>
+    {
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/created.ts",
+                            kind: { type: "add" as const },
+                            diff: "temporary\n",
+                        },
+                    ],
+                },
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/created.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1,2 @@\n-temporary\n+final\n+export {}\n",
+                        },
+                    ],
+                },
+            ]),
+        ).toBe(
+            [
+                "diff --git a/src/created.ts b/src/created.ts",
+                "new file mode 100644",
+                "--- /dev/null",
+                "+++ b/src/created.ts",
+                "@@ -0,0 +1,2 @@",
+                "+final",
+                "+export {}",
+                "",
+            ].join("\n"),
+        );
+    });
+
+    it("removes intermediate edits that are reverted later in the turn", () =>
+    {
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/restored.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1 @@\n-original\n+temporary\n",
+                        },
+                    ],
+                },
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/restored.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1 @@\n-temporary\n+original\n",
+                        },
+                    ],
+                },
+            ]),
+        ).toBe("");
+    });
+
+    it("replays header-looking content inside repeated update hunks", () =>
+    {
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/header-looking.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1 @@\n--- original\n+++ temporary\n",
+                        },
+                    ],
+                },
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/header-looking.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -1 +1 @@\n-++ temporary\n+-- original\n",
+                        },
+                    ],
+                },
+            ]),
+        ).toBe("");
+    });
+
+    it("reports only the original and final versions across repeated updates", () =>
+    {
+        expect(
+            unifiedDiffForFileChangeBatches([
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/updated.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -4 +4 @@\n-original\n+temporary\n",
+                        },
+                    ],
+                },
+                {
+                    cwd: "/repo",
+                    changes: [
+                        {
+                            path: "src/updated.ts",
+                            kind: { type: "update" as const, move_path: null },
+                            diff: "@@ -4 +4 @@\n-temporary\n+final\n",
+                        },
+                    ],
+                },
+            ]),
+        ).toBe(
+            [
+                "diff --git a/src/updated.ts b/src/updated.ts",
+                "--- a/src/updated.ts",
+                "+++ b/src/updated.ts",
+                "@@ -4 +4 @@",
+                "-original",
+                "+final",
                 "",
             ].join("\n"),
         );
