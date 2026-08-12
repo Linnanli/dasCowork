@@ -68,6 +68,7 @@ import { createProjectRuntimeServices } from './projects/projectRuntimeServices'
 import type { WorkspaceRecoveryService } from './projects/WorkspaceRecoveryService'
 import { LocalGitService } from './localGit/LocalGitService'
 import { LocalCommitService } from './localGit/LocalCommitService'
+import { LocalPushService } from './localGit/LocalPushService'
 import { GitManager } from './localGit/GitManager'
 import { GitHostRegistry } from './localGit/GitHostRegistry'
 import { GitRepositoryTargetResolver } from './localGit/GitRepositoryTargetResolver'
@@ -565,6 +566,7 @@ app.whenReady().then(() => {
     localGit,
     targetResolver,
     commits: new LocalCommitService(localGit, (input) => runtime.generateCommitMessage(input)),
+    pushes: new LocalPushService(localGit),
     watchBroker: localGitWatchBroker
   })
   rightWorkspaceIpc = registerRightWorkspaceIpc({
@@ -631,6 +633,8 @@ app.whenReady().then(() => {
   ipcMain.handle(gitIpcChannels.createBranch, localGitHandlers.createBranch)
   ipcMain.handle(gitIpcChannels.checkoutBranch, localGitHandlers.checkoutBranch)
   ipcMain.handle(gitIpcChannels.commitChanges, localGitHandlers.commitChanges)
+  ipcMain.handle(gitIpcChannels.getPublishStatus, localGitHandlers.getPublishStatus)
+  ipcMain.handle(gitIpcChannels.pushChanges, localGitHandlers.pushChanges)
   ipcMain.on(localGitWatchControlChannels.subscribe, (event) => {
     localGitWatchBroker?.subscribe(event.sender)
   })

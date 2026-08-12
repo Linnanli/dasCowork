@@ -8,6 +8,7 @@ const realGitTestFiles = [
   'src/main/localGit/GitManager.integration.test.ts',
   'src/main/localGit/LocalBranchService.test.ts',
   'src/main/localGit/LocalCommitService.test.ts',
+  'src/main/localGit/LocalPushService.test.ts',
   'src/main/localGit/LocalGitService.integration.test.ts',
   'src/main/localGit/LocalGitService.test.ts',
   'src/main/localGit/reviewSnapshot.test.ts'

@@ -42,6 +42,26 @@ describe('localGitIpc', () => {
     ).rejects.toThrow()
   })
 
+  it('rejects arbitrary push fields and forwards only a validated target', async () => {
+    const push = vi.fn(async () => ({ status: 'nothing-to-push' as const }))
+    const pushes = {
+      getStatus: vi.fn(async () => ({})),
+      push
+    } as never
+    const handlers = createLocalGitIpcHandlers({ localGit: {} as never, pushes })
+
+    await handlers.pushChanges(undefined, { target })
+    expect(push).toHaveBeenCalledWith(target)
+    await expect(
+      handlers.pushChanges(undefined, {
+        target,
+        remote: 'origin',
+        refspec: 'HEAD:main',
+        force: true
+      })
+    ).rejects.toThrow()
+  })
+
   it('forwards bounded persistent batches without a Main-memory registry', async () => {
     const applyTurnPatch = vi.fn(async () => ({ status: 'success' }))
     const handlers = createLocalGitIpcHandlers({

@@ -19,9 +19,10 @@ import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 type Props = {
   controller: ReviewWorkspaceController
   lastTurnId?: string
+  onGitFeedback(feedback: { tone: 'success' | 'info' | 'error'; message: string }): void
 }
 
-export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Element {
+export function ReviewToolbar({ controller, lastTurnId, onGitFeedback }: Props): React.JSX.Element {
   const groups = controller.loadState.status === 'ready' ? controller.loadState.groups : []
   const totals = groups.reduce(
     (result, group) => ({
@@ -133,7 +134,7 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         >
           <FolderIcon />
         </Button>
-        <ReviewCommitControl controller={controller} />
+        <ReviewCommitControl controller={controller} onFeedback={onGitFeedback} />
       </div>
     </header>
   )

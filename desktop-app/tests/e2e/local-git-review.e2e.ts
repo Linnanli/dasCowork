@@ -344,7 +344,9 @@ test('P004-E2E-02/P004-E2E-03 stages, unstages, and safely reverts a real workin
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
 
     await selectReviewSource(page, '未暂存')
-    await expect(panel.getByRole('button', { name: 'Revert file changes', exact: true })).toBeVisible()
+    await expect(
+      panel.getByRole('button', { name: 'Revert file changes', exact: true })
+    ).toBeVisible()
     await panel.getByRole('button', { name: 'Revert file changes', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toContainText('还原文件更改？')
@@ -392,12 +394,18 @@ test('P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful in
     await page.locator('[data-slot="conversation-changes-row"]').click()
     const panel = reviewWorkspace(page)
     await selectReviewSource(page, '已暂存')
-    await expect(panel.getByRole('button', { name: 'Revert file changes', exact: true })).toBeVisible()
+    await expect(
+      panel.getByRole('button', { name: 'Revert file changes', exact: true })
+    ).toBeVisible()
     await panel.getByRole('button', { name: 'Revert file changes', exact: true }).click()
     await page.getByRole('dialog').getByRole('button', { name: '还原', exact: true }).click()
 
-    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText('已应用：notes.txt')
-    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText('冲突：notes.txt')
+    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText(
+      '已应用：notes.txt'
+    )
+    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText(
+      '冲突：notes.txt'
+    )
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
     await expect
       .poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8'))
@@ -659,6 +667,84 @@ test('P004-E2E-20 restores persisted turn batches after a Main-process relaunch'
   }
 })
 
+test('commits and publishes a new branch through the review menu', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-review-publish-'))
+  const remoteRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-review-publish-remote-'))
+  const remote = join(remoteRoot, 'remote.git')
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('review-publish', 'review-publish-message', 'Thread ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await initializeGitRepository(projectRoot)
+    const initialBranch = await gitOutput(projectRoot, ['branch', '--show-current'])
+    await execFile('git', ['init', '--bare', remote])
+    await execFile('git', ['remote', 'add', 'origin', remote], { cwd: projectRoot })
+    await writeFile(join(projectRoot, 'notes.txt'), 'publish through dialog\n', 'utf8')
+
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `P004 Publish ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open Review and publish the current changes.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+    await page.locator('[data-slot="conversation-changes-row"]').click()
+    const panel = reviewWorkspace(page)
+    await expect(panel.getByRole('button', { name: '提交或推送', exact: true })).toBeEnabled()
+    await panel.getByRole('button', { name: '提交或推送', exact: true }).click()
+
+    const dialog = page.locator('[data-slot="commit-or-push-dialog"]')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.locator('[data-action="commit"]')).toBeVisible()
+    await expect(dialog.locator('[data-action="commit-and-push"]')).toBeVisible()
+    await expect(dialog.locator('[data-action="push"]')).toBeEnabled()
+    await dialog.getByRole('button', { name: initialBranch, exact: true }).click()
+    await page.getByRole('button', { name: '新分支', exact: true }).click()
+    await dialog.getByLabel('新分支名称').fill('feature/published-from-review')
+    await dialog.getByLabel('提交信息').fill('Publish from review')
+    await dialog.locator('[data-action="commit-and-push"]').click()
+
+    await expect
+      .poll(() => gitOutput(projectRoot, ['branch', '--show-current']))
+      .toBe('feature/published-from-review')
+    await expect
+      .poll(async () => {
+        try {
+          return await gitOutput(projectRoot, [
+            'rev-parse',
+            '--abbrev-ref',
+            '--symbolic-full-name',
+            '@{upstream}'
+          ])
+        } catch {
+          return ''
+        }
+      })
+      .toBe('origin/feature/published-from-review')
+    await expect
+      .poll(() =>
+        gitOutput(remote, ['log', '-1', '--format=%s', 'refs/heads/feature/published-from-review'])
+      )
+      .toBe('Publish from review')
+
+    await panel.getByRole('button', { name: '提交或推送', exact: true }).click()
+    await expect(dialog.locator('[data-action="push"]')).toBeDisabled()
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot, remoteRoot])
+  }
+})
+
 test('P004-E2E-05/P004-EDGE-09 refuses an undo after later local edits leave the turn patch stale', async ({
   browserName
 }, testInfo) => {
@@ -759,15 +845,15 @@ test('P004-E2E-09/P004-E2E-11/P004-EDGE-11 commits then retries a branch switch 
     await switcher.getByRole('option', { name: /other/ }).click()
     await expect(page.getByRole('dialog')).toContainText('Commit changes to switch branch')
     await page.getByRole('button', { name: 'Commit and switch branch…' }).click()
-    const commitDialog = page.getByRole('dialog')
-    await expect(commitDialog.getByLabel('Commit message')).toHaveValue('')
+    const commitDialog = page.locator('[data-slot="commit-or-push-dialog"]')
+    await expect(commitDialog.getByLabel('提交信息')).toHaveValue('')
     await writeFile(join(projectRoot, 'notes.txt'), 'latest blocked\n', 'utf8')
     await writeFile(
       join(projectRoot, 'created-after-commit-dialog.txt'),
       'latest untracked\n',
       'utf8'
     )
-    await commitDialog.getByRole('button', { name: 'Commit', exact: true }).click()
+    await commitDialog.locator('[data-action="commit"]').click()
     await expect.poll(() => gitOutput(projectRoot, ['branch', '--show-current'])).toBe('other')
     await expect
       .poll(() => gitOutput(projectRoot, ['log', originalBranch, '-1', '--format=%s']))
@@ -830,8 +916,8 @@ test('P004-E2E-10 keeps the branch and working tree when the blocked commit is c
     await expect(blockedDialog).toContainText('Commit changes to switch branch')
 
     await blockedDialog.getByRole('button', { name: 'Commit and switch branch…' }).click()
-    const commitDialog = page.getByRole('dialog')
-    await commitDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    const commitDialog = page.locator('[data-slot="commit-or-push-dialog"]')
+    await commitDialog.press('Escape')
     await expect(page.getByRole('dialog')).toContainText('Commit changes to switch branch')
     await expect
       .poll(() => gitOutput(projectRoot, ['branch', '--show-current']))
@@ -842,8 +928,8 @@ test('P004-E2E-10 keeps the branch and working tree when the blocked commit is c
       .getByRole('dialog')
       .getByRole('button', { name: 'Commit and switch branch…' })
       .click()
-    await page.getByLabel('Commit message').fill('must not switch')
-    await page.getByRole('button', { name: 'Commit', exact: true }).click()
+    await page.getByLabel('提交信息').fill('must not switch')
+    await page.locator('[data-slot="commit-or-push-dialog"] [data-action="commit"]').click()
     await expect(page.locator('[data-slot="local-git-operation-toast"]')).toBeVisible()
     await expect
       .poll(() => gitOutput(projectRoot, ['branch', '--show-current']))
@@ -977,9 +1063,9 @@ test('P004-E2E-15 runs remote branch, review, stage, and commit actions through 
     await switcher.getByRole('option', { name: 'other' }).click()
     await expect(page.getByRole('dialog')).toContainText('Commit changes to switch branch')
     await page.getByRole('button', { name: 'Commit and switch branch…' }).click()
-    const commitDialog = page.locator('[data-slot="commit-changes-dialog"]')
-    await commitDialog.getByLabel('Commit message').fill('Save remote Git changes')
-    await commitDialog.getByRole('button', { name: 'Commit', exact: true }).click()
+    const commitDialog = page.locator('[data-slot="commit-or-push-dialog"]')
+    await commitDialog.getByLabel('提交信息').fill('Save remote Git changes')
+    await commitDialog.locator('[data-action="commit"]').click()
     await expect.poll(() => gitOutput(projectRoot, ['branch', '--show-current'])).toBe('other')
     await expect
       .poll(() => gitOutput(projectRoot, ['log', originalBranch, '-1', '--format=%s']))

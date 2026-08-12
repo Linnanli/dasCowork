@@ -14,14 +14,17 @@ import {
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
+  localGitGetPublishStatusRequestSchema,
   localGitReviewMutationRequestSchema,
   localGitResolveMergeBaseRequestSchema,
   localGitSearchReviewRequestSchema,
+  localPushRequestSchema,
   turnPatchRequestSchema
 } from '../../shared/localGitApi'
 import { LocalBranchService } from './LocalBranchService'
 import { LocalCommitService } from './LocalCommitService'
 import { LocalGitService } from './LocalGitService'
+import { LocalPushService } from './LocalPushService'
 import type { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
 import type { LocalGitWatchBroker } from './LocalGitWatchBroker'
 import type { LocalGitTarget } from './types'
@@ -46,6 +49,8 @@ export type LocalGitIpcHandlers = {
   createBranch(_event: unknown, payload: unknown): Promise<unknown>
   checkoutBranch(_event: unknown, payload: unknown): Promise<unknown>
   commitChanges(_event: unknown, payload: unknown): Promise<unknown>
+  getPublishStatus(_event: unknown, payload: unknown): Promise<unknown>
+  pushChanges(_event: unknown, payload: unknown): Promise<unknown>
 }
 
 export function createLocalGitIpcHandlers({
@@ -53,12 +58,14 @@ export function createLocalGitIpcHandlers({
   targetResolver,
   branches = new LocalBranchService(localGit),
   commits = new LocalCommitService(localGit),
+  pushes = new LocalPushService(localGit),
   watchBroker
 }: {
   localGit: LocalGitService
   targetResolver?: GitRepositoryTargetResolver
   branches?: LocalBranchService
   commits?: LocalCommitService
+  pushes?: LocalPushService
   watchBroker?: Pick<LocalGitWatchBroker, 'observeTarget'>
 }): LocalGitIpcHandlers {
   const observeTarget = (target: LocalGitTarget): void => watchBroker?.observeTarget(target)
@@ -158,6 +165,16 @@ export function createLocalGitIpcHandlers({
       const request = localCommitRequestSchema.parse(payload)
       observeTarget(request.target)
       return commits.commit(request)
+    },
+    getPublishStatus: async (_event, payload) => {
+      const request = localGitGetPublishStatusRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return pushes.getStatus(request.target)
+    },
+    pushChanges: async (_event, payload) => {
+      const request = localPushRequestSchema.parse(payload)
+      observeTarget(request.target)
+      return pushes.push(request.target)
     }
   }
 }

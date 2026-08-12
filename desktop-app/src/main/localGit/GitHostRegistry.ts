@@ -93,7 +93,11 @@ export class LocalGitHost implements GitHost {
     return runLocalCommand(['git', ...args], cwd, options)
   }
 
-  runGitBytes(args: readonly string[], cwd: string, options: GitRunOptions = {}): Promise<GitBytesResult> {
+  runGitBytes(
+    args: readonly string[],
+    cwd: string,
+    options: GitRunOptions = {}
+  ): Promise<GitBytesResult> {
     return runLocalCommandBytes(['git', ...args], cwd, options)
   }
 
@@ -190,6 +194,10 @@ export class RemoteGitHost implements GitHost {
       ...options,
       cwd,
       readOnly,
+      // All public Git mutations are local-only except the fixed publish
+      // operation. `LocalPushService` is the sole caller that can construct a
+      // push command, so remote workspaces do not get generic network access.
+      networkAccess: args[0] === 'push',
       writableRoots
     })
   }
@@ -207,6 +215,7 @@ export class RemoteGitHost implements GitHost {
     options: GitRunOptions & {
       cwd?: string
       readOnly?: boolean
+      networkAccess?: boolean
       writableRoots?: string[]
     } = {}
   ): Promise<GitRunResult> {
@@ -224,7 +233,7 @@ export class RemoteGitHost implements GitHost {
           : {
               type: 'workspaceWrite',
               writableRoots: options.writableRoots ?? [],
-              networkAccess: false,
+              networkAccess: options.networkAccess ?? false,
               excludeTmpdirEnvVar: false,
               excludeSlashTmp: false
             }
@@ -376,7 +385,10 @@ function createSshCommandClient(hostId: string, remoteCodexCommand: string): Cod
   })
 }
 
-export function createSshCodexAppServerTransport(hostId: string, remoteCodexCommand: string): {
+export function createSshCodexAppServerTransport(
+  hostId: string,
+  remoteCodexCommand: string
+): {
   type: 'stdio'
   stdio: { command: string; args: string[] }
 } {
@@ -488,7 +500,12 @@ function runLocalCommandBytes(
 ): Promise<GitBytesResult> {
   const [executable, ...args] = command
   if (!executable) {
-    return Promise.resolve({ success: false, code: null, stdout: new Uint8Array(), stderr: 'Empty command' })
+    return Promise.resolve({
+      success: false,
+      code: null,
+      stdout: new Uint8Array(),
+      stderr: 'Empty command'
+    })
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
@@ -519,7 +536,12 @@ function runLocalCommandBytes(
     }
     const abort = (): void => {
       child.kill('SIGKILL')
-      finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git process aborted' })
+      finish({
+        success: false,
+        code: null,
+        stdout: Buffer.concat(chunks),
+        stderr: 'git process aborted'
+      })
     }
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
@@ -535,7 +557,12 @@ function runLocalCommandBytes(
       outputBytes += chunk.length
       if (outputBytes > maxOutputBytes) {
         child.kill('SIGKILL')
-        finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git output exceeded limit' })
+        finish({
+          success: false,
+          code: null,
+          stdout: Buffer.concat(chunks),
+          stderr: 'git output exceeded limit'
+        })
         return
       }
       chunks.push(chunk)
@@ -546,7 +573,12 @@ function runLocalCommandBytes(
       outputBytes += chunk.length
       if (outputBytes > maxOutputBytes) {
         child.kill('SIGKILL')
-        finish({ success: false, code: null, stdout: Buffer.concat(chunks), stderr: 'git output exceeded limit' })
+        finish({
+          success: false,
+          code: null,
+          stdout: Buffer.concat(chunks),
+          stderr: 'git output exceeded limit'
+        })
       }
     })
     child.on('error', (error) =>

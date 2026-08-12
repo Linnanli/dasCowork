@@ -38,6 +38,10 @@ import type {
   LocalBranchSummary,
   LocalCommitRequest,
   LocalCommitResult,
+  LocalGitGetPublishStatusRequest,
+  LocalGitPublishStatus,
+  LocalPushRequest,
+  LocalPushResult,
   GitResolveRepositoryTargetRequest,
   GitResolveRepositoryTargetResult,
   LocalGitCommitSummary,
@@ -647,6 +651,8 @@ export type DesktopGitApi = {
   createBranch(input: LocalGitCreateBranchRequest): Promise<LocalBranchCheckoutResult>
   checkoutBranch(input: LocalGitCheckoutBranchRequest): Promise<LocalBranchCheckoutResult>
   commitChanges(input: LocalCommitRequest): Promise<LocalCommitResult>
+  getPublishStatus(input: LocalGitGetPublishStatusRequest): Promise<LocalGitPublishStatus>
+  pushChanges(input: LocalPushRequest): Promise<LocalPushResult>
   subscribe(callback: (event: LocalGitChangeEvent) => void): () => void
 }
 

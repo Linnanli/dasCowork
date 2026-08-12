@@ -85,9 +85,11 @@ import {
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
+  localGitGetPublishStatusRequestSchema,
   localGitSearchReviewRequestSchema,
   localGitReviewMutationRequestSchema,
   localCommitRequestSchema,
+  localPushRequestSchema,
   localGitResolveMergeBaseRequestSchema,
   turnPatchRequestSchema
 } from '../shared/localGitApi'
@@ -443,6 +445,13 @@ const desktopGit: DesktopGitApi = {
       gitIpcChannels.commitChanges,
       parseGitPayload(localCommitRequestSchema, input)
     ),
+  getPublishStatus: (input) =>
+    ipcRenderer.invoke(
+      gitIpcChannels.getPublishStatus,
+      parseGitPayload(localGitGetPublishStatusRequestSchema, input)
+    ),
+  pushChanges: (input) =>
+    ipcRenderer.invoke(gitIpcChannels.pushChanges, parseGitPayload(localPushRequestSchema, input)),
   subscribe: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
       const parsed = localGitChangeEventSchema.safeParse(payload, { jitless: true })

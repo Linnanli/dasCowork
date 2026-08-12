@@ -11,6 +11,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { validateBranchName } from './branchNameValidation'
 
 type Props = {
   open: boolean
@@ -96,27 +97,4 @@ export function BranchCreateDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-function validateBranchName(
-  branch: string,
-  existingBranches: readonly string[]
-): string | undefined {
-  const value = branch.trim()
-  if (!value) return 'Branch name is required'
-  if (value.endsWith('/')) return 'Branch name cannot end with /'
-  if (existingBranches.includes(value)) return 'Branch already exists'
-  if (
-    value.startsWith('/') ||
-    value.endsWith('.') ||
-    value.includes('//') ||
-    value.includes('..') ||
-    value.includes('@{') ||
-    value.includes('\\') ||
-    /[\s~^:?*[\]]/u.test(value) ||
-    value.split('/').some((part) => part.length === 0 || part.endsWith('.lock'))
-  ) {
-    return 'Branch name must be a safe git ref'
-  }
-  return undefined
 }

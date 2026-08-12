@@ -12,7 +12,7 @@ function FieldLegend({ className, ...props }: React.ComponentProps<'legend'>): R
   return (
     <legend
       data-slot="field-legend"
-      className={cn('text-sm font-medium text-foreground', className)}
+      className={cn('text-sm font-normal text-foreground', className)}
       {...props}
     />
   )
@@ -49,7 +49,7 @@ function FieldLabel({ className, ...props }: React.ComponentProps<'label'>): Rea
   return (
     <label
       data-slot="field-label"
-      className={cn('text-sm font-medium leading-none text-foreground', className)}
+      className={cn('text-sm font-normal leading-none text-foreground', className)}
       {...props}
     />
   )

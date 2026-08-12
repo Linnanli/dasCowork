@@ -13,7 +13,6 @@ import type {
   LocalBranchCheckoutResult,
   LocalBranchSearchResult,
   LocalBranchSummary,
-  LocalGitSummary,
   LocalGitTarget
 } from '../../../../shared/localGitApi'
 import { Button } from '@/components/ui/button'
@@ -21,8 +20,11 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { BranchCreateDialog } from './BranchCreateDialog'
 import { BranchSwitchBlockedDialog } from './BranchSwitchBlockedDialog'
-import { CommitChangesDialog } from './CommitChangesDialog'
 import { useLocalGitReview } from './LocalGitReviewProvider'
+import {
+  CommitOrPushDialog,
+  type CommitOrPushDialogStatus
+} from '../right-workspace/review/CommitOrPushDialog'
 
 type BranchContinuation = {
   kind: 'checkout' | 'create-and-checkout'
@@ -58,7 +60,7 @@ export function LocalBranchSwitcher({
   const [error, setError] = useState<string>()
   const [pendingBranch, setPendingBranch] = useState<string>()
   const [createOpen, setCreateOpen] = useState(false)
-  const [commitSummary, setCommitSummary] = useState<LocalGitSummary>()
+  const [commitStatus, setCommitStatus] = useState<CommitOrPushDialogStatus>()
   const [blocked, setBlocked] = useState<{
     continuation: BranchContinuation
     conflictedPaths: string[]
@@ -234,7 +236,7 @@ export function LocalBranchSwitcher({
     setCommitOpen(true)
     setError(undefined)
     try {
-      setCommitSummary(await window.desktopApp.git.getSummary({ target }))
+      setCommitStatus(await window.desktopApp.git.getPublishStatus({ target }))
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'Unable to refresh changes'
       setError(message)
@@ -460,22 +462,19 @@ export function LocalBranchSwitcher({
         onCancel={() => setBlocked(undefined)}
         onCommit={() => void openCommitDialog()}
       />
-      <CommitChangesDialog
+      <CommitOrPushDialog
         open={commitOpen}
-        branch={blocked?.continuation.branch ?? ''}
-        uncommittedFileCount={
-          commitSummary
-            ? commitSummary.stagedFileCount +
-              commitSummary.unstagedFileCount +
-              commitSummary.untrackedFileCount
-            : (summary?.uncommittedFileCount ?? 0)
-        }
-        pendingPhase={commitWorkflow?.phase}
+        status={commitStatus}
+        mode="commit-before-switch"
+        pending={commitWorkflow !== undefined}
         onOpenChange={(nextOpen) => {
           setCommitOpen(nextOpen)
           if (!nextOpen) triggerRef.current?.focus()
         }}
-        onCommit={(message, includeUnstaged) => commitAndRetry(message, includeUnstaged)}
+        onAction={({ action, message, includeUnstaged }) => {
+          if (action !== 'commit') throw new Error('Unsupported branch switch action')
+          return commitAndRetry(message, includeUnstaged)
+        }}
       />
     </div>
   )

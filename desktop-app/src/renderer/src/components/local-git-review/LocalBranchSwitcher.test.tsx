@@ -43,7 +43,7 @@ const target = {
 let container: HTMLDivElement
 let root: Root
 let git: {
-  getSummary: ReturnType<typeof vi.fn>
+  getPublishStatus: ReturnType<typeof vi.fn>
   listBranches: ReturnType<typeof vi.fn>
   searchBranches: ReturnType<typeof vi.fn>
   createBranch: ReturnType<typeof vi.fn>
@@ -57,15 +57,14 @@ describe('LocalBranchSwitcher', () => {
     document.body.appendChild(container)
     root = createRoot(container)
     git = {
-      getSummary: vi.fn(async () => ({
-        snapshotGeneration: 'generation',
-        gitRoot: '/repo',
-        stagedFileCount: 1,
-        unstagedFileCount: 1,
-        untrackedFileCount: 0,
-        additions: 2,
-        deletions: 1,
-        branch: 'main'
+      getPublishStatus: vi.fn(async () => ({
+        branch: 'main',
+        hasHead: true,
+        staged: { fileCount: 1, additions: 1, deletions: 0 },
+        unstaged: { fileCount: 1, additions: 1, deletions: 1 },
+        selectedPushRemote: 'origin',
+        commitsAhead: 0,
+        pushBlockedReason: 'nothing-to-push'
       })),
       listBranches: vi.fn(async () => ({
         current: 'main',
@@ -200,11 +199,13 @@ describe('LocalBranchSwitcher', () => {
 
     await act(async () => buttonWithText('Commit and switch branch…')?.click())
     await flush()
-    await act(async () => setTextAreaValue(textareaByLabel('Commit message'), 'Save work'))
-    await act(async () => buttonWithText('Commit')?.click())
+    await act(async () => setTextAreaValue(textareaByLabel('提交信息'), 'Save work'))
+    expect(document.body.querySelector('[data-action="commit-and-push"]')).toBeNull()
+    expect(document.body.querySelector('[data-action="push"]')).toBeNull()
+    await act(async () => actionButton('commit')?.click())
     await flush()
 
-    expect(git.getSummary).toHaveBeenCalledTimes(1)
+    expect(git.getPublishStatus).toHaveBeenCalledTimes(1)
     expect(git.commitChanges).toHaveBeenCalledWith({
       target,
       message: 'Save work',
@@ -270,7 +271,7 @@ describe('LocalBranchSwitcher', () => {
     await flush()
     await act(async () => buttonWithText('Commit and switch branch…')?.click())
     await flush()
-    await act(async () => buttonWithText('Commit')?.click())
+    await act(async () => actionButton('commit')?.click())
     await flush()
 
     expect(git.commitChanges).not.toHaveBeenCalled()
@@ -302,6 +303,10 @@ function buttonWithExactText(text: string): HTMLButtonElement | undefined {
   return [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(
     (button) => button.textContent?.trim() === text
   )
+}
+
+function actionButton(action: 'commit' | 'commit-and-push' | 'push'): HTMLButtonElement | null {
+  return document.body.querySelector<HTMLButtonElement>(`button[data-action="${action}"]`)
 }
 
 function inputByLabel(label: string): HTMLInputElement {

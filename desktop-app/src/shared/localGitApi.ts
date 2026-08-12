@@ -672,6 +672,81 @@ export const localCommitResultSchema = z.discriminatedUnion('status', [
 ])
 export type LocalCommitResult = z.infer<typeof localCommitResultSchema>
 
+/** A bounded working-tree selection summary used by the commit/publish menu. */
+export const localGitSelectionSummarySchema = z
+  .object({
+    fileCount: z.number().int().nonnegative(),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative()
+  })
+  .strict()
+export type LocalGitSelectionSummary = z.infer<typeof localGitSelectionSummarySchema>
+
+export const localGitPushBlockedReasonSchema = z.enum([
+  'branch-missing',
+  'remote-missing',
+  'remote-ambiguous',
+  'nothing-to-push',
+  'status-unavailable'
+])
+export type LocalGitPushBlockedReason = z.infer<typeof localGitPushBlockedReasonSchema>
+
+/**
+ * Renderer-safe state for the fixed commit/push workflow. Remote names and
+ * refs are informational only: only Main turns this state into Git commands.
+ */
+export const localGitPublishStatusSchema = z
+  .object({
+    branch: z.string().min(1).max(255).nullable(),
+    hasHead: z.boolean(),
+    staged: localGitSelectionSummarySchema,
+    unstaged: localGitSelectionSummarySchema,
+    upstreamTrackingRef: z.string().min(1).max(1024).nullable(),
+    upstreamRemote: z.string().min(1).max(255).nullable(),
+    upstreamRemoteRef: z.string().min(1).max(1024).nullable(),
+    selectedPushRemote: z.string().min(1).max(255).nullable(),
+    commitsAhead: z.number().int().nonnegative(),
+    pushBlockedReason: localGitPushBlockedReasonSchema.nullable(),
+    unavailableReason: z.string().min(1).max(2000).optional()
+  })
+  .strict()
+export type LocalGitPublishStatus = z.infer<typeof localGitPublishStatusSchema>
+
+export const localGitGetPublishStatusRequestSchema = z
+  .object({ target: gitRepositoryTargetSchema })
+  .strict()
+export type LocalGitGetPublishStatusRequest = z.infer<typeof localGitGetPublishStatusRequestSchema>
+
+/** Push has no renderer-controlled remote, refspec, flags, or shell input. */
+export const localPushRequestSchema = z.object({ target: gitRepositoryTargetSchema }).strict()
+export type LocalPushRequest = z.infer<typeof localPushRequestSchema>
+
+export const localPushResultSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('success'),
+      branch: z.string().min(1).max(255),
+      upstreamTrackingRef: z.string().min(1).max(1024),
+      upstreamRemote: z.string().min(1).max(255),
+      upstreamRemoteRef: z.string().min(1).max(1024)
+    })
+    .strict(),
+  z
+    .object({
+      status: z.enum([
+        'branch-missing',
+        'remote-missing',
+        'remote-ambiguous',
+        'nothing-to-push',
+        'status-unavailable',
+        'push-failed'
+      ]),
+      message: z.string().min(1).max(2000).optional()
+    })
+    .strict()
+])
+export type LocalPushResult = z.infer<typeof localPushResultSchema>
+
 export const localGitChangeTypeSchema = z.enum([
   'config',
   'head',
@@ -713,6 +788,8 @@ export const gitIpcChannels = {
   createBranch: 'git:create-branch',
   checkoutBranch: 'git:checkout-branch',
   commitChanges: 'git:commit-changes',
+  getPublishStatus: 'git:get-publish-status',
+  pushChanges: 'git:push-changes',
   changed: 'git:changed'
 } as const
 

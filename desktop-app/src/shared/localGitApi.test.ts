@@ -23,7 +23,9 @@ import {
   localGitRefreshReviewFilesRequestSchema,
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
+  localGitGetPublishStatusRequestSchema,
   localGitMutationResultSchema,
+  localGitPublishStatusSchema,
   localGitReviewApplyCommandSchema,
   localGitReviewMutationRequestSchema,
   localGitReviewSearchResultSchema,
@@ -31,6 +33,8 @@ import {
   localGitReviewDiffFileContentsSchema,
   localGitReviewSnapshotSchema,
   localGitSearchReviewRequestSchema,
+  localPushRequestSchema,
+  localPushResultSchema,
   turnPatchRequestSchema
 } from './localGitApi'
 
@@ -99,6 +103,46 @@ describe('local git API schemas', () => {
     ).toBe(false)
     expect(localCommitResultSchema.safeParse({ status: 'nothing-to-commit' }).success).toBe(true)
     expect(localCommitResultSchema.safeParse({ status: 'stale-snapshot' }).success).toBe(false)
+  })
+
+  it('allows publish requests to name only a trusted target', () => {
+    expect(localGitGetPublishStatusRequestSchema.safeParse({ target }).success).toBe(true)
+    expect(localPushRequestSchema.safeParse({ target }).success).toBe(true)
+    for (const field of ['remote', 'refspec', 'force', 'args', 'shell']) {
+      expect(
+        localPushRequestSchema.safeParse({ target, [field]: field === 'force' ? true : 'value' })
+          .success
+      ).toBe(false)
+    }
+  })
+
+  it('uses structured, bounded publish status and result payloads', () => {
+    expect(
+      localGitPublishStatusSchema.safeParse({
+        branch: 'main',
+        hasHead: true,
+        staged: { fileCount: 1, additions: 2, deletions: 1 },
+        unstaged: { fileCount: 1, additions: 3, deletions: 0 },
+        upstreamTrackingRef: 'refs/remotes/origin/main',
+        upstreamRemote: 'origin',
+        upstreamRemoteRef: 'refs/heads/main',
+        selectedPushRemote: 'origin',
+        commitsAhead: 1,
+        pushBlockedReason: null
+      }).success
+    ).toBe(true)
+    expect(
+      localPushResultSchema.safeParse({
+        status: 'success',
+        branch: 'main',
+        upstreamTrackingRef: 'refs/remotes/origin/main',
+        upstreamRemote: 'origin',
+        upstreamRemoteRef: 'refs/heads/main'
+      }).success
+    ).toBe(true)
+    expect(localPushResultSchema.safeParse({ status: 'push-failed', force: true }).success).toBe(
+      false
+    )
   })
 
   it('validates review sources and rejects unknown source shapes', () => {
