@@ -260,6 +260,36 @@ describe('ReviewWorkspace', () => {
     )
   })
 
+  it('toggles all review file sections between expanded and collapsed', async () => {
+    await renderReview()
+
+    const collapseAll = container.querySelector<HTMLButtonElement>('[aria-label="折叠全部文件"]')
+    expect(collapseAll).not.toBeNull()
+    expect(
+      container.querySelectorAll('[aria-label="展开全部文件"], [aria-label="折叠全部文件"]')
+    ).toHaveLength(1)
+    expect(collapseAll?.getAttribute('aria-pressed')).toBe('true')
+
+    await act(async () => {
+      collapseAll?.click()
+      await Promise.resolve()
+    })
+
+    const expandAll = container.querySelector<HTMLButtonElement>('[aria-label="展开全部文件"]')
+    expect(expandAll).not.toBeNull()
+    expect(
+      container.querySelectorAll('[aria-label="展开全部文件"], [aria-label="折叠全部文件"]')
+    ).toHaveLength(1)
+    expect(expandAll?.getAttribute('aria-pressed')).toBe('false')
+
+    await act(async () => {
+      expandAll?.click()
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector('[aria-label="折叠全部文件"]')).not.toBeNull()
+  })
+
   it('filters the Pierre tree locally without loading another snapshot', async () => {
     await renderReview()
     const callsBeforeFilter = vi.mocked(window.desktopApp.git.getReviewSnapshot).mock.calls.length

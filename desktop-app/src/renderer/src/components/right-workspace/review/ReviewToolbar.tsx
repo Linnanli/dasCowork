@@ -13,6 +13,7 @@ import { ReviewJumpToFileMenu } from './ReviewJumpToFileMenu'
 import { ReviewCommitControl } from './ReviewCommitControl'
 import { ReviewOptionsMenu } from './ReviewOptionsMenu'
 import { ReviewSourceMenu } from './ReviewSourceMenu'
+import { groupKey } from './reviewWorkspaceModel'
 import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 
 type Props = {
@@ -38,6 +39,22 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
   const stagedSection = groups
     .flatMap((group) => group.sections)
     .find((section) => section.kind === 'snapshot' && section.backendSource.type === 'staged')
+  const allFilesCollapsed =
+    groups.length > 0 &&
+    groups.every((group) => controller.preferences.collapsedKeys.includes(groupKey(group)))
+  const expansionControl = allFilesCollapsed
+    ? {
+        ariaLabel: '展开全部文件',
+        title: '展开全部',
+        onClick: controller.expandAll,
+        icon: <ChevronsUpDownIcon />
+      }
+    : {
+        ariaLabel: '折叠全部文件',
+        title: '折叠全部',
+        onClick: controller.collapseAll,
+        icon: <ChevronsDownUpIcon />
+      }
   return (
     <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-3">
       <ReviewSourceMenu
@@ -95,21 +112,12 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
           type="button"
           variant="ghost"
           size="icon-xs"
-          aria-label="展开全部文件"
-          title="展开全部"
-          onClick={controller.expandAll}
+          aria-label={expansionControl.ariaLabel}
+          aria-pressed={!allFilesCollapsed}
+          title={expansionControl.title}
+          onClick={expansionControl.onClick}
         >
-          <ChevronsUpDownIcon />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="折叠全部文件"
-          title="折叠全部"
-          onClick={controller.collapseAll}
-        >
-          <ChevronsDownUpIcon />
+          {expansionControl.icon}
         </Button>
         <Button
           type="button"
