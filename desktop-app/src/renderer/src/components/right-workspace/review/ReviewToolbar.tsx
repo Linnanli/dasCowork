@@ -2,7 +2,7 @@ import {
   Columns2Icon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
-  PanelRightIcon,
+  FolderIcon,
   RefreshCwIcon,
   Rows3Icon
 } from 'lucide-react'
@@ -33,9 +33,6 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
   const richPreviewAvailable = groups.some((group) =>
     /\.(?:md|mdx|png|jpe?g|gif|webp|pdf)$/iu.test(group.path)
   )
-  const unstagedSection = groups
-    .flatMap((group) => group.sections)
-    .find((section) => section.kind === 'snapshot' && section.backendSource.type === 'unstaged')
   const stagedSection = groups
     .flatMap((group) => group.sections)
     .find((section) => section.kind === 'snapshot' && section.backendSource.type === 'staged')
@@ -55,6 +52,9 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         onClick: controller.collapseAll,
         icon: <ChevronsDownUpIcon />
       }
+  const diffModeControlLabel =
+    controller.preferences.diffMode === 'split' ? '切换为统一差异视图' : '切换为并排差异视图'
+  const treeControlLabel = controller.treeVisible ? '隐藏文件树' : '显示文件树'
   return (
     <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-3">
       <ReviewSourceMenu
@@ -67,24 +67,12 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         <span className="text-emerald-600">+{totals.additions}</span>{' '}
         <span className="text-destructive">-{totals.deletions}</span>
       </div>
-      <div role="toolbar" aria-label="Review controls" className="flex items-center gap-1">
-        {unstagedSection ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            title="暂存全部未暂存文件"
-            disabled={controller.isMutationDisabled(unstagedSection, 'section')}
-            onClick={() => controller.applySectionAction(unstagedSection, 'stage')}
-          >
-            暂存全部
-          </Button>
-        ) : null}
+      <div role="toolbar" aria-label="审阅控件" className="flex items-center gap-2">
         {stagedSection ? (
           <Button
             type="button"
             variant="ghost"
-            size="xs"
+            size="sm"
             title="取消暂存全部已暂存文件"
             disabled={controller.isMutationDisabled(stagedSection, 'section')}
             onClick={() => controller.applySectionAction(stagedSection, 'unstage')}
@@ -97,9 +85,9 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label="Refresh changes"
-          title="Refresh"
+          size="sm"
+          aria-label="刷新更改"
+          title="刷新"
           onClick={controller.refresh}
         >
           <RefreshCwIcon
@@ -111,7 +99,7 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
+          size="sm"
           aria-label={expansionControl.ariaLabel}
           aria-pressed={!allFilesCollapsed}
           title={expansionControl.title}
@@ -122,12 +110,10 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label={
-            controller.preferences.diffMode === 'split' ? 'Use unified diff' : 'Use split diff'
-          }
+          size="sm"
+          aria-label={diffModeControlLabel}
           aria-pressed={controller.preferences.diffMode === 'split'}
-          title="Split/unified"
+          title={diffModeControlLabel}
           onClick={() =>
             controller.setDiffMode(
               controller.preferences.diffMode === 'split' ? 'unified' : 'split'
@@ -139,13 +125,13 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label="Toggle file tree"
+          size="sm"
+          aria-label={treeControlLabel}
           aria-pressed={controller.treeVisible}
-          title="File tree"
+          title={treeControlLabel}
           onClick={() => controller.setTreeVisible(!controller.treeVisible)}
         >
-          <PanelRightIcon />
+          <FolderIcon />
         </Button>
         <ReviewCommitControl controller={controller} />
       </div>

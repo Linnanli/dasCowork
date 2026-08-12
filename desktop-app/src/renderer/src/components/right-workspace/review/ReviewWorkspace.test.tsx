@@ -556,7 +556,7 @@ describe('ReviewWorkspace', () => {
     await renderReview()
 
     expect(container.textContent).toContain('No changes to review.')
-    expect(container.querySelector('[aria-label="Refresh changes"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="刷新更改"]')).not.toBeNull()
   })
 
   it('P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-08/P004-EDGE-12 renders file paths and rename origins without section labels', async () => {
@@ -689,7 +689,7 @@ describe('ReviewWorkspace', () => {
       snapshotFor(source)
     )
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Refresh changes"]')?.click()
+      container.querySelector<HTMLButtonElement>('[aria-label="刷新更改"]')?.click()
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     })
 

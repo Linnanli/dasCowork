@@ -20,7 +20,7 @@ export function ReviewOptionsMenu({ controller, richPreviewAvailable }: Props): 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label="审阅选项" title="审阅选项">
+        <Button type="button" variant="ghost" size="sm" aria-label="审阅选项" title="审阅选项">
           <SlidersHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>

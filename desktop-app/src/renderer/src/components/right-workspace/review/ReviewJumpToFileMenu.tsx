@@ -23,7 +23,7 @@ export function ReviewJumpToFileMenu({ groups, onSelect }: Props): React.JSX.Ele
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label="跳转到文件" title="跳转到文件">
+        <Button type="button" variant="ghost" size="sm" aria-label="跳转到文件" title="跳转到文件">
           <SearchIcon />
         </Button>
       </DropdownMenuTrigger>

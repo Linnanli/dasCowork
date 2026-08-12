@@ -39,14 +39,14 @@ export function ReviewCommitControl({ controller }: { controller: ReviewWorkspac
     <>
       <Button
         type="button"
-        variant="secondary"
+        variant="outline"
         size="sm"
         disabled={!controller.target || uncommittedFileCount === 0}
-        title="提交本地更改"
+        title="提交或推送"
         onClick={() => setOpen(true)}
       >
         <GitCommitHorizontalIcon />
-        提交
+        提交或推送
       </Button>
       <CommitChangesDialog
         open={open}
