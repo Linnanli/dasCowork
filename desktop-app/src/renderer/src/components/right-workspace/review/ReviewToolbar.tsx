@@ -9,7 +9,6 @@ import {
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { sourceLabel } from './reviewWorkspaceModel'
 import { ReviewJumpToFileMenu } from './ReviewJumpToFileMenu'
 import { ReviewCommitControl } from './ReviewCommitControl'
 import { ReviewOptionsMenu } from './ReviewOptionsMenu'
@@ -47,12 +46,9 @@ export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Elem
         lastTurnId={lastTurnId}
         onChange={controller.setDisplaySource}
       />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-xs font-medium">{sourceLabel(controller.displaySource)}</div>
-        <div className="text-[11px] text-muted-foreground">
-          {groups.length} files · <span className="text-emerald-600">+{totals.additions}</span>{' '}
-          <span className="text-destructive">-{totals.deletions}</span>
-        </div>
+      <div className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+        <span className="text-emerald-600">+{totals.additions}</span>{' '}
+        <span className="text-destructive">-{totals.deletions}</span>
       </div>
       <div role="toolbar" aria-label="Review controls" className="flex items-center gap-1">
         {unstagedSection ? (

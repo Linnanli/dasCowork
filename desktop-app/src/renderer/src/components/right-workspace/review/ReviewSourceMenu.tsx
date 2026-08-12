@@ -1,4 +1,4 @@
-import { CheckIcon, GitBranchIcon, GitCommitIcon } from 'lucide-react'
+import { CheckIcon, ChevronDownIcon, GitBranchIcon, GitCommitIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -80,8 +80,9 @@ export function ReviewSourceMenu({ lastTurnId, onChange, target, value }: Props)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="outline" size="sm" className="max-w-64 justify-start" aria-label="选择审阅来源">
-          {sourceLabel(value)}
+        <Button type="button" variant="ghost" size="sm" className="max-w-64 justify-start" aria-label="选择审阅来源">
+          <span className="min-w-0 flex-1 truncate">{sourceLabel(value)}</span>
+          <ChevronDownIcon aria-hidden="true" className="size-4 shrink-0" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
