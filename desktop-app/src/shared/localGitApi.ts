@@ -347,7 +347,7 @@ export const localGitGetTurnDiffFileContentsRequestSchema = z
   .object({
     target: gitRepositoryTargetSchema,
     turnId: nonEmptyIdSchema,
-    path: repoRelativePathSchema,
+    path: repoRelativePathSchema
   })
   .strict()
 export type LocalGitGetTurnDiffFileContentsRequest = z.infer<
