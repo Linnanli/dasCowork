@@ -74,7 +74,7 @@ test('RW-E2E-01 opens the four workspace surfaces from a real local conversation
     await expectWorkspaceLayout(page)
     await captureWorkspaceScreenshot(page, testInfo, 'RW-02-terminal')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openWorkspaceMenuItem(page, 'Review')
     await expect(page.locator('[data-slot="review-workspace"]')).toBeVisible()
     await captureWorkspaceScreenshot(page, testInfo, 'RW-05-review')
 

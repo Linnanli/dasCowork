@@ -184,7 +184,7 @@
 
 当前证据：
 
-- [会话 Changes 行与打开 Review 面板](../desktop-app/src/renderer/src/components/local-git-review/ConversationChangesRow.tsx#L10)
+- [工作区 Review 标签与打开 Review 面板](../desktop-app/src/renderer/src/components/workspace-container/WorkspaceTabStrip.tsx#L73)
 - [turn 撤销／重新应用、审核及操作反馈](../desktop-app/src/renderer/src/components/render-units/renderUnitDetails.tsx#L460)
 - [Review 面板的来源、操作与可恢复反馈](../desktop-app/src/renderer/src/components/local-git-review/LocalGitReviewPanel.tsx#L237)
 - [本地 Git 读取、review 写操作与 turn patch 服务](../desktop-app/src/main/localGit/LocalGitService.ts#L228)

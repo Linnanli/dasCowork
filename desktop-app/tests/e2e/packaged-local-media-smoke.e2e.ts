@@ -119,7 +119,7 @@ test.describe('packaged local media smoke', () => {
     await sendComposerMessage(page, 'Open the packaged PDF review preview.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openWorkspaceMenuItem(page, 'Review')
     const review = page.locator('[data-slot="review-workspace"]')
     await expect(review).toContainText('preview.pdf')
     await review.getByRole('button', { name: '审阅选项', exact: true }).click()
