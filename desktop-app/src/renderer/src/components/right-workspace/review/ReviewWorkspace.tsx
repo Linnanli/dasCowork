@@ -6,12 +6,22 @@ import { ReviewToolbar } from './ReviewToolbar'
 import { useReviewWorkspaceController } from './useReviewWorkspaceController'
 
 export function ReviewWorkspace(): React.JSX.Element {
-  const { lastTurn, notifyGitOperation, setReviewSource, source, target } = useLocalGitReview()
+  const {
+    acknowledgeReviewOpenIntent,
+    lastTurn,
+    notifyGitOperation,
+    reviewOpenIntent,
+    setReviewSource,
+    source,
+    target
+  } = useLocalGitReview()
   const controller = useReviewWorkspaceController({
     target,
     source,
     lastTurn,
+    reviewOpenIntent,
     onSourceChange: setReviewSource,
+    onReviewOpenIntentAcknowledged: acknowledgeReviewOpenIntent,
     onFeedback: notifyGitOperation
   })
 
@@ -22,11 +32,7 @@ export function ReviewWorkspace(): React.JSX.Element {
       tabIndex={-1}
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background"
     >
-      <ReviewToolbar
-        controller={controller}
-        lastTurnId={lastTurn?.turnId}
-        onGitFeedback={notifyGitOperation}
-      />
+      <ReviewToolbar controller={controller} lastTurnId={lastTurn?.turnId} />
       {controller.mutationStale ? (
         <div
           role="alert"

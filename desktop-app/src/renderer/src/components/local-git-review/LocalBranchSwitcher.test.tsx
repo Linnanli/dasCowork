@@ -28,7 +28,7 @@ vi.mock('./LocalGitReviewProvider', () => ({
   })
 }))
 
-import { LocalBranchSwitcher } from './LocalBranchSwitcher'
+import { BranchMenuContentForTarget, LocalBranchSwitcher } from './LocalBranchSwitcher'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -116,6 +116,27 @@ describe('LocalBranchSwitcher', () => {
     await flush()
 
     expect(git.searchBranches).toHaveBeenCalledWith({ target, query: 'feature' })
+    expect(document.body.textContent).toContain('feature/a')
+  })
+
+  it('exposes reusable branch menu content for summary submenus', async () => {
+    await act(async () => {
+      root.render(
+        <BranchMenuContentForTarget
+          open
+          target={target}
+          role="dialog"
+          ariaLabel="Summary branch switcher"
+          className="w-80"
+          searchPlaceholder="搜索 dasCowork 分支"
+        />
+      )
+      await flush()
+    })
+
+    expect(git.listBranches).toHaveBeenCalledWith({ target })
+    expect(document.body.querySelector('[aria-label="Summary branch switcher"]')).not.toBeNull()
+    expect(inputByLabel('Search branches').placeholder).toBe('搜索 dasCowork 分支')
     expect(document.body.textContent).toContain('feature/a')
   })
 

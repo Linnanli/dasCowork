@@ -45,13 +45,15 @@ import type {
 export function useReviewWorkspaceController({
   lastTurn,
   onFeedback,
+  onReviewOpenIntentAcknowledged,
   onSourceChange,
+  reviewOpenIntent,
   source,
   target
 }: ReviewWorkspaceControllerInput): ReviewWorkspaceController {
   const initialDisplaySource = useMemo<ReviewDisplaySource>(
-    () => defaultDisplaySource(source),
-    [source]
+    () => (reviewOpenIntent ? { type: 'uncommitted' } : defaultDisplaySource(source)),
+    [reviewOpenIntent, source]
   )
   const storageKey = useMemo(
     () =>
@@ -69,7 +71,9 @@ export function useReviewWorkspaceController({
     loadViewedFiles(window.localStorage, storageKey)
   )
   const [displaySource, setDisplaySourceState] = useState<ReviewDisplaySource>(() =>
-    persistedDisplaySource(source, preferences.source, initialDisplaySource)
+    reviewOpenIntent
+      ? { type: 'uncommitted' }
+      : persistedDisplaySource(source, preferences.source, initialDisplaySource)
   )
   const [loadState, setLoadState] = useState<ReviewSourceLoadState>({ status: 'idle' })
   const [selectedPath, setSelectedPathState] = useState<string>()
@@ -91,6 +95,7 @@ export function useReviewWorkspaceController({
   const navigationTokenRef = useRef(0)
   const pendingMutationsRef = useRef<PendingReviewMutation[]>([])
   const loadedSourceIdentityRef = useRef<string | undefined>(undefined)
+  const lastHandledReviewOpenIntentTokenRef = useRef<number | undefined>(undefined)
   const programmaticScrollUntilRef = useRef(0)
   const loadStateRef = useRef(loadState)
   const reviewSearchIdentity = useMemo(
@@ -126,6 +131,16 @@ export function useReviewWorkspaceController({
       setPreferences((current) => ({ ...current, source }))
     }
   }, [displaySource, source])
+
+  useEffect(() => {
+    if (!reviewOpenIntent) return
+    if (lastHandledReviewOpenIntentTokenRef.current === reviewOpenIntent.token) return
+    lastHandledReviewOpenIntentTokenRef.current = reviewOpenIntent.token
+    const nextSource: ReviewDisplaySource = { type: 'uncommitted' }
+    setDisplaySourceState(nextSource)
+    setPreferences((current) => ({ ...current, source: nextSource }))
+    onReviewOpenIntentAcknowledged?.(reviewOpenIntent.token)
+  }, [onReviewOpenIntentAcknowledged, reviewOpenIntent])
 
   useEffect(() => {
     const updateCompactState = (): void => {

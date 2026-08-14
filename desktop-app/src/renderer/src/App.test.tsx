@@ -1906,6 +1906,7 @@ describe('App composer', () => {
     expect(sidebar?.style.width).toBe('260px')
     expect(headerSlot?.style.width).toBe('260px')
     expect(conversationHeader?.style.paddingLeft).toBe('16px')
+    expect(conversationHeader?.style.paddingRight).toBe('80px')
     expect(sidebar?.contains(hideSidebar ?? null)).toBe(false)
     expect(conversationHeader?.contains(hideSidebar ?? null)).toBe(false)
 
@@ -1919,6 +1920,7 @@ describe('App composer', () => {
     expect(sidebar?.getAttribute('aria-hidden')).toBe('true')
     expect(headerSlot?.style.width).toBe('48px')
     expect(conversationHeader?.style.paddingLeft).toBe('56px')
+    expect(conversationHeader?.style.paddingRight).toBe('80px')
   })
 
   it('shows active conversation title in the header without workspace path', () => {
@@ -1937,6 +1939,23 @@ describe('App composer', () => {
 
     expect(header?.textContent).toContain('Feature thread')
     expect(header?.innerHTML).not.toContain('/Users/test/repo')
+  })
+
+  it('keeps the summary trigger in the adjacent header action slot', () => {
+    act(() => {
+      root.render(<App />)
+    })
+
+    const header = container.querySelector<HTMLElement>('header')
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="切换置顶摘要"]')
+    const workspaceActions = container.querySelector<HTMLElement>(
+      '[data-slot="workspace-header-actions"]'
+    )
+
+    expect(container.querySelectorAll('button[aria-label="切换置顶摘要"]')).toHaveLength(1)
+    expect(header?.contains(trigger ?? null)).toBe(true)
+    expect(workspaceActions?.contains(trigger ?? null)).toBe(false)
+    expect(header?.style.paddingRight).toBe('80px')
   })
 
   it('keeps one shared workspace trigger across the conversation and workspace headers', () => {
@@ -1976,6 +1995,7 @@ describe('App composer', () => {
     expect(secondaryActionSlot?.style.width).toBe('40px')
     expect(container.querySelector('button[aria-label="最大化工作区"]')).not.toBeNull()
     expect(container.querySelector('button[aria-label="Collapse workspace"]')).toBeNull()
+    expect(container.querySelector<HTMLElement>('header')?.style.paddingRight).toBe('16px')
 
     act(() => {
       closeWorkspace?.click()
@@ -2004,7 +2024,7 @@ describe('App composer', () => {
     expect(bottomWorkspace?.querySelector('[role="tab"]')?.textContent).toContain('Terminal')
   })
 
-  it('restores each conversation\'s saved right-workspace open state when switching back', async () => {
+  it("restores each conversation's saved right-workspace open state when switching back", async () => {
     const openConversationId = 'workspace-recovery-open'
     const closedConversationId = 'workspace-recovery-closed'
     window.localStorage.removeItem(`workspace-container:v2:${openConversationId}`)

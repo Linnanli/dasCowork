@@ -11,9 +11,17 @@ const target = {
   cwd: '/repo',
   gitRoot: '/repo'
 }
+const openWorkspaceReview = vi.fn()
 
 vi.mock('./GitRepositoryProvider', () => ({
   useGitRepository: () => ({ target })
+}))
+
+vi.mock('@/components/right-workspace', () => ({
+  useOptionalRightWorkspace: () => ({
+    openReview: openWorkspaceReview,
+    closeTab: vi.fn()
+  })
 }))
 
 import { LocalGitReviewProvider, useLocalGitReview } from './LocalGitReviewProvider'
@@ -28,6 +36,7 @@ describe('LocalGitReviewProvider', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
+    openWorkspaceReview.mockClear()
   })
 
   afterEach(() => {
@@ -58,6 +67,30 @@ describe('LocalGitReviewProvider', () => {
     expect(document.body.textContent).toContain('switching-branch')
     await act(async () => buttonWithText('Finish commit')?.click())
     expect(document.body.textContent).toContain('idle')
+  })
+
+  it('publishes a one-shot uncommitted review intent and acknowledges it by token', async () => {
+    await act(async () => {
+      root.render(
+        <LocalGitReviewProvider>
+          <ReviewIntentProbe />
+        </LocalGitReviewProvider>
+      )
+    })
+
+    await act(async () => buttonWithText('Open last turn')?.click())
+    expect(document.body.textContent).toContain('source:last-turn')
+    expect(document.body.textContent).toContain('last-turn:turn-1')
+
+    await act(async () => buttonWithText('Open uncommitted')?.click())
+
+    expect(openWorkspaceReview).toHaveBeenCalledWith({ type: 'unstaged' })
+    expect(document.body.textContent).toContain('source:unstaged')
+    expect(document.body.textContent).toContain('last-turn:none')
+    expect(document.body.textContent).toContain('intent:1')
+
+    await act(async () => buttonWithText('Acknowledge intent')?.click())
+    expect(document.body.textContent).toContain('intent:none')
   })
 })
 
@@ -124,6 +157,46 @@ function FeedbackProbe(): React.JSX.Element {
         Finish commit
       </button>
       <output>{workflow?.phase ?? 'idle'}</output>
+    </div>
+  )
+}
+
+function ReviewIntentProbe(): React.JSX.Element {
+  const {
+    acknowledgeReviewOpenIntent,
+    lastTurn,
+    openReview,
+    openUncommittedReview,
+    reviewOpenIntent,
+    source
+  } = useLocalGitReview()
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() =>
+          openReview({ type: 'last-turn', turnId: 'turn-1' }, { turnId: 'turn-1', files: [] })
+        }
+      >
+        Open last turn
+      </button>
+      <button type="button" onClick={() => openUncommittedReview()}>
+        Open uncommitted
+      </button>
+      <button
+        type="button"
+        disabled={!reviewOpenIntent}
+        onClick={() => {
+          if (reviewOpenIntent) acknowledgeReviewOpenIntent(reviewOpenIntent.token)
+        }}
+      >
+        Acknowledge intent
+      </button>
+      <output>
+        source:{source.type};last-turn:{lastTurn?.turnId ?? 'none'};intent:
+        {reviewOpenIntent?.token ?? 'none'}
+      </output>
     </div>
   )
 }

@@ -38,7 +38,9 @@ import {
   useGitRepository
 } from '@/components/local-git-review/GitRepositoryProvider'
 import { LocalBranchSwitcher } from '@/components/local-git-review/LocalBranchSwitcher'
+import { CommitOrPushControlProvider } from '@/components/local-git-review/CommitOrPushControlProvider'
 import { LocalGitReviewProvider } from '@/components/local-git-review/LocalGitReviewProvider'
+import { ConversationPinnedSummary } from '@/components/conversation-summary/ConversationPinnedSummary'
 import {
   RightWorkspaceProvider,
   WorkspaceLauncher,
@@ -117,10 +119,12 @@ import {
   WrenchIcon
 } from 'lucide-react'
 import {
+  createContext,
   forwardRef,
   useCallback,
   useEffect,
   useEffectEvent,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -328,6 +332,19 @@ const expandedSidebarWidth = 260
 const collapsedSidebarHeaderSlotWidth = 48
 const conversationHeaderPadding = 16
 const collapsedConversationHeaderPadding = collapsedSidebarHeaderSlotWidth + 8
+const workspaceHeaderActionFallbackWidth = 64
+const workspaceHeaderActionEdgeInset = 8
+const workspaceHeaderActionGap = 8
+
+type WorkspaceHeaderActionSlot = {
+  width: number
+  reportWidth: (width: number) => void
+}
+
+const WorkspaceHeaderActionSlotContext = createContext<WorkspaceHeaderActionSlot>({
+  width: 0,
+  reportWidth: () => undefined
+})
 
 const nativeBackdropSurfaceClass =
   'bg-background/50 bg-clip-padding backdrop-blur-xl [@media(prefers-reduced-transparency:reduce)]:bg-background [@media(prefers-reduced-transparency:reduce)]:backdrop-blur-none dark:bg-background/30'
@@ -666,45 +683,47 @@ function App(): React.JSX.Element {
           preSendProjectKey={preSendProjectKey}
         >
           <LocalGitReviewProvider>
-            <section
-              data-slot="app-main-section"
-              className={cn(
-                'relative flex min-w-0 flex-1 overflow-hidden',
-                nativeBackdrop && nativeBackdropSurfaceClass
-              )}
-            >
-              <ConversationWorkspaceLayout
-                target={gitRepositoryIdentity}
-                workspaceId={`conversation:${workspaceProjectScope}`}
+            <CommitOrPushControlProvider>
+              <section
+                data-slot="app-main-section"
+                className={cn(
+                  'relative flex min-w-0 flex-1 overflow-hidden',
+                  nativeBackdrop && nativeBackdropSurfaceClass
+                )}
               >
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
-                  <ActiveConversationPane
-                    key={activeEntry.localId}
-                    activeConversation={activeConversation}
-                    entry={activeEntry}
-                    approvalRequests={visibleApprovalRequests}
-                    hasBlockingRequest={visibleApprovalRequests.length > 0}
-                    models={models}
-                    selectedModelId={selectedModelId}
-                    modelSelectionError={modelSelectionError}
-                    onDraftChange={setActiveDraft}
-                    onDraftAttachmentsChange={setActiveDraftAttachments}
-                    onRetryLoad={() => {
-                      void openConversation({ conversationId: activeEntry.localId })
-                    }}
-                    onOpenConversation={handleOpenConversation}
-                    onScrollSnapshotChange={setActiveScroll}
-                    onSelectedModelChange={handleSelectedModelChange}
-                    onCreateNewTask={handleStartNewConversation}
-                    onRejectApproval={rejectServerRequest}
-                    onSnoozeApproval={snoozeServerRequest}
-                    onRespondApproval={respondToServerRequest}
-                    projectState={projectState}
-                    sidebarCollapsed={sidebarCollapsed}
-                  />
-                </div>
-              </ConversationWorkspaceLayout>
-            </section>
+                <ConversationWorkspaceLayout
+                  target={gitRepositoryIdentity}
+                  workspaceId={`conversation:${workspaceProjectScope}`}
+                >
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/50 bg-background shadow-[0_18px_60px_-48px_rgba(15,23,42,0.75)]">
+                    <ActiveConversationPane
+                      key={activeEntry.localId}
+                      activeConversation={activeConversation}
+                      entry={activeEntry}
+                      approvalRequests={visibleApprovalRequests}
+                      hasBlockingRequest={visibleApprovalRequests.length > 0}
+                      models={models}
+                      selectedModelId={selectedModelId}
+                      modelSelectionError={modelSelectionError}
+                      onDraftChange={setActiveDraft}
+                      onDraftAttachmentsChange={setActiveDraftAttachments}
+                      onRetryLoad={() => {
+                        void openConversation({ conversationId: activeEntry.localId })
+                      }}
+                      onOpenConversation={handleOpenConversation}
+                      onScrollSnapshotChange={setActiveScroll}
+                      onSelectedModelChange={handleSelectedModelChange}
+                      onCreateNewTask={handleStartNewConversation}
+                      onRejectApproval={rejectServerRequest}
+                      onSnoozeApproval={snoozeServerRequest}
+                      onRespondApproval={respondToServerRequest}
+                      projectState={projectState}
+                      sidebarCollapsed={sidebarCollapsed}
+                    />
+                  </div>
+                </ConversationWorkspaceLayout>
+              </section>
+            </CommitOrPushControlProvider>
           </LocalGitReviewProvider>
         </GitRepositoryProvider>
       </RightWorkspaceProvider>
@@ -832,7 +851,11 @@ function ActiveConversationPane({
         onDraftAttachmentsChange={onDraftAttachmentsChange}
       />
       <ConversationFocusBridge entryId={entry.localId} />
-      <Header activeConversation={activeConversation} sidebarCollapsed={sidebarCollapsed} />
+      <Header
+        activeConversation={activeConversation}
+        projectState={projectState}
+        sidebarCollapsed={sidebarCollapsed}
+      />
       <ChatThread
         activeConversation={activeConversation}
         approvalRequests={approvalRequests}
@@ -875,6 +898,17 @@ function ConversationWorkspaceLayout({
   const container = useWorkspaceContainer()
   const registry = useMemo(() => createWorkspaceContentRegistry(), [])
   const terminalCloseDialog = useTerminalCloseDialog()
+  const [workspaceHeaderActionWidth, setWorkspaceHeaderActionWidth] = useState(0)
+  const reportWorkspaceHeaderActionWidth = useCallback((width: number): void => {
+    setWorkspaceHeaderActionWidth((currentWidth) => (currentWidth === width ? currentWidth : width))
+  }, [])
+  const workspaceHeaderActionSlot = useMemo(
+    () => ({
+      width: workspaceHeaderActionWidth,
+      reportWidth: reportWorkspaceHeaderActionWidth
+    }),
+    [reportWorkspaceHeaderActionWidth, workspaceHeaderActionWidth]
+  )
   const controller = new WorkspacePanelController({
     getState: () => container.state,
     dispatch: container.dispatch,
@@ -957,9 +991,11 @@ function ConversationWorkspaceLayout({
   }
 
   return (
-    <>
+    <WorkspaceHeaderActionSlotContext.Provider value={workspaceHeaderActionSlot}>
       <WorkspaceHeaderActions
-        onOpenBottomTerminal={() => void controller.open({ type: 'terminal' }, { panelId: 'bottom' })}
+        onOpenBottomTerminal={() =>
+          void controller.open({ type: 'terminal' }, { panelId: 'bottom' })
+        }
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div data-slot="conversation-workspace-row" className="flex min-h-0 min-w-0 flex-1">
@@ -972,7 +1008,7 @@ function ConversationWorkspaceLayout({
         tabs={terminalCloseDialog.tabs}
         onDecision={terminalCloseDialog.decide}
       />
-    </>
+    </WorkspaceHeaderActionSlotContext.Provider>
   )
 }
 
@@ -1204,8 +1240,15 @@ function BrandMark(): React.JSX.Element {
   )
 }
 
-function Header({ activeConversation, sidebarCollapsed }: HeaderProps): React.JSX.Element {
+function Header({
+  activeConversation,
+  projectState,
+  sidebarCollapsed
+}: HeaderProps & { projectState: ProjectStateController }): React.JSX.Element {
   const { state: workspaceState } = useRightWorkspace()
+  const { width: workspaceHeaderActionWidth } = useContext(WorkspaceHeaderActionSlotContext)
+  const workspaceHeaderActionSpace =
+    workspaceHeaderActionWidth || workspaceHeaderActionFallbackWidth
 
   return (
     <header
@@ -1214,13 +1257,24 @@ function Header({ activeConversation, sidebarCollapsed }: HeaderProps): React.JS
         paddingLeft: sidebarCollapsed
           ? collapsedConversationHeaderPadding
           : conversationHeaderPadding,
+        // When the right workspace is open, its column already bounds this
+        // header. When it is closed, reserve the actual header action rail so
+        // the summary trigger occupies the adjacent header action slot.
         paddingRight: workspaceState.isOpen
           ? conversationHeaderPadding
-          : collapsedConversationHeaderPadding
+          : workspaceHeaderActionSpace + workspaceHeaderActionEdgeInset + workspaceHeaderActionGap
       }}
     >
       <ConversationContextText activeConversation={activeConversation} />
       {!activeConversation ? <ThreadTitle /> : null}
+      <div className="ml-auto flex shrink-0 items-center">
+        <ConversationPinnedSummary
+          selection={
+            activeConversation?.projectSelection ?? projectState.state?.activeProjectSelection
+          }
+          taskStarted={Boolean(activeConversation?.threadId)}
+        />
+      </div>
     </header>
   )
 }
@@ -1232,6 +1286,8 @@ function WorkspaceHeaderActions({
 }): React.JSX.Element {
   const { collapse, restore, state, toggleMaximized } = useRightWorkspace()
   const container = useWorkspaceContainer()
+  const { reportWidth } = useContext(WorkspaceHeaderActionSlotContext)
+  const actionRailRef = useRef<HTMLDivElement>(null)
   const toggleLabel = state.isOpen ? '关闭工作区' : '打开工作区'
   const maximizeLabel = state.isMaximized ? '恢复工作区宽度' : '最大化工作区'
   const bottomOpen = container.state.panels.bottom.isOpen
@@ -1247,10 +1303,25 @@ function WorkspaceHeaderActions({
     }
     container.dispatch({ type: 'set-panel-open', panelId: 'bottom', isOpen: true })
   }
+  const measureActionRail = useCallback((): void => {
+    const width = actionRailRef.current?.getBoundingClientRect().width ?? 0
+    reportWidth(Math.round(width))
+  }, [reportWidth])
+
+  useLayoutEffect(() => {
+    measureActionRail()
+    const actionRail = actionRailRef.current
+    if (!actionRail || typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(measureActionRail)
+    observer.observe(actionRail)
+    return () => observer.disconnect()
+  }, [measureActionRail])
 
   return (
     <div
       data-slot="workspace-header-actions"
+      ref={actionRailRef}
       className="absolute top-2 right-2 z-50 flex items-center"
     >
       <div

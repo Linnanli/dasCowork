@@ -7,6 +7,7 @@ import type {
   LocalGitTarget
 } from '../../../../../shared/localGitApi'
 import type { LocalGitReviewLastTurn } from '../../local-git-review/LocalGitReviewProvider'
+import type { ReviewOpenIntent } from '../../local-git-review/reviewOpenIntent'
 
 export type ReviewDisplaySource = { type: 'uncommitted' } | LocalGitReviewSource
 
@@ -173,6 +174,8 @@ export type ReviewWorkspaceControllerInput = {
   target?: LocalGitTarget
   source: LocalGitReviewSource
   lastTurn?: LocalGitReviewLastTurn
+  reviewOpenIntent?: ReviewOpenIntent
   onSourceChange(source: LocalGitReviewSource): void
+  onReviewOpenIntentAcknowledged?(token: number): void
   onFeedback?(feedback: { tone: 'success' | 'info' | 'error'; message: string }): void
 }
