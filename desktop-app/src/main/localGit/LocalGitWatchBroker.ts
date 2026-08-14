@@ -109,7 +109,8 @@ export class LocalGitWatchBroker {
 
   observeTarget(target: LocalGitTarget): void {
     const key = targetKey(target)
-    if (!this.targets.has(key)) {
+    const isNewTarget = !this.targets.has(key)
+    if (isNewTarget) {
       this.targets.set(key, {
         target: { ...target },
         polling: false,
@@ -118,6 +119,7 @@ export class LocalGitWatchBroker {
       })
     }
     if (this.hasSubscribers()) {
+      if (isNewTarget && target.hostId !== 'local') this.restartTimer()
       this.ensureStarted()
       this.startLocalWatcher(key)
       void this.pollTarget(key)
@@ -250,8 +252,19 @@ export class LocalGitWatchBroker {
     const setIntervalImpl = this.options.setInterval ?? setInterval
     this.timer = setIntervalImpl(
       () => void this.pollNow(),
-      this.options.pollIntervalMs ?? 1500
+      this.options.pollIntervalMs ?? this.defaultPollIntervalMs()
     ) as NodeJS.Timeout
+  }
+
+  private restartTimer(): void {
+    this.stopTimer()
+    this.ensureTimer()
+  }
+
+  private defaultPollIntervalMs(): number {
+    return [...this.targets.values()].some((watched) => watched.target.hostId !== 'local')
+      ? 5_000
+      : 1_500
   }
 
   private stopTimer(): void {

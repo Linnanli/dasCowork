@@ -243,7 +243,7 @@ test('renders live turn status and a completed turn-diff card through the deskto
     await expect(completedDiff).toContainText('已编辑 1 个文件')
     await expect(completedDiff).toContainText('notes.txt')
     await expect(
-      completedDiff.getByRole('button', { name: 'Review', exact: true }).first()
+      completedDiff.getByRole('button', { name: '审核', exact: true }).first()
     ).toBeVisible()
     await expect(
       page.locator('[data-role="assistant"]').filter({ hasText: 'Turn diff render unit complete' })

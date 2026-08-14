@@ -50,7 +50,7 @@ import type {
   LocalGitChangeEvent,
   LocalGitCheckoutBranchRequest,
   LocalGitCreateBranchRequest,
-  LocalGitFileDiff,
+  LocalGitFileDiffResult,
   LocalGitGetReviewSnapshotRequest,
   LocalGitRefreshReviewFilesRequest,
   LocalGitListCommitsRequest,
@@ -629,7 +629,7 @@ export type DesktopGitApi = {
   listCommits(input: LocalGitListCommitsRequest): Promise<LocalGitCommitSummary[]>
   getReviewSnapshot(input: LocalGitGetReviewSnapshotRequest): Promise<LocalGitReviewSnapshot>
   refreshReviewFiles(input: LocalGitRefreshReviewFilesRequest): Promise<LocalGitReviewFilesRefresh>
-  getFileDiff(input: LocalGitGetFileDiffRequest): Promise<LocalGitFileDiff>
+  getFileDiff(input: LocalGitGetFileDiffRequest): Promise<LocalGitFileDiffResult>
   getReviewApplyCommand(
     input: LocalGitGetReviewApplyCommandRequest
   ): Promise<LocalGitReviewApplyCommand>

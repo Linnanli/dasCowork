@@ -24,6 +24,7 @@ import {
   localGitListCommitsRequestSchema,
   localGitGetSummaryRequestSchema,
   localGitGetPublishStatusRequestSchema,
+  localGitFileDiffResultSchema,
   localGitMutationResultSchema,
   localGitPublishStatusSchema,
   localGitReviewApplyCommandSchema,
@@ -48,6 +49,29 @@ const target = {
 const source = { type: 'unstaged' as const }
 
 describe('local git API schemas', () => {
+  it('models a stale file diff as an expected result', () => {
+    expect(localGitFileDiffResultSchema.safeParse({ status: 'stale' }).success).toBe(true)
+    expect(
+      localGitFileDiffResultSchema.safeParse({
+        status: 'ready',
+        snapshotGeneration: 'generation-1',
+        file: {
+          path: 'src/index.ts',
+          changeKind: 'modified',
+          revision: 'revision-1',
+          additions: 1,
+          deletions: 1,
+          binary: false,
+          conflicted: false
+        },
+        diff: '',
+        truncated: false,
+        binary: false,
+        conflicted: false
+      }).success
+    ).toBe(true)
+  })
+
   it('separates conversation targets from resolved repository targets', () => {
     expect(gitConversationTargetSchema.safeParse(conversationTarget).success).toBe(true)
     expect(gitRepositoryTargetSchema.safeParse(target).success).toBe(true)

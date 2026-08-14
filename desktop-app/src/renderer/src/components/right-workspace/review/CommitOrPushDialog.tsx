@@ -59,7 +59,7 @@ export function CommitOrPushDialog({
   const [includeUnstaged, setIncludeUnstaged] = useState(true)
   const [branchMode, setBranchMode] = useState<'current' | 'new'>('current')
   const [newBranch, setNewBranch] = useState('')
-  const [selectedAction, setSelectedAction] = useState<CommitOrPushAction>('commit')
+  const [selectedAction, setSelectedAction] = useState<CommitOrPushAction>()
   const [executing, setExecuting] = useState(false)
   const [error, setError] = useState<string>()
   const isPending = pending || executing
@@ -70,7 +70,7 @@ export function CommitOrPushDialog({
     setIncludeUnstaged(true)
     setBranchMode('current')
     setNewBranch('')
-    setSelectedAction('commit')
+    setSelectedAction(undefined)
     setExecuting(false)
     setError(undefined)
   }, [open])
@@ -83,15 +83,32 @@ export function CommitOrPushDialog({
     mode === 'commit-or-push' && branchMode === 'new'
       ? validateBranchName(newBranch, branches)
       : undefined
-  const actionState = actionStates({
-    status,
-    selectedSummary,
-    branchMode,
-    branchError,
-    mode
-  })
-  const visibleActions: readonly CommitOrPushAction[] =
-    mode === 'commit-before-switch' ? ['commit'] : actionOrder
+  const actionState = useMemo(
+    () =>
+      actionStates({
+        status,
+        selectedSummary,
+        branchMode,
+        branchError,
+        mode
+      }),
+    [branchError, branchMode, mode, selectedSummary, status]
+  )
+  const visibleActions = useMemo(
+    () => (mode === 'commit-before-switch' ? (['commit'] as const) : actionOrder),
+    [mode]
+  )
+  const enabledActions = useMemo(
+    () => visibleActions.filter((action) => !actionState[action]),
+    [actionState, visibleActions]
+  )
+
+  useEffect(() => {
+    if (!open) return
+    setSelectedAction((current) =>
+      current && enabledActions.includes(current) ? current : enabledActions[0]
+    )
+  }, [enabledActions, open])
 
   const perform = async (action: CommitOrPushAction): Promise<void> => {
     if (isPending || actionState[action]) return
@@ -114,17 +131,22 @@ export function CommitOrPushDialog({
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault()
-      void perform(selectedAction)
+      if (selectedAction) void perform(selectedAction)
       return
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement)
       return
     event.preventDefault()
-    const index = visibleActions.indexOf(selectedAction)
+    if (enabledActions.length === 0) return
+    const index = selectedAction ? enabledActions.indexOf(selectedAction) : -1
     const step = event.key === 'ArrowDown' ? 1 : -1
     setSelectedAction(
-      visibleActions[(index + step + visibleActions.length) % visibleActions.length]!
+      enabledActions[
+        index < 0 && event.key === 'ArrowUp'
+          ? enabledActions.length - 1
+          : (index + step + enabledActions.length) % enabledActions.length
+      ]!
     )
   }
 

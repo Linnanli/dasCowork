@@ -3,7 +3,12 @@ import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { GitManager, type GitHost, type GitRunResult } from './GitManager'
+import {
+  GitManager,
+  GitReviewSnapshotStaleError,
+  type GitHost,
+  type GitRunResult
+} from './GitManager'
 import type { GitRepositoryTargetResolver } from './GitRepositoryTargetResolver'
 import { LocalGitService } from './LocalGitService'
 import { git, createGitFixture, gitTarget } from './testHelpers'
@@ -13,6 +18,88 @@ import {
 } from '../../shared/localGitApi'
 
 describe('LocalGitService', () => {
+  it('retries a snapshot once when a Git change notification invalidates the initial read', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const { repository } = await service.resolveTrustedRepository(target)
+    const initialReviewSnapshot = repository.reviewSnapshot
+    const initialRead = vi.spyOn(initialReviewSnapshot, 'read')
+
+    initialRead.mockImplementationOnce(async () => {
+      repository.invalidateGitReadCachesForRepoChange('working-tree')
+      throw new GitReviewSnapshotStaleError()
+    })
+
+    await expect(service.getSnapshot(target, { type: 'unstaged' })).resolves.toMatchObject({
+      gitRoot: repo,
+      files: [expect.objectContaining({ path: 'tracked.txt' })]
+    })
+    expect(initialRead).toHaveBeenCalledOnce()
+    expect(repository.reviewSnapshot.generation).toBe(1)
+  })
+
+  it('returns a stale file-diff result when the signed review snapshot is retired', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const { repository } = await service.resolveTrustedRepository(target)
+
+    repository.invalidateGitReadCachesForRepoChange('working-tree')
+
+    await expect(
+      service.getFileDiff({
+        target,
+        source: snapshot.source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: snapshot.files[0]
+      })
+    ).resolves.toEqual({ status: 'stale' })
+    await expect(
+      service.getReviewFileContent({
+        target,
+        source: snapshot.source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: snapshot.files[0],
+        side: 'after'
+      })
+    ).resolves.toEqual({ status: 'stale' })
+    await expect(
+      service.getReviewDiffFileContents({
+        target,
+        source: snapshot.source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: snapshot.files[0]
+      })
+    ).resolves.toEqual({ status: 'stale' })
+  })
+
+  it('returns a stale file-diff result when the snapshot retires during the read', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+    const { repository } = await service.resolveTrustedRepository(target)
+
+    vi.spyOn(repository.reviewSnapshot, 'read').mockImplementationOnce(async () => {
+      repository.invalidateGitReadCachesForRepoChange('working-tree')
+      throw new GitReviewSnapshotStaleError()
+    })
+
+    await expect(
+      service.getFileDiff({
+        target,
+        source: snapshot.source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: snapshot.files[0]
+      })
+    ).resolves.toEqual({ status: 'stale' })
+  })
+
   it('creates a trusted unstaged snapshot and stages only with matching revisions', async () => {
     const { repo, projectService } = await createGitFixture()
     await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
@@ -284,7 +371,7 @@ describe('LocalGitService', () => {
           revision: untouched!.revision
         }
       })
-    ).resolves.toMatchObject({ file: { path: 'second.txt' } })
+    ).resolves.toMatchObject({ status: 'ready', file: { path: 'second.txt' } })
     await expect(
       service.getFileDiff({
         target,
@@ -295,7 +382,7 @@ describe('LocalGitService', () => {
           revision: written!.revision
         }
       })
-    ).rejects.toThrow('stale-snapshot')
+    ).resolves.toEqual({ status: 'stale' })
   })
 
   it('rejects review mutation targets that do not exactly match their signed snapshot', async () => {
@@ -458,7 +545,7 @@ describe('LocalGitService', () => {
         snapshotGeneration: snapshot.snapshotGeneration,
         file: { path: 'tracked.txt', revision: snapshot.files[0].revision }
       })
-    ).rejects.toThrow('stale-snapshot')
+    ).resolves.toEqual({ status: 'stale' })
     await expect(
       service.searchReview({
         target: gitTarget(repo),

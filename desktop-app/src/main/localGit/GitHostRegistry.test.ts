@@ -41,6 +41,110 @@ describe('GitHostRegistry', () => {
     )
   })
 
+  it('coalesces concurrent validation of the same remote workspace', async () => {
+    let resolveRootCheck: (() => void) | undefined
+    const client = createCommandClient()
+    client.exec = vi.fn(async (options) => {
+      if (options.command[0] === 'codex') {
+        return commandResult({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 })
+      }
+      await new Promise<void>((resolve) => {
+        resolveRootCheck = resolve
+      })
+      return commandResult({ stdout: '', stderr: '', exitCode: 0 })
+    })
+    const registry = new GitHostRegistry({ createRemoteCommandClient: () => client })
+
+    const validations = [
+      registry.validateRemoteRoot('devbox', '/srv/repo'),
+      registry.validateRemoteRoot('devbox', '/srv/repo')
+    ]
+    await vi.waitFor(() => expect(resolveRootCheck).toBeTypeOf('function'))
+    expect(client.exec).toHaveBeenCalledTimes(2)
+
+    resolveRootCheck?.()
+    await Promise.all(validations)
+  })
+
+  it('rechecks a remote workspace after a successful validation', async () => {
+    const client = createCommandClient([
+      commandResult({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 }),
+      commandResult({ stdout: '', stderr: '', exitCode: 0 }),
+      commandResult({ stdout: '', stderr: 'workspace missing', exitCode: 1 })
+    ])
+    const registry = new GitHostRegistry({ createRemoteCommandClient: () => client })
+
+    await expect(registry.validateRemoteRoot('devbox', '/srv/repo')).resolves.toBeUndefined()
+    await expect(registry.validateRemoteRoot('devbox', '/srv/repo')).rejects.toThrow(
+      'Remote workspace is unavailable on devbox: /srv/repo'
+    )
+
+    expect(client.exec).toHaveBeenCalledTimes(3)
+    expect(client.exec).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ command: ['test', '-d', '/srv/repo'] })
+    )
+  })
+
+  it('runs remote read-only Git commands concurrently', async () => {
+    const deferredResults: Array<() => void> = []
+    const client = createCommandClient()
+    client.exec = vi.fn(async (options) => {
+      if (options.command[0] === 'codex') {
+        return commandResult({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 })
+      }
+      return new Promise<CodexCommandExecResult>((resolve) => {
+        deferredResults.push(() =>
+          resolve(commandResult({ stdout: '', stderr: '', exitCode: 0 }))
+        )
+      })
+    })
+    const host = new RemoteGitHost('devbox', client)
+
+    const first = host.runGit(['status', '--porcelain=v1'], '/srv/repo')
+    const second = host.runGit(['diff', '--name-only'], '/srv/repo')
+
+    await vi.waitFor(() => expect(deferredResults).toHaveLength(2))
+    deferredResults.forEach((resolve) => resolve())
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true })
+    ])
+  })
+
+  it('waits for active remote reads before starting a write', async () => {
+    let resolveRead: (() => void) | undefined
+    const client = createCommandClient()
+    client.exec = vi.fn(async (options) => {
+      if (options.command[1] !== 'status') {
+        return commandResult({ stdout: '', stderr: '', exitCode: 0 })
+      }
+      await new Promise<void>((resolve) => {
+        resolveRead = resolve
+      })
+      return commandResult({ stdout: '', stderr: '', exitCode: 0 })
+    })
+    const host = new RemoteGitHost('devbox', client)
+
+    const read = host.runCommand(['git', 'status'], { readOnly: true })
+    await vi.waitFor(() => expect(resolveRead).toBeTypeOf('function'))
+    const write = host.runCommand(['git', 'add', 'notes.txt'], {
+      writableRoots: ['/srv/repo']
+    })
+
+    await Promise.resolve()
+    expect(client.exec).toHaveBeenCalledTimes(1)
+    resolveRead?.()
+    await expect(Promise.all([read, write])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true })
+    ])
+    expect(client.exec).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ command: ['git', 'add', 'notes.txt'] })
+    )
+  })
+
   it('retries availability after an incompatible remote command response', async () => {
     const client = createCommandClient([
       commandResult({ stdout: '', stderr: 'unknown command', exitCode: 1 }),
@@ -82,10 +186,31 @@ describe('GitHostRegistry', () => {
       expect.objectContaining({
         command: ['git', 'add', '--all'],
         cwd: '/srv/repo/worktree',
+        env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }),
         sandboxPolicy: expect.objectContaining({
           type: 'workspaceWrite',
           writableRoots: ['/srv/repo/worktree', '/srv/repo/.git']
         })
+      })
+    )
+  })
+
+  it('keeps configured diff commands read-only', async () => {
+    const client = createCommandClient([
+      commandResult({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 }),
+      commandResult({ stdout: '', stderr: '', exitCode: 0 })
+    ])
+    const host = new RemoteGitHost('devbox', client)
+
+    await expect(
+      host.runGit(['-c', 'diff.mnemonicPrefix=false', 'diff', '--numstat'], '/srv/repo')
+    ).resolves.toMatchObject({ success: true })
+
+    expect(client.exec).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        command: ['git', '-c', 'diff.mnemonicPrefix=false', 'diff', '--numstat'],
+        sandboxPolicy: { type: 'readOnly', networkAccess: false }
       })
     )
   })

@@ -13,6 +13,12 @@ import type { GitBytesResult, GitHost, GitRunOptions, GitRunResult } from './Git
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+const GIT_NON_INTERACTIVE_ENV = {
+  LC_MESSAGES: 'C',
+  LANGUAGE: 'C',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_OPTIONAL_LOCKS: '0'
+} as const
 const SSH_ALIAS_PATTERN = /^[A-Za-z0-9_.@:-]+$/u
 const EXECUTABLE_NAME_PATTERN = /^[A-Za-z0-9._+-]+$/u
 const READ_ONLY_SUBCOMMANDS = new Set([
@@ -61,15 +67,7 @@ export class GitHostRegistry {
   }
 
   async validateRemoteRoot(hostId: string, path: string): Promise<void> {
-    const host = this.getRemoteHost(hostId)
-    await host.ensureAvailable()
-    const result = await host.runCommand(['test', '-d', path], {
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-      readOnly: true
-    })
-    if (!result.success) {
-      throw new Error(`Remote workspace is unavailable on ${hostId}: ${path}`)
-    }
+    await this.getRemoteHost(hostId).validateRoot(path)
   }
 
   async shutdown(): Promise<void> {
@@ -82,6 +80,7 @@ export class GitHostRegistry {
     if (host instanceof RemoteGitHost) return host
     throw new Error('Remote Git requires a non-local host ID')
   }
+
 }
 
 export class LocalGitHost implements GitHost {
@@ -166,7 +165,10 @@ export class RemoteGitHost implements GitHost {
   readonly platformFamily = 'posix' as const
   private readonly ownedTempDirectories = new Set<string>()
   private readonly commonDirectories = new Map<string, string>()
+  private readonly rootValidationsInFlight = new Map<string, Promise<void>>()
   private availabilityPromise: Promise<void> | undefined
+  private writeTail: Promise<void> = Promise.resolve()
+  private readonly activeReadCommands = new Set<Promise<void>>()
   private readonly removeTransportTerminationListener: () => void
 
   constructor(
@@ -179,6 +181,7 @@ export class RemoteGitHost implements GitHost {
     this.removeTransportTerminationListener = this.commandClient.onTransportTermination(() => {
       this.availabilityPromise = undefined
       this.commonDirectories.clear()
+      this.rootValidationsInFlight.clear()
     })
   }
 
@@ -192,12 +195,13 @@ export class RemoteGitHost implements GitHost {
     const writableRoots = readOnly ? undefined : await this.resolveWritableRoots(cwd)
     return this.runCommand(['git', ...args], {
       ...options,
+      env: { ...GIT_NON_INTERACTIVE_ENV, ...options.env },
       cwd,
       readOnly,
       // All public Git mutations are local-only except the fixed publish
       // operation. `LocalPushService` is the sole caller that can construct a
       // push command, so remote workspaces do not get generic network access.
-      networkAccess: args[0] === 'push',
+      networkAccess: gitSubcommand(args) === 'push',
       writableRoots
     })
   }
@@ -210,6 +214,24 @@ export class RemoteGitHost implements GitHost {
     await this.availabilityPromise
   }
 
+  async validateRoot(path: string): Promise<void> {
+    const existingValidation = this.rootValidationsInFlight.get(path)
+    if (existingValidation) {
+      await existingValidation
+      return
+    }
+
+    const validation = this.checkRoot(path)
+    this.rootValidationsInFlight.set(path, validation)
+    try {
+      await validation
+    } finally {
+      if (this.rootValidationsInFlight.get(path) === validation) {
+        this.rootValidationsInFlight.delete(path)
+      }
+    }
+  }
+
   async runCommand(
     command: string[],
     options: GitRunOptions & {
@@ -219,12 +241,25 @@ export class RemoteGitHost implements GitHost {
       writableRoots?: string[]
     } = {}
   ): Promise<GitRunResult> {
+    const execute = (): Promise<GitRunResult> => this.executeCommand(command, options)
+    return options.readOnly ? this.runReadCommand(execute) : this.runWriteCommand(execute)
+  }
+
+  private async executeCommand(
+    command: string[],
+    options: GitRunOptions & {
+      cwd?: string
+      readOnly?: boolean
+      networkAccess?: boolean
+      writableRoots?: string[]
+    }
+  ): Promise<GitRunResult> {
     try {
       const execOptions: CodexCommandExecOptions = {
         command,
         ...(options.cwd ? { cwd: options.cwd } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         outputBytesCap: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.input !== undefined ? { stdin: options.input } : {}),
@@ -238,8 +273,7 @@ export class RemoteGitHost implements GitHost {
               excludeSlashTmp: false
             }
       }
-      const result = await this.commandClient.exec(execOptions)
-      return commandResult(result)
+      return commandResult(await this.commandClient.exec(execOptions))
     } catch (error) {
       return {
         success: false,
@@ -248,6 +282,33 @@ export class RemoteGitHost implements GitHost {
         stderr: error instanceof Error ? error.message : String(error)
       }
     }
+  }
+
+  private async runReadCommand(
+    execute: () => Promise<GitRunResult>
+  ): Promise<GitRunResult> {
+    const execution = this.writeTail.then(execute)
+    const tracking = execution.then(
+      () => undefined,
+      () => undefined
+    )
+    this.activeReadCommands.add(tracking)
+    try {
+      return await execution
+    } finally {
+      this.activeReadCommands.delete(tracking)
+    }
+  }
+
+  private runWriteCommand(execute: () => Promise<GitRunResult>): Promise<GitRunResult> {
+    const priorWrites = this.writeTail
+    const priorReads = Promise.allSettled([...this.activeReadCommands])
+    const execution = Promise.all([priorWrites, priorReads]).then(execute)
+    this.writeTail = execution.then(
+      () => undefined,
+      () => undefined
+    )
+    return execution
   }
 
   async createTempDirectory(
@@ -321,6 +382,7 @@ export class RemoteGitHost implements GitHost {
   shutdown(): Promise<void> {
     this.availabilityPromise = undefined
     this.commonDirectories.clear()
+    this.rootValidationsInFlight.clear()
     this.removeTransportTerminationListener()
     return this.commandClient.shutdown()
   }
@@ -335,6 +397,17 @@ export class RemoteGitHost implements GitHost {
       throw new Error(
         result.stderr || `Remote Codex on ${this.id} did not report a compatible command interface`
       )
+    }
+  }
+
+  private async checkRoot(path: string): Promise<void> {
+    await this.ensureAvailable()
+    const result = await this.runCommand(['test', '-d', path], {
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      readOnly: true
+    })
+    if (!result.success) {
+      throw new Error(`Remote workspace is unavailable on ${this.id}: ${path}`)
     }
   }
 
@@ -421,10 +494,7 @@ function runLocalCommand(
       cwd,
       env: {
         ...process.env,
-        LC_MESSAGES: 'C',
-        LANGUAGE: 'C',
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_OPTIONAL_LOCKS: '0',
+        ...GIT_NON_INTERACTIVE_ENV,
         ...options.env
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -514,10 +584,7 @@ function runLocalCommandBytes(
       cwd,
       env: {
         ...process.env,
-        LC_MESSAGES: 'C',
-        LANGUAGE: 'C',
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_OPTIONAL_LOCKS: '0',
+        ...GIT_NON_INTERACTIVE_ENV,
         ...options.env
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -608,9 +675,15 @@ function commandResult(result: CodexCommandExecResult): GitRunResult {
 }
 
 function isReadOnlyGitCommand(args: readonly string[]): boolean {
-  const subcommand = args[0] ?? ''
+  const subcommand = gitSubcommand(args)
   if (!READ_ONLY_SUBCOMMANDS.has(subcommand)) return false
   return !(subcommand === 'config' && args.some((arg) => /^--?(add|replace-all|unset)/u.test(arg)))
+}
+
+function gitSubcommand(args: readonly string[]): string {
+  let index = 0
+  while (args[index] === '-c' || args[index] === '--config-env') index += 2
+  return args[index] ?? ''
 }
 
 export function assertSafeSshAlias(hostId: string): void {

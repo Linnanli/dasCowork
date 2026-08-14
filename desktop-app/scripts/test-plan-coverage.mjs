@@ -13,12 +13,22 @@ import {
 } from './lib/test-plan-coverage-validator.mjs'
 import { flattenPlaywrightReporterSuites } from './lib/test-plan-playwright-reporter.mjs'
 import { playwrightEvidenceSelection } from './lib/test-plan-playwright-selection.mjs'
+import { vitestEvidenceSelection } from './lib/test-plan-vitest-selection.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const desktopRoot = resolve(scriptDir, '..')
 const runDirectory = await mkdtemp(resolve(tmpdir(), 'dascowork-test-plan-'))
 const runId = runDirectory.split('/').at(-1)
 const assertionEvidencePath = resolve(runDirectory, 'assertions.ndjson')
+const localGitIntegrationTestFiles = new Set([
+  'src/main/localGit/GitManager.integration.test.ts',
+  'src/main/localGit/LocalBranchService.test.ts',
+  'src/main/localGit/LocalCommitService.test.ts',
+  'src/main/localGit/LocalPushService.test.ts',
+  'src/main/localGit/LocalGitService.integration.test.ts',
+  'src/main/localGit/LocalGitService.test.ts',
+  'src/main/localGit/reviewSnapshot.test.ts'
+])
 
 try {
   const manifest = JSON.parse(
@@ -50,25 +60,40 @@ async function executeEvidenceTests(manifest) {
   )
   const desktopTests = unique(
     evidence
-      .map((item) => item.file)
-      .filter((file) => !file.startsWith('vendors/') && !isPlaywrightEvidence(file))
+      .filter((item) => !item.file.startsWith('vendors/') && !isPlaywrightEvidence(item.file))
   )
   const providerTests = unique(
     evidence
-      .map((item) => item.file)
-      .filter((file) => file.startsWith('vendors/'))
-      .map((file) => file.replace(/^vendors\/ai-sdk-provider-codex-asp\//u, ''))
+      .filter((item) => item.file.startsWith('vendors/'))
+      .map((item) => ({
+        ...item,
+        file: item.file.replace(/^vendors\/ai-sdk-provider-codex-asp\//u, '')
+      }))
   )
   const e2eEvidence = evidence.filter((item) => isPlaywrightEvidence(item.file))
+  const desktopVitestRuns = [
+    {
+      label: 'desktop-unit',
+      project: 'unit',
+      cwd: desktopRoot,
+      evidence: desktopTests.filter((item) => !localGitIntegrationTestFiles.has(item.file))
+    },
+    {
+      label: 'desktop-local-git-integration',
+      project: 'local-git-integration',
+      cwd: desktopRoot,
+      evidence: desktopTests.filter((item) => localGitIntegrationTestFiles.has(item.file))
+    }
+  ].filter((run) => run.evidence.length > 0)
   const tests = [
-    ...(desktopTests.length === 0 ? [] : await runVitest(desktopRoot, desktopTests, 'desktop')),
+    ...(await runVitestBatches(desktopVitestRuns)),
     ...(providerTests.length === 0
       ? []
-      : await runVitest(
-          resolve(desktopRoot, 'vendors/ai-sdk-provider-codex-asp'),
-          providerTests,
-          'provider'
-        )),
+      : await runVitest({
+          cwd: resolve(desktopRoot, 'vendors/ai-sdk-provider-codex-asp'),
+          evidence: providerTests,
+          label: 'provider'
+        })),
     ...(e2eEvidence.length === 0 ? [] : await runPlaywright(e2eEvidence))
   ]
   return {
@@ -81,11 +106,27 @@ async function executeEvidenceTests(manifest) {
   }
 }
 
-async function runVitest(cwd, files, label) {
+async function runVitestBatches(runs) {
+  const results = []
+  for (const run of runs) results.push(...(await runVitest(run)))
+  return results
+}
+
+async function runVitest({ cwd, evidence, label, project }) {
+  const { files, testNamePattern } = vitestEvidenceSelection(evidence)
   const reportPath = resolve(runDirectory, `${label}-vitest.json`)
   runOrThrow(
     'npx',
-    ['vitest', 'run', ...files, '--retry=0', '--reporter=json', `--outputFile=${reportPath}`],
+    [
+      'vitest',
+      'run',
+      ...files,
+      ...(project ? ['--project', project] : []),
+      '--retry=0',
+      '--reporter=json',
+      `--outputFile=${reportPath}`,
+      ...(testNamePattern ? ['--testNamePattern', testNamePattern] : [])
+    ],
     cwd
   )
   const report = JSON.parse(await readFile(reportPath, 'utf8'))
@@ -118,7 +159,16 @@ async function runPlaywright(evidence) {
   runOrThrow('npm', ['run', 'build'], desktopRoot)
   const result = spawnSync(
     'npx',
-    ['playwright', 'test', ...files, '--grep', grep, '--retries=0', '--reporter=json'],
+    [
+      'playwright',
+      'test',
+      ...files,
+      '--grep',
+      grep,
+      '--retries=0',
+      '--workers=1',
+      '--reporter=json'
+    ],
     {
       cwd: desktopRoot,
       encoding: 'utf8',

@@ -36,10 +36,10 @@ export const expectedReleaseIds = Array.from(
   (_, index) => `R${String(index + 1).padStart(2, '0')}`
 )
 
-export const expectedP004Ids = [
-  ...Array.from({ length: 18 }, (_, index) => `P004-E2E-${String(index + 1).padStart(2, '0')}`),
-  'P004-E2E-20'
-]
+export const expectedP004Ids = Array.from(
+  { length: 20 },
+  (_, index) => `P004-E2E-${String(index + 1).padStart(2, '0')}`
+)
 
 export const expectedP004EdgeIds = Array.from(
   { length: 13 },

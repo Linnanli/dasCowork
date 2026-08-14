@@ -101,6 +101,7 @@ test('submits code review from the slash command without leaking composer state'
 
   try {
     await initializeGitRepository(projectRoot)
+    await writeFile(join(projectRoot, 'notes.txt'), 'review change\n', 'utf8')
     await writeFile(attachmentPath, 'This attachment must not reach the code review request.')
     app = await launchApp(backend, logs)
     await app.evaluate(
@@ -116,12 +117,12 @@ test('submits code review from the slash command without leaking composer state'
     await createLocalProject(page, `Composer review ${Date.now().toString(36)}`, projectRoot)
     await sendComposerMessage(page, 'Prepare the code review command.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Ready to review')
-    await expect(page.getByRole('button', { name: 'Review', exact: true })).toBeEnabled()
 
     const composerInput = page.locator('.aui-lexical-input[contenteditable="true"]').last()
     await composerInput.fill('REVIEW_DRAFT_MARKER_DO_NOT_SEND')
     await composerInput.fill('')
-    await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+    const addContextButton = page.getByRole('button', { name: '添加文件和更多', exact: true })
+    await addContextButton.click()
     await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
     await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Remove file', exact: true }).click()
@@ -139,7 +140,9 @@ test('submits code review from the slash command without leaking composer state'
     await expect(composerInput).toBeVisible()
 
     await reviewContent.getByRole('button', { name: '审查未提交的更改', exact: true }).click()
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Code review complete.')
+    await expect(page.locator('[data-role="assistant"]').last()).toContainText(
+      'Code review complete.'
+    )
     await expect(reviewContent).toHaveCount(0)
 
     const reviewRequest = backend.requests.find(

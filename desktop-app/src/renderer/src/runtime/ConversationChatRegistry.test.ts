@@ -652,6 +652,15 @@ describe('ConversationChatRegistry', () => {
     expect(liveEntry.scroll).toEqual({ scrollTop: 120, followBottom: false })
   })
 
+  it('ignores a late scroll snapshot after the registry is destroyed', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+
+    registry.destroy()
+
+    expect(() => registry.setScroll(entry, { scrollTop: 64, followBottom: false })).not.toThrow()
+  })
+
   it('retries a failed history load instead of turning the selected thread into a new chat', async () => {
     const { registry } = registryFixture()
 

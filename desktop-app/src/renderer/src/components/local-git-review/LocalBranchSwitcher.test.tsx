@@ -170,12 +170,76 @@ describe('LocalBranchSwitcher', () => {
       branch: 'feature/new',
       failIfExists: true
     })
+    expect(startGitWorkflow).toHaveBeenCalledWith(target, {
+      kind: 'branch-switch',
+      phase: 'creating-branch'
+    })
+    expect(finishGitWorkflow).toHaveBeenCalledWith(target)
     expect(notifyGitOperation).toHaveBeenCalledWith({
       id: 'branch-operation:local:/repo',
       tone: 'success',
       message: 'Created and switched to feature/new.'
     })
     expect(document.body.textContent).not.toContain('Create and checkout branch')
+  })
+
+  it('checks out existing branches under the shared Git workflow lock', async () => {
+    await renderSwitcher()
+
+    await act(async () => buttonWithText('Branch')?.click())
+    await flush()
+    await act(async () => buttonWithText('feature/a')?.click())
+    await flush()
+
+    expect(startGitWorkflow).toHaveBeenCalledWith(target, {
+      kind: 'branch-switch',
+      phase: 'switching-branch'
+    })
+    expect(git.checkoutBranch).toHaveBeenCalledWith({ target, branch: 'feature/a' })
+    expect(finishGitWorkflow).toHaveBeenCalledWith(target)
+    expect(notifyGitOperation).toHaveBeenCalledWith({
+      id: 'branch-operation:local:/repo',
+      tone: 'success',
+      message: 'Switched to feature/a.'
+    })
+  })
+
+  it('does not checkout an existing branch when another Git workflow holds the repository lock', async () => {
+    startGitWorkflow.mockReturnValue(false)
+    await renderSwitcher()
+
+    await act(async () => buttonWithText('Branch')?.click())
+    await flush()
+    await act(async () => buttonWithText('feature/a')?.click())
+    await flush()
+
+    expect(git.checkoutBranch).not.toHaveBeenCalled()
+    expect(finishGitWorkflow).not.toHaveBeenCalled()
+    expect(notifyGitOperation).toHaveBeenCalledWith({
+      id: 'branch-operation:local:/repo',
+      tone: 'info',
+      message: 'A Git operation is already in progress for this repository.'
+    })
+  })
+
+  it('does not create a branch when another Git workflow holds the repository lock', async () => {
+    startGitWorkflow.mockReturnValue(false)
+    await renderSwitcher()
+
+    await act(async () => buttonWithText('Branch')?.click())
+    await flush()
+    await act(async () => buttonWithText('Create and checkout new branch…')?.click())
+    await act(async () => setInputValue(inputByLabel('Branch name'), 'feature/new'))
+    await act(async () => buttonWithExactText('Create and checkout')?.click())
+    await flush()
+
+    expect(git.createBranch).not.toHaveBeenCalled()
+    expect(finishGitWorkflow).not.toHaveBeenCalled()
+    expect(notifyGitOperation).toHaveBeenCalledWith({
+      id: 'branch-operation:local:/repo',
+      tone: 'info',
+      message: 'A Git operation is already in progress for this repository.'
+    })
   })
 
   it('P004-EDGE-11 blocks checkout, commits changes, and retries the saved checkout', async () => {
@@ -256,7 +320,7 @@ describe('LocalBranchSwitcher', () => {
   })
 
   it('prevents a second commit workflow for the same repository', async () => {
-    startGitWorkflow.mockReturnValue(false)
+    startGitWorkflow.mockReturnValueOnce(true).mockReturnValueOnce(false)
     git.checkoutBranch.mockResolvedValueOnce({
       status: 'error',
       errorCode: 'blocked-by-working-tree-changes',

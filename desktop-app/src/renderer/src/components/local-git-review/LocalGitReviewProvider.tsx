@@ -3,7 +3,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -11,9 +10,10 @@ import {
 } from 'react'
 
 import type { GitRepositoryTarget, LocalGitReviewSource } from '../../../../shared/localGitApi'
-import { Button } from '@/components/ui/button'
+import { Toaster } from '@/components/ui/sonner'
 import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { useGitRepository } from './GitRepositoryProvider'
+import { toast } from 'sonner'
 
 export type LocalGitReviewLastTurn = {
   turnId: string
@@ -31,10 +31,19 @@ export type LocalGitOperationFeedback = {
   message: string
 }
 
-export type LocalGitWorkflow = {
-  kind: 'commit-and-switch'
-  phase: 'committing' | 'switching-branch'
-}
+export type LocalGitWorkflow =
+  | {
+      kind: 'branch-switch'
+      phase: 'switching-branch' | 'creating-branch'
+    }
+  | {
+      kind: 'commit-and-switch'
+      phase: 'committing' | 'switching-branch'
+    }
+  | {
+      kind: 'commit-or-push'
+      phase: 'creating-branch' | 'committing' | 'pushing'
+    }
 
 type LocalGitReviewContextValue = {
   target?: GitRepositoryTarget
@@ -62,19 +71,15 @@ const LocalGitReviewContext = createContext<LocalGitReviewContextValue>({
   getGitWorkflow: () => undefined
 })
 
-type RenderedOperationFeedback = LocalGitOperationFeedback & {
-  key: string
-}
+const GIT_OPERATION_TOAST_DURATION = 6_000
+const GIT_OPERATION_TOAST_TEST_ID = 'local-git-operation-toast'
 
 export function LocalGitReviewProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { target } = useGitRepository()
   const workspace = useOptionalRightWorkspace()
   const [source, setSource] = useState<LocalGitReviewSource>({ type: 'unstaged' })
   const [lastTurn, setLastTurn] = useState<LocalGitReviewLastTurn>()
-  const [operationFeedbacks, setOperationFeedbacks] = useState<RenderedOperationFeedback[]>([])
   const [gitWorkflows, setGitWorkflows] = useState<Record<string, LocalGitWorkflow>>({})
-  const feedbackSequenceRef = useRef(0)
-  const feedbackTimeoutsRef = useRef<Map<string, number>>(new Map())
   const gitWorkflowsRef = useRef<Record<string, LocalGitWorkflow>>({})
 
   const openReview = useCallback(
@@ -98,37 +103,23 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
     },
     [workspace]
   )
-  const dismissGitOperationFeedback = useCallback((key: string) => {
-    const timeout = feedbackTimeoutsRef.current.get(key)
-    if (timeout !== undefined) {
-      window.clearTimeout(timeout)
-      feedbackTimeoutsRef.current.delete(key)
+  const notifyGitOperation = useCallback((feedback: LocalGitOperationFeedback) => {
+    const options = {
+      duration: GIT_OPERATION_TOAST_DURATION,
+      testId: GIT_OPERATION_TOAST_TEST_ID,
+      ...(feedback.id === undefined ? {} : { id: feedback.id })
     }
-    setOperationFeedbacks((current) => current.filter((feedback) => feedback.key !== key))
+
+    if (feedback.tone === 'success') {
+      toast.success(feedback.message, options)
+      return
+    }
+    if (feedback.tone === 'error') {
+      toast.error(feedback.message, options)
+      return
+    }
+    toast.info(feedback.message, options)
   }, [])
-  const notifyGitOperation = useCallback(
-    (feedback: LocalGitOperationFeedback) => {
-      const key = feedback.id ?? `git-operation-${feedbackSequenceRef.current++}`
-      const existingTimeout = feedbackTimeoutsRef.current.get(key)
-      if (existingTimeout !== undefined) window.clearTimeout(existingTimeout)
-      setOperationFeedbacks((current) => [
-        ...current.filter((currentFeedback) => currentFeedback.key !== key),
-        { ...feedback, key }
-      ])
-      feedbackTimeoutsRef.current.set(
-        key,
-        window.setTimeout(() => dismissGitOperationFeedback(key), 6_000)
-      )
-    },
-    [dismissGitOperationFeedback]
-  )
-  useEffect(
-    () => () => {
-      for (const timeout of feedbackTimeoutsRef.current.values()) window.clearTimeout(timeout)
-      feedbackTimeoutsRef.current.clear()
-    },
-    []
-  )
 
   const startGitWorkflow = useCallback(
     (workflowTarget: GitRepositoryTarget, workflow: LocalGitWorkflow): boolean => {
@@ -193,34 +184,12 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
   return (
     <LocalGitReviewContext.Provider value={value}>
       {children}
-      {operationFeedbacks.length > 0 ? (
-        <div className="fixed right-4 bottom-4 z-50 space-y-2">
-          {operationFeedbacks.map((operationFeedback) => (
-            <div
-              key={operationFeedback.key}
-              data-slot="local-git-operation-toast"
-              role={operationFeedback.tone === 'error' ? 'alert' : 'status'}
-              aria-live={operationFeedback.tone === 'error' ? 'assertive' : 'polite'}
-              className={
-                operationFeedback.tone === 'error'
-                  ? 'flex max-w-sm items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive shadow-lg'
-                  : 'flex max-w-sm items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm shadow-lg'
-              }
-            >
-              <p className="min-w-0 flex-1">{operationFeedback.message}</p>
-              <Button
-                type="button"
-                size="xs"
-                variant="ghost"
-                aria-label="Dismiss Git operation feedback"
-                onClick={() => dismissGitOperationFeedback(operationFeedback.key)}
-              >
-                Dismiss
-              </Button>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <Toaster
+        position="top-center"
+        theme="system"
+        duration={GIT_OPERATION_TOAST_DURATION}
+        visibleToasts={3}
+      />
     </LocalGitReviewContext.Provider>
   )
 }

@@ -135,6 +135,7 @@ describe('localGitIpc', () => {
 
   it('forwards only fixed diff display options', async () => {
     const getFileDiff = vi.fn(async (request) => ({
+      status: 'ready' as const,
       snapshotGeneration: request.snapshotGeneration,
       file: request.file,
       diff: '',

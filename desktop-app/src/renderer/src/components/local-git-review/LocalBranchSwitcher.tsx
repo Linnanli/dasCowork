@@ -158,6 +158,14 @@ export function LocalBranchSwitcher({
 
   const checkoutBranch = async (branch: string) => {
     if (!target || branch === summary?.current) return
+    if (!startGitWorkflow(target, { kind: 'branch-switch', phase: 'switching-branch' })) {
+      notifyGitOperation({
+        id: feedbackId,
+        tone: 'info',
+        message: 'A Git operation is already in progress for this repository.'
+      })
+      return
+    }
     setPendingBranch(branch)
     setError(undefined)
     const continuation: BranchContinuation = { kind: 'checkout', branch }
@@ -182,12 +190,21 @@ export function LocalBranchSwitcher({
       setError(message)
       notifyGitOperation({ id: feedbackId, tone: 'error', message })
     } finally {
+      finishGitWorkflow(target)
       setPendingBranch(undefined)
     }
   }
 
   const createBranch = async (branch: string) => {
     if (!target) return
+    if (!startGitWorkflow(target, { kind: 'branch-switch', phase: 'creating-branch' })) {
+      notifyGitOperation({
+        id: feedbackId,
+        tone: 'info',
+        message: 'A Git operation is already in progress for this repository.'
+      })
+      return
+    }
     setPendingBranch(branch)
     setError(undefined)
     const continuation: BranchContinuation = { kind: 'create-and-checkout', branch }
@@ -227,6 +244,7 @@ export function LocalBranchSwitcher({
       setError(message)
       notifyGitOperation({ id: feedbackId, tone: 'error', message })
     } finally {
+      finishGitWorkflow(target)
       setPendingBranch(undefined)
     }
   }
@@ -324,6 +342,7 @@ export function LocalBranchSwitcher({
         aria-expanded={open}
         aria-controls="local-branch-switcher-popover"
         title="Switch branch"
+        disabled={commitWorkflow !== undefined}
         onClick={() => setOpen((value) => !value)}
       >
         <GitBranchIcon className="size-3.5" />
@@ -438,6 +457,7 @@ export function LocalBranchSwitcher({
               size="sm"
               variant="ghost"
               className="w-full justify-start"
+              disabled={commitWorkflow !== undefined}
               onClick={() => setCreateOpen(true)}
             >
               <PlusIcon className="size-3.5" /> Create and checkout new branch…
@@ -454,14 +474,16 @@ export function LocalBranchSwitcher({
         onCreate={(branch) => createBranch(branch)}
         onError={setError}
       />
-      <BranchSwitchBlockedDialog
-        open={Boolean(blocked) && !commitOpen}
-        branch={blocked?.continuation.branch ?? ''}
-        conflictedPaths={blocked?.conflictedPaths ?? []}
-        message={blocked?.message}
-        onCancel={() => setBlocked(undefined)}
-        onCommit={() => void openCommitDialog()}
-      />
+      {!commitOpen ? (
+        <BranchSwitchBlockedDialog
+          open={Boolean(blocked)}
+          branch={blocked?.continuation.branch ?? ''}
+          conflictedPaths={blocked?.conflictedPaths ?? []}
+          message={blocked?.message}
+          onCancel={() => setBlocked(undefined)}
+          onCommit={() => void openCommitDialog()}
+        />
+      ) : null}
       <CommitOrPushDialog
         open={commitOpen}
         status={commitStatus}

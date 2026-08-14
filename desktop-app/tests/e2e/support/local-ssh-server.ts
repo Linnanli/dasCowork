@@ -29,10 +29,12 @@ export type LocalSshServer = {
  */
 export async function startLocalSshServer({
   appServerPath,
-  terminalTracePath
+  terminalTracePath,
+  commandTracePath
 }: {
   appServerPath: string
   terminalTracePath: string
+  commandTracePath?: string
 }): Promise<LocalSshServer> {
   const tempDirectory = await mkdtemp(join(tmpdir(), 'dascowork-e2e-local-ssh-'))
   const sshBinDirectory = join(tempDirectory, 'bin')
@@ -89,7 +91,13 @@ export async function startLocalSshServer({
           return
         }
         const channel = acceptExec()
-        forwardAppServer(channel, appServerPath, terminalTracePath, childProcesses)
+        forwardAppServer(
+          channel,
+          appServerPath,
+          terminalTracePath,
+          commandTracePath,
+          childProcesses
+        )
       })
     })
   })
@@ -146,12 +154,14 @@ function forwardAppServer(
   channel: ServerChannel,
   appServerPath: string,
   terminalTracePath: string,
+  commandTracePath: string | undefined,
   childProcesses: Set<ChildProcess>
 ): void {
   const child = spawn(process.execPath, [appServerPath], {
     env: {
       ...process.env,
-      DASCOWORK_E2E_REMOTE_TERMINAL_TRACE: terminalTracePath
+      DASCOWORK_E2E_REMOTE_TERMINAL_TRACE: terminalTracePath,
+      DASCOWORK_E2E_REMOTE_COMMAND_TRACE: commandTracePath
     },
     stdio: ['pipe', 'pipe', 'pipe']
   })

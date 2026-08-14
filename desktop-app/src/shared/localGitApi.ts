@@ -404,17 +404,22 @@ export const localGitReviewDiffFileContentsSchema = z.discriminatedUnion('status
 ])
 export type LocalGitReviewDiffFileContents = z.infer<typeof localGitReviewDiffFileContentsSchema>
 
-export const localGitFileDiffSchema = z
-  .object({
-    snapshotGeneration: snapshotGenerationSchema,
-    file: localGitReviewFileSchema,
-    diff: z.string().max(LOCAL_GIT_PATCH_MAX_CHARACTERS),
-    truncated: z.boolean(),
-    binary: z.boolean(),
-    conflicted: z.boolean()
-  })
-  .strict()
-export type LocalGitFileDiff = z.infer<typeof localGitFileDiffSchema>
+export const localGitFileDiffResultSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ready'),
+      snapshotGeneration: snapshotGenerationSchema,
+      file: localGitReviewFileSchema,
+      diff: z.string().max(LOCAL_GIT_PATCH_MAX_CHARACTERS),
+      truncated: z.boolean(),
+      binary: z.boolean(),
+      conflicted: z.boolean()
+    })
+    .strict(),
+  z.object({ status: z.literal('stale') }).strict()
+])
+export type LocalGitFileDiffResult = z.infer<typeof localGitFileDiffResultSchema>
+export type LocalGitFileDiff = Extract<LocalGitFileDiffResult, { status: 'ready' }>
 
 export const localGitReviewActionSchema = z.enum(['stage', 'unstage', 'revert'])
 export type LocalGitReviewAction = z.infer<typeof localGitReviewActionSchema>

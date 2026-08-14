@@ -39,6 +39,7 @@ import {
   validateGitPatch
 } from './reviewPatch'
 import type {
+  LocalGitFileDiffResult,
   LocalGitMutationResult,
   LocalGitCommitSummary,
   LocalGitRefreshReviewFilesRequest,
@@ -55,6 +56,7 @@ import type {
   LocalGitReviewMutationRequest,
   LocalGitReviewSearchResult,
   LocalGitReviewSnapshot,
+  LocalGitReviewSource,
   LocalGitSearchReviewRequest,
   LocalGitSummary,
   LocalGitTarget,
@@ -140,16 +142,28 @@ export class LocalGitService {
     source: LocalGitReviewSnapshot['source']
   ): Promise<LocalGitReviewSnapshot> {
     const { repository } = await this.resolveTrustedRepository(target)
-    const reviewSnapshot = repository.reviewSnapshot
-    const { snapshot, stateHash } = await reviewSnapshot.read(() =>
-      createReviewSnapshot({ repository, source })
-    )
-    this.snapshots.remember(snapshot, stateHash)
-    this.reviewGenerations.set(snapshot.snapshotGeneration, {
-      hostId: repository.host.id,
-      generation: reviewSnapshot.generation
-    })
-    return snapshot
+    // A watcher can report the same worktree change while this first snapshot
+    // is being read. Retry once against the newly-issued review snapshot so a
+    // normal refresh cannot leave the review panel waiting for a stale read.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reviewSnapshot = repository.reviewSnapshot
+      try {
+        const { snapshot, stateHash } = await reviewSnapshot.read(() =>
+          createReviewSnapshot({ repository, source })
+        )
+        this.snapshots.remember(snapshot, stateHash)
+        this.reviewGenerations.set(snapshot.snapshotGeneration, {
+          hostId: repository.host.id,
+          generation: reviewSnapshot.generation
+        })
+        return snapshot
+      } catch (error) {
+        if (attempt === 0 && error instanceof GitReviewSnapshotStaleError) continue
+        throw error
+      }
+    }
+
+    throw new Error('Unable to create a current Git review snapshot')
   }
 
   async refreshReviewFiles(
@@ -237,53 +251,47 @@ export class LocalGitService {
     snapshotGeneration: string
     file: { path: string; previousPath?: string; revision: string }
     options?: { ignoreWhitespace: boolean; fullFiles: boolean }
-  }): Promise<{
-    snapshotGeneration: string
-    file: LocalGitReviewFile
-    diff: string
-    truncated: boolean
-    binary: boolean
-    conflicted: boolean
-  }> {
+  }): Promise<LocalGitFileDiffResult> {
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const gitRoot = repository.root
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    const file = record?.files.get(input.file.path)
-    if (
-      !record ||
-      record.gitRoot !== gitRoot ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source) ||
-      !file ||
-      file.revision !== input.file.revision
-    ) {
-      throw new Error('stale-snapshot')
-    }
-    const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
-    const { currentRevision, diff } = await snapshot.read(async () => ({
-      currentRevision: await computeFileRevision({
-        gitRoot: repository,
-        source: input.source,
-        path: input.file.path
-      }),
-      diff: await getDiffForSource({
-        gitRoot: repository,
-        source: input.source,
-        path: input.file.path,
-        options: input.options
-      })
-    }))
-    if (currentRevision !== input.file.revision) throw new Error('stale-snapshot')
-    const truncated = diff.length > LOCAL_GIT_PATCH_MAX_CHARACTERS
-    return {
-      snapshotGeneration: input.snapshotGeneration,
-      file,
-      diff: truncated ? diff.slice(0, LOCAL_GIT_PATCH_MAX_CHARACTERS) : diff,
-      truncated,
-      binary: file.binary,
-      conflicted: file.conflicted
+    const context = this.findReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
+    if (!context) return { status: 'stale' }
+    const { record, reviewSnapshot } = context
+    const file = record.files.get(input.file.path)
+    if (!file || file.revision !== input.file.revision) return { status: 'stale' }
+    try {
+      const { currentRevision, diff } = await reviewSnapshot.read(async () => ({
+        currentRevision: await computeFileRevision({
+          gitRoot: repository,
+          source: input.source,
+          path: input.file.path
+        }),
+        diff: await getDiffForSource({
+          gitRoot: repository,
+          source: input.source,
+          path: input.file.path,
+          options: input.options
+        })
+      }))
+      if (currentRevision !== input.file.revision) return { status: 'stale' }
+      const truncated = diff.length > LOCAL_GIT_PATCH_MAX_CHARACTERS
+      return {
+        status: 'ready',
+        snapshotGeneration: input.snapshotGeneration,
+        file,
+        diff: truncated ? diff.slice(0, LOCAL_GIT_PATCH_MAX_CHARACTERS) : diff,
+        truncated,
+        binary: file.binary,
+        conflicted: file.conflicted
+      }
+    } catch (error) {
+      if (error instanceof GitReviewSnapshotStaleError) return { status: 'stale' }
+      throw error
     }
   }
 
@@ -294,19 +302,14 @@ export class LocalGitService {
       throw new Error('上一轮没有可验证的完整 Git patch。')
     }
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    if (
-      !record ||
-      record.gitRoot !== repository.root ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source)
-    ) {
-      throw new Error('stale-snapshot')
-    }
-    const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
-    const patch = await snapshot.read(() =>
+    const { reviewSnapshot } = this.resolveReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
+    const patch = await reviewSnapshot.read(() =>
       getDiffForSource({ gitRoot: repository, source: input.source })
     )
     if (!patch.trim()) throw new Error('当前来源没有可导出的 patch。')
@@ -325,24 +328,19 @@ export class LocalGitService {
     const query = input.query.trim()
     if (!query) return emptyReviewSearchResult(input)
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    if (
-      !record ||
-      record.gitRoot !== repository.root ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source)
-    ) {
-      throw new Error('stale-snapshot')
-    }
-    const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
+    const { record, reviewSnapshot } = this.resolveReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
     const searchablePaths = new Set(
       [...record.files.values()]
         .filter((file) => !file.binary && !isGeneratedReviewPath(file.path))
         .map((file) => file.path)
     )
-    const diff = await snapshot.read(() =>
+    const diff = await reviewSnapshot.read(() =>
       getSearchDiffForSource({ gitRoot: repository, source: input.source })
     )
     return searchReviewDiff(diff, query, searchablePaths, input)
@@ -356,23 +354,21 @@ export class LocalGitService {
     }
     const source = input.source
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    const file = record?.files.get(input.file.path)
-    if (
-      !record ||
-      record.gitRoot !== repository.root ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source) ||
-      !file ||
-      file.revision !== input.file.revision
-    ) {
+    const context = this.findReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
+    if (!context) return { status: 'stale' }
+    const { record, reviewSnapshot } = context
+    const file = record.files.get(input.file.path)
+    if (!file || file.revision !== input.file.revision) {
       return { status: 'stale' }
     }
     try {
-      const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
-      return await snapshot.read(async () => {
+      return await reviewSnapshot.read(async () => {
         const currentRevision = await computeFileRevision({
           gitRoot: repository,
           source,
@@ -397,23 +393,21 @@ export class LocalGitService {
     }
     const source = input.source
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    const file = record?.files.get(input.file.path)
-    if (
-      !record ||
-      record.gitRoot !== repository.root ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source) ||
-      !file ||
-      file.revision !== input.file.revision
-    ) {
+    const context = this.findReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
+    if (!context) return { status: 'stale' }
+    const { record, reviewSnapshot } = context
+    const file = record.files.get(input.file.path)
+    if (!file || file.revision !== input.file.revision) {
       return { status: 'stale' }
     }
     try {
-      const snapshot = repository.requireReviewSnapshot(reviewGeneration.generation)
-      return await snapshot.read(async () => {
+      return await reviewSnapshot.read(async () => {
         const currentRevision = await computeFileRevision({
           gitRoot: repository,
           source,
@@ -458,23 +452,15 @@ export class LocalGitService {
       return unsupportedReviewMutationResult()
     }
     const { repository } = await this.resolveTrustedRepository(input.target)
-    const gitRoot = repository.root
-    const record = this.snapshots.get(input.snapshotGeneration)
-    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
-    if (
-      !record ||
-      record.gitRoot !== gitRoot ||
-      !reviewGeneration ||
-      reviewGeneration.hostId !== repository.host.id ||
-      !sameReviewSource(record.source, input.source)
-    ) {
-      return staleSnapshotResult()
-    }
-    try {
-      repository.requireReviewSnapshot(reviewGeneration.generation)
-    } catch {
-      return staleSnapshotResult()
-    }
+    const context = this.findReviewContext(
+      {
+        snapshotGeneration: input.snapshotGeneration,
+        source: input.source
+      },
+      repository
+    )
+    if (!context) return staleSnapshotResult()
+    const { record } = context
     if (!hasExactSnapshotTargets(record, input)) return staleSnapshotResult()
     // A review snapshot can reuse its reads while it is rendered, but a write
     // must compare against the filesystem again immediately before applying.
@@ -692,6 +678,49 @@ export class LocalGitService {
       repository.invalidateUntrackedPathsCache()
     }
     return result
+  }
+
+  private resolveReviewContext(
+    input: {
+      snapshotGeneration: string
+      source: LocalGitReviewSource
+    },
+    repository: WorktreeRepository
+  ): {
+    record: SnapshotGenerationRecord
+    reviewSnapshot: ReturnType<WorktreeRepository['requireReviewSnapshot']>
+  } {
+    const context = this.findReviewContext(input, repository)
+    if (!context) throw new Error('stale-snapshot')
+    return context
+  }
+
+  private findReviewContext(
+    input: {
+      snapshotGeneration: string
+      source: LocalGitReviewSource
+    },
+    repository: WorktreeRepository
+  ):
+    | {
+        record: SnapshotGenerationRecord
+        reviewSnapshot: ReturnType<WorktreeRepository['requireReviewSnapshot']>
+      }
+    | undefined {
+    const record = this.snapshots.get(input.snapshotGeneration)
+    const reviewGeneration = this.reviewGenerations.get(input.snapshotGeneration)
+    const reviewSnapshot = repository.reviewSnapshot
+    if (
+      !record ||
+      record.gitRoot !== repository.root ||
+      !reviewGeneration ||
+      reviewGeneration.hostId !== repository.host.id ||
+      reviewGeneration.generation !== reviewSnapshot.generation ||
+      !sameReviewSource(record.source, input.source)
+    ) {
+      return undefined
+    }
+    return { record, reviewSnapshot }
   }
 }
 

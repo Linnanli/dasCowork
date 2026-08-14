@@ -132,7 +132,10 @@ export function ComposerSuggestionSurface({
       void dispatchComposerSuggestionSelection({
         session,
         item,
-        closeSession: () => controller.close(),
+        closeSession: () => {
+          controller.dismiss()
+          controller.close()
+        },
         updateSession: (next) => controller.updateSession(next),
         rangeMatches: (range, expectedText) => controller.rangeMatches(range, expectedText),
         replaceRange: (range, replacement) => controller.replaceRange(range, replacement),

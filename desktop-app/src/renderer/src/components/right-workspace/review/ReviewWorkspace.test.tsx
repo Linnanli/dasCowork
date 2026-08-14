@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  LocalGitChangeEvent,
   LocalGitReviewFile,
   LocalGitReviewSearchItem,
   LocalGitReviewSearchResult,
@@ -75,7 +76,11 @@ vi.mock('@/components/local-git-review/LocalGitReviewProvider', () => ({
     source: { type: 'unstaged' },
     lastTurn: undefined,
     setReviewSource,
-    notifyGitOperation
+    notifyGitOperation,
+    startGitWorkflow: () => true,
+    updateGitWorkflow: () => undefined,
+    finishGitWorkflow: () => undefined,
+    getGitWorkflow: () => undefined
   })
 }))
 
@@ -173,6 +178,7 @@ describe('ReviewWorkspace', () => {
       git: {
         getReviewSnapshot: vi.fn(async ({ source }) => snapshotFor(source)),
         getFileDiff: vi.fn(async ({ file }) => ({
+          status: 'ready' as const,
           snapshotGeneration: 'generation',
           file,
           diff: `diff --git a/${file.path} b/${file.path}\n--- a/${file.path}\n+++ b/${file.path}\n@@ -1 +1 @@\n-before\n+after\n`,
@@ -249,6 +255,81 @@ describe('ReviewWorkspace', () => {
     expect(container.textContent).toContain('未提交')
     expect(container.textContent).toContain('src/a.ts')
     expect(container.textContent).toContain('README.md')
+  })
+
+  it('finishes the initial snapshot before applying a matching Git change refresh', async () => {
+    let resolveSnapshots: (() => void) | undefined
+    let notifyGitChange: ((event: LocalGitChangeEvent) => void) | undefined
+    const snapshotsReady = new Promise<void>((resolve) => {
+      resolveSnapshots = resolve
+    })
+    vi.mocked(window.desktopApp.git.getReviewSnapshot).mockImplementation(async ({ source }) => {
+      await snapshotsReady
+      return snapshotFor(source)
+    })
+    vi.mocked(window.desktopApp.git.subscribe).mockImplementation((listener) => {
+      notifyGitChange = listener
+      return () => undefined
+    })
+
+    await renderReview()
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      notifyGitChange?.({
+        target,
+        snapshotGeneration: 'changed-generation',
+        changeTypes: ['working-tree']
+      })
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      resolveSnapshots?.()
+      await Promise.resolve()
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledTimes(4)
+    expect(container.textContent).toContain('src/a.ts')
+  })
+
+  it('collapses stale file-diff replies into one snapshot refresh', async () => {
+    vi.mocked(window.desktopApp.git.getFileDiff)
+      .mockResolvedValueOnce({ status: 'stale' })
+      .mockResolvedValueOnce({ status: 'stale' })
+      .mockResolvedValueOnce({ status: 'stale' })
+
+    await renderReview()
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledTimes(4)
+    expect(container.textContent).not.toContain('Git snapshot became stale')
+  })
+
+  it('discards an unusable snapshot when its stale refresh fails', async () => {
+    let snapshotRequests = 0
+    vi.mocked(window.desktopApp.git.getReviewSnapshot).mockImplementation(async ({ source }) => {
+      snapshotRequests += 1
+      if (snapshotRequests > 2) throw new Error('refresh unavailable')
+      return snapshotFor(source)
+    })
+    vi.mocked(window.desktopApp.git.getFileDiff).mockResolvedValueOnce({ status: 'stale' })
+
+    await renderReview()
+
+    await act(async () => {
+      await vi.waitFor(() => expect(container.textContent).toContain('refresh unavailable'))
+    })
+
+    expect(container.textContent).not.toContain('Loading review...')
   })
 
   it('expands review file-tree directories by default', async () => {
@@ -429,7 +510,7 @@ describe('ReviewWorkspace', () => {
 
     await selectReviewOption('忽略空白差异')
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 0))
+      await vi.waitFor(() => expect(window.desktopApp.git.getFileDiff).toHaveBeenCalled())
     })
     expect(window.desktopApp.git.getFileDiff).toHaveBeenCalledWith(
       expect.objectContaining({ options: { ignoreWhitespace: true, fullFiles: false } })
@@ -592,6 +673,7 @@ describe('ReviewWorkspace', () => {
       largeDiff: false
     }))
     vi.mocked(window.desktopApp.git.getFileDiff).mockImplementation(async ({ file }) => ({
+      status: 'ready' as const,
       snapshotGeneration: 'generation',
       file: {
         path: file.path,
@@ -619,7 +701,7 @@ describe('ReviewWorkspace', () => {
     expect(container.textContent).not.toContain('已重命名')
     expect(container.textContent).not.toContain('已复制')
     expect(container.textContent).not.toContain('类型已变更')
-    expect(container.textContent).not.toContain('存在冲突')
+    expect(container.textContent).toContain('此文件存在冲突，暂不渲染文本差异。')
   })
 
   it('locks only the overlapping file while its mutation is pending', async () => {

@@ -93,6 +93,7 @@ export function useReviewWorkspaceController({
   const loadedSourceIdentityRef = useRef<string | undefined>(undefined)
   const programmaticScrollUntilRef = useRef(0)
   const loadStateRef = useRef(loadState)
+  const pendingGitChangeRefreshRef = useRef(false)
   const reviewSearchIdentity = useMemo(
     () =>
       loadState.status === 'ready'
@@ -153,30 +154,50 @@ export function useReviewWorkspaceController({
     []
   )
 
-  const replaceGroups = useCallback((updater: (groups: ReviewFileGroup[]) => ReviewFileGroup[]) => {
-    setLoadState((current) =>
-      current.status === 'ready' ? { ...current, groups: updater(current.groups) } : current
-    )
-  }, [])
+  const updateLoadState = useCallback(
+    (updater: (current: ReviewSourceLoadState) => ReviewSourceLoadState) => {
+      setLoadState((current) => {
+        const next = updater(current)
+        loadStateRef.current = next
+        return next
+      })
+    },
+    []
+  )
+
+  const replaceGroups = useCallback(
+    (updater: (groups: ReviewFileGroup[]) => ReviewFileGroup[]) => {
+      updateLoadState((current) =>
+        current.status === 'ready' ? { ...current, groups: updater(current.groups) } : current
+      )
+    },
+    [updateLoadState]
+  )
 
   const load = useCallback(
-    async (nextSource: ReviewDisplaySource = displaySource): Promise<boolean> => {
+    async (
+      nextSource: ReviewDisplaySource = displaySource,
+      options: { discardCurrentSnapshot?: boolean } = {}
+    ): Promise<boolean> => {
       const requestId = ++requestIdRef.current
       pendingDiffLoadsRef.current.clear()
       const nextSourceIdentity = displaySourceIdentity(nextSource)
       const backgroundRefresh =
+        !options.discardCurrentSnapshot &&
         loadStateRef.current.status === 'ready' &&
         loadedSourceIdentityRef.current === nextSourceIdentity
       if (backgroundRefresh) setRefreshing(true)
       if (nextSource.type === 'last-turn') {
         const groups = createLastTurnGroups(nextSource, lastTurn)
-        setLoadState({
+        const nextLoadState: ReviewSourceLoadState = {
           status: 'ready',
           groups,
           snapshots: [],
           partialErrors: [],
           largeDiff: false
-        })
+        }
+        loadStateRef.current = nextLoadState
+        setLoadState(nextLoadState)
         loadedSourceIdentityRef.current = nextSourceIdentity
         setRefreshing(false)
         setMutationStale(false)
@@ -185,11 +206,20 @@ export function useReviewWorkspaceController({
         return true
       }
       if (!target) {
-        setLoadState({ status: 'error', message: 'No Git repository is available for review.' })
+        const nextLoadState: ReviewSourceLoadState = {
+          status: 'error',
+          message: 'No Git repository is available for review.'
+        }
+        loadStateRef.current = nextLoadState
+        setLoadState(nextLoadState)
         setRefreshing(false)
         return false
       }
-      if (!backgroundRefresh) setLoadState({ status: 'loading' })
+      if (!backgroundRefresh) {
+        const nextLoadState: ReviewSourceLoadState = { status: 'loading' }
+        loadStateRef.current = nextLoadState
+        setLoadState(nextLoadState)
+      }
       const backendSources = backendSourcesForDisplay(nextSource)
       const settled = await Promise.allSettled(
         backendSources.map((backendSource) =>
@@ -215,10 +245,12 @@ export function useReviewWorkspaceController({
       })
       if (snapshots.length === 0 && partialErrors.length > 0) {
         if (!backgroundRefresh) {
-          setLoadState({
+          const nextLoadState: ReviewSourceLoadState = {
             status: 'error',
             message: partialErrors.map((error) => error.message).join('\n')
-          })
+          }
+          loadStateRef.current = nextLoadState
+          setLoadState(nextLoadState)
         } else {
           onFeedback?.({
             tone: 'error',
@@ -229,14 +261,16 @@ export function useReviewWorkspaceController({
         return false
       }
       const groups = createSnapshotGroups(snapshots, partialErrors)
-      setLoadState({
+      const nextLoadState: ReviewSourceLoadState = {
         status: 'ready',
         groups,
         snapshots,
         partialErrors,
         largeDiff: snapshots.some((snapshot) => snapshot.largeDiff),
         gitRoot: snapshots[0]?.gitRoot
-      })
+      }
+      loadStateRef.current = nextLoadState
+      setLoadState(nextLoadState)
       loadedSourceIdentityRef.current = nextSourceIdentity
       setRefreshing(false)
       setMutationStale(false)
@@ -263,10 +297,20 @@ export function useReviewWorkspaceController({
         event.target.cwd === target.cwd &&
         event.target.gitRoot === target.gitRoot
       ) {
+        if (loadStateRef.current.status === 'loading') {
+          pendingGitChangeRefreshRef.current = true
+          return
+        }
         void load(displaySource)
       }
     })
   }, [displaySource, load, target])
+
+  useEffect(() => {
+    if (!pendingGitChangeRefreshRef.current || loadState.status === 'loading') return
+    pendingGitChangeRefreshRef.current = false
+    void load(displaySource)
+  }, [displaySource, load, loadState.status])
 
   useEffect(() => {
     if (!search.open || !search.query.trim()) return
@@ -466,6 +510,13 @@ export function useReviewWorkspaceController({
               currentDiffOptionsGeneration !== diffOptionsGenerationRef.current
             )
               return
+            if (diff.status === 'stale') {
+              // Staleness invalidates the signed snapshot as a whole. load()
+              // advances requestId synchronously, so concurrent stale replies
+              // from this batch collapse into one refresh.
+              void load(displaySource, { discardCurrentSnapshot: true })
+              return
+            }
             replaceSection(sectionKey, { status: 'ready', diff })
           })
           .catch((cause) => {
@@ -487,7 +538,7 @@ export function useReviewWorkspaceController({
       pendingDiffLoadsRef.current.set(sectionKey, task)
       runNextDiffLoad(activeDiffLoadsRef, pendingDiffLoadsRef)
     },
-    [preferences.ignoreWhitespace, replaceSection, target]
+    [displaySource, load, preferences.ignoreWhitespace, replaceSection, target]
   )
 
   useEffect(() => {

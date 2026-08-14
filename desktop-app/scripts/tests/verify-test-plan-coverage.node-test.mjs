@@ -24,6 +24,7 @@ import {
   normalizePlaywrightReporterFile
 } from '../lib/test-plan-playwright-reporter.mjs'
 import { playwrightEvidenceSelection } from '../lib/test-plan-playwright-selection.mjs'
+import { vitestEvidenceSelection } from '../lib/test-plan-vitest-selection.mjs'
 
 const temporaryRoots = []
 
@@ -95,6 +96,26 @@ test('selects only manifest-declared Playwright evidence by literal test title',
   )
 })
 
+test('selects only manifest-declared Vitest evidence by file and parameterized title', () => {
+  assert.deepEqual(
+    vitestEvidenceSelection([
+      { file: 'src/main/service.test.ts', testName: 'A01 verifies (the) behavior' },
+      { file: 'src/main/service.test.ts', testName: 'A01 verifies (the) behavior' },
+      { file: 'src/main/queue.test.ts', testName: 'E13 pauses persisted %s delivery' },
+      { file: 'src/main/runtime.test.ts', testName: 'C23 terminates once $phase' }
+    ]),
+    {
+      files: [
+        'src/main/service.test.ts',
+        'src/main/queue.test.ts',
+        'src/main/runtime.test.ts'
+      ],
+      testNamePattern:
+        '(?:A01 verifies \\(the\\) behavior|E13 pauses persisted .+ delivery|C23 terminates once .+)'
+    }
+  )
+})
+
 test('accepts a complete manifest whose evidence covers every layer and assertion', async () => {
   const fixture = await createFixture()
 
@@ -115,9 +136,11 @@ test('requires every P0-04 case to point at a declared test', async () => {
   )
 })
 
-test('includes the persisted-turn recovery P0-04 case without requiring an unused case 19', () => {
+test('requires the complete P0-04 case matrix', () => {
+  assert.equal(expectedP004Ids.length, 20)
+  assert.ok(expectedP004Ids.includes('P004-E2E-01'))
+  assert.ok(expectedP004Ids.includes('P004-E2E-19'))
   assert.ok(expectedP004Ids.includes('P004-E2E-20'))
-  assert.ok(!expectedP004Ids.includes('P004-E2E-19'))
 })
 
 test('requires the complete P0-04 edge-case matrix', () => {

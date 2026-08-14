@@ -374,7 +374,8 @@ export class ConversationChatRegistry {
     entryOrIdentity: ConversationChatEntry | string,
     scroll: ConversationScrollSnapshot
   ): void {
-    const entry = this.internalEntry(entryOrIdentity)
+    const entry = this.findInternalEntry(entryOrIdentity)
+    if (!entry) return
     entry.scroll = scroll
   }
 
@@ -719,6 +720,14 @@ export class ConversationChatRegistry {
   private internalEntry(
     entryOrIdentity: ConversationChatEntry | string
   ): InternalConversationChatEntry {
+    const entry = this.findInternalEntry(entryOrIdentity)
+    if (entry) return entry
+    throw new Error('Conversation entry is not registered')
+  }
+
+  private findInternalEntry(
+    entryOrIdentity: ConversationChatEntry | string
+  ): InternalConversationChatEntry | undefined {
     if (typeof entryOrIdentity !== 'string') {
       const entry = this.entriesByLocalId.get(entryOrIdentity.localId)
       if (entry === entryOrIdentity) return entry
@@ -728,7 +737,7 @@ export class ConversationChatRegistry {
       const entry = this.aliases.get(entryOrIdentity)
       if (entry) return entry
     }
-    throw new Error('Conversation entry is not registered')
+    return undefined
   }
 
   private resolveInternal(identity: string | undefined): InternalConversationChatEntry | undefined {

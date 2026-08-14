@@ -132,6 +132,23 @@ describe('LocalGitWatchBroker', () => {
     expect(webContents.send).not.toHaveBeenCalled()
     broker.dispose()
   })
+
+  it('uses a lower default polling rate when observing a remote repository', () => {
+    const setInterval = vi.fn(() => 1 as never)
+    const clearInterval = vi.fn()
+    const broker = new LocalGitWatchBroker({
+      getState: vi.fn<() => Promise<LocalGitWatchState>>(),
+      setInterval,
+      clearInterval
+    })
+
+    broker.subscribe(new FakeWebContents(1))
+    broker.observeTarget({ ...target, hostId: 'devbox' })
+
+    expect(setInterval).toHaveBeenLastCalledWith(expect.any(Function), 5_000)
+    expect(clearInterval).toHaveBeenCalledWith(1)
+    broker.dispose()
+  })
 })
 
 class FakeWebContents extends EventEmitter {

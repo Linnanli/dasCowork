@@ -19,7 +19,7 @@ import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 type Props = {
   controller: ReviewWorkspaceController
   lastTurnId?: string
-  onGitFeedback(feedback: { tone: 'success' | 'info' | 'error'; message: string }): void
+  onGitFeedback(feedback: { id?: string; tone: 'success' | 'info' | 'error'; message: string }): void
 }
 
 export function ReviewToolbar({ controller, lastTurnId, onGitFeedback }: Props): React.JSX.Element {

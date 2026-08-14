@@ -18,6 +18,7 @@ export type {
   LocalGitGetReviewApplyCommandRequest,
   LocalGitRefreshReviewFilesRequest,
   LocalGitMutationResult,
+  LocalGitFileDiffResult,
   LocalGitMergeBase,
   LocalGitPatchTarget,
   LocalGitReviewAction,

@@ -138,6 +138,123 @@ describe('CommitOrPushDialog', () => {
     })
   })
 
+  it('selects push first when only push is available', async () => {
+    await render({
+      status: {
+        ...status,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+        commitsAhead: 1
+      }
+    })
+
+    expect(selectedAction()).toBe('push')
+    await act(async () => keyTarget().dispatchEvent(keyDown('Enter', { ctrlKey: true })))
+
+    expect(onAction).toHaveBeenCalledWith({
+      action: 'push',
+      message: '',
+      includeUnstaged: true,
+      newBranch: undefined
+    })
+  })
+
+  it('skips disabled actions during arrow navigation', async () => {
+    await render({
+      status: {
+        ...status,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+        commitsAhead: 1
+      }
+    })
+
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+
+    expect(selectedAction()).toBe('push')
+  })
+
+  it('moves selection when the selected action becomes disabled after status changes', async () => {
+    await render()
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    expect(selectedAction()).toBe('commit-and-push')
+
+    await render({
+      status: {
+        ...status,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+        commitsAhead: 1
+      }
+    })
+
+    expect(selectedAction()).toBe('push')
+  })
+
+  it('moves selection when checkbox changes disable the selected action', async () => {
+    await render({
+      status: {
+        ...status,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        commitsAhead: 1
+      }
+    })
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    expect(selectedAction()).toBe('commit-and-push')
+
+    await act(async () => checkbox().click())
+
+    expect(selectedAction()).toBe('push')
+  })
+
+  it('moves selection when branch changes disable the selected action', async () => {
+    await render({
+      status: {
+        ...status,
+        hasHead: false
+      }
+    })
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    expect(selectedAction()).toBe('push')
+
+    await act(async () => branchTrigger().click())
+    await act(async () => buttonWithText('新分支')?.click())
+    await act(async () => setTextValue(inputByLabel('新分支名称'), 'feature/new-target'))
+
+    expect(selectedAction()).toBe('commit')
+  })
+
+  it('does not run shortcut action when no actions are enabled', async () => {
+    await render({
+      status: {
+        ...status,
+        unavailableReason: 'Git 状态不可用。'
+      }
+    })
+
+    expect(selectedAction()).toBeUndefined()
+    await act(async () => keyTarget().dispatchEvent(keyDown('Enter', { ctrlKey: true })))
+
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('preserves a valid user-selected action across status updates', async () => {
+    await render()
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    await act(async () => keyTarget().dispatchEvent(keyDown('ArrowDown')))
+    expect(selectedAction()).toBe('push')
+
+    await render({
+      status: {
+        ...status,
+        commitsAhead: 2
+      }
+    })
+
+    expect(selectedAction()).toBe('push')
+  })
+
   it('runs Cmd/Ctrl+Enter from the textarea exactly once without consuming normal Enter', async () => {
     await render()
     await act(async () => textarea().dispatchEvent(keyDown('Enter', { ctrlKey: true })))
@@ -194,6 +311,19 @@ function actionButton(action: 'commit' | 'commit-and-push' | 'push'): HTMLButton
   const button = document.body.querySelector<HTMLButtonElement>(`button[data-action="${action}"]`)
   if (!button) throw new Error(`Missing ${action} action`)
   return button
+}
+
+function selectedAction(): CommitOrPushDialogActionInput['action'] | undefined {
+  const button = [...document.body.querySelectorAll<HTMLButtonElement>('button[data-action]')].find(
+    (candidate) => candidate.querySelector('kbd')
+  )
+  return button?.dataset.action as CommitOrPushDialogActionInput['action'] | undefined
+}
+
+function keyTarget(): HTMLElement {
+  const element = document.body.querySelector<HTMLElement>('[data-slot="commit-or-push-dialog"]')
+  if (!element) throw new Error('Missing dialog')
+  return element
 }
 
 function branchTrigger(label = 'main'): HTMLButtonElement {

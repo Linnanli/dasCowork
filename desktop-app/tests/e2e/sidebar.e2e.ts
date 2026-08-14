@@ -92,7 +92,7 @@ test('opens a sidebar conversation and continues the same desktop thread', async
 
     await sendMessage(page, firstPrompt)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toBeVisible()
     await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
@@ -102,13 +102,13 @@ test('opens a sidebar conversation and continues the same desktop thread', async
     await sidebar.getByRole('button', { name: '新对话', exact: true }).click()
     await expect(page.locator('[data-role="user"]').filter({ hasText: firstPrompt })).toHaveCount(0)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toHaveCount(0)
 
     await sidebar.getByText(firstPrompt, { exact: true }).click()
     await expect(page.locator('[data-role="user"]')).toContainText(firstPrompt)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toBeVisible()
     await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
@@ -157,7 +157,7 @@ test('keeps sidebar projects and conversations after a renderer reload', async (
 
     await sendComposerMessage(page, firstPrompt)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toBeVisible()
     await expect(page.locator('[data-slot="composer-project-card-shell"]')).toHaveCount(0)
 
@@ -200,7 +200,7 @@ test('preserves a new conversation across reload and restores its history', asyn
 
     await sendMessage(page, firstPrompt)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toBeVisible()
 
     const sidebar = page.locator('[data-slot="codex-sidebar"]')
@@ -215,7 +215,7 @@ test('preserves a new conversation across reload and restores its history', asyn
     await sidebar.getByText(firstPrompt, { exact: true }).click()
     await expect(page.locator('[data-role="user"]')).toContainText(firstPrompt)
     await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse })
+      page.locator('[data-role="assistant"]').filter({ hasText: firstResponse }).first()
     ).toBeVisible()
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)

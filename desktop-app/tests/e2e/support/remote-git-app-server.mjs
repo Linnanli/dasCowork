@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline'
 const running = new Map()
 const terminalProcesses = new Map()
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity })
+let outputQueue = Promise.resolve()
 
 input.on('line', (line) => {
   let message
@@ -57,7 +58,8 @@ input.on('line', (line) => {
 })
 
 async function execute(message) {
-  const { command, cwd, env, processId } = message.params ?? {}
+  const { command, cwd, env, processId, streamStdin } = message.params ?? {}
+  traceCommandRequest('command/exec', message.params)
   if (!Array.isArray(command) || !command.every((part) => typeof part === 'string')) {
     respond(message.id, { processId: processId ?? 'invalid', exitCode: 2, stdout: '', stderr: '' })
     return
@@ -71,6 +73,7 @@ async function execute(message) {
 
   if (command[0] === 'codex' && command[1] === '--version') {
     emitOutput(processId, 'stdout', 'codex-cli 1.2.3\n')
+    traceCommandRequest('command/exec/close', { processId, exitCode: 0 })
     respond(message.id, { processId, exitCode: 0, stdout: '', stderr: '' })
     return
   }
@@ -79,16 +82,19 @@ async function execute(message) {
   const child = spawn(executable, args, {
     cwd: typeof cwd === 'string' ? cwd : undefined,
     env: mergeEnvironment(env),
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: [streamStdin === true ? 'pipe' : 'ignore', 'pipe', 'pipe']
   })
   if (typeof processId === 'string') running.set(processId, child)
   child.stdout.on('data', (chunk) => emitOutput(processId, 'stdout', chunk))
   child.stderr.on('data', (chunk) => emitOutput(processId, 'stderr', chunk))
   child.once('error', (error) => {
     emitOutput(processId, 'stderr', error.message)
+    traceCommandRequest('command/exec/error', { processId, message: error.message })
+    respond(message.id, { processId, exitCode: 1, stdout: '', stderr: error.message })
   })
   child.once('close', (exitCode) => {
     if (typeof processId === 'string') running.delete(processId)
+    traceCommandRequest('command/exec/close', { processId, exitCode })
     respond(message.id, { processId, exitCode: exitCode ?? 1, stdout: '', stderr: '' })
   })
 }
@@ -196,10 +202,26 @@ function traceTerminalRequest(method, params) {
   appendFileSync(tracePath, `${JSON.stringify({ method, params })}\n`, 'utf8')
 }
 
+function traceCommandRequest(method, params) {
+  const tracePath = process.env.DASCOWORK_E2E_REMOTE_COMMAND_TRACE
+  if (!tracePath) return
+  appendFileSync(tracePath, `${JSON.stringify({ method, params })}\n`, 'utf8')
+}
+
 function respond(id, result) {
   if (id !== undefined) emit({ id, result })
 }
 
 function emit(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`)
+  const line = `${JSON.stringify(message)}\n`
+  outputQueue = outputQueue.then(
+    () =>
+      new Promise((resolve) => {
+        if (process.stdout.write(line)) {
+          resolve()
+          return
+        }
+        process.stdout.once('drain', resolve)
+      })
+  )
 }

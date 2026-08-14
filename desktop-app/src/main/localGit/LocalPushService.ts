@@ -291,7 +291,8 @@ function resolvePushRemote(input: {
   configuredRemote: string | null
   upstreamRemote: string | null
 }): string | null {
-  if (input.upstreamRemote) return input.upstreamRemote
+  if (input.upstreamRemote && input.remotes.includes(input.upstreamRemote))
+    return input.upstreamRemote
   for (const candidate of [
     input.configuredPushRemote,
     input.pushDefault,
@@ -348,10 +349,23 @@ function unavailableStatus(error: unknown): LocalGitPublishStatus {
 }
 
 function errorMessage(error: unknown): string {
-  const message = isGitCliError(error)
-    ? `${error.stderr}\n${error.stdout}`.trim() || error.message
-    : error instanceof Error
-      ? error.message
-      : String(error)
+  if (isGitCliError(error)) {
+    const output = `${error.stderr}\n${error.stdout}`.trim() || error.message
+    if (output.includes('git process timed out') || error.message.includes('timed out')) {
+      return 'Git publish operation timed out.'
+    }
+    if (
+      output.includes('git output exceeded limit') ||
+      error.message.includes('output exceeded limit')
+    ) {
+      return 'Git publish operation produced too much output.'
+    }
+    return truncateMessage(output)
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return truncateMessage(message)
+}
+
+function truncateMessage(message: string): string {
   return message.slice(0, 2_000) || 'Git publish operation failed.'
 }

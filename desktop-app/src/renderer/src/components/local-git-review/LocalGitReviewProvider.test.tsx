@@ -25,6 +25,16 @@ let root: Root
 
 describe('LocalGitReviewProvider', () => {
   beforeEach(() => {
+    vi.stubGlobal('matchMedia', () => ({
+      matches: false,
+      media: '(prefers-color-scheme: dark)',
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => true
+    }))
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -34,9 +44,10 @@ describe('LocalGitReviewProvider', () => {
     act(() => root.unmount())
     container.remove()
     document.body.innerHTML = ''
+    vi.unstubAllGlobals()
   })
 
-  it('queues independent feedback, replaces matching feedback, and tracks a repository workflow', async () => {
+  it('uses typed top-center toasts, replaces matching feedback, and tracks a repository workflow', async () => {
     await act(async () => {
       root.render(
         <LocalGitReviewProvider>
@@ -47,10 +58,23 @@ describe('LocalGitReviewProvider', () => {
 
     await act(async () => buttonWithText('Show first')?.click())
     await act(async () => buttonWithText('Show second')?.click())
-    expect(toastMessages()).toEqual(['First result', 'Second result'])
+    await act(flushSonner)
+    expect(toastMessages()).toEqual(['Second result', 'First result'])
+    expect(toastTypes()).toEqual(['error', 'success'])
+    const toaster = document.body.querySelector<HTMLElement>('[data-sonner-toaster]')
+    expect(toaster?.dataset.yPosition).toBe('top')
+    expect(toaster?.dataset.xPosition).toBe('center')
+    expect(document.body.querySelector('[data-close-button]')).toBeNull()
+    expect(
+      document.body
+        .querySelector('[data-testid="local-git-operation-toast"]')
+        ?.getAttribute('data-rich-colors')
+    ).not.toBe('true')
 
     await act(async () => buttonWithText('Replace first')?.click())
+    await act(flushSonner)
     expect(toastMessages()).toEqual(['Second result', 'Updated first result'])
+    expect(toastTypes()).toEqual(['error', 'info'])
 
     await act(async () => buttonWithText('Begin commit')?.click())
     expect(document.body.textContent).toContain('committing')
@@ -136,6 +160,16 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
 
 function toastMessages(): string[] {
   return [
-    ...document.body.querySelectorAll<HTMLElement>('[data-slot="local-git-operation-toast"]')
-  ].map((toast) => toast.textContent?.replace('Dismiss', '').trim() ?? '')
+    ...document.body.querySelectorAll<HTMLElement>('[data-testid="local-git-operation-toast"]')
+  ].map((toast) => toast.textContent?.trim() ?? '')
+}
+
+function toastTypes(): string[] {
+  return [
+    ...document.body.querySelectorAll<HTMLElement>('[data-testid="local-git-operation-toast"]')
+  ].map((toast) => toast.dataset.type ?? '')
+}
+
+async function flushSonner(): Promise<void> {
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
 }
