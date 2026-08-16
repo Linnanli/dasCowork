@@ -261,7 +261,10 @@ async function killElectronProcessTree(
       // Playwright launches Electron as a process-group leader on Unix. Killing
       // the group also closes any Codex CLI descendants that otherwise retain
       // the Electron stdout/stderr pipes after a crash.
-      process.kill(globalThis.process.platform === 'win32' ? process.pid : -process.pid, 'SIGKILL')
+      globalThis.process.kill(
+        globalThis.process.platform === 'win32' ? process.pid : -process.pid,
+        'SIGKILL'
+      )
     } catch (error) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') throw error
     }
