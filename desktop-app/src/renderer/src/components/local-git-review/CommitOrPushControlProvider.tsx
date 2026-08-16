@@ -159,7 +159,7 @@ export function CommitOrPushControlProvider({
         return
       }
       bumpRefreshVersion()
-      if (dialogOpenRef.current) void refreshStatus()
+      void refreshStatus()
     })
   }, [bumpRefreshVersion, refreshStatus, target])
 
@@ -254,7 +254,7 @@ export function CommitOrPushControlProvider({
       } finally {
         finishGitWorkflow(target)
         setPending(false)
-        if (dialogOpenRef.current) void refreshStatus()
+        void refreshStatus()
       }
     },
     [
@@ -270,7 +270,13 @@ export function CommitOrPushControlProvider({
     ]
   )
 
-  const buttonEnabled = Boolean(target) && !pending
+  const buttonEnabled =
+    Boolean(target) &&
+    !pending &&
+    (!status ||
+      status.staged.fileCount > 0 ||
+      status.unstaged.fileCount > 0 ||
+      status.commitsAhead > 0)
   const value = useMemo(
     () => ({
       target,

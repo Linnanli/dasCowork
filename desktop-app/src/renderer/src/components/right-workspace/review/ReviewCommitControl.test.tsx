@@ -142,6 +142,22 @@ describe('ReviewCommitControl', () => {
     expect(git.pushChanges).toHaveBeenCalledWith({ target })
   })
 
+  it('disables the toolbar after a completed operation refreshes a clean repository status', async () => {
+    git.getPublishStatus
+      .mockResolvedValueOnce(publishStatus({ stagedFiles: 1 }))
+      .mockResolvedValueOnce(publishStatus({ stagedFiles: 0 }))
+
+    await render()
+    await act(flush)
+    await act(async () => button().click())
+    await act(flush)
+    await act(async () => actionButton('commit').click())
+    await act(flush)
+
+    expect(git.getPublishStatus).toHaveBeenCalledTimes(2)
+    expect(button().disabled).toBe(true)
+  })
+
   it('opens from a clean detached HEAD when a remote can publish a new branch', async () => {
     git.getPublishStatus.mockResolvedValue(
       publishStatus({ stagedFiles: 0, branch: null, commitsAhead: 0 })
