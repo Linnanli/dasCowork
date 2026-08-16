@@ -641,12 +641,21 @@ test('A12 steers text, image, file, folder, and a context directive on one activ
   try {
     app = await launchApp(backend, logs)
     await app.evaluate(
-      ({ dialog }, filePaths) => {
+      ({ dialog }, { filePaths, folderPath }) => {
+        let pickerChoice = 0
         Object.assign(dialog, {
-          showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
+          showMessageBox: async () => ({ response: pickerChoice++, checkboxChecked: false }),
+          showOpenDialog: async ({ properties }: { properties: string[] }) => ({
+            canceled: false,
+            filePaths:
+              properties.includes('openDirectory') && !properties.includes('openFile')
+                ? [folderPath]
+                : filePaths,
+            bookmarks: []
+          })
         })
       },
-      [imagePath, filePath, folderPath]
+      { filePaths: [imagePath, filePath, folderPath], folderPath }
     )
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
@@ -665,6 +674,10 @@ test('A12 steers text, image, file, folder, and a context directive on one activ
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
     await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
+    if (process.platform !== 'darwin') {
+      await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+      await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
+    }
     await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toHaveCount(2)
     await queueButton.click()
 

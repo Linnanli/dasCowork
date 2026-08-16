@@ -90,7 +90,7 @@ export function createCodexAspProviderSettings(
     defaultTurnSettings: {
       cwd: input.cwd,
       summary: 'auto',
-      ...e2eTurnSandboxPolicy(input.cwd)
+      ...e2eTurnSandboxPolicy()
     },
     approvals: {
       onCommandApproval: input.onCommandApproval,
@@ -126,20 +126,18 @@ function defaultThreadSandbox(): 'workspace-write' {
   return 'workspace-write'
 }
 
-function e2eTurnSandboxPolicy(
-  cwd: string
-): Pick<NonNullable<CodexProviderSettings['defaultTurnSettings']>, 'sandboxPolicy'> {
-  // GitHub-hosted Linux runners reject bubblewrap's loopback setup for a
-  // network-isolated sandbox. Keep workspace-write (and its approval flow),
-  // but allow networking only in the explicitly marked E2E process.
-  return process.env.DASCOWORK_E2E_ALLOW_NETWORKED_WORKSPACE_SANDBOX === '1'
+function e2eTurnSandboxPolicy(): Pick<
+  NonNullable<CodexProviderSettings['defaultTurnSettings']>,
+  'sandboxPolicy'
+> {
+  // GitHub-hosted Linux runners prohibit the namespaces bubblewrap requires.
+  // This override is restricted to the temporary E2E process; the thread
+  // remains workspace-write with on-request approvals so approval scenarios
+  // continue to exercise the production interaction contract.
+  return process.env.DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS === '1'
     ? {
         sandboxPolicy: {
-          type: 'workspaceWrite' as const,
-          writableRoots: [cwd],
-          networkAccess: true,
-          excludeTmpdirEnvVar: false,
-          excludeSlashTmp: false
+          type: 'dangerFullAccess' as const
         }
       }
     : {}

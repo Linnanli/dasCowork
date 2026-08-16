@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expect, type Page, type TestInfo } from '@playwright/test'
@@ -52,7 +52,6 @@ export async function launchApp(
     await waitForE2eLaunchCooldown()
     await mkdir(documentsDir, { recursive: true })
     await options.configureCodexHome?.(codexHomeDir)
-    await enableLegacyLandlockForCi(codexHomeDir)
     app = await electron.launch({
       executablePath: options.executablePath ?? electronExecutable,
       args: options.args ?? ['.'],
@@ -65,7 +64,7 @@ export async function launchApp(
         CODEX_ASP_DEBUG_PACKETS: '1',
         CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG: '1',
         CODEX_HOME: codexHomeDir,
-        DASCOWORK_E2E_ALLOW_NETWORKED_WORKSPACE_SANDBOX: '1',
+        DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS: '1',
         DASCOWORK_E2E_DOCUMENTS_DIR: documentsDir,
         DASCOWORK_E2E_USER_DATA_DIR: userDataDir,
         ELECTRON_ENABLE_LOGGING: '1',
@@ -86,28 +85,6 @@ export async function launchApp(
   }
 
   return app
-}
-
-async function enableLegacyLandlockForCi(codexHomeDir: string): Promise<void> {
-  if (process.env.DASCOWORK_E2E_USE_LEGACY_LANDLOCK !== '1') return
-
-  const configPath = join(codexHomeDir, 'config.toml')
-  let config = ''
-  try {
-    config = await readFile(configPath, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-
-  if (/^use_legacy_landlock\s*=/mu.test(config)) return
-
-  const featuresHeader = /^\[features\]\s*$/mu.exec(config)
-  const setting = 'use_legacy_landlock = true\n'
-  const updatedConfig = featuresHeader
-    ? `${config.slice(0, featuresHeader.index + featuresHeader[0].length)}\n${setting}${config.slice(featuresHeader.index + featuresHeader[0].length)}`
-    : `${config}${config.length > 0 && !config.endsWith('\n') ? '\n' : ''}\n[features]\n${setting}`
-
-  await writeFile(configPath, updatedConfig, 'utf8')
 }
 
 /**

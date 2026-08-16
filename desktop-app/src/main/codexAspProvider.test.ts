@@ -87,8 +87,8 @@ describe('createCodexAspProviderSettings', () => {
     expect(settings.persistent).toBeUndefined()
   })
 
-  it('uses a network-enabled workspace turn sandbox only for the E2E runner override', () => {
-    vi.stubEnv('DASCOWORK_E2E_ALLOW_NETWORKED_WORKSPACE_SANDBOX', '1')
+  it('uses an unsandboxed turn only for the E2E runner override', () => {
+    vi.stubEnv('DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS', '1')
 
     try {
       const settings = createCodexAspProviderSettings({
@@ -106,11 +106,7 @@ describe('createCodexAspProviderSettings', () => {
 
       expect(settings.defaultThreadSettings?.sandbox).toBe('workspace-write')
       expect(settings.defaultTurnSettings?.sandboxPolicy).toEqual({
-        type: 'workspaceWrite',
-        writableRoots: ['/repo'],
-        networkAccess: true,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false
+        type: 'dangerFullAccess'
       })
     } finally {
       vi.unstubAllEnvs()
