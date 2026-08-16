@@ -89,7 +89,8 @@ export function createCodexAspProviderSettings(
     },
     defaultTurnSettings: {
       cwd: input.cwd,
-      summary: 'auto'
+      summary: 'auto',
+      ...e2eTurnSandboxPolicy(input.cwd)
     },
     approvals: {
       onCommandApproval: input.onCommandApproval,
@@ -123,6 +124,25 @@ export function createCodexAspProviderSettings(
 
 function defaultThreadSandbox(): 'workspace-write' {
   return 'workspace-write'
+}
+
+function e2eTurnSandboxPolicy(
+  cwd: string
+): Pick<NonNullable<CodexProviderSettings['defaultTurnSettings']>, 'sandboxPolicy'> {
+  // GitHub-hosted Linux runners reject bubblewrap's network namespace setup.
+  // This test-only override keeps the workspace-write file boundary and the
+  // regular approval protocol, while allowing the mock backend on localhost.
+  return process.env.DASCOWORK_E2E_ALLOW_NETWORKED_WORKSPACE_SANDBOX === '1'
+    ? {
+        sandboxPolicy: {
+          type: 'workspaceWrite' as const,
+          writableRoots: [cwd],
+          networkAccess: true,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false
+        }
+      }
+    : {}
 }
 
 export function createReadThreadTerminalTool(

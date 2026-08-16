@@ -1022,7 +1022,7 @@ test('P002-E2E-06A reattaches the same active turn after only the desktop-facing
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
-  const relayDirectory = await mkdtemp('/private/tmp/dascowork-p002-relay-')
+  const relayDirectory = await mkdtemp(join(tmpdir(), 'dascowork-p002-relay-'))
   const proxyPidPath = join(relayDirectory, 'proxy.pid')
   const relayPidPath = join(relayDirectory, 'relay.pid')
   const relayReadyPath = join(relayDirectory, 'relay.ready')
@@ -1117,7 +1117,7 @@ test('P002-E2E-06B settles as interrupted when the restarted app-server has no a
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
 
-  const relayDirectory = await mkdtemp('/private/tmp/dascowork-p002-restart-')
+  const relayDirectory = await mkdtemp(join(tmpdir(), 'dascowork-p002-restart-'))
   const proxyPidPath = join(relayDirectory, 'proxy.pid')
   const relayPidPath = join(relayDirectory, 'relay.pid')
   const relayReadyPath = join(relayDirectory, 'relay.ready')
