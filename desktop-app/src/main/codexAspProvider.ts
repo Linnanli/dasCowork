@@ -12,7 +12,10 @@ import {
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { CodexAppServerLaunchOptions } from './codexAppServerLaunch'
-import { readThreadTerminalToolResult, type ThreadTerminalReader } from './terminal/readThreadTerminalTool'
+import {
+  readThreadTerminalToolResult,
+  type ThreadTerminalReader
+} from './terminal/readThreadTerminalTool'
 
 type CodexApprovalSettings = NonNullable<CodexProviderSettings['approvals']>
 type ToolUserInputHandler = NonNullable<CodexApprovalSettings['onToolUserInput']>
@@ -82,7 +85,7 @@ export function createCodexAspProviderSettings(
       cwd: input.cwd,
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
-      sandbox: 'workspace-write'
+      sandbox: defaultThreadSandbox()
     },
     defaultTurnSettings: {
       cwd: input.cwd,
@@ -116,6 +119,15 @@ export function createCodexAspProviderSettings(
           }
         : undefined
   }
+}
+
+function defaultThreadSandbox(): 'workspace-write' | 'danger-full-access' {
+  // GitHub-hosted Linux runners cannot create the nested bubblewrap sandbox
+  // that the CLI uses for workspace-write. This is deliberately test-only:
+  // normal desktop launches retain the least-privilege workspace sandbox.
+  return process.env.DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS === '1'
+    ? 'danger-full-access'
+    : 'workspace-write'
 }
 
 export function createReadThreadTerminalTool(

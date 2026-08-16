@@ -87,6 +87,29 @@ describe('createCodexAspProviderSettings', () => {
     expect(settings.persistent).toBeUndefined()
   })
 
+  it('uses an unsandboxed thread only for the explicit E2E runner override', () => {
+    vi.stubEnv('DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS', '1')
+
+    try {
+      const settings = createCodexAspProviderSettings({
+        launch: {
+          command: 'codex',
+          args: ['app-server', '--listen', 'stdio://'],
+          displayBinary: 'codex app-server --listen stdio://'
+        },
+        cwd: '/repo',
+        onCommandApproval: () => 'accept' as const,
+        onFileChangeApproval: () => 'accept' as const,
+        onToolUserInput: async () => ({ answers: {} }),
+        onElicitation: async () => ({ action: 'accept' as const, content: null, _meta: null })
+      })
+
+      expect(settings.defaultThreadSettings?.sandbox).toBe('danger-full-access')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('advertises a bounded read_thread_terminal dynamic tool when the desktop runtime supplies one', async () => {
     const readThreadTerminal = vi.fn(async () => ({
       terminalAttached: true,
@@ -112,7 +135,9 @@ describe('createCodexAspProviderSettings', () => {
     expect(tool).toMatchObject({
       inputSchema: { type: 'object', additionalProperties: false }
     })
-    await expect(tool?.execute({}, { threadId: 'thread-1', toolName: 'read_thread_terminal' })).resolves.toEqual({
+    await expect(
+      tool?.execute({}, { threadId: 'thread-1', toolName: 'read_thread_terminal' })
+    ).resolves.toEqual({
       success: true,
       contentItems: [{ type: 'inputText', text: expect.stringContaining('last 16 KB only') }]
     })
