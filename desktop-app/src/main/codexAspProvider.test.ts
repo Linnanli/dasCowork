@@ -87,32 +87,6 @@ describe('createCodexAspProviderSettings', () => {
     expect(settings.persistent).toBeUndefined()
   })
 
-  it('uses an unsandboxed turn only for the E2E runner override', () => {
-    vi.stubEnv('DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS', '1')
-
-    try {
-      const settings = createCodexAspProviderSettings({
-        launch: {
-          command: 'codex',
-          args: ['app-server', '--listen', 'stdio://'],
-          displayBinary: 'codex app-server --listen stdio://'
-        },
-        cwd: '/repo',
-        onCommandApproval: () => 'accept' as const,
-        onFileChangeApproval: () => 'accept' as const,
-        onToolUserInput: async () => ({ answers: {} }),
-        onElicitation: async () => ({ action: 'accept' as const, content: null, _meta: null })
-      })
-
-      expect(settings.defaultThreadSettings?.sandbox).toBe('workspace-write')
-      expect(settings.defaultTurnSettings?.sandboxPolicy).toEqual({
-        type: 'dangerFullAccess'
-      })
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
-
   it('advertises a bounded read_thread_terminal dynamic tool when the desktop runtime supplies one', async () => {
     const readThreadTerminal = vi.fn(async () => ({
       terminalAttached: true,

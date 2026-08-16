@@ -163,7 +163,9 @@ async function runCompletedToolAndAcceptedSteerRecoveryScenario(
       },
       shellCommandResponse('resp-follow-up-failure-tool', 'call-follow-up-failure-pwd', {
         command: 'pwd',
-        timeout_ms: 5_000
+        timeout_ms: 5_000,
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E executes the recovery fixture command outside the Linux runner sandbox'
       }),
       disconnectingResponse('resp-follow-up-failure-final'),
       assistantMessageResponse(
@@ -241,6 +243,8 @@ async function runCompletedToolAndAcceptedSteerRecoveryScenario(
     expect(providerResponseBodies(backend)).toHaveLength(1)
 
     releaseInitialResponse.resolve()
+
+    await approveE2eFixtureCommand(page)
 
     await expect.poll(() => providerResponseBodies(backend).length).toBe(3)
     await expect(page.locator('[data-slot="tool-group-unit"]')).toBeVisible()
@@ -949,7 +953,11 @@ test('C21/F19 @terminal-failure releases the UI when the next response hangs aft
   await runSingleConversationScenario(
     testInfo,
     [
-      shellCommandResponse('resp-tool-then-hang-tool', 'call-tool-then-hang', { command: 'pwd' }),
+      shellCommandResponse('resp-tool-then-hang-tool', 'call-tool-then-hang', {
+        command: 'pwd',
+        sandbox_permissions: 'require_escalated',
+        justification: 'E2E executes the terminal fixture command outside the Linux runner sandbox'
+      }),
       {
         events: [responseCreated('resp-tool-then-hang-final')],
         termination: 'hang'
@@ -957,6 +965,7 @@ test('C21/F19 @terminal-failure releases the UI when the next response hangs aft
     ],
     async ({ page, backend, logs }) => {
       await sendMessage(page, 'Run one tool, then hang until I stop the turn.')
+      await approveE2eFixtureCommand(page)
       await expect.poll(() => providerResponseBodies(backend).length).toBe(2)
       await expect(page.locator('[data-slot="tool-group-unit"]')).toBeVisible()
       await page.getByRole('button', { name: '停止生成', exact: true }).click()
@@ -984,6 +993,13 @@ test('C21/F19 @terminal-failure releases the UI when the next response hangs aft
     }
   )
 })
+
+async function approveE2eFixtureCommand(page: Page): Promise<void> {
+  const panel = page.locator('[data-slot="server-request-panel"]')
+  await expect(panel).toContainText('pwd')
+  await panel.getByRole('button', { name: '允许一次', exact: true }).click()
+  await expect(panel).toHaveCount(0)
+}
 
 test('M10/G06 @terminal-failure isolates a failed conversation from a concurrent successful conversation', async ({
   browserName

@@ -67,18 +67,12 @@ jobs:
           npm test
 
       - name: Verify test-plan coverage contract
-        env:
-          DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS: '1'
         run: xvfb-run --auto-servernum npm --prefix desktop-app run test:plan-coverage
 
       - name: Run Mock E2E
-        env:
-          DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS: '1'
         run: xvfb-run --auto-servernum npm --prefix desktop-app run test:e2e -- --reporter=line
 
       - name: Run packaged smoke
-        env:
-          DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS: '1'
         run: xvfb-run --auto-servernum npm --prefix desktop-app run test:e2e:packaged
 
       - name: Check change scope

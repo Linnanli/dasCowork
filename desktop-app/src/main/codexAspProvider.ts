@@ -89,8 +89,7 @@ export function createCodexAspProviderSettings(
     },
     defaultTurnSettings: {
       cwd: input.cwd,
-      summary: 'auto',
-      ...e2eTurnSandboxPolicy()
+      summary: 'auto'
     },
     approvals: {
       onCommandApproval: input.onCommandApproval,
@@ -124,23 +123,6 @@ export function createCodexAspProviderSettings(
 
 function defaultThreadSandbox(): 'workspace-write' {
   return 'workspace-write'
-}
-
-function e2eTurnSandboxPolicy(): Pick<
-  NonNullable<CodexProviderSettings['defaultTurnSettings']>,
-  'sandboxPolicy'
-> {
-  // GitHub-hosted Linux runners prohibit the namespaces bubblewrap requires.
-  // This override is restricted to the temporary E2E process; the thread
-  // remains workspace-write with on-request approvals so approval scenarios
-  // continue to exercise the production interaction contract.
-  return process.env.DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS === '1'
-    ? {
-        sandboxPolicy: {
-          type: 'dangerFullAccess' as const
-        }
-      }
-    : {}
 }
 
 export function createReadThreadTerminalTool(
