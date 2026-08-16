@@ -191,20 +191,8 @@ export async function crashApp(app: ElectronApplication | undefined): Promise<vo
   const process = app.process()
   appTempDirs.delete(app)
 
-  if (process.exitCode === null && process.signalCode === null) {
-    const exited = new Promise<void>((resolveExit, rejectExit) => {
-      const timeout = setTimeout(
-        () => rejectExit(new Error('Electron did not exit after SIGKILL')),
-        10_000
-      )
-      process.once('exit', () => {
-        clearTimeout(timeout)
-        resolveExit()
-      })
-    })
-    process.kill('SIGKILL')
-    await exited
-  }
+  if (process.exitCode === null && process.signalCode === null)
+    await killElectronProcessTree(process, 'Electron did not close after SIGKILL')
 
   markE2eLaunchClosed()
   await cleanupTempDirs(tempDirs)
@@ -229,26 +217,73 @@ async function terminateElectronApp(app: ElectronApplication): Promise<void> {
   try {
     if (process.exitCode !== null || process.signalCode !== null) return
 
+    const processClosed = observeChildProcessClose(process)
     await Promise.race([
       app.close().catch(() => undefined),
       new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 5_000))
     ])
-    if (process.exitCode !== null || process.signalCode !== null) return
-
-    const exited = new Promise<void>((resolveExit, rejectExit) => {
-      const timeout = setTimeout(
-        () => rejectExit(new Error('Electron did not exit after graceful close or SIGKILL')),
-        10_000
+    if (!processClosed.hasClosed())
+      await killElectronProcessTree(
+        process,
+        'Electron did not close after graceful shutdown or SIGKILL',
+        processClosed
       )
-      process.once('exit', () => {
-        clearTimeout(timeout)
-        resolveExit()
-      })
-    })
-    process.kill('SIGKILL')
-    await exited
   } finally {
     markE2eLaunchClosed()
+  }
+}
+
+type ChildProcessCloseObserver = {
+  hasClosed(): boolean
+  closed: Promise<void>
+}
+
+function observeChildProcessClose(
+  process: ReturnType<ElectronApplication['process']>
+): ChildProcessCloseObserver {
+  let hasClosed = false
+  const closed = new Promise<void>((resolveClose) => {
+    process.once('close', () => {
+      hasClosed = true
+      resolveClose()
+    })
+  })
+  return { hasClosed: () => hasClosed, closed }
+}
+
+async function killElectronProcessTree(
+  process: ReturnType<ElectronApplication['process']>,
+  timeoutMessage: string,
+  processClosed = observeChildProcessClose(process)
+): Promise<void> {
+  if (process.pid && !processClosed.hasClosed()) {
+    try {
+      // Playwright launches Electron as a process-group leader on Unix. Killing
+      // the group also closes any Codex CLI descendants that otherwise retain
+      // the Electron stdout/stderr pipes after a crash.
+      process.kill(globalThis.process.platform === 'win32' ? process.pid : -process.pid, 'SIGKILL')
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') throw error
+    }
+  }
+
+  await waitForChildProcessClose(processClosed.closed, timeoutMessage)
+}
+
+async function waitForChildProcessClose(
+  closed: Promise<void>,
+  timeoutMessage: string
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(timeoutMessage)), 10_000)
+      })
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
   }
 }
 
