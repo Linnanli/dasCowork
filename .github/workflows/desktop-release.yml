@@ -28,6 +28,7 @@ jobs:
             desktop-app/vendors/ai-sdk-provider-codex-asp/package-lock.json
 
       - name: Install Codex CLI
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           curl -fsSL https://chatgpt.com/codex/install.sh | sh
@@ -39,6 +40,20 @@ jobs:
           codex_dir="$(dirname "$codex_bin")"
           echo "$codex_dir" >> "$GITHUB_PATH"
           "$codex_bin" --version
+
+      - name: Install Codex CLI on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-RestMethod https://chatgpt.com/codex/install.ps1 | Invoke-Expression
+          $codexBin = Get-ChildItem -Path $env:USERPROFILE -Filter codex.exe -File -Recurse |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $codexBin) {
+            throw 'Codex CLI was not installed.'
+          }
+          $codexDir = Split-Path -Parent $codexBin
+          Add-Content -Path $env:GITHUB_PATH -Value $codexDir
+          & $codexBin --version
 
       - name: Install provider dependencies
         run: npm ci
@@ -162,6 +177,7 @@ jobs:
         working-directory: desktop-app
 
       - name: Install Codex CLI
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           curl -fsSL https://chatgpt.com/codex/install.sh | sh
@@ -173,6 +189,20 @@ jobs:
           codex_dir="$(dirname "$codex_bin")"
           echo "$codex_dir" >> "$GITHUB_PATH"
           "$codex_bin" --version
+
+      - name: Install Codex CLI on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-RestMethod https://chatgpt.com/codex/install.ps1 | Invoke-Expression
+          $codexBin = Get-ChildItem -Path $env:USERPROFILE -Filter codex.exe -File -Recurse |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $codexBin) {
+            throw 'Codex CLI was not installed.'
+          }
+          $codexDir = Split-Path -Parent $codexBin
+          Add-Content -Path $env:GITHUB_PATH -Value $codexDir
+          & $codexBin --version
 
       - name: Generate Codex app-server protocol types
         run: npm run codex:generate-types
