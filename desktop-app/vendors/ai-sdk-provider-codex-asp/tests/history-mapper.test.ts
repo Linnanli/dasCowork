@@ -1068,9 +1068,8 @@ describe("history mapper", () =>
             status: "completed",
             revisedPrompt: "a sunrise",
             result: "abc123",
-            failure: null,
             savedPath: "/tmp/sunrise.png",
-        } satisfies Extract<ThreadItem, { type: "imageGeneration" }>;
+        } as Extract<ThreadItem, { type: "imageGeneration" }>;
 
         expect(mapCodexThreadItemToUiPart(item)).toEqual({
             type: "file",
