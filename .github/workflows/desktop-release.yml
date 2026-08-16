@@ -67,13 +67,13 @@ jobs:
           npm test
 
       - name: Verify test-plan coverage contract
-        run: npm --prefix desktop-app run test:plan-coverage
+        run: xvfb-run --auto-servernum npm --prefix desktop-app run test:plan-coverage
 
       - name: Run Mock E2E
-        run: npm --prefix desktop-app run test:e2e -- --reporter=line
+        run: xvfb-run --auto-servernum npm --prefix desktop-app run test:e2e -- --reporter=line
 
       - name: Run packaged smoke
-        run: npm --prefix desktop-app run test:e2e:packaged
+        run: xvfb-run --auto-servernum npm --prefix desktop-app run test:e2e:packaged
 
       - name: Check change scope
         shell: bash
