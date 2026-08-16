@@ -29,7 +29,7 @@ dasCowork/
 │   │   ├── preload/              # contextBridge 与 IPC bridge
 │   │   ├── renderer/             # React / assistant-ui 前端
 │   │   └── shared/               # 主进程、preload、renderer 共享类型与 Zod schema
-│   ├── scripts/                  # 构建 codex-app-server 等脚本
+│   ├── scripts/                  # 本地与发布 smoke 脚本
 │   ├── resources/                # Electron 资源
 │   ├── electron-builder.yml      # 桌面端打包配置
 │   ├── electron.vite.config.ts   # Electron Vite 配置
@@ -184,7 +184,7 @@ window.desktopCodexChat
 | `desktop-app/src/main/contextMenu.ts` | 窗口上下文菜单。 |
 | `desktop-app/src/main/codexChatRuntimeService.ts` | Codex provider、模型列表、流式聊天、审批处理、状态机。 |
 | `desktop-app/src/main/codexAspProvider.ts` | 构造 `@janole/ai-sdk-provider-codex-asp` 配置。 |
-| `desktop-app/src/main/codexAppServerLaunch.ts` | 解析 `codex-app-server` 启动方式。 |
+| `desktop-app/src/main/codexAppServerLaunch.ts` | 解析本机 Codex CLI 的 app-server 启动方式。 |
 | `desktop-app/src/main/codexApprovalBroker.ts` | 管理待审批请求、超时、响应和 shutdown reject。 |
 
 Main 进程中的 `codexRuntime` 是单例：
@@ -201,15 +201,14 @@ const codexRuntime = new CodexChatRuntimeService()
 
 关键文件：`desktop-app/src/main/codexAppServerLaunch.ts`
 
-`codex-app-server` 有三种解析优先级：
+桌面端只从应用进程可见的 `PATH` 启动用户本机 Codex CLI：
 
 | 优先级 | 场景 | 启动方式 |
 | --- | --- | --- |
-| 1 | 设置了 `CODEX_APP_SERVER_BIN` | 直接执行该二进制，并附加 `--listen stdio://`。 |
-| 2 | Electron packaged 应用 | 从 `process.resourcesPath/codex-app-server/` 或 `.../codex-app-server/bin/` 查找 `codex-app-server` / `codex-app-server.exe`。 |
-| 3 | 开发模式 | 执行 `cargo run --quiet -p codex-app-server --bin codex-app-server -- --listen stdio://`，cwd 默认为 `codex/codex-rs`。 |
+| 1 | 设置了 `CODEX_APP_SERVER_BIN` | 仅测试替身使用；直接执行该命令，并附加 `--listen stdio://`。 |
+| 2 | 默认运行 | 执行 `codex app-server --listen stdio://`。 |
 
-开发模式下可以用 `CODEX_RUST_WORKSPACE_ROOT` 覆盖 Rust workspace 路径。
+安装后的应用不内置、不下载、不扫描 Codex CLI。用户需要自行安装 Codex CLI、完成登录，并确保 GUI 应用进程能从 `PATH` 找到 `codex`。未找到时，聊天错误会提示：`未找到 Codex CLI。请安装 Codex CLI、将 codex 加入 PATH 并完成登录后重试。`
 
 ### 6.2 Provider 配置
 
@@ -400,16 +399,10 @@ sequenceDiagram
 - config overrides 与 strict config。
 - 测试 hook 与 remote control 配置。
 
-桌面端当前通过：
+桌面应用通过官方 CLI 入口启动：
 
 ```bash
-codex-app-server --listen stdio://
-```
-
-或开发模式：
-
-```bash
-cargo run --quiet -p codex-app-server --bin codex-app-server -- --listen stdio://
+codex app-server --listen stdio://
 ```
 
 ### 8.2 Transport 层
@@ -520,31 +513,14 @@ flowchart TD
 | --- | --- |
 | `dev` | 启动 electron-vite 开发模式。 |
 | `build` | 先执行 Node/Web TypeScript typecheck，再执行 electron-vite build。 |
-| `build:codex-app-server` | 编译 Rust `codex-app-server`，复制到 `.bundle-resources/codex-app-server`。 |
-| `build:unpack` | 构建桌面端、构建 app-server，并以目录形式打包。 |
-| `build:win` / `build:mac` / `build:linux` | 构建桌面端、构建 app-server，并生成对应平台安装包。 |
+| `build:unpack` | 构建桌面端，并以目录形式打包。 |
+| `build:win` / `build:mac` / `build:linux` | 构建桌面端，并生成对应平台安装包。 |
 
-### 9.2 app-server 打包脚本
+### 9.2 app-server 运行时依赖
 
-关键文件：`desktop-app/scripts/build-codex-app-server.mjs`
+仓库不再提供 Rust `codex-app-server` 打包脚本，也不再把 app-server 二进制复制到安装包资源目录。安装包依赖用户本机已经安装、已登录、且在 GUI 进程 `PATH` 中可见的 Codex CLI。
 
-流程：
-
-1. 定位 `codex/codex-rs`。
-2. 读取可选环境变量：
-   - `CARGO_BUILD_TARGET`
-   - `CARGO_PROFILE`，默认 `release`
-3. 执行：
-
-```bash
-cargo build --package codex-app-server --bin codex-app-server --profile <profile>
-```
-
-4. 将产物复制到：
-
-```text
-desktop-app/.bundle-resources/codex-app-server/codex-app-server[.exe]
-```
+`CODEX_APP_SERVER_BIN` 只保留给现有测试替身。正常开发、packaged smoke、发布包都应显示 runtime binary 为 `codex app-server --listen stdio://`。
 
 ### 9.3 Electron Builder 配置
 
@@ -552,8 +528,9 @@ desktop-app/.bundle-resources/codex-app-server/codex-app-server[.exe]
 
 重要配置：
 
-- `extraResources` 将 `.bundle-resources/codex-app-server` 打入安装包资源目录。
 - `asarUnpack` 包含 `resources/**`。
+- 不再配置 `codex-app-server` 的 `extraResources`，并显式排除历史 `.bundle-resources/**` 与 `dist/**`，避免旧产物进入 `app.asar`。
+- 安装包文件名带 `${arch}`，避免 macOS x64 与 arm64 资产重名。
 - Windows 目标：NSIS。
 - macOS 目标：DMG，`notarize: false`。
 - Linux 目标：AppImage、snap、deb。
@@ -567,6 +544,12 @@ desktop-app/.bundle-resources/codex-app-server/codex-app-server[.exe]
 - publish URL 为 `https://example.com/auto-updates`
 
 这些在正式发布前需要替换为 dasCowork 的真实产品标识。
+
+### 9.4 GitHub 预发布
+
+`.github/workflows/desktop-release.yml` 在每次 push 到 `main` 后先完成 Linux 验证，再并行构建 macOS x64/arm64、Windows x64 和 Linux x64 安装包。汇总任务以 `main-<完整提交 SHA>` 创建或更新 GitHub prerelease，并覆盖同名附件。
+
+这些 Release 附件是测试预发布；macOS 未公证、Windows 未签名。它们不包含 API key、Codex 登录态或后端凭据，也不替代 `electron-builder.yml` 中既有的 generic 自动更新源。
 
 ## 10. 安全边界
 
@@ -587,7 +570,7 @@ desktop-app/.bundle-resources/codex-app-server/codex-app-server[.exe]
 | 风险点 | 当前情况 | 建议 |
 | --- | --- | --- |
 | `BrowserWindow.webPreferences.sandbox` | 当前显式为 `false`。 | 评估是否可以启用 sandbox；至少显式设置 `contextIsolation: true`、`nodeIntegration: false` 来避免依赖 Electron 默认值。 |
-| Packaged app-server 缺失 | packaged 模式下找不到 binary 会直接 throw。 | 将启动失败降级为 `unavailableReason`，并在 UI 给出修复指引。 |
+| Codex CLI 缺失 | 用户的 GUI `PATH` 中找不到 `codex` 时，聊天无法启动。 | 提示安装 Codex CLI、完成登录，并把 `codex` 加入 GUI 进程可见的 `PATH`。 |
 | `approvalForSession` 与 `alwaysApprove` 映射 | command/file 当前都映射到 `acceptForSession`。 | 若底层支持长期持久化，应区分 session 与 always。 |
 | Renderer 审批队列 | `ServerRequestPanel` 目前只展示队列首个请求。 | 增加队列视图、批量拒绝、超时提示。 |
 | 选中模型持久化 | 当前仅在内存中保存。 | 保存到本地配置或 app-server thread/user settings。 |
@@ -651,7 +634,7 @@ flowchart LR
 
 | 测试文件 | 覆盖点 |
 | --- | --- |
-| `codexAppServerLaunch.test.ts` | env override、packaged binary、Windows exe、dev cargo run。 |
+| `codexAppServerLaunch.test.ts` | 默认 Codex CLI 启动、`CODEX_APP_SERVER_BIN` 测试替身 override。 |
 | `codexApprovalBroker.test.ts` | 审批请求发布、响应、未知 ID、shutdown reject、超时 decline。 |
 | `codexAspProvider.test.ts` | provider settings、stdio transport、clientInfo、thread settings、persistent pool。 |
 | `codexChatRuntimeService.test.ts` | stream chunk、错误、审批广播。 |
@@ -676,8 +659,8 @@ flowchart LR
 
 1. 替换 Electron 模板元信息：`appId`、`productName`、`author`、`homepage`、update URL。
 2. 明确 macOS notarization 与签名策略。
-3. 明确 `codex-app-server` 的跨平台构建矩阵和产物校验。
-4. 对 packaged binary 缺失、权限不足、cargo 不存在等情况做可恢复错误处理。
+3. 明确 Codex CLI 安装、登录和 GUI `PATH` 可见性的产品提示。
+4. 对 CLI 缺失、权限不足等情况做可恢复错误处理。
 5. 明确数据目录、线程存储目录、日志目录和敏感信息存储策略。
 
 ### 13.2 架构层优化
@@ -694,7 +677,7 @@ flowchart LR
 1. 审批面板支持多请求队列、倒计时、详情展开和风险提示。
 2. 模型选择器展示模型来源、能力标签、上下文长度、是否受组织策略限制。
 3. Runtime 状态在 Header 中可见：启动中、已连接、失败、重试。
-4. 失败时提供可操作建议，例如配置 `CODEX_APP_SERVER_BIN` 或重新构建 app-server。
+4. 失败时提供可操作建议，例如安装 Codex CLI、完成登录，并把 `codex` 加入 GUI 进程可见的 `PATH`。
 5. slash commands 当前是 no-op，可接入实际 prompt/action 模板。
 
 ### 13.4 代码一致性小问题
@@ -745,7 +728,7 @@ flowchart LR
 | 模型列表 | `src/main/codexChatRuntimeService.ts`、`src/main/codexAspProvider.ts`、`src/shared/codexIpcApi.ts`、`src/renderer/src/hooks/useCodexIpcAssistantRuntime.ts` |
 | 聊天流式 | `src/renderer/src/lib/ElectronIpcChatTransport.ts`、`src/preload/index.ts`、`src/main/index.ts`、`src/main/codexChatRuntimeService.ts` |
 | 用户审批 | `src/main/codexApprovalBroker.ts`、`src/main/codexChatRuntimeService.ts`、`src/renderer/src/components/assistant-ui/server-request-panel.tsx` |
-| app-server 启动 | `src/main/codexAppServerLaunch.ts`、`scripts/build-codex-app-server.mjs`、`electron-builder.yml` |
+| app-server 启动 | `src/main/codexAppServerLaunch.ts`、`electron-builder.yml` |
 | UI 主框架 | `src/renderer/src/App.tsx`、`src/renderer/src/components/assistant-ui/*` |
 | Electron 安全 | `src/main/windowOptions.ts`、`src/preload/index.ts`、`src/shared/codexIpcApi.ts`、`src/renderer/index.html` |
 | Rust 协议 | `codex-rs/app-server-protocol/src/protocol/common.rs`、`codex-rs/app-server-protocol/src/rpc.rs` |

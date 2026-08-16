@@ -37,11 +37,7 @@ export function ReviewWorkspace(): React.JSX.Element {
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background"
     >
       <ReviewCommitMarker />
-      <ReviewToolbar
-        controller={controller}
-        lastTurnId={lastTurn?.turnId}
-        onGitFeedback={notifyGitOperation}
-      />
+      <ReviewToolbar controller={controller} lastTurnId={lastTurn?.turnId} />
       {controller.mutationStale ? (
         <div
           role="alert"

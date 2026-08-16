@@ -68,11 +68,9 @@ function runOrExit(command, args, extraEnv = {}) {
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function run(command, args, extraEnv = {}) {
   const env = { ...process.env, ...extraEnv }
-  // The release gate must prove that the packaged resource is used. An
-  // inherited developer override would silently turn this into a false pass.
+  // The release gate must prove that the packaged app starts the Codex CLI
+  // from PATH instead of inheriting a developer test override.
   delete env.CODEX_APP_SERVER_BIN
-  delete env.CODEX_RUST_WORKSPACE_ROOT
-  delete env.DASCOWORK_RELEASE_DEV_APP_SERVER_BIN
   const result = spawnSync(command, args, {
     cwd: appRoot,
     env,

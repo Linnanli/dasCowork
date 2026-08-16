@@ -23,6 +23,8 @@ import {
   startMockBackend
 } from './support/mockBackend'
 
+const realCodexCommand = process.env.DASCOWORK_E2E_REAL_CODEX_BIN || 'codex'
+
 const onePixelPng = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64'
@@ -965,12 +967,7 @@ test('M05/E07 @recovery returns an explicitly rejected steer to its original que
       environment: {
         CODEX_APP_SERVER_BIN: join(appRoot, 'tests/e2e/support/app-server-process-wrapper.mjs'),
         DASCOWORK_E2E_APP_SERVER_PID_PATH: pidPath,
-        DASCOWORK_E2E_REAL_APP_SERVER_BIN: join(
-          appRoot,
-          '.bundle-resources',
-          'codex-app-server',
-          process.platform === 'win32' ? 'codex-app-server.exe' : 'codex-app-server'
-        ),
+        DASCOWORK_E2E_REAL_CODEX_BIN: realCodexCommand,
         DASCOWORK_E2E_HELD_STEER_REQUEST_PATH: heldSteerRequestPath,
         DASCOWORK_E2E_ORIGINAL_TURN_COMPLETED_PATH: originalTurnCompletedPath
       }

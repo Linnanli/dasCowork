@@ -11,9 +11,9 @@ const socketPath = process.env.DASCOWORK_E2E_PERSISTENT_RELAY_SOCKET
 const readyPath = process.env.DASCOWORK_E2E_RELAY_READY_PATH
 const relayPidPath = process.env.DASCOWORK_E2E_RELAY_PID_PATH
 const proxyPidPath = process.env.DASCOWORK_E2E_APP_SERVER_PID_PATH
-const appServerBinary = process.env.DASCOWORK_E2E_REAL_APP_SERVER_BIN
+const codexCommand = process.env.DASCOWORK_E2E_REAL_CODEX_BIN || 'codex'
 
-if (!socketPath || !readyPath || !relayPidPath || !proxyPidPath || !appServerBinary) {
+if (!socketPath || !readyPath || !relayPidPath || !proxyPidPath) {
   throw new Error('Persistent app-server proxy is missing required E2E environment variables.')
 }
 
@@ -23,7 +23,7 @@ if (!existsSync(socketPath)) {
     [
       join(dirname(new URL(import.meta.url).pathname), 'persistent-app-server-relay.mjs'),
       socketPath,
-      appServerBinary,
+      codexCommand,
       ...process.argv.slice(2)
     ],
     { detached: true, stdio: 'ignore', env: process.env }

@@ -24,9 +24,11 @@ run(
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function run(command, args, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv }
+  delete env.CODEX_APP_SERVER_BIN
   const result = spawnSync(command, args, {
     cwd: appRoot,
-    env: { ...process.env, ...extraEnv },
+    env,
     stdio: 'inherit'
   })
   if (result.status !== 0) process.exit(result.status ?? 1)

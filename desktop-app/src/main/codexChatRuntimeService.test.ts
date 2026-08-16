@@ -1603,9 +1603,13 @@ describe('CodexChatRuntimeService', () => {
     expect(JSON.stringify(port.messages)).not.toContain('aggregatedOutput')
   })
 
-  it('redacts credentials and supplies a fallback before forwarding stream errors', async () => {
-    const errors = ['Authorization: Bearer secret-token api_key=secret-value sk-secret123', '   ']
-    const ports = [new FakePort(), new FakePort()]
+  it('redacts credentials, explains a missing Codex CLI, and supplies a fallback before forwarding stream errors', async () => {
+    const errors = [
+      new Error('Authorization: Bearer secret-token api_key=secret-value sk-secret123'),
+      Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }),
+      new Error('   ')
+    ]
+    const ports = [new FakePort(), new FakePort(), new FakePort()]
     let invocation = 0
     const service = new CodexChatRuntimeService({
       cwd: '/repo',
@@ -1621,7 +1625,7 @@ describe('CodexChatRuntimeService', () => {
             (async function* () {
               yield {
                 type: 'error',
-                errorText: options.onError?.(new Error(currentError)) ?? 'missing error'
+                errorText: options.onError?.(currentError) ?? 'missing error'
               }
             })()
         }
@@ -1647,7 +1651,13 @@ describe('CodexChatRuntimeService', () => {
         error: 'Authorization: [REDACTED] api_key=[REDACTED] sk-[REDACTED]'
       }
     ])
-    expect(ports[1].messages).toEqual([{ type: 'error', error: '模型响应未完成，请重试。' }])
+    expect(ports[1].messages).toEqual([
+      {
+        type: 'error',
+        error: '未找到 Codex CLI。请安装 Codex CLI、将 codex 加入 PATH 并完成登录后重试。'
+      }
+    ])
+    expect(ports[2].messages).toEqual([{ type: 'error', error: '模型响应未完成，请重试。' }])
   })
 
   it('persists project assignment to the canonical app-server thread id', async () => {

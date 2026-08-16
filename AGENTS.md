@@ -31,7 +31,7 @@
 - 启动与模型列表：Renderer 调 `desktopCodex.listModels()` -> Preload `codex:list-models` -> Main `CodexChatRuntimeService.listModels()` -> provider/app-server 或 admin backend -> 归一化为 `CodexModelList` 返回 UI。
 - 聊天流：assistant-ui -> `ElectronIpcChatTransport` -> Preload `desktopCodexChat.startChatStream()` -> `codex-chat:start` + `MessagePort` -> Main Zod 校验 -> `CodexChatRuntimeService.startChatStream()` -> AI SDK `streamText()` -> `@janole/ai-sdk-provider-codex-asp` -> stdio JSON-RPC -> `codex-app-server` -> custom model provider。响应按相反方向以 `chunk`、`finish`、`aborted`、`error` 回到 renderer。
 - 审批流：app-server 发出 command/file/tool/mcp 等 server request -> provider -> `CodexApprovalBroker` -> Main `webContents.send('codex:approval-request')` -> Renderer 审批面板 -> `codex:respond-approval` -> broker resolve -> provider -> app-server。
-- app-server 启动：优先 `CODEX_APP_SERVER_BIN`，其次 packaged resources，开发模式下从 `codex/codex-rs` 执行 `cargo run -p codex-app-server --bin codex-app-server -- --listen stdio://`。
+- app-server 启动：默认从应用进程的 `PATH` 执行 `codex app-server --listen stdio://`；`CODEX_APP_SERVER_BIN` 只用于测试替身。
 
 ### 架构边界
 

@@ -1,6 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { execFile as execFileCallback } from 'node:child_process'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
@@ -28,8 +30,9 @@ const adminBackendUserId = isReleaseRuntime
 const packagedExecutable = process.env['DASCOWORK_RELEASE_PACKAGED_APP_EXECUTABLE']
 const realModelAssertionTimeoutMs = 120_000
 const realModelTestTimeoutMs = 180_000
+const execFile = promisify(execFileCallback)
 
-type RuntimeExpectation = { expectedBinaryPathFragment: string }
+type RuntimeExpectation = { expectedBinary: string }
 
 type ReleaseContext = {
   app: ElectronApplication
@@ -209,10 +212,6 @@ async function withReleaseApp(
   if (isReleaseRuntime && process.env['CODEX_APP_SERVER_BIN']) {
     throw new Error('CODEX_APP_SERVER_BIN is forbidden in the packaged release gate')
   }
-  if (isReleaseRuntime && process.env['DASCOWORK_RELEASE_DEV_APP_SERVER_BIN']) {
-    throw new Error('DASCOWORK_RELEASE_DEV_APP_SERVER_BIN is forbidden in the release gate')
-  }
-
   const logs: string[] = []
   let app: ElectronApplication | undefined
   try {
@@ -226,8 +225,6 @@ async function withReleaseApp(
           // backend. Real catalog backends may reject it, so omit user_id unless explicitly set.
           ADMIN_BACKEND_MODEL_USER_ID: adminBackendUserId ?? '',
           CODEX_APP_SERVER_BIN: undefined,
-          CODEX_RUST_WORKSPACE_ROOT: undefined,
-          DASCOWORK_RELEASE_DEV_APP_SERVER_BIN: undefined,
           CODEX_ASP_DEBUG_PACKETS: process.env.DASCOWORK_RELEASE_LLM_DEBUG === '1' ? '1' : undefined
         },
         executablePath: isReleaseRuntime ? packagedExecutable : undefined,
@@ -243,10 +240,11 @@ async function withReleaseApp(
       resourcesPath: process.resourcesPath
     }))
     expect(runtimeInfo.isPackaged).toBe(isReleaseRuntime)
+    if (isReleaseRuntime) {
+      await expectNoBundledAppServerResources(runtimeInfo.resourcesPath)
+    }
     const runtime: RuntimeExpectation = {
-      expectedBinaryPathFragment: isReleaseRuntime
-        ? runtimeInfo.resourcesPath
-        : `${appRoot}/.bundle-resources/codex-app-server`
+      expectedBinary: 'codex app-server --listen stdio://'
     }
     await run({ app, page, logs, runtime })
   } finally {
@@ -378,9 +376,18 @@ async function expectReleaseRuntime(page: Page, runtime: RuntimeExpectation): Pr
     .poll(() => page.evaluate(() => window.desktopApp.codex.getStatus()))
     .toMatchObject({ state: 'ready' })
   const status = await page.evaluate(() => window.desktopApp.codex.getStatus())
-  expect(status.binary).toContain(runtime.expectedBinaryPathFragment)
-  expect(status.binary).toContain('codex-app-server')
+  expect(status.binary).toBe(runtime.expectedBinary)
   expect(status.binary).not.toMatch(/(?:^|\s)cargo(?:\s|$)/u)
+}
+
+async function expectNoBundledAppServerResources(resourcesPath: string): Promise<void> {
+  await expect(
+    access(join(resourcesPath, 'codex-app-server')),
+    'packaged app must not include a bundled codex-app-server resource'
+  ).rejects.toThrow()
+  const appAsarPath = join(resourcesPath, 'app.asar')
+  const { stdout } = await execFile('npx', ['asar', 'list', appAsarPath])
+  expect(stdout).not.toContain('codex-app-server')
 }
 
 function resolveRealModelRuntime(): 'development' | 'release' {

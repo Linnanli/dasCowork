@@ -6,13 +6,15 @@ import { spawn } from 'node:child_process'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 
-const [socketPath, appServerBinary, ...appServerArgs] = process.argv.slice(2)
+const [socketPath, codexCommand, ...appServerArgs] = process.argv.slice(2)
 const readyPath = process.env.DASCOWORK_E2E_RELAY_READY_PATH
 const relayPidPath = process.env.DASCOWORK_E2E_RELAY_PID_PATH
 const restartPath = process.env.DASCOWORK_E2E_RELAY_RESTART_PATH
 
-if (!socketPath || !appServerBinary || !readyPath || !relayPidPath) {
-  throw new Error('Persistent app-server relay requires socket, binary, ready, and PID paths.')
+if (!socketPath || !codexCommand || !readyPath || !relayPidPath) {
+  throw new Error(
+    'Persistent app-server relay requires socket, Codex CLI command, ready, and PID paths.'
+  )
 }
 
 if (existsSync(socketPath)) rmSync(socketPath)
@@ -65,7 +67,7 @@ const forwardToChild = (line) => {
 
 const startChild = () => {
   childOutputBuffer = ''
-  child = spawn(appServerBinary, appServerArgs, {
+  child = spawn(codexCommand, ['app-server', ...appServerArgs], {
     env: process.env,
     stdio: ['pipe', 'pipe', 'inherit']
   })

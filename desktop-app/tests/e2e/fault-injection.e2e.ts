@@ -23,6 +23,8 @@ import {
   startMockBackend
 } from './support/mockBackend'
 
+const realCodexCommand = process.env.DASCOWORK_E2E_REAL_CODEX_BIN || 'codex'
+
 test('P002-E2E-01 restores the local conversation when reload precedes thread binding', async ({
   browserName
 }, testInfo) => {
@@ -60,12 +62,7 @@ test('P002-E2E-01 restores the local conversation when reload precedes thread bi
         CODEX_APP_SERVER_BIN: join(appRoot, 'tests/e2e/support/app-server-process-wrapper.mjs'),
         DASCOWORK_E2E_APP_SERVER_PID_PATH: pidPath,
         DASCOWORK_E2E_HELD_THREAD_START_PATH: heldThreadStartPath,
-        DASCOWORK_E2E_REAL_APP_SERVER_BIN: join(
-          appRoot,
-          '.bundle-resources',
-          'codex-app-server',
-          process.platform === 'win32' ? 'codex-app-server.exe' : 'codex-app-server'
-        ),
+        DASCOWORK_E2E_REAL_CODEX_BIN: realCodexCommand,
         DASCOWORK_E2E_RELEASE_THREAD_START_PATH: releaseThreadStartPath
       }
     })
@@ -957,12 +954,7 @@ test('C23 @terminal-failure crashes the active Desktop shared app-server transpo
       environment: {
         CODEX_APP_SERVER_BIN: join(appRoot, 'tests/e2e/support/app-server-process-wrapper.mjs'),
         DASCOWORK_E2E_APP_SERVER_PID_PATH: pidPath,
-        DASCOWORK_E2E_REAL_APP_SERVER_BIN: join(
-          appRoot,
-          '.bundle-resources',
-          'codex-app-server',
-          process.platform === 'win32' ? 'codex-app-server.exe' : 'codex-app-server'
-        )
+        DASCOWORK_E2E_REAL_CODEX_BIN: realCodexCommand
       }
     })
     const page = await app.firstWindow()
@@ -1084,12 +1076,7 @@ test('P002-E2E-06A reattaches the same active turn after only the desktop-facing
         DASCOWORK_E2E_PERSISTENT_RELAY_SOCKET: relaySocketPath,
         DASCOWORK_E2E_RELAY_READY_PATH: relayReadyPath,
         DASCOWORK_E2E_RELAY_PID_PATH: relayPidPath,
-        DASCOWORK_E2E_REAL_APP_SERVER_BIN: join(
-          appRoot,
-          '.bundle-resources',
-          'codex-app-server',
-          process.platform === 'win32' ? 'codex-app-server.exe' : 'codex-app-server'
-        )
+        DASCOWORK_E2E_REAL_CODEX_BIN: realCodexCommand
       }
     })
     const page = await app.firstWindow()
@@ -1172,12 +1159,7 @@ test('P002-E2E-06B settles as interrupted when the restarted app-server has no a
         DASCOWORK_E2E_RELAY_READY_PATH: relayReadyPath,
         DASCOWORK_E2E_RELAY_PID_PATH: relayPidPath,
         DASCOWORK_E2E_RELAY_RESTART_PATH: relayRestartPath,
-        DASCOWORK_E2E_REAL_APP_SERVER_BIN: join(
-          appRoot,
-          '.bundle-resources',
-          'codex-app-server',
-          process.platform === 'win32' ? 'codex-app-server.exe' : 'codex-app-server'
-        )
+        DASCOWORK_E2E_REAL_CODEX_BIN: realCodexCommand
       }
     })
     const page = await app.firstWindow()

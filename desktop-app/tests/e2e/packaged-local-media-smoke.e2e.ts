@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -54,7 +54,12 @@ test.describe('packaged local media smoke', () => {
     })
     const page = await app.firstWindow()
 
-    expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true)
+    const runtimeInfo = await app.evaluate(({ app }) => ({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath
+    }))
+    expect(runtimeInfo.isPackaged).toBe(true)
+    await expectNoBundledAppServerResources(runtimeInfo.resourcesPath)
     await expect.poll(() => page.url()).toBe('app://-/index.html')
     await expect(
       page.evaluate(() => ({
@@ -84,6 +89,7 @@ test.describe('packaged local media smoke', () => {
     await createLocalProject(page, `Packaged smoke ${Date.now().toString(36)}`, projectRoot)
     await sendComposerMessage(page, 'Open packaged terminal smoke.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Ready')
+    await expectCodexCliRuntime(page)
     await openRightWorkspace(page)
     await openWorkspaceMenuItem(page, 'Terminal')
     const terminalStarted = await startVisibleTerminalIfAvailable(page)
@@ -272,4 +278,22 @@ async function expectTerminalSnapshot(
       { timeout: 10_000 }
     )
     .toEqual(expect.stringContaining(expectedFragments.at(-1) ?? ''))
+}
+
+async function expectCodexCliRuntime(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => window.desktopApp.codex.getStatus()))
+    .toMatchObject({ state: 'ready' })
+  const status = await page.evaluate(() => window.desktopApp.codex.getStatus())
+  expect(status.binary).toBe('codex app-server --listen stdio://')
+}
+
+async function expectNoBundledAppServerResources(resourcesPath: string): Promise<void> {
+  await expect(
+    access(join(resourcesPath, 'codex-app-server')),
+    'packaged app must not include a bundled codex-app-server resource'
+  ).rejects.toThrow()
+  const appAsarPath = join(resourcesPath, 'app.asar')
+  const { stdout } = await execFile('npx', ['asar', 'list', appAsarPath])
+  expect(stdout).not.toContain('codex-app-server')
 }

@@ -992,9 +992,9 @@ type CodexThreadHistoryMappingInput = {
 launch 解析顺序：
 
 1. `CODEX_APP_SERVER_BIN`
-2. packaged resources 下的 `codex-app-server`
-3. dev `.bundle-resources`
-4. `cargo run --quiet -p codex-app-server --bin codex-app-server -- --listen stdio://`
+2. 默认执行 `codex app-server --listen stdio://`
+
+`CODEX_APP_SERVER_BIN` 仅保留给测试替身，正常开发和安装包运行都依赖用户本机已经安装、已登录、且在 GUI 进程 `PATH` 中可见的 Codex CLI。安装包不包含 Rust `codex-app-server` 二进制，也不会自动扫描或下载 CLI。
 
 环境处理：
 

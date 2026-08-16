@@ -14,6 +14,17 @@ An Electron application with React and TypeScript
 $ npm install
 ```
 
+The desktop chat runtime requires the Codex CLI on the machine running the app:
+
+```bash
+$ codex --version
+$ codex login
+```
+
+The installed app starts `codex app-server --listen stdio://` from the GUI process `PATH`.
+It does not compile, bundle, download, or scan for a repository-local `codex-app-server`.
+If the CLI is missing, chat shows: `未找到 Codex CLI。请安装 Codex CLI、将 codex 加入 PATH 并完成登录后重试。`
+
 ### Development
 
 ```bash
@@ -32,6 +43,9 @@ $ npm run build:mac
 # For Linux
 $ npm run build:linux
 ```
+
+Build scripts only package the Electron app. GitHub prereleases upload installer files as
+release attachments, but the generic auto-update URL in `electron-builder.yml` stays unchanged.
 
 ## Admin Backend Model Catalog
 

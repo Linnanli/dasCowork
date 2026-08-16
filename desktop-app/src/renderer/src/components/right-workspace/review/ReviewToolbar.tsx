@@ -20,14 +20,9 @@ import type { ReviewFileSection, ReviewWorkspaceController } from './reviewWorks
 type Props = {
   controller: ReviewWorkspaceController
   lastTurnId?: string
-  onGitFeedback(feedback: {
-    id?: string
-    tone: 'success' | 'info' | 'error'
-    message: string
-  }): void
 }
 
-export function ReviewToolbar({ controller, lastTurnId, onGitFeedback }: Props): React.JSX.Element {
+export function ReviewToolbar({ controller, lastTurnId }: Props): React.JSX.Element {
   const reviewSummary = useMemo(() => {
     const groups = controller.loadState.status === 'ready' ? controller.loadState.groups : []
     let additions = 0
@@ -143,7 +138,7 @@ export function ReviewToolbar({ controller, lastTurnId, onGitFeedback }: Props):
         >
           <FolderIcon />
         </Button>
-        <ReviewCommitControl controller={controller} onFeedback={onGitFeedback} />
+        <ReviewCommitControl />
       </div>
     </header>
   )

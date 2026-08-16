@@ -252,7 +252,9 @@ export class CodexChatRuntimeService {
   private readonly projectStore: ProjectStoreLike | undefined
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
-  private readonly onThreadBound: ((conversationId: string, threadId: string) => void | Promise<void>) | undefined
+  private readonly onThreadBound:
+    | ((conversationId: string, threadId: string) => void | Promise<void>)
+    | undefined
   private readonly onTurnCompleted: (() => void) | undefined
   private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly steerConfirmationTimeoutMs: number
@@ -280,14 +282,7 @@ export class CodexChatRuntimeService {
 
   constructor(options: CodexChatRuntimeServiceOptions = {}) {
     this.cwd = options.cwd ?? app.getAppPath()
-    this.launch =
-      options.launch ??
-      resolveCodexAppServerLaunchOptions({
-        env: process.env,
-        isPackaged: app.isPackaged,
-        mainDir: __dirname,
-        resourcesPath: process.resourcesPath
-      })
+    this.launch = options.launch ?? resolveCodexAppServerLaunchOptions({ env: process.env })
     this.streamText = options.streamText ?? defaultStreamText
     this.onAgentLifecycle = options.onAgentLifecycle
     this.onThreadBound = options.onThreadBound
@@ -2644,6 +2639,9 @@ function providerTurnFailureDetail(event: ProviderTurnLifecycleEvent): string | 
 }
 
 function errorMessage(error: unknown): string {
+  if (isMissingCodexCliError(error)) {
+    return '未找到 Codex CLI。请安装 Codex CLI、将 codex 加入 PATH 并完成登录后重试。'
+  }
   const message = error instanceof Error ? error.message : String(error)
   if (message.includes('thread_reference_limit_exceeded')) {
     return '每条消息最多引用 3 个任务'
@@ -2652,6 +2650,13 @@ function errorMessage(error: unknown): string {
     return '无法加载引用的任务'
   }
   return sanitizeUserFacingError(message)
+}
+
+function isMissingCodexCliError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === 'ENOENT' && /\bcodex(?:\.exe)?\b/iu.test(error.message)) return true
+  return /\bspawn\s+codex(?:\.exe)?\s+enoent\b/iu.test(error.message)
 }
 
 function canResumeActiveTurnAfterTransportError(

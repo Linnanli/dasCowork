@@ -22,11 +22,8 @@ function requireDevelopmentEnvironment() {
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function run(command, args, extraEnv = {}) {
   const env = { ...process.env, ...extraEnv }
-  // This checks the application’s development resource lookup, not an
-  // inherited developer executable or a Cargo fallback.
+  // This checks the normal Codex CLI launch path, not a test-only executable override.
   delete env.CODEX_APP_SERVER_BIN
-  delete env.CODEX_RUST_WORKSPACE_ROOT
-  delete env.DASCOWORK_RELEASE_DEV_APP_SERVER_BIN
   const result = spawnSync(command, args, {
     cwd: appRoot,
     env,

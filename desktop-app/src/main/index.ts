@@ -150,12 +150,7 @@ function createCodexRuntime(
   manager: GitManager,
   turnDiffStore: TurnDiffStore
 ): CodexChatRuntimeService {
-  const launch = resolveCodexAppServerLaunchOptions({
-    env: process.env,
-    isPackaged: app.isPackaged,
-    mainDir: __dirname,
-    resourcesPath: process.resourcesPath
-  })
+  const launch = resolveCodexAppServerLaunchOptions({ env: process.env })
   const connection = createCodexAspSharedConnection(launch)
   codexAppServerConnection = connection
   const historyClient = createCodexHistoryClient({
