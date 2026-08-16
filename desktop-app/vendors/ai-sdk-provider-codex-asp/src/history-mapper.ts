@@ -57,10 +57,20 @@ export type CodexThreadForUi = Pick<Thread, "id"> & {
 
 export function mapCodexThreadToUiMessages(thread: CodexThreadForUi): UIMessage[]
 {
-    return thread.turns.flatMap((turn) => mapCodexTurnToUiMessages(turn, thread.cwd ?? undefined));
+    return thread.turns.flatMap((turn, index) =>
+        mapCodexTurnToUiMessages(
+            turn,
+            thread.cwd ?? undefined,
+            !hasLaterCompletedTurn(thread.turns, index),
+        ),
+    );
 }
 
-export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UIMessage[]
+export function mapCodexTurnToUiMessages(
+    turn: CodexTurnForUi,
+    cwd?: string,
+    includeTerminalState = true,
+): UIMessage[]
 {
     const messages: UIMessage[] = [];
     let assistantParts: UIMessage["parts"] = [];
@@ -172,8 +182,16 @@ export function mapCodexTurnToUiMessages(turn: CodexTurnForUi, cwd?: string): UI
     }
 
     flushAssistant();
-    appendHistoricalTerminalState(messages, turn);
+    if (includeTerminalState)
+    {
+        appendHistoricalTerminalState(messages, turn);
+    }
     return messages;
+}
+
+function hasLaterCompletedTurn(turns: readonly CodexTurnForUi[], index: number): boolean
+{
+    return turns.slice(index + 1).some((turn) => turn.status === "completed");
 }
 
 function appendHistoricalTerminalState(messages: UIMessage[], turn: CodexTurnForUi): void

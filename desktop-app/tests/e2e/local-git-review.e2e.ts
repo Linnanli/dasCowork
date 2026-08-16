@@ -52,7 +52,7 @@ test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review sna
 
     await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
-    const operationFeedback = page.locator('[data-slot="local-git-operation-toast"]')
+    const operationFeedback = page.locator('[data-testid="local-git-operation-toast"]')
     await expect(panel).toContainText('new-file.txt')
     await panel.getByRole('button', { name: '隐藏文件树', exact: true }).click()
     const fileActions = panel.locator('[data-review-file-header-operation-actions]')
@@ -314,10 +314,10 @@ test('P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful in
     await panel.getByRole('button', { name: '还原已暂存文件更改', exact: true }).click()
     await page.getByRole('dialog').getByRole('button', { name: '还原', exact: true }).click()
 
-    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText(
+    await expect(page.locator('[data-testid="local-git-operation-toast"]')).toContainText(
       '已应用：notes.txt'
     )
-    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toContainText(
+    await expect(page.locator('[data-testid="local-git-operation-toast"]')).toContainText(
       '冲突：notes.txt'
     )
     await expect.poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only'])).toBe('')
@@ -757,7 +757,7 @@ test('P004-E2E-19 commits, pushes, disables clean push, and publishes a new bran
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
     await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
-    const operationFeedback = page.locator('[data-slot="local-git-operation-toast"]')
+    const operationFeedback = page.locator('[data-testid="local-git-operation-toast"]')
     await expect(panel.getByRole('button', { name: '提交或推送', exact: true })).toBeEnabled()
     await panel.getByRole('button', { name: '提交或推送', exact: true }).click()
 
@@ -1043,7 +1043,7 @@ test('P004-E2E-10 keeps the branch and working tree when the blocked commit is c
     await blockedDialog.getByRole('button', { name: 'Commit and switch branch…' }).click()
     await page.getByLabel('提交信息').fill('must not switch')
     await page.locator('[data-slot="commit-or-push-dialog"] [data-action="commit"]').click()
-    await expect(page.locator('[data-slot="local-git-operation-toast"]')).toBeVisible()
+    await expect(page.locator('[data-testid="local-git-operation-toast"]')).toBeVisible()
     await expect
       .poll(() => gitOutput(projectRoot, ['branch', '--show-current']))
       .toBe(originalBranch)
@@ -1159,7 +1159,7 @@ test('P004-E2E-15 runs remote review, stage, and commit-and-push actions through
     collectRendererLogs(page, logs)
     await createRemoteProject(page, `P004 Remote Git ${Date.now().toString(36)}`, projectRoot)
 
-    const operationFeedback = page.locator('[data-slot="local-git-operation-toast"]')
+    const operationFeedback = page.locator('[data-testid="local-git-operation-toast"]')
     await sendComposerMessage(page, 'Start the remote Git review test.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
@@ -1197,7 +1197,7 @@ test('P004-E2E-15 runs remote review, stage, and commit-and-push actions through
     await publishDialog.getByLabel('新分支名称').fill('feature/remote-review-published')
     await publishDialog.getByLabel('提交信息').fill('Publish remote Git changes')
     await publishDialog.locator('[data-action="commit-and-push"]').click()
-    const publishFeedback = page.locator('[data-slot="local-git-operation-toast"]').filter({
+    const publishFeedback = page.locator('[data-testid="local-git-operation-toast"]').filter({
       hasText:
         /正在创建新分支…|正在提交更改…|正在推送提交…|已推送 feature\/remote-review-published。|提交成功，但推送失败：|Git 操作失败。/
     })

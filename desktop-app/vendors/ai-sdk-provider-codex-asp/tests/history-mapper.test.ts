@@ -974,6 +974,60 @@ describe("history mapper", () =>
         ]);
     });
 
+    it("does not restore an old failed terminal after a later turn completed", () =>
+    {
+        const thread = {
+            id: "thr",
+            turns: [
+                {
+                    id: "turn_failed",
+                    durationMs: null,
+                    status: "failed",
+                    error: null,
+                    items: [
+                        {
+                            type: "agentMessage",
+                            id: "failed_message",
+                            text: "Partial answer",
+                            phase: null,
+                            memoryCitation: null,
+                        },
+                    ],
+                },
+                {
+                    id: "turn_completed",
+                    durationMs: null,
+                    status: "completed",
+                    error: null,
+                    items: [
+                        {
+                            type: "agentMessage",
+                            id: "completed_message",
+                            text: "Recovered answer",
+                            phase: null,
+                            memoryCitation: null,
+                        },
+                    ],
+                },
+            ],
+        } as CodexThreadForUi;
+
+        expect(mapCodexThreadToUiMessages(thread)).toEqual([
+            {
+                id: "assistant:turn_failed:failed_message",
+                role: "assistant",
+                parts: [{ type: "text", text: "Partial answer", state: "done" }],
+                metadata: { codexSource: { turnId: "turn_failed" } },
+            },
+            {
+                id: "assistant:turn_completed:completed_message",
+                role: "assistant",
+                parts: [{ type: "text", text: "Recovered answer", state: "done" }],
+                metadata: { codexSource: { turnId: "turn_completed" } },
+            },
+        ]);
+    });
+
     it("restores interrupted turns without inventing a model error", () =>
     {
         const thread = {

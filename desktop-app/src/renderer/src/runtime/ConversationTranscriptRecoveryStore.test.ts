@@ -324,6 +324,50 @@ describe('ConversationTranscriptRecoveryStore', () => {
     ])
   })
 
+  it('merges a recovery fallback into the canonical history message for the same turn', () => {
+    const storage = new MemoryStorage()
+    const store = new ConversationTranscriptRecoveryStore(storage)
+    const fallback: UIMessage = {
+      id: 'assistant:turn-1:renderer-item',
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'Partial output before the transport failed.' }],
+      metadata: {
+        codexTurn: {
+          turnId: 'turn-1',
+          status: 'failed',
+          error: { message: 'Renderer failure' }
+        }
+      }
+    }
+    const canonicalFailure: UIMessage = {
+      id: 'assistant:turn-1:server-item',
+      role: 'assistant',
+      parts: [],
+      metadata: {
+        codexSource: { turnId: 'turn-1' },
+        codexTurn: {
+          turnId: 'turn-1',
+          status: 'failed',
+          error: { message: 'Canonical failure' }
+        }
+      }
+    }
+
+    store.saveTerminalFallback('thread-1', [fallback])
+
+    expect(
+      new ConversationTranscriptRecoveryStore(storage).mergeWithHistory('thread-1', [
+        canonicalFailure
+      ])
+    ).toEqual([
+      {
+        ...canonicalFailure,
+        parts: [{ type: 'text', text: 'Partial output before the transport failed.' }]
+      }
+    ])
+    expect(storage.getItem(storageKey)).toContain('"recoveries":{}')
+  })
+
   it('removes an overlay after canonical history contains the same metadata', () => {
     const storage = new MemoryStorage()
     const store = new ConversationTranscriptRecoveryStore(storage)

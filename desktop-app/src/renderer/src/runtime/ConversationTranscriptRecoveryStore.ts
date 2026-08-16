@@ -320,8 +320,12 @@ export class ConversationTranscriptRecoveryStore {
       delete remainingTerminals[messageId]
       delete remainingTools[messageId]
     }
+    const recoveryMessageIdsByHistoryIndex = recoveryMessageIdsByCanonicalHistoryIndex(
+      remainingTerminals,
+      clonedHistory
+    )
     let resolvedRecoveryOverlay = false
-    const merged = clonedHistory.map((message) => {
+    const merged = clonedHistory.map((message, index) => {
       const attachments = recovery.attachmentsByMessageId[message.id]
       const missingAttachments = (attachments ?? []).filter(
         (attachment) => !message.parts.some((part) => samePart(part, attachment))
@@ -339,6 +343,7 @@ export class ConversationTranscriptRecoveryStore {
               ...message,
               parts: [...message.parts, ...missingAttachments] as UIMessage['parts']
             },
+        recoveryMessageIdsByHistoryIndex.get(index),
         remainingTerminals,
         remainingTools
       )
@@ -874,7 +879,10 @@ function terminalMessageIdsSupersededByCanonicalHistory(
   const superseded = new Set<string>()
   for (const [messageId, terminal] of Object.entries(terminalByMessageId)) {
     const terminalIndex = history.findLastIndex(
-      (message) => message.id === messageId || canonicalTurnId(message.metadata) === terminal.turnId
+      (message) =>
+        message.id === messageId ||
+        (canonicalTurnId(message.metadata) === terminal.turnId &&
+          terminalFromMetadata(message.metadata)?.turnId === terminal.turnId)
     )
     if (terminalIndex < 0) continue
     if (history.slice(terminalIndex + 1).some(isSuccessfulAssistantMessage)) {
@@ -882,6 +890,23 @@ function terminalMessageIdsSupersededByCanonicalHistory(
     }
   }
   return superseded
+}
+
+function recoveryMessageIdsByCanonicalHistoryIndex(
+  terminalByMessageId: Record<string, RecoveredTurnTerminal>,
+  history: readonly UIMessage[]
+): Map<number, string> {
+  const recoveryMessageIds = new Map<number, string>()
+  for (const [messageId, terminal] of Object.entries(terminalByMessageId)) {
+    const index = history.findLastIndex(
+      (message) =>
+        message.id === messageId ||
+        (canonicalTurnId(message.metadata) === terminal.turnId &&
+          terminalFromMetadata(message.metadata)?.turnId === terminal.turnId)
+    )
+    if (index >= 0) recoveryMessageIds.set(index, messageId)
+  }
+  return recoveryMessageIds
 }
 
 function isSuccessfulAssistantMessage(
@@ -996,18 +1021,21 @@ function toRecoveredToolPart(part: unknown): RecoveredToolPart[] {
 
 function mergeTerminalFallbackIntoMessage(
   message: UIMessage,
+  recoveryMessageId: string | undefined,
   remainingTerminals: Record<string, RecoveredTurnTerminal>,
   remainingTools: Record<string, RecoveredToolPart[]>
 ): UIMessage {
-  const terminal = remainingTerminals[message.id]
-  const tools = remainingTools[message.id] ?? []
+  const terminal = recoveryMessageId ? remainingTerminals[recoveryMessageId] : undefined
+  const tools = recoveryMessageId ? (remainingTools[recoveryMessageId] ?? []) : []
   const existingToolCallIds = new Set(
     message.parts.flatMap((part) =>
       'toolCallId' in part && typeof part.toolCallId === 'string' ? [part.toolCallId] : []
     )
   )
   const missingTools = tools.filter((tool) => !existingToolCallIds.has(tool.toolCallId))
-  if (missingTools.length === 0 && tools.length > 0) delete remainingTools[message.id]
+  if (missingTools.length === 0 && tools.length > 0 && recoveryMessageId) {
+    delete remainingTools[recoveryMessageId]
+  }
 
   const partialText = terminal?.partialText
   const missingPartialText =
@@ -1015,7 +1043,7 @@ function mergeTerminalFallbackIntoMessage(
     !message.parts.some((part) => part.type === 'text' && part.text.includes(partialText))
 
   const canonicalTerminal = terminalFromMetadata(message.metadata)
-  if (canonicalTerminal) delete remainingTerminals[message.id]
+  if (canonicalTerminal && recoveryMessageId) delete remainingTerminals[recoveryMessageId]
 
   if (missingTools.length === 0 && !missingPartialText && (!terminal || canonicalTerminal)) {
     return message

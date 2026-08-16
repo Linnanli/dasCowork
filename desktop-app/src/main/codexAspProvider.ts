@@ -89,7 +89,8 @@ export function createCodexAspProviderSettings(
     },
     defaultTurnSettings: {
       cwd: input.cwd,
-      summary: 'auto'
+      summary: 'auto',
+      ...e2eTurnSandboxPolicy(input.cwd)
     },
     approvals: {
       onCommandApproval: input.onCommandApproval,
@@ -121,13 +122,27 @@ export function createCodexAspProviderSettings(
   }
 }
 
-function defaultThreadSandbox(): 'workspace-write' | 'danger-full-access' {
-  // GitHub-hosted Linux runners cannot create the nested bubblewrap sandbox
-  // that the CLI uses for workspace-write. This is deliberately test-only:
-  // normal desktop launches retain the least-privilege workspace sandbox.
-  return process.env.DASCOWORK_E2E_ALLOW_UNSANDBOXED_COMMANDS === '1'
-    ? 'danger-full-access'
-    : 'workspace-write'
+function defaultThreadSandbox(): 'workspace-write' {
+  return 'workspace-write'
+}
+
+function e2eTurnSandboxPolicy(
+  cwd: string
+): Pick<NonNullable<CodexProviderSettings['defaultTurnSettings']>, 'sandboxPolicy'> {
+  // GitHub-hosted Linux runners reject bubblewrap's loopback setup for a
+  // network-isolated sandbox. Keep workspace-write (and its approval flow),
+  // but allow networking only in the explicitly marked E2E process.
+  return process.env.DASCOWORK_E2E_ALLOW_NETWORKED_WORKSPACE_SANDBOX === '1'
+    ? {
+        sandboxPolicy: {
+          type: 'workspaceWrite' as const,
+          writableRoots: [cwd],
+          networkAccess: true,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false
+        }
+      }
+    : {}
 }
 
 export function createReadThreadTerminalTool(
