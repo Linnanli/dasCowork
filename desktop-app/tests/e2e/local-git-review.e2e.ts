@@ -25,69 +25,6 @@ import { startLocalSshServer, type LocalSshServer } from './support/local-ssh-se
 
 const execFile = promisify(execFileCallback)
 
-test('P004-E2E-01 opens the real unstaged review panel from Changes', async ({
-  browserName
-}, testInfo) => {
-  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
-
-  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-local-git-review-'))
-  const backend = await startMockBackend({
-    responses: [assistantMessageResponse('review-thread', 'review-thread-message', 'Thread ready')]
-  })
-  const logs: string[] = []
-  let app: ElectronApplication | undefined
-
-  try {
-    await execFile('git', ['init'], { cwd: projectRoot })
-    await execFile('git', ['config', 'user.email', 'e2e@example.test'], { cwd: projectRoot })
-    await execFile('git', ['config', 'user.name', 'E2E'], { cwd: projectRoot })
-    await writeFile(join(projectRoot, 'notes.txt'), 'before\n', 'utf8')
-    await execFile('git', ['add', 'notes.txt'], { cwd: projectRoot })
-    await execFile('git', ['commit', '-m', 'initial'], { cwd: projectRoot })
-    const initialBranch = await gitOutput(projectRoot, ['branch', '--show-current'])
-    await writeFile(join(projectRoot, 'notes.txt'), 'after\n', 'utf8')
-
-    app = await launchApp(backend, logs)
-    const page = await app.firstWindow()
-    collectRendererLogs(page, logs)
-    await createLocalProject(page, `P004 Git Review ${Date.now().toString(36)}`, projectRoot)
-    await sendComposerMessage(page, 'Start the local Git review test.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
-
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await expect(changes).toBeEnabled()
-    await expect(changes).toContainText('+1')
-    await changes.click()
-    const panel = reviewWorkspace(page)
-    await expect(panel).toBeVisible()
-    await expect(panel).toContainText('未提交')
-    await expect(panel).toContainText('notes.txt')
-    await expect(panel).toContainText('after')
-    await panel.getByRole('button', { name: '审阅选项', exact: true }).click()
-    await expect(page.getByRole('menuitem', { name: '按词高亮', exact: true })).toBeVisible()
-    await page.keyboard.press('Escape')
-
-    await selectReviewSource(page, '已暂存')
-    await expect(panel).toContainText('No changes to review.')
-
-    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
-    const initialCommit = page.getByRole('menuitem').filter({ hasText: 'initial' }).first()
-    await expect(initialCommit).toBeVisible()
-    await initialCommit.click()
-    await expect(panel).toContainText('已提交')
-    await expect(panel).toContainText('notes.txt')
-
-    await page.getByRole('button', { name: '选择审阅来源', exact: true }).click()
-    await page.getByRole('menuitem', { name: initialBranch, exact: true }).click()
-    await expect(panel).toContainText(`分支 ${initialBranch}`)
-  } finally {
-    await attachDiagnostics(testInfo, logs, backend, app)
-    await closeApp(app)
-    await backend.close()
-    await cleanupTempDirs([projectRoot])
-  }
-})
-
 test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review snapshot and stages it', async ({
   browserName
 }, testInfo) => {
@@ -113,9 +50,7 @@ test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review sna
     await sendComposerMessage(page, 'Start the untracked file review test.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await expect(changes).toContainText('+1')
-    await changes.click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     const operationFeedback = page.locator('[data-slot="local-git-operation-toast"]')
     await expect(panel).toContainText('new-file.txt')
@@ -135,39 +70,6 @@ test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review sna
     await expect
       .poll(() => gitOutput(projectRoot, ['diff', '--cached', '--name-only']))
       .toBe('new-file.txt')
-  } finally {
-    await attachDiagnostics(testInfo, logs, backend, app)
-    await closeApp(app)
-    await backend.close()
-    await cleanupTempDirs([projectRoot])
-  }
-})
-
-test('P004-E2E-12/P004-EDGE-01 keeps Changes unavailable for a non-Git local project', async ({
-  browserName
-}, testInfo) => {
-  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
-
-  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-non-git-review-'))
-  const backend = await startMockBackend({
-    responses: [
-      assistantMessageResponse('non-git-review', 'non-git-review-message', 'Thread ready')
-    ]
-  })
-  const logs: string[] = []
-  let app: ElectronApplication | undefined
-
-  try {
-    app = await launchApp(backend, logs)
-    const page = await app.firstWindow()
-    collectRendererLogs(page, logs)
-    await createLocalProject(page, `P004 Non Git ${Date.now().toString(36)}`, projectRoot)
-    await sendComposerMessage(page, 'Open a non-Git local project.')
-    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
-
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await expect(changes).toBeDisabled()
-    await expect(changes).toHaveAttribute('title', /Git review is unavailable/)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)
@@ -202,9 +104,7 @@ test('P004-E2E-12/P004-EDGE-02 opens an empty repository without a HEAD commit',
     await sendComposerMessage(page, 'Open an empty Git repository.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await expect(changes).toBeEnabled()
-    await changes.click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await expect(panel).toContainText('No changes to review.')
     await expect(panel.getByRole('button', { name: '刷新更改' })).toBeEnabled()
@@ -245,7 +145,7 @@ test('P004-E2E-12/P004-EDGE-04/P004-EDGE-05/P004-EDGE-06/P004-EDGE-07/P004-EDGE-
     await sendComposerMessage(page, 'Open the file status review.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await expect(panel).toContainText('image.bin')
     await expect(panel).toContainText('二进制文件暂不支持文本预览。')
@@ -305,7 +205,7 @@ test('P004-E2E-12 displays the large-diff file summary before rendering a select
     await sendComposerMessage(page, 'Open the large diff review.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await expect(panel).toContainText('large.txt')
     await expect(panel).toContainText('差异内容过大，暂不渲染完整文本。')
@@ -342,7 +242,7 @@ test('P004-E2E-02/P004-E2E-03 stages, unstages, and safely reverts a real workin
     await sendComposerMessage(page, 'Start the local Git action test.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await panel.getByRole('button', { name: '隐藏文件树', exact: true }).click()
     await expect(panel.getByRole('button', { name: '暂存未暂存文件', exact: true })).toBeVisible()
@@ -404,7 +304,7 @@ test('P004-E2E-06/P004-EDGE-09/P004-EDGE-12/P004-EDGE-13 keeps the successful in
     await sendComposerMessage(page, 'Start the staged revert partial-success test.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await panel.getByRole('button', { name: '隐藏文件树', exact: true }).click()
     await selectReviewSource(page, '已暂存')
@@ -855,7 +755,7 @@ test('P004-E2E-19 commits, pushes, disables clean push, and publishes a new bran
     await createLocalProject(page, `P004 Publish ${Date.now().toString(36)}`, projectRoot)
     await sendComposerMessage(page, 'Open Review and publish the current changes.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     const operationFeedback = page.locator('[data-slot="local-git-operation-toast"]')
     await expect(panel.getByRole('button', { name: '提交或推送', exact: true })).toBeEnabled()
@@ -1264,8 +1164,7 @@ test('P004-E2E-15 runs remote review, stage, and commit-and-push actions through
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
     await writeFile(join(projectRoot, 'notes.txt'), 'remote review change\n', 'utf8')
-    const changes = page.locator('[data-slot="conversation-changes-row"]')
-    await changes.click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await panel.getByRole('button', { name: '刷新更改', exact: true }).click()
     await expect(panel).toContainText('未提交')
@@ -1380,7 +1279,7 @@ test('P004-E2E-17 recovers remote review data after a post-success transport clo
     await sendComposerMessage(page, 'Start the remote Git retry test.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const panel = reviewWorkspace(page)
     await expect(panel).toContainText('remote retry change')
 
@@ -1403,6 +1302,20 @@ test('P004-E2E-17 recovers remote review data after a post-success transport clo
 
 function reviewWorkspace(page: Page): Locator {
   return page.locator('[data-slot="review-workspace"]')
+}
+
+async function openReviewWorkspace(page: Page): Promise<void> {
+  const openWorkspace = page.getByRole('button', { name: '打开工作区', exact: true })
+  if (await openWorkspace.isVisible().catch(() => false)) await openWorkspace.click()
+
+  const newTab = page.getByRole('button', { name: 'Open workspace tab', exact: true })
+  if (await newTab.isVisible().catch(() => false)) {
+    await newTab.click()
+    await page.getByRole('menuitem', { name: /^Review/ }).click()
+    return
+  }
+
+  await page.getByRole('button', { name: /^审阅/ }).click()
 }
 
 async function selectReviewSource(page: Page, label: string): Promise<void> {

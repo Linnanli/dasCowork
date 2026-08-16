@@ -26,7 +26,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
-    "dev": "electron-vite dev",
+    "dev": "sh scripts/link-shared-codex-app-server.sh && electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "build:codex-app-server": "node scripts/build-codex-app-server.mjs",
     "reference:chatgpt": "node scripts/extract-chatgpt-reference.mjs",

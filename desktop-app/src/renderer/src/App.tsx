@@ -33,7 +33,6 @@ import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-ad
 import type { ComposerReviewSelection } from '@/components/assistant-ui/composer-code-review-command-content'
 import { ComposerSuggestionSurface } from '@/components/assistant-ui/composer-suggestion-surface'
 import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
-import { ConversationChangesRow } from '@/components/local-git-review/ConversationChangesRow'
 import {
   GitRepositoryProvider,
   useGitRepository
@@ -1511,7 +1510,6 @@ function ChatThread({
             />
             <ComposerTurnStatusCard status={composerTurnStatus} />
             <div data-slot="composer-project-stack" className="flex w-full flex-col">
-              <ConversationChangesRow />
               {reservedEditingItem && !editingFollowUp ? (
                 <div
                   data-slot="queued-follow-up-edit-recovery"
