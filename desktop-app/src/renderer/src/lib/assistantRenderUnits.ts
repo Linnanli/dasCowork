@@ -774,6 +774,7 @@ function deriveThinkingPresentation(
   activityPhase: AssistantActivityPhase
 ): ThinkingPresentation {
   if (activityPhase !== 'thinking') return { type: 'hidden' }
+  if (hasSettledCommentaryCommandOutput(units)) return { type: 'hidden' }
 
   const latestUnit = units.at(-1)
   if (latestUnit && isThinkingFallbackToolGroup(latestUnit)) {
@@ -781,6 +782,25 @@ function deriveThinkingPresentation(
   }
 
   return { type: 'standalone' }
+}
+
+function hasSettledCommentaryCommandOutput(units: readonly AssistantRenderUnit[]): boolean {
+  const latestUnit = units.at(-1)
+  if (latestUnit?.type !== 'reasoning-group') return false
+  if (!latestUnit.children.some((unit) => unit.type === 'text' && unit.phase === 'commentary')) {
+    return false
+  }
+
+  const latestProcessUnit = latestUnit.children.at(-1)
+  if (latestProcessUnit?.type !== 'tool-group') return false
+
+  return latestProcessUnit.children.some(
+    (item) =>
+      item.status === 'complete' &&
+      item.kind === 'commandExecution' &&
+      typeof item.rawItem?.aggregatedOutput === 'string' &&
+      item.rawItem.aggregatedOutput.trim().length > 0
+  )
 }
 
 function hasVisibleTextAfterLatestActivity(units: readonly AssistantRenderUnit[]): boolean {

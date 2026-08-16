@@ -206,6 +206,29 @@ describe('buildAssistantRenderUnits', () => {
     expect(model.units).toHaveLength(2)
   })
 
+  it('does not append thinking after a commentary command has completed with output', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      content: [
+        { type: 'text', text: '请确认这条命令。' },
+        toolPart('cmd-approval', 'commandExecution', {
+          aggregatedOutput: '/workspace\nE2E_APPROVED_COMMAND'
+        })
+      ],
+      textPhases: ['commentary']
+    })
+
+    expect(model.units).toMatchObject([
+      {
+        type: 'reasoning-group',
+        active: true,
+        state: 'thinking',
+        children: [{ type: 'text' }, { type: 'tool-group', kind: 'command', active: false }]
+      }
+    ])
+    expect(model.units).toHaveLength(1)
+  })
+
   it('keeps a blocked commentary process group without a thinking presentation', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'running' },
