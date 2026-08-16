@@ -1537,6 +1537,8 @@ describe('CodexChatRuntimeService', () => {
     const command = {
       id: 'command-journal',
       type: 'commandExecution' as const,
+      pluginId: null,
+      scriptPath: null,
       command: 'pwd',
       cwd: '/repo',
       processId: 'pid-journal',

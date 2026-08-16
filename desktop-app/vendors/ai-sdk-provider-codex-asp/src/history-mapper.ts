@@ -344,6 +344,10 @@ function userInputFilePart(entry: CodexTurnInputItem): FileUiPart | null
             return { type: "file", mediaType: "image/*", url: entry.url };
         case "localImage":
             return { type: "file", mediaType: "image/*", url: pathToFileURL(entry.path).href };
+        case "audio":
+            return { type: "file", mediaType: "audio/*", url: entry.url };
+        case "localAudio":
+            return { type: "file", mediaType: "audio/*", url: pathToFileURL(entry.path).href };
         case "text":
         case "skill":
         case "mention":

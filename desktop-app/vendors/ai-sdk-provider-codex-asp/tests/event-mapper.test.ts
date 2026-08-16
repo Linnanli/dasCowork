@@ -2322,6 +2322,8 @@ describe("CodexEventMapper", () =>
         const command = (id: string, cwd: string) => ({
             type: "commandExecution" as const,
             id,
+            pluginId: null,
+            scriptPath: null,
             command: "edit",
             cwd,
             processId: null,

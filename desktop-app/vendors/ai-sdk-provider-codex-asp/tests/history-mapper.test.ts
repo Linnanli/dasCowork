@@ -37,6 +37,8 @@ describe("history mapper", () =>
         const commandItem = {
             type: "commandExecution",
             id: "cmd_1",
+            pluginId: null,
+            scriptPath: null,
             command: "npm test",
             cwd: "/repo",
             processId: null,
@@ -539,6 +541,8 @@ describe("history mapper", () =>
                         {
                             type: "commandExecution",
                             id: "cmd_a",
+                            pluginId: null,
+                            scriptPath: null,
                             command: "edit a",
                             cwd: "/repo/a",
                             processId: null,
@@ -570,6 +574,8 @@ describe("history mapper", () =>
                         {
                             type: "commandExecution",
                             id: "cmd_b",
+                            pluginId: null,
+                            scriptPath: null,
                             command: "edit b",
                             cwd: "/repo/b",
                             processId: null,
@@ -1062,6 +1068,7 @@ describe("history mapper", () =>
             status: "completed",
             revisedPrompt: "a sunrise",
             result: "abc123",
+            failure: null,
             savedPath: "/tmp/sunrise.png",
         } satisfies Extract<ThreadItem, { type: "imageGeneration" }>;
 

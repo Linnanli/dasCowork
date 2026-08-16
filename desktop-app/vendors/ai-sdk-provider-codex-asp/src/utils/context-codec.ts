@@ -157,6 +157,8 @@ export function restoreComposerContextInputs(inputs: readonly CodexTurnInputItem
             case "text":
             case "image":
             case "localImage":
+            case "audio":
+            case "localAudio":
                 break;
             default:
                 assertNever(input);

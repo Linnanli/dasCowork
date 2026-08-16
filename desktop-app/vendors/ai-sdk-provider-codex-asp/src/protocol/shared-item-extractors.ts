@@ -288,6 +288,8 @@ export function userMessageCompareKey(
             case "text":
             case "skill":
             case "mention":
+            case "audio":
+            case "localAudio":
                 return [];
             default:
                 return assertNever(input);

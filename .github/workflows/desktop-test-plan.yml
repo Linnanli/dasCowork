@@ -51,6 +51,10 @@ jobs:
           echo "$codex_dir" >> "$GITHUB_PATH"
           "$codex_bin" --version
 
+      - name: Generate Codex app-server protocol types
+        run: npm run codex:generate-types
+        working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
+
       - name: Provider lint, typecheck, and tests
         working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
         run: |

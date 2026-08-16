@@ -48,6 +48,10 @@ jobs:
         run: npm ci
         working-directory: desktop-app
 
+      - name: Generate Codex app-server protocol types
+        run: npm run codex:generate-types
+        working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
+
       - name: Provider lint, typecheck, and tests
         working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
         run: |
@@ -146,6 +150,23 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
         working-directory: desktop-app
+
+      - name: Install Codex CLI
+        shell: bash
+        run: |
+          curl -fsSL https://chatgpt.com/codex/install.sh | sh
+          codex_bin="$(find "$HOME" -type f -name codex -perm -111 -print -quit)"
+          if [ -z "$codex_bin" ]; then
+            echo "Codex CLI was not installed." >&2
+            exit 1
+          fi
+          codex_dir="$(dirname "$codex_bin")"
+          echo "$codex_dir" >> "$GITHUB_PATH"
+          "$codex_bin" --version
+
+      - name: Generate Codex app-server protocol types
+        run: npm run codex:generate-types
+        working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
 
       - name: Build installer
         run: npm run ${{ matrix.command }} -- --${{ matrix.arch }}

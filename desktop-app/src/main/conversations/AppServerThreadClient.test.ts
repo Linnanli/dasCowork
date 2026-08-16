@@ -120,6 +120,8 @@ describe('AppServerThreadClient', () => {
     const commandItem = {
       id: 'cmd_1',
       type: 'commandExecution',
+      pluginId: null,
+      scriptPath: null,
       command: 'npm test',
       cwd: '/repo/app',
       processId: null,
