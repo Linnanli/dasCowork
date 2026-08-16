@@ -2476,10 +2476,18 @@ describe('App composer', () => {
       root.render(<App />)
     })
 
+    const viewport = container.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
+    const footer = container.querySelector<HTMLElement>('.aui-thread-viewport-footer')
+
     expect(container.textContent).toContain('How can I help you today?')
     expect(container.textContent).not.toContain('Open Project Folder')
     expect(container.textContent).not.toContain('Create Local Project')
     expect(container.textContent).not.toContain('Start Projectless Thread')
+    expect(viewport?.className).not.toContain('justify-center')
+    expect(footer?.className).toContain('sticky')
+    expect(footer?.className).toContain('bottom-0')
+    expect(footer?.className).toContain('mt-auto')
+    expect(container.querySelector('.aui-thread-welcome-suggestions-shell')).toBeNull()
   })
 
   it('treats empty and explicit projectless selections as the same sendable mode', () => {

@@ -93,7 +93,6 @@ import {
 } from '@/components/render-units/subagentActivity'
 import { renderUnitAttributes } from '@/components/render-units/renderUnitAttributes'
 import {
-  ActivityIcon,
   ArrowDownIcon,
   ArrowUpIcon,
   BotIcon,
@@ -1530,10 +1529,7 @@ function ChatThread({
           scrollToBottomOnInitialize={!scrollSnapshot}
           scrollToBottomOnThreadSwitch={false}
           data-slot="aui_thread-viewport"
-          className={cn(
-            'relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4',
-            showNewConversationView && 'justify-center'
-          )}
+          className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
         >
           {loadError ? (
             <div
@@ -1566,12 +1562,7 @@ function ChatThread({
               }}
             </ThreadPrimitive.Messages>
           </div>
-          <ThreadPrimitive.ViewportFooter
-            className={cn(
-              'aui-thread-viewport-footer mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible bg-background pb-4 md:pb-6',
-              !showNewConversationView && 'sticky bottom-0 mt-auto rounded-t-xl'
-            )}
-          >
+          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-xl bg-background pb-4 md:pb-6">
             <ThreadScrollToBottom />
             <ConversationRecoveryStatus phase={recoveryPhase} error={recoveryError} />
             <WorkspaceRecoveryBanner
@@ -1679,13 +1670,6 @@ function ChatThread({
                 />
               )}
             </div>
-            {showNewConversationView ? (
-              <div className="aui-thread-welcome-suggestions-shell min-h-19">
-                <AuiIf condition={(state) => state.composer.isEmpty}>
-                  <ThreadSuggestions />
-                </AuiIf>
-              </div>
-            ) : null}
           </ThreadPrimitive.ViewportFooter>
         </ThreadPrimitive.Viewport>
       </ThreadPrimitive.Root>
@@ -1860,90 +1844,6 @@ function ThreadWelcome(): React.JSX.Element {
         How can I help you today?
       </h1>
     </section>
-  )
-}
-
-type SuggestionGroup = {
-  label: string
-  icon: ReactNode
-  options: { label: string; prompt: string }[]
-}
-
-const suggestionGroups: SuggestionGroup[] = [
-  {
-    label: '代码',
-    icon: <PencilIcon size={15} />,
-    options: [
-      { label: '解释当前改动', prompt: '请解释当前工作区里的主要改动。' },
-      { label: '生成 PR 描述', prompt: '请根据当前改动生成一份 PR 描述。' },
-      { label: '找潜在风险', prompt: '请审查当前改动里可能的风险。' }
-    ]
-  },
-  {
-    label: '任务',
-    icon: <ActivityIcon size={15} />,
-    options: [
-      { label: '列出下一步', prompt: '请根据当前上下文列出最小下一步。' },
-      { label: '总结线程', prompt: '请总结这个线程目前的目标和状态。' },
-      { label: '整理待办', prompt: '请把当前任务整理成可执行的待办清单。' }
-    ]
-  }
-]
-
-const suggestionChipClass =
-  'aui-thread-welcome-suggestion h-auto gap-1.5 rounded-full border border-border/60 px-3.5 py-1.5 text-sm font-normal whitespace-nowrap text-foreground transition-colors hover:bg-muted [&_svg]:size-4'
-
-function ThreadSuggestions(): React.JSX.Element {
-  const aui = useAui()
-  const [expandedLabel, setExpandedLabel] = useState<string | null>(null)
-  const expandedGroup = suggestionGroups.find((group) => group.label === expandedLabel)
-
-  const sendPrompt = (prompt: string): void => {
-    if (aui.thread().getState().isRunning) return
-    aui.thread().append({
-      content: [{ type: 'text', text: prompt }],
-      runConfig: aui.composer().getState().runConfig
-    })
-  }
-
-  const toggleGroup = (label: string): void => {
-    setExpandedLabel((currentLabel) => (currentLabel === label ? null : label))
-  }
-
-  return (
-    <div className="aui-thread-welcome-suggestions flex w-full flex-col gap-2 px-4">
-      <div className="w-full overflow-x-auto">
-        <div className="mx-auto flex w-max items-center gap-2">
-          {suggestionGroups.map((group) => (
-            <button
-              key={group.label}
-              className={cn(suggestionChipClass, group.label === expandedLabel && 'bg-muted')}
-              type="button"
-              onClick={() => toggleGroup(group.label)}
-            >
-              {group.icon}
-              {group.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {expandedGroup ? (
-        <div className="w-full overflow-x-auto duration-200 animate-in fade-in slide-in-from-top-1">
-          <div className="mx-auto flex w-max items-center gap-2">
-            {expandedGroup.options.map((option) => (
-              <button
-                key={option.label}
-                className={suggestionChipClass}
-                type="button"
-                onClick={() => sendPrompt(option.prompt)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
   )
 }
 

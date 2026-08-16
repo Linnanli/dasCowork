@@ -8,4 +8,6 @@ script = ""
 [[actions]]
 name = "启动客户端"
 icon = "run"
-command = "npm run dev"
+command = '''
+cd ./desktop-app
+npm run dev'''
