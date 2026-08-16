@@ -37,7 +37,14 @@ export async function createGitFixture(): Promise<{
     throw error
   }
   const repo = await realpath(fixturePath)
-  onTestFinished(() => rm(parent, { recursive: true, force: true }))
+  onTestFinished(() =>
+    rm(parent, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100
+    })
+  )
 
   const store = ProjectStore.inMemory({
     ...createDefaultProjectState(),
