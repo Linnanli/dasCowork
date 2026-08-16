@@ -130,7 +130,7 @@ jobs:
       matrix:
         include:
           - name: macOS x64 DMG
-            os: macos-13
+            os: macos-15-intel
             command: build:mac
             arch: x64
             artifact: desktop-macos-x64
