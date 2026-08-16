@@ -163,7 +163,7 @@ test.describe('packaged local media smoke', () => {
     await sendComposerMessage(page, 'Open the packaged diff worker review.')
     await expect(page.locator('[data-role="assistant"]')).toContainText('Ready')
 
-    await page.locator('[data-slot="conversation-changes-row"]').click()
+    await openReviewWorkspace(page)
     const review = page.locator('[data-slot="review-workspace"]')
     await review.getByRole('button', { name: '隐藏文件树' }).click()
     await expect(review.locator('[data-review-file-diff]')).toBeVisible()
@@ -179,6 +179,20 @@ test.describe('packaged local media smoke', () => {
       .toBe(true)
   })
 })
+
+async function openReviewWorkspace(page: Page): Promise<void> {
+  const openWorkspace = page.getByRole('button', { name: '打开工作区', exact: true })
+  if (await openWorkspace.isVisible().catch(() => false)) await openWorkspace.click()
+
+  const newTab = page.getByRole('button', { name: 'Open workspace tab', exact: true })
+  if (await newTab.isVisible().catch(() => false)) {
+    await newTab.click()
+    await page.getByRole('menuitem', { name: /^Review/ }).click()
+    return
+  }
+
+  await page.getByRole('button', { name: /^审阅/ }).click()
+}
 
 function onePagePdf(): Buffer {
   const objects = [

@@ -339,13 +339,21 @@ test('preserves a workspace reference, local file, folder and image after conver
   try {
     app = await launchApp(backend, logs)
     await app.evaluate(
-      ({ dialog }, filePaths) => {
+      ({ dialog }, { filePaths, folderPath }) => {
+        let pickerChoice = 0
         Object.assign(dialog, {
-          showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
-          showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
+          showMessageBox: async () => ({ response: pickerChoice++, checkboxChecked: false }),
+          showOpenDialog: async ({ properties }: { properties: string[] }) => ({
+            canceled: false,
+            filePaths:
+              properties.includes('openDirectory') && !properties.includes('openFile')
+                ? [folderPath]
+                : filePaths,
+            bookmarks: []
+          })
         })
       },
-      [attachmentPath, folderPath, imagePath]
+      { filePaths: [attachmentPath, folderPath, imagePath], folderPath }
     )
     const page = await app.firstWindow()
     collectRendererLogs(page, logs)
@@ -364,6 +372,10 @@ test('preserves a workspace reference, local file, folder and image after conver
 
     await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
     await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
+    if (process.platform !== 'darwin') {
+      await page.getByRole('button', { name: '添加文件和更多', exact: true }).click()
+      await page.getByRole('option', { name: 'Files and folders', exact: true }).click()
+    }
     await expect(page.getByRole('button', { name: 'File attachment', exact: true })).toHaveCount(2)
     await expect(page.getByRole('button', { name: 'Image attachment', exact: true })).toBeVisible()
 

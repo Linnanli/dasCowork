@@ -266,7 +266,15 @@ export function webSearchResponse(
 export function providerResponseBodies(backend: MockBackend): unknown[] {
   return backend.requests
     .filter((request) => request.method === 'POST' && isResponsesUrl(request.url))
-    .map((request) => JSON.parse(request.body) as unknown)
+    .flatMap((request) => {
+      if (!request.body.trim()) return []
+      try {
+        return [JSON.parse(request.body) as unknown]
+      } catch (error) {
+        if (error instanceof SyntaxError) return []
+        throw error
+      }
+    })
 }
 
 export function functionCallOutputText(providerBody: unknown, callId: string): string | undefined {

@@ -60,7 +60,7 @@ test.describe('local Git review performance baseline', () => {
           await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
         })
         await measureAction(actionDurationsMs, 'openReviewWorkspace', async () => {
-          await page.locator('[data-slot="conversation-changes-row"]').click()
+          await openReviewWorkspace(page)
           await expect(reviewWorkspace(page)).toBeVisible()
         })
         const panel = reviewWorkspace(page)
@@ -133,6 +133,20 @@ test.describe('local Git review performance baseline', () => {
 
 function reviewWorkspace(page: Page): Locator {
   return page.locator('[data-slot="review-workspace"]')
+}
+
+async function openReviewWorkspace(page: Page): Promise<void> {
+  const openWorkspace = page.getByRole('button', { name: '打开工作区', exact: true })
+  if (await openWorkspace.isVisible().catch(() => false)) await openWorkspace.click()
+
+  const newTab = page.getByRole('button', { name: 'Open workspace tab', exact: true })
+  if (await newTab.isVisible().catch(() => false)) {
+    await newTab.click()
+    await page.getByRole('menuitem', { name: /^Review/ }).click()
+    return
+  }
+
+  await page.getByRole('button', { name: /^审阅/ }).click()
 }
 
 async function measureAction(

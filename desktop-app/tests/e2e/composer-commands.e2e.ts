@@ -107,6 +107,7 @@ test('submits code review from the slash command without leaking composer state'
     await app.evaluate(
       ({ dialog }, filePaths) => {
         Object.assign(dialog, {
+          showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
           showOpenDialog: async () => ({ canceled: false, filePaths, bookmarks: [] })
         })
       },

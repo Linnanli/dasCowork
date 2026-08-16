@@ -1169,6 +1169,7 @@ test('edits a queued message in the composer and closes queueing without clearin
     app = await launchApp(backend, logs)
     await app.evaluate(({ dialog }, filePath) => {
       Object.assign(dialog, {
+        showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
         showOpenDialog: async () => ({ canceled: false, filePaths: [filePath], bookmarks: [] })
       })
     }, imagePath)
