@@ -249,6 +249,7 @@ describe('ConversationPinnedSummary', () => {
       submenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
     await flush()
+    await flushAnimationFrame()
 
     expect(document.body.querySelector('[data-slot="conversation-pinned-summary"]')).not.toBeNull()
     expect(
@@ -366,4 +367,10 @@ async function flush(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+async function flushAnimationFrame(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  })
 }
