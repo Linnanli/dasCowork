@@ -14,6 +14,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { useGitRepository } from './GitRepositoryProvider'
 import { toast } from 'sonner'
+import type { ReviewOpenIntent } from './reviewOpenIntent'
 
 export type LocalGitReviewLastTurn = {
   turnId: string
@@ -49,7 +50,10 @@ type LocalGitReviewContextValue = {
   target?: GitRepositoryTarget
   source: LocalGitReviewSource
   lastTurn?: LocalGitReviewLastTurn
+  reviewOpenIntent?: ReviewOpenIntent
   openReview(source?: LocalGitReviewSource, lastTurn?: LocalGitReviewLastTurn): void
+  openUncommittedReview(): void
+  acknowledgeReviewOpenIntent(token: number): void
   setReviewSource(source: LocalGitReviewSource): void
   closeReview(): void
   notifyGitOperation(feedback: LocalGitOperationFeedback): void
@@ -61,6 +65,8 @@ type LocalGitReviewContextValue = {
 
 const LocalGitReviewContext = createContext<LocalGitReviewContextValue>({
   openReview: () => undefined,
+  openUncommittedReview: () => undefined,
+  acknowledgeReviewOpenIntent: () => undefined,
   source: { type: 'unstaged' },
   setReviewSource: () => undefined,
   closeReview: () => undefined,
@@ -79,7 +85,9 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
   const workspace = useOptionalRightWorkspace()
   const [source, setSource] = useState<LocalGitReviewSource>({ type: 'unstaged' })
   const [lastTurn, setLastTurn] = useState<LocalGitReviewLastTurn>()
+  const [reviewOpenIntent, setReviewOpenIntent] = useState<ReviewOpenIntent>()
   const [gitWorkflows, setGitWorkflows] = useState<Record<string, LocalGitWorkflow>>({})
+  const reviewOpenIntentSequenceRef = useRef(0)
   const gitWorkflowsRef = useRef<Record<string, LocalGitWorkflow>>({})
 
   const openReview = useCallback(
@@ -93,6 +101,20 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
     },
     [workspace]
   )
+  const openUncommittedReview = useCallback(() => {
+    const nextSource: LocalGitReviewSource = { type: 'unstaged' }
+    const nextIntent: ReviewOpenIntent = {
+      type: 'uncommitted',
+      token: ++reviewOpenIntentSequenceRef.current
+    }
+    setSource(nextSource)
+    setLastTurn(undefined)
+    setReviewOpenIntent(nextIntent)
+    workspace?.openReview(nextSource)
+  }, [workspace])
+  const acknowledgeReviewOpenIntent = useCallback((token: number) => {
+    setReviewOpenIntent((current) => (current?.token === token ? undefined : current))
+  }, [])
   const closeReview = useCallback(() => {
     workspace?.closeTab('review')
   }, [workspace])
@@ -157,7 +179,10 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
       target,
       source,
       lastTurn,
+      reviewOpenIntent,
       openReview,
+      openUncommittedReview,
+      acknowledgeReviewOpenIntent,
       setReviewSource,
       closeReview,
       notifyGitOperation,
@@ -168,11 +193,14 @@ export function LocalGitReviewProvider({ children }: { children: ReactNode }): R
     }),
     [
       closeReview,
+      acknowledgeReviewOpenIntent,
       finishGitWorkflow,
       getGitWorkflow,
       notifyGitOperation,
       openReview,
+      openUncommittedReview,
       lastTurn,
+      reviewOpenIntent,
       startGitWorkflow,
       target,
       source,

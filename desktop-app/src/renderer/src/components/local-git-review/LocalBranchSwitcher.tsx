@@ -1,8 +1,17 @@
-/* eslint-disable @typescript-eslint/explicit-function-return-type, react-hooks/set-state-in-effect */
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+/* eslint-disable @typescript-eslint/explicit-function-return-type, react-hooks/set-state-in-effect, react-refresh/only-export-components */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type RefObject
+} from 'react'
 import {
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   GitBranchIcon,
   LoaderCircleIcon,
   PlusIcon,
@@ -16,6 +25,11 @@ import type {
   LocalGitTarget
 } from '../../../../shared/localGitApi'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { BranchCreateDialog } from './BranchCreateDialog'
@@ -39,11 +53,48 @@ type BranchRow = {
   uncommittedFileCount: number
 }
 
-export function LocalBranchSwitcher({
-  target
-}: {
+type BranchMenuController = {
   target?: LocalGitTarget
-}): React.JSX.Element | null {
+  summary?: LocalBranchSummary
+  query: string
+  searchResults: LocalBranchSearchResult[]
+  rows: BranchRow[]
+  loading: boolean
+  searching: boolean
+  error?: string
+  pendingBranch?: string
+  createOpen: boolean
+  commitStatus?: CommitOrPushDialogStatus
+  blocked?: {
+    continuation: BranchContinuation
+    conflictedPaths: string[]
+    message?: string
+  }
+  commitOpen: boolean
+  commitWorkflow: ReturnType<ReturnType<typeof useLocalGitReview>['getGitWorkflow']>
+  currentLabel: string
+  setQuery: (query: string) => void
+  setCreateOpen: (open: boolean) => void
+  setCommitOpen: (open: boolean) => void
+  setBlocked: (blocked: undefined) => void
+  setError: (error: string | undefined) => void
+  loadBranches: () => Promise<void>
+  checkoutBranch: (branch: string) => Promise<void>
+  createBranch: (branch: string) => Promise<void>
+  openCommitDialog: () => Promise<void>
+  commitAndRetry: (message: string, includeUnstaged: boolean) => Promise<void>
+  resetMenu: () => void
+}
+
+export function useBranchMenuController({
+  open,
+  target,
+  onRequestClose
+}: {
+  open: boolean
+  target?: LocalGitTarget
+  onRequestClose?: () => void
+}): BranchMenuController {
   const {
     finishGitWorkflow,
     getGitWorkflow,
@@ -51,7 +102,6 @@ export function LocalBranchSwitcher({
     startGitWorkflow,
     updateGitWorkflow
   } = useLocalGitReview()
-  const [open, setOpen] = useState(false)
   const [summary, setSummary] = useState<LocalBranchSummary>()
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<LocalBranchSearchResult[]>([])
@@ -67,9 +117,8 @@ export function LocalBranchSwitcher({
     message?: string
   }>()
   const [commitOpen, setCommitOpen] = useState(false)
-  const switcherRef = useRef<HTMLDivElement | null>(null)
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
   const feedbackId = target ? `branch-operation:${target.hostId}:${target.cwd}` : 'branch-operation'
+  const commitWorkflow = target ? getGitWorkflow(target) : undefined
 
   const loadBranches = useCallback(async () => {
     if (!target) return
@@ -85,20 +134,15 @@ export function LocalBranchSwitcher({
     }
   }, [target])
 
+  const resetMenu = useCallback(() => {
+    setQuery('')
+    setSearchResults([])
+  }, [])
+
   useEffect(() => {
     if (!target || !open) return
     void loadBranches()
   }, [loadBranches, open, target])
-
-  useEffect(() => {
-    if (!open) return undefined
-    const closeWhenPointerLeaves = (event: PointerEvent): void => {
-      if (switcherRef.current?.contains(event.target as Node)) return
-      setOpen(false)
-    }
-    document.addEventListener('pointerdown', closeWhenPointerLeaves)
-    return () => document.removeEventListener('pointerdown', closeWhenPointerLeaves)
-  }, [open])
 
   useEffect(() => {
     let active = true
@@ -173,8 +217,8 @@ export function LocalBranchSwitcher({
       const result = await window.desktopApp.git.checkoutBranch({ target, branch })
       if (result.status === 'success') {
         setSummary((current) => (current ? { ...current, current: result.current } : current))
-        setOpen(false)
-        setQuery('')
+        onRequestClose?.()
+        resetMenu()
         notifyGitOperation({
           id: feedbackId,
           tone: 'success',
@@ -227,8 +271,8 @@ export function LocalBranchSwitcher({
             : current
         )
         setCreateOpen(false)
-        setOpen(false)
-        setQuery('')
+        onRequestClose?.()
+        resetMenu()
         notifyGitOperation({
           id: feedbackId,
           tone: 'success',
@@ -292,8 +336,8 @@ export function LocalBranchSwitcher({
         )
         setBlocked(undefined)
         setCommitOpen(false)
-        setOpen(false)
-        setQuery('')
+        onRequestClose?.()
+        resetMenu()
         notifyGitOperation({
           id: feedbackId,
           tone: 'success',
@@ -319,10 +363,63 @@ export function LocalBranchSwitcher({
     }
   }
 
-  if (!target) return null
-
   const currentLabel = summary?.current ?? 'Branch'
-  const commitWorkflow = getGitWorkflow(target)
+
+  return {
+    target,
+    summary,
+    query,
+    searchResults,
+    rows,
+    loading,
+    searching,
+    error,
+    pendingBranch,
+    createOpen,
+    commitStatus,
+    blocked,
+    commitOpen,
+    commitWorkflow,
+    currentLabel,
+    setQuery,
+    setCreateOpen,
+    setCommitOpen,
+    setBlocked,
+    setError,
+    loadBranches,
+    checkoutBranch,
+    createBranch,
+    openCommitDialog,
+    commitAndRetry,
+    resetMenu
+  }
+}
+
+export function LocalBranchSwitcher({
+  target
+}: {
+  target?: LocalGitTarget
+}): React.JSX.Element | null {
+  const [open, setOpen] = useState(false)
+  const switcherRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const controller = useBranchMenuController({
+    open,
+    target,
+    onRequestClose: () => setOpen(false)
+  })
+
+  useEffect(() => {
+    if (!open) return undefined
+    const closeWhenPointerLeaves = (event: PointerEvent): void => {
+      if (switcherRef.current?.contains(event.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeWhenPointerLeaves)
+    return () => document.removeEventListener('pointerdown', closeWhenPointerLeaves)
+  }, [open])
+
+  if (!target) return null
 
   return (
     <div
@@ -342,163 +439,303 @@ export function LocalBranchSwitcher({
         aria-expanded={open}
         aria-controls="local-branch-switcher-popover"
         title="Switch branch"
-        disabled={commitWorkflow !== undefined}
+        disabled={controller.commitWorkflow !== undefined}
         onClick={() => setOpen((value) => !value)}
       >
         <GitBranchIcon className="size-3.5" />
-        <span className="max-w-36 truncate">{currentLabel}</span>
+        <span className="max-w-36 truncate">{controller.currentLabel}</span>
         <ChevronDownIcon className="size-3" />
       </Button>
       {open ? (
-        <div
+        <BranchMenuContent
           id="local-branch-switcher-popover"
+          controller={controller}
           role="dialog"
-          aria-label="Switch branch"
+          ariaLabel="Switch branch"
           className="absolute bottom-full left-0 z-50 mb-2 w-80 rounded-lg border bg-popover p-2 shadow-lg"
-        >
-          <div className="relative">
-            <SearchIcon className="pointer-events-none absolute top-2 left-2 size-3.5 text-muted-foreground" />
-            <Input
-              aria-label="Search branches"
-              className="h-8 rounded-md pl-7 text-xs"
-              placeholder="Search branches"
-              value={query}
-              autoFocus
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  setOpen(false)
-                  triggerRef.current?.focus()
-                }
-              }}
-            />
-          </div>
-          {error ? (
-            <div
-              role="alert"
-              className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive"
-            >
-              <p>{error}</p>
-              <Button
-                type="button"
-                size="xs"
-                variant="ghost"
-                className="mt-1"
-                onClick={() => void loadBranches()}
-              >
-                Retry
-              </Button>
-            </div>
-          ) : null}
-          {loading ? (
-            <p role="status" className="flex items-center gap-1 p-2 text-xs text-muted-foreground">
-              <LoaderCircleIcon className="size-3 animate-spin" /> Loading branches
-            </p>
-          ) : null}
-          {!loading && !error ? (
-            <div
-              data-slot="local-branch-list"
-              role="listbox"
-              aria-label="Local branches"
-              className="mt-2 max-h-72 overflow-y-auto"
-            >
-              {searching ? (
-                <p
-                  role="status"
-                  className="flex items-center gap-1 p-2 text-xs text-muted-foreground"
-                >
-                  <LoaderCircleIcon className="size-3 animate-spin" /> Searching branches
-                </p>
-              ) : null}
-              {rows.map((row) => (
-                <button
-                  key={row.branch}
-                  type="button"
-                  role="option"
-                  aria-selected={row.isCurrent}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted focus:bg-muted focus:outline-none',
-                    row.isCurrent && 'bg-muted'
-                  )}
-                  disabled={Boolean(pendingBranch) || commitWorkflow !== undefined}
-                  onClick={() => void checkoutBranch(row.branch)}
-                  onKeyDown={(event) =>
-                    moveRovingFocus(
-                      event,
-                      event.currentTarget.closest('[data-slot="local-branch-list"]'),
-                      'button[role="option"]'
-                    )
-                  }
-                >
-                  <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{row.branch}</span>
-                    {row.isDefault || row.isRecent || row.uncommittedFileCount > 0 ? (
-                      <span className="block truncate text-[11px] text-muted-foreground">
-                        {branchMeta(row)}
-                      </span>
-                    ) : null}
-                  </span>
-                  {pendingBranch === row.branch ? (
-                    <LoaderCircleIcon className="size-3 animate-spin" />
-                  ) : row.isCurrent ? (
-                    <CheckIcon className="size-3.5" />
-                  ) : null}
-                </button>
-              ))}
-              {!searching && rows.length === 0 ? (
-                <p className="p-2 text-xs text-muted-foreground">No branches found</p>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="mt-2 border-t pt-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="w-full justify-start"
-              disabled={commitWorkflow !== undefined}
-              onClick={() => setCreateOpen(true)}
-            >
-              <PlusIcon className="size-3.5" /> Create and checkout new branch…
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      <BranchCreateDialog
-        open={createOpen}
-        existingBranches={summary?.local ?? []}
-        pending={Boolean(pendingBranch) || commitWorkflow !== undefined}
-        error={error}
-        onOpenChange={setCreateOpen}
-        onCreate={(branch) => createBranch(branch)}
-        onError={setError}
-      />
-      {!commitOpen ? (
-        <BranchSwitchBlockedDialog
-          open={Boolean(blocked)}
-          branch={blocked?.continuation.branch ?? ''}
-          conflictedPaths={blocked?.conflictedPaths ?? []}
-          message={blocked?.message}
-          onCancel={() => setBlocked(undefined)}
-          onCommit={() => void openCommitDialog()}
+          searchPlaceholder="Search branches"
+          autoFocusSearch
+          onEscape={() => {
+            setOpen(false)
+            triggerRef.current?.focus()
+          }}
         />
       ) : null}
+      <BranchMenuDialogs controller={controller} restoreFocusRef={triggerRef} />
+    </div>
+  )
+}
+
+export function BranchMenuContent({
+  id,
+  controller,
+  role,
+  ariaLabel,
+  className,
+  searchPlaceholder = 'Search branches',
+  autoFocusSearch = false,
+  onEscape
+}: {
+  id?: string
+  controller: BranchMenuController
+  role?: 'dialog'
+  ariaLabel?: string
+  className?: string
+  searchPlaceholder?: string
+  autoFocusSearch?: boolean
+  onEscape?: () => void
+}): React.JSX.Element {
+  return (
+    <div id={id} role={role} aria-label={ariaLabel} className={className}>
+      <div className="relative">
+        <SearchIcon className="pointer-events-none absolute top-2 left-2 size-3.5 text-muted-foreground" />
+        <Input
+          aria-label="Search branches"
+          className="h-8 rounded-md pl-7 text-xs"
+          placeholder={searchPlaceholder}
+          value={controller.query}
+          autoFocus={autoFocusSearch}
+          onChange={(event) => controller.setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') onEscape?.()
+          }}
+        />
+      </div>
+      {controller.error ? (
+        <div
+          role="alert"
+          className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive"
+        >
+          <p>{controller.error}</p>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="mt-1"
+            onClick={() => void controller.loadBranches()}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {controller.loading ? (
+        <p role="status" className="flex items-center gap-1 p-2 text-xs text-muted-foreground">
+          <LoaderCircleIcon className="size-3 animate-spin" /> Loading branches
+        </p>
+      ) : null}
+      {!controller.loading && !controller.error ? (
+        <div
+          data-slot="local-branch-list"
+          role="listbox"
+          aria-label="Local branches"
+          className="mt-2 max-h-72 overflow-y-auto"
+        >
+          {controller.searching ? (
+            <p role="status" className="flex items-center gap-1 p-2 text-xs text-muted-foreground">
+              <LoaderCircleIcon className="size-3 animate-spin" /> Searching branches
+            </p>
+          ) : null}
+          {controller.rows.map((row) => (
+            <button
+              key={row.branch}
+              type="button"
+              role="option"
+              aria-selected={row.isCurrent}
+              title={row.branch}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted focus:bg-muted focus:outline-none',
+                row.isCurrent && 'bg-muted'
+              )}
+              disabled={
+                Boolean(controller.pendingBranch) || controller.commitWorkflow !== undefined
+              }
+              onClick={() => void controller.checkoutBranch(row.branch)}
+              onKeyDown={(event) =>
+                moveRovingFocus(
+                  event,
+                  event.currentTarget.closest('[data-slot="local-branch-list"]'),
+                  'button[role="option"]'
+                )
+              }
+            >
+              <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{row.branch}</span>
+                {row.isDefault || row.isRecent || row.uncommittedFileCount > 0 ? (
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {branchMeta(row)}
+                  </span>
+                ) : null}
+              </span>
+              {controller.pendingBranch === row.branch ? (
+                <LoaderCircleIcon className="size-3 animate-spin" />
+              ) : row.isCurrent ? (
+                <CheckIcon className="size-3.5" />
+              ) : null}
+            </button>
+          ))}
+          {!controller.searching && controller.rows.length === 0 ? (
+            <p className="p-2 text-xs text-muted-foreground">No branches found</p>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="mt-2 border-t pt-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="w-full justify-start"
+          disabled={controller.commitWorkflow !== undefined}
+          onClick={() => controller.setCreateOpen(true)}
+        >
+          <PlusIcon className="size-3.5" /> Create and checkout new branch…
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export function BranchMenuContentForTarget({
+  open,
+  target,
+  onRequestClose,
+  ...contentProps
+}: Omit<Parameters<typeof BranchMenuContent>[0], 'controller'> & {
+  open: boolean
+  target?: LocalGitTarget
+  onRequestClose?: () => void
+}): React.JSX.Element {
+  const controller = useBranchMenuController({ open, target, onRequestClose })
+  return <BranchMenuContent {...contentProps} controller={controller} />
+}
+
+/**
+ * The summary panel uses the exact branch state machine as the composer
+ * switcher, but lets Radix own pointer grace and keyboard transitions between
+ * the parent panel and its left-opening submenu.
+ */
+export function LocalBranchSubmenu({
+  target,
+  branch
+}: {
+  target?: LocalGitTarget
+  branch?: string | null
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const controller = useBranchMenuController({
+    open,
+    target,
+    onRequestClose: () => setOpen(false)
+  })
+
+  useEffect(() => {
+    if (controller.createOpen || controller.commitOpen || controller.blocked) setOpen(false)
+  }, [controller.blocked, controller.commitOpen, controller.createOpen])
+
+  useEffect(() => {
+    if (!open) return
+    const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape' || !contentRef.current?.contains(event.target as Node)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      setOpen(false)
+      window.requestAnimationFrame(() => triggerRef.current?.focus())
+    }
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => window.removeEventListener('keydown', closeOnEscape, true)
+  }, [open])
+
+  return (
+    <DropdownMenuSub open={open} onOpenChange={setOpen}>
+      <DropdownMenuSubTrigger
+        ref={triggerRef}
+        data-slot="conversation-pinned-summary-branch"
+        disabled={!target}
+        title={branch ?? 'Git 分支不可用'}
+        className="h-10 w-full rounded-xl px-2.5 text-sm"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowRight') return
+          event.preventDefault()
+          setOpen(true)
+        }}
+      >
+        <GitBranchIcon className="size-4 text-muted-foreground" />
+        <span className="min-w-0 flex-1 text-left">当前分支</span>
+        <span className="max-w-28 truncate text-xs text-muted-foreground">
+          {branch ?? '不可用'}
+        </span>
+        <ChevronRightIcon className="size-3.5 text-muted-foreground" />
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent
+        ref={contentRef}
+        data-slot="conversation-pinned-summary-branch-submenu"
+        align="start"
+        sideOffset={8}
+        collisionPadding={12}
+        className="w-[300px] rounded-2xl p-2"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft') return
+          event.preventDefault()
+          setOpen(false)
+          triggerRef.current?.focus()
+        }}
+      >
+        <div dir="ltr">
+          <BranchMenuContent
+            controller={controller}
+            searchPlaceholder={`搜索 ${repositoryName(target)} 分支`}
+            onEscape={() => setOpen(false)}
+          />
+        </div>
+      </DropdownMenuSubContent>
+      <BranchMenuDialogs controller={controller} restoreFocusRef={triggerRef} />
+    </DropdownMenuSub>
+  )
+}
+
+export function BranchMenuDialogs({
+  controller,
+  restoreFocusRef
+}: {
+  controller: BranchMenuController
+  restoreFocusRef?: RefObject<HTMLElement | null>
+}): React.JSX.Element {
+  return (
+    <>
+      <BranchCreateDialog
+        open={controller.createOpen}
+        existingBranches={controller.summary?.local ?? []}
+        pending={Boolean(controller.pendingBranch) || controller.commitWorkflow !== undefined}
+        error={controller.error}
+        onOpenChange={controller.setCreateOpen}
+        onCreate={(branch) => controller.createBranch(branch)}
+        onError={controller.setError}
+      />
+      <BranchSwitchBlockedDialog
+        open={Boolean(controller.blocked) && !controller.commitOpen}
+        branch={controller.blocked?.continuation.branch ?? ''}
+        conflictedPaths={controller.blocked?.conflictedPaths ?? []}
+        message={controller.blocked?.message}
+        onCancel={() => controller.setBlocked(undefined)}
+        onCommit={() => void controller.openCommitDialog()}
+      />
       <CommitOrPushDialog
-        open={commitOpen}
-        status={commitStatus}
+        open={controller.commitOpen}
+        status={controller.commitStatus}
         mode="commit-before-switch"
-        pending={commitWorkflow !== undefined}
+        pending={controller.commitWorkflow !== undefined}
         onOpenChange={(nextOpen) => {
-          setCommitOpen(nextOpen)
-          if (!nextOpen) triggerRef.current?.focus()
+          controller.setCommitOpen(nextOpen)
+          if (!nextOpen) restoreFocusRef?.current?.focus()
         }}
         onAction={({ action, message, includeUnstaged }) => {
           if (action !== 'commit') throw new Error('Unsupported branch switch action')
-          return commitAndRetry(message, includeUnstaged)
+          return controller.commitAndRetry(message, includeUnstaged)
         }}
       />
-    </div>
+    </>
   )
 }
 
@@ -537,6 +774,12 @@ function branchMeta(row: BranchRow): string {
   if (row.isRecent) parts.push('Recent')
   if (row.uncommittedFileCount > 0) parts.push(`Uncommitted: ${row.uncommittedFileCount} files`)
   return parts.join(' · ')
+}
+
+function repositoryName(target: LocalGitTarget | undefined): string {
+  if (!target) return '仓库'
+  const path = target.gitRoot || target.cwd
+  return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? '仓库'
 }
 
 function moveRovingFocus(

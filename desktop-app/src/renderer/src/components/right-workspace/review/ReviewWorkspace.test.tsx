@@ -13,6 +13,7 @@ import type {
   LocalGitReviewSource
 } from '../../../../../shared/localGitApi'
 import { ReviewWorkspace } from './ReviewWorkspace'
+import { reviewWorkspacePreferencesKey } from './reviewWorkspaceStore'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -24,7 +25,12 @@ const target = {
   gitRoot: '/repo'
 }
 
+let reviewSource: LocalGitReviewSource = { type: 'unstaged' }
+let reviewOpenIntent: { type: 'uncommitted'; token: number } | undefined
 const setReviewSource = vi.fn()
+const acknowledgeReviewOpenIntent = vi.fn((token: number) => {
+  if (reviewOpenIntent?.token === token) reviewOpenIntent = undefined
+})
 const notifyGitOperation = vi.fn()
 const pierreFileDiffRender = vi.hoisted(() => vi.fn())
 const pierreLineScroll = vi.hoisted(() => vi.fn())
@@ -73,13 +79,15 @@ const scrollIntoView = vi.fn()
 vi.mock('@/components/local-git-review/LocalGitReviewProvider', () => ({
   useLocalGitReview: () => ({
     target,
-    source: { type: 'unstaged' },
+    source: reviewSource,
     lastTurn: undefined,
+    reviewOpenIntent,
     setReviewSource,
     notifyGitOperation,
     startGitWorkflow: () => true,
     updateGitWorkflow: () => undefined,
     finishGitWorkflow: () => undefined,
+    acknowledgeReviewOpenIntent,
     getGitWorkflow: () => undefined
   })
 }))
@@ -155,7 +163,10 @@ describe('ReviewWorkspace', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
+    reviewSource = { type: 'unstaged' }
+    reviewOpenIntent = undefined
     setReviewSource.mockClear()
+    acknowledgeReviewOpenIntent.mockClear()
     notifyGitOperation.mockClear()
     pierreFileDiffRender.mockClear()
     pierreLineScroll.mockClear()
@@ -331,6 +342,67 @@ describe('ReviewWorkspace', () => {
     })
 
     expect(container.textContent).not.toContain('Loading review...')
+  })
+
+  it('consumes an uncommitted open intent and overrides a persisted branch review source once', async () => {
+    const storageKey = reviewWorkspacePreferencesKey({
+      hostId: target.hostId,
+      repository: target.gitRoot,
+      workspaceId: 'review'
+    })
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 1,
+        source: { type: 'branch', baseBranch: 'feature/old' },
+        diffMode: 'unified',
+        lineDiffType: 'word',
+        wrap: false,
+        ignoreWhitespace: false,
+        fullFiles: false,
+        richPreview: false,
+        skipRevertConfirmation: false,
+        treeVisible: true,
+        treeWidth: 280,
+        treeFilter: '',
+        collapsedKeys: []
+      })
+    )
+    reviewOpenIntent = { type: 'uncommitted', token: 7 }
+
+    await renderReview()
+
+    expect(acknowledgeReviewOpenIntent).toHaveBeenCalledWith(7)
+    expect(container.textContent).toContain('未提交')
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledWith({
+      target,
+      source: { type: 'unstaged' }
+    })
+    expect(window.desktopApp.git.getReviewSnapshot).toHaveBeenCalledWith({
+      target,
+      source: { type: 'staged' }
+    })
+    expect(window.desktopApp.git.getReviewSnapshot).not.toHaveBeenCalledWith({
+      target,
+      source: { type: 'branch', branch: 'feature/old' }
+    })
+  })
+
+  it('consumes each uncommitted intent token once across repeated renders', async () => {
+    acknowledgeReviewOpenIntent.mockImplementation(() => undefined)
+    reviewOpenIntent = { type: 'uncommitted', token: 11 }
+
+    await renderReview()
+    reviewOpenIntent = { type: 'uncommitted', token: 11 }
+    await renderReview()
+
+    expect(acknowledgeReviewOpenIntent).toHaveBeenCalledTimes(1)
+
+    reviewOpenIntent = { type: 'uncommitted', token: 12 }
+    await renderReview()
+
+    expect(acknowledgeReviewOpenIntent).toHaveBeenCalledTimes(2)
+    expect(acknowledgeReviewOpenIntent).toHaveBeenLastCalledWith(12)
   })
 
   it('expands review file-tree directories by default', async () => {

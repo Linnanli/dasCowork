@@ -1,44 +1,43 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
-
-const { finishGitWorkflow, getGitWorkflow, startGitWorkflow, updateGitWorkflow } = vi.hoisted(
-  () => ({
-    finishGitWorkflow: vi.fn(),
-    getGitWorkflow: vi.fn(),
-    startGitWorkflow: vi.fn(),
-    updateGitWorkflow: vi.fn()
-  })
-)
-
-vi.mock('@/components/local-git-review/LocalGitReviewProvider', () => ({
-  useLocalGitReview: () => ({
-    finishGitWorkflow,
-    getGitWorkflow,
-    startGitWorkflow,
-    updateGitWorkflow
-  })
-}))
-
+import type {
+  GitRepositoryTarget,
+  LocalBranchSummary,
+  LocalGitPublishStatus
+} from '../../../../../shared/localGitApi'
+import { CommitOrPushControlProvider } from '@/components/local-git-review/CommitOrPushControlProvider'
+import { GitRepositoryProvider } from '@/components/local-git-review/GitRepositoryProvider'
+import {
+  LocalGitReviewProvider,
+  useLocalGitReview
+} from '@/components/local-git-review/LocalGitReviewProvider'
 import { ReviewCommitControl } from './ReviewCommitControl'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-const target = {
+const target: GitRepositoryTarget = {
   conversationId: 'conversation',
   threadId: 'thread',
   hostId: 'local',
   cwd: '/repo',
   gitRoot: '/repo'
 }
+const otherTarget: GitRepositoryTarget = {
+  conversationId: 'other-conversation',
+  threadId: 'other-thread',
+  hostId: 'local',
+  cwd: '/other-repo',
+  gitRoot: '/other-repo'
+}
 
 let container: HTMLDivElement
 let root: Root
 let git: {
+  resolveRepositoryTarget: ReturnType<typeof vi.fn>
   getPublishStatus: ReturnType<typeof vi.fn>
   listBranches: ReturnType<typeof vi.fn>
   subscribe: ReturnType<typeof vi.fn>
@@ -46,8 +45,6 @@ let git: {
   pushChanges: ReturnType<typeof vi.fn>
   createBranch: ReturnType<typeof vi.fn>
 }
-let controller: ReviewWorkspaceController
-let onFeedback: ReturnType<typeof vi.fn>
 
 describe('ReviewCommitControl', () => {
   beforeEach(() => {
@@ -55,14 +52,12 @@ describe('ReviewCommitControl', () => {
     document.body.appendChild(container)
     root = createRoot(container)
     git = {
-      getPublishStatus: vi.fn(async () => publishStatus({ stagedFiles: 1 })),
-      listBranches: vi.fn(async () => ({
-        current: 'main',
-        defaultBase: 'main',
-        local: ['main'],
-        recent: [],
-        uncommittedFileCount: 0
+      resolveRepositoryTarget: vi.fn(async ({ target: identity }) => ({
+        status: 'ready',
+        target: identity.conversationId === otherTarget.conversationId ? otherTarget : target
       })),
+      getPublishStatus: vi.fn(async () => publishStatus({ stagedFiles: 1 })),
+      listBranches: vi.fn(async () => branchSummary()),
       subscribe: vi.fn(() => () => undefined),
       commitChanges: vi.fn(async () => ({ status: 'success', commitSha: 'abc1234' })),
       pushChanges: vi.fn(async () => ({
@@ -75,14 +70,16 @@ describe('ReviewCommitControl', () => {
       createBranch: vi.fn()
     }
     window.desktopApp = { git } as never
-    finishGitWorkflow.mockReset()
-    getGitWorkflow.mockReset()
-    getGitWorkflow.mockReturnValue(undefined)
-    startGitWorkflow.mockReset()
-    startGitWorkflow.mockReturnValue(true)
-    updateGitWorkflow.mockReset()
-    controller = createController()
-    onFeedback = vi.fn()
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    }))
   })
 
   afterEach(() => {
@@ -91,18 +88,29 @@ describe('ReviewCommitControl', () => {
     document.body.innerHTML = ''
   })
 
-  it('uses working-tree publish status instead of the displayed review groups', async () => {
-    controller = createController({ groups: [] })
+  it('loads shared working-tree publish status only after a toolbar trigger opens the dialog', async () => {
     await render()
     await act(flush)
 
-    expect(git.getPublishStatus).toHaveBeenCalledWith({ target })
     expect(button().disabled).toBe(false)
     await act(async () => button().click())
     await act(flush)
 
+    expect(git.getPublishStatus).toHaveBeenCalledWith({ target })
     expect(git.listBranches).toHaveBeenCalledWith({ target })
     expect(document.body.querySelector('[data-slot="commit-or-push-dialog"]')).not.toBeNull()
+  })
+
+  it('renders one shared dialog for multiple toolbar triggers', async () => {
+    await render({ controlCount: 2 })
+    await act(flush)
+
+    expect(git.subscribe).toHaveBeenCalledTimes(1)
+    expect(buttons()).toHaveLength(2)
+    await act(async () => buttons()[1]?.click())
+    await flush()
+
+    expect(document.body.querySelectorAll('[data-slot="commit-or-push-dialog"]')).toHaveLength(1)
   })
 
   it('commits before pushing for commit-and-push and reports the pushed branch', async () => {
@@ -118,12 +126,7 @@ describe('ReviewCommitControl', () => {
     expect(git.commitChanges.mock.invocationCallOrder[0]).toBeLessThan(
       git.pushChanges.mock.invocationCallOrder[0]!
     )
-    expect(onFeedback).toHaveBeenCalledWith({
-      id: 'publish-operation:local:/repo',
-      tone: 'success',
-      message: '已推送 main。'
-    })
-    expect(controller.refresh).toHaveBeenCalled()
+    expect(document.body.textContent).toContain('已推送 main。')
   })
 
   it('push-only does not create a commit', async () => {
@@ -201,11 +204,7 @@ describe('ReviewCommitControl', () => {
     await act(async () => actionButton('push').click())
     await act(flush)
 
-    expect(onFeedback).toHaveBeenCalledWith({
-      id: 'publish-operation:local:/repo',
-      tone: 'error',
-      message: expectedMessage
-    })
+    expect(document.body.textContent).toContain(expectedMessage)
   })
 
   it('retains a successful commit when the following push fails', async () => {
@@ -217,16 +216,11 @@ describe('ReviewCommitControl', () => {
     await act(async () => actionButton('commit-and-push').click())
     await act(flush)
 
-    expect(onFeedback).toHaveBeenCalledWith({
-      id: 'publish-operation:local:/repo',
-      tone: 'error',
-      message: '提交成功，但推送失败：未配置可用的远端。'
-    })
+    expect(document.body.textContent).toContain('提交成功，但推送失败：未配置可用的远端。')
   })
 
   it('does not execute when another workflow already holds the repository lock', async () => {
-    startGitWorkflow.mockReturnValue(false)
-    await render()
+    await render({ workflowOccupied: true })
     await act(flush)
     await act(async () => button().click())
     await act(flush)
@@ -234,91 +228,53 @@ describe('ReviewCommitControl', () => {
     await act(flush)
 
     expect(git.commitChanges).not.toHaveBeenCalled()
-    expect(onFeedback).toHaveBeenCalledWith({
-      id: 'publish-operation:local:/repo',
-      tone: 'info',
-      message: '当前仓库已有 Git 操作进行中。'
+    expect(document.body.textContent).toContain('当前仓库已有 Git 操作进行中。')
+  })
+
+  it('closes and invalidates a dialog when the conversation target changes', async () => {
+    const initialStatus = deferred<LocalGitPublishStatus>()
+    const initialBranches = deferred<LocalBranchSummary>()
+    git.getPublishStatus.mockImplementation(({ target: requestedTarget }) =>
+      requestedTarget.conversationId === target.conversationId
+        ? initialStatus.promise
+        : Promise.resolve(publishStatus({ stagedFiles: 1 }))
+    )
+    git.listBranches.mockImplementation(({ target: requestedTarget }) =>
+      requestedTarget.conversationId === target.conversationId
+        ? initialBranches.promise
+        : Promise.resolve(branchSummary())
+    )
+
+    await render()
+    await act(flush)
+    await act(async () => button().click())
+    expect(document.body.querySelector('[data-slot="commit-or-push-dialog"]')).not.toBeNull()
+
+    await render({ identity: otherTarget })
+    await act(flush)
+    expect(document.body.querySelector('[data-slot="commit-or-push-dialog"]')).toBeNull()
+
+    await act(async () => {
+      initialStatus.resolve(publishStatus({ stagedFiles: 1 }))
+      initialBranches.resolve(branchSummary())
+    })
+    await act(flush)
+    expect(document.body.querySelector('[data-slot="commit-or-push-dialog"]')).toBeNull()
+
+    await act(async () => button().click())
+    await act(flush)
+    expect(git.getPublishStatus).toHaveBeenLastCalledWith({ target: otherTarget })
+    expect(git.listBranches).toHaveBeenLastCalledWith({ target: otherTarget })
+
+    await act(async () => actionButton('commit').click())
+    await act(flush)
+    expect(git.commitChanges).toHaveBeenCalledWith({
+      target: otherTarget,
+      message: '',
+      includeUnstaged: true
     })
   })
 })
-
-function createController({
-  groups = [{ path: 'review-only.ts' }]
-}: { groups?: unknown[] } = {}): ReviewWorkspaceController {
-  return {
-    target,
-    displaySource: { type: 'commit', commitSha: 'abcdef1' },
-    loadState: {
-      status: 'ready',
-      groups: groups as never,
-      snapshots: [],
-      partialErrors: [],
-      largeDiff: false
-    },
-    selectedPath: undefined,
-    activePath: undefined,
-    treeVisible: false,
-    refreshing: false,
-    mutationStale: false,
-    canCopyApplyCommand: false,
-    canLoadMoreSearchMatches: false,
-    preferences: {
-      source: { type: 'unstaged' },
-      diffMode: 'unified',
-      lineDiffType: 'none',
-      wrap: false,
-      ignoreWhitespace: false,
-      fullFiles: false,
-      richPreview: false,
-      skipRevertConfirmation: false,
-      treeVisible: false,
-      treeWidth: 240,
-      treeFilter: '',
-      collapsedKeys: []
-    },
-    search: {
-      open: false,
-      query: '',
-      status: 'idle',
-      matches: [],
-      totalMatches: 0,
-      isCapped: false,
-      partialErrors: [],
-      currentIndex: 0
-    },
-    setDisplaySource: vi.fn(),
-    setSelectedPath: vi.fn(),
-    setActivePath: vi.fn(),
-    setTreeFilter: vi.fn(),
-    setTreeVisible: vi.fn(),
-    setTreeWidth: vi.fn(),
-    setDiffMode: vi.fn(),
-    setLineDiffType: vi.fn(),
-    setWrap: vi.fn(),
-    setIgnoreWhitespace: vi.fn(),
-    setFullFiles: vi.fn(),
-    setRichPreview: vi.fn(),
-    setSkipRevertConfirmation: vi.fn(),
-    setCollapsed: vi.fn(),
-    expandAll: vi.fn(),
-    collapseAll: vi.fn(),
-    isViewed: vi.fn(),
-    setViewed: vi.fn(),
-    refresh: vi.fn(),
-    retryPartialSource: vi.fn(),
-    setSearchOpen: vi.fn(),
-    setSearchQuery: vi.fn(),
-    moveSearchMatch: vi.fn(),
-    selectSearchMatch: vi.fn(),
-    loadMoreSearchMatches: vi.fn(),
-    copyReviewApplyCommand: vi.fn(),
-    loadSectionDiff: vi.fn(),
-    isMutationDisabled: vi.fn(),
-    applyHunkAction: vi.fn(),
-    applySectionAction: vi.fn(),
-    applyFileAction: vi.fn()
-  }
-}
 
 function publishStatus({
   stagedFiles,
@@ -328,7 +284,7 @@ function publishStatus({
   stagedFiles: number
   commitsAhead?: number
   branch?: string | null
-}): import('../../../../../shared/localGitApi').LocalGitPublishStatus {
+}): LocalGitPublishStatus {
   return {
     branch,
     hasHead: true,
@@ -343,26 +299,62 @@ function publishStatus({
   }
 }
 
-async function render(): Promise<void> {
+function branchSummary(): LocalBranchSummary {
+  return {
+    current: 'main',
+    defaultBase: 'main',
+    local: ['main'],
+    recent: [],
+    uncommittedFileCount: 0
+  }
+}
+
+async function render({
+  controlCount = 1,
+  identity = target,
+  workflowOccupied = false
+}: {
+  controlCount?: number
+  identity?: Pick<GitRepositoryTarget, 'conversationId' | 'threadId'>
+  workflowOccupied?: boolean
+} = {}): Promise<void> {
   await act(async () => {
     root.render(
-      <ReviewCommitControl
-        controller={controller}
-        onFeedback={
-          onFeedback as (feedback: { tone: 'success' | 'info' | 'error'; message: string }) => void
-        }
-      />
+      <GitRepositoryProvider identity={identity}>
+        <LocalGitReviewProvider>
+          {workflowOccupied ? <WorkflowOccupier /> : null}
+          <CommitOrPushControlProvider>
+            {Array.from({ length: controlCount }, (_, index) => (
+              <ReviewCommitControl key={index} />
+            ))}
+          </CommitOrPushControlProvider>
+        </LocalGitReviewProvider>
+      </GitRepositoryProvider>
     )
     await flush()
   })
 }
 
+function WorkflowOccupier(): null {
+  const { startGitWorkflow } = useLocalGitReview()
+  useEffect(() => {
+    startGitWorkflow(target, { kind: 'branch-switch', phase: 'switching-branch' })
+  }, [startGitWorkflow])
+  return null
+}
+
 function button(): HTMLButtonElement {
-  const element = [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(
-    (candidate) => candidate.textContent?.includes('提交或推送')
-  )
+  const [element] = buttons()
   if (!element) throw new Error('Missing commit or push control')
   return element
+}
+
+function buttons(): HTMLButtonElement[] {
+  const elements = [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (candidate) => candidate.textContent?.includes('提交或推送')
+  )
+  if (elements.length === 0) throw new Error('Missing commit or push control')
+  return elements
 }
 
 function actionButton(action: 'commit' | 'commit-and-push' | 'push'): HTMLButtonElement {
@@ -404,4 +396,12 @@ async function flush(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
