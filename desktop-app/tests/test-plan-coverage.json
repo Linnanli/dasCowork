@@ -113,7 +113,7 @@
         "requiredLayer": ["desktop-unit", "mock-e2e"],
         "evidence": [
           {"file": "src/main/localGit/GitRepositoryTargetResolver.test.ts", "testName": "P004-EDGE-01 returns unavailable instead of throwing for a non-repository cwd", "layer": "desktop-unit"},
-          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-12/P004-EDGE-01 keeps Changes unavailable for a non-Git local project", "layer": "mock-e2e"}
+          {"file": "tests/e2e/local-git-review.e2e.ts", "testName": "P004-E2E-01/P004-EDGE-01 keeps Changes unavailable for a non-Git local project", "layer": "mock-e2e"}
         ]
       },
       {

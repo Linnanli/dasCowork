@@ -25,6 +25,45 @@ import { startLocalSshServer, type LocalSshServer } from './support/local-ssh-se
 
 const execFile = promisify(execFileCallback)
 
+test('P004-E2E-01/P004-EDGE-01 keeps Changes unavailable for a non-Git local project', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const projectRoot = await mkdtemp(join(tmpdir(), 'dascowork-e2e-non-git-review-'))
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse('non-git-review', 'non-git-review-message', 'Thread ready')
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    await writeFile(join(projectRoot, 'notes.txt'), 'not a Git repository\n', 'utf8')
+
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await createLocalProject(page, `P004 Non-Git ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open the non-Git project review.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Thread ready')
+
+    await openReviewWorkspace(page)
+    const panel = reviewWorkspace(page)
+    await expect(panel).toContainText('No Git repository is available for review.')
+    await expect(panel.getByRole('button', { name: '提交或推送', exact: true })).toBeDisabled()
+
+    await panel.getByRole('button', { name: '刷新更改', exact: true }).click()
+    await expect(panel).toContainText('No Git repository is available for review.')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+    await cleanupTempDirs([projectRoot])
+  }
+})
+
 test('P004-E2E-12/P004-EDGE-03 includes an untracked file in the real review snapshot and stages it', async ({
   browserName
 }, testInfo) => {
