@@ -43,7 +43,9 @@ export function buildReviewFileTreeModel(groups: readonly ReviewFileGroup[]): Re
   return {
     paths,
     entriesByTreePath: entries,
-    gitStatus: [...statuses].map(([path, status]) => ({ path, status })).filter((entry) => paths.includes(entry.path))
+    gitStatus: [...statuses]
+      .filter(([path]) => entries.has(path))
+      .map(([path, status]) => ({ path, status }))
   }
 }
 

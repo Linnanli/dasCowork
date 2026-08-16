@@ -4,8 +4,10 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { createReviewSnapshot, getDiffForSource } from './reviewSnapshot'
-import { createGitFixture, git } from './testHelpers'
+import { setGitInvocationObserver, type GitInvocationRecord } from './gitCli'
+import { LocalGitService } from './LocalGitService'
+import { computeFileRevision, createReviewSnapshot, getDiffForSource } from './reviewSnapshot'
+import { createGitFixture, git, gitTarget } from './testHelpers'
 
 describe('reviewSnapshot', () => {
   it('P004-EDGE-03 includes untracked files in an unstaged snapshot and produces a safe add patch', async () => {
@@ -61,6 +63,28 @@ describe('reviewSnapshot', () => {
       source: { type: 'branch', baseBranch }
     })
     expect(branch.files).toMatchObject([{ path: 'tracked.txt', additions: 1 }])
+  })
+
+  it('uses the same revision contract for staged snapshots and per-file validation', async () => {
+    const { repo } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\nstaged\n')
+    await writeFile(join(repo, 'new-file.txt'), 'new\n')
+    git(repo, ['add', 'tracked.txt', 'new-file.txt'])
+    const source = { type: 'staged' as const }
+
+    const { snapshot } = await createReviewSnapshot({ gitRoot: repo, source })
+    const validatedRevisions = await Promise.all(
+      snapshot.files.map((file) =>
+        computeFileRevision({ gitRoot: repo, source, path: file.path }).then((revision) => ({
+          path: file.path,
+          revision
+        }))
+      )
+    )
+
+    expect(validatedRevisions).toEqual(
+      snapshot.files.map((file) => ({ path: file.path, revision: file.revision }))
+    )
   })
 
   it('maps fixed diff display options to whitespace filtering and full-file context', async () => {
@@ -171,4 +195,210 @@ describe('reviewSnapshot', () => {
       ])
     )
   })
+
+  it('keeps new snapshots usable for file diff and refresh while detecting same-file drift', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'other.txt'), 'one\n')
+    git(repo, ['add', 'other.txt'])
+    git(repo, ['commit', '-m', 'add other file'])
+    await writeFile(join(repo, 'tracked.txt'), 'one\nlocal\n')
+    await writeFile(join(repo, 'other.txt'), 'one\nlocal\n')
+
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const source = { type: 'unstaged' as const }
+    const snapshot = await service.getSnapshot(target, source)
+    const file = snapshot.files.find((entry) => entry.path === 'tracked.txt')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getFileDiff({
+        target,
+        source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision }
+      })
+    ).resolves.toMatchObject({ status: 'ready' })
+
+    const refresh = await service.refreshReviewFiles({
+      target,
+      source,
+      snapshotGeneration: snapshot.snapshotGeneration,
+      paths: ['tracked.txt']
+    })
+    const refreshedFile = refresh.files.find((entry) => entry.path === 'tracked.txt')
+    expect(refreshedFile).toBeDefined()
+    await expect(
+      service.getFileDiff({
+        target,
+        source,
+        snapshotGeneration: refresh.snapshotGeneration,
+        file: { path: refreshedFile!.path, revision: refreshedFile!.revision }
+      })
+    ).resolves.toMatchObject({ status: 'ready' })
+
+    await writeFile(join(repo, 'other.txt'), 'one\nlocal\nother drift\n')
+    await expect(
+      service.getFileDiff({
+        target,
+        source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision }
+      })
+    ).resolves.toMatchObject({ status: 'ready' })
+
+    await writeFile(join(repo, 'tracked.txt'), 'one\nlocal\nsame file drift\n')
+    await expect(
+      service.getFileDiff({
+        target,
+        source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision }
+      })
+    ).resolves.toMatchObject({ status: 'stale' })
+  })
+
+  it('keeps an untracked file snapshot usable for its first file diff read', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'untracked.txt'), 'first\nsecond\n')
+
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const source = { type: 'unstaged' as const }
+    const snapshot = await service.getSnapshot(target, source)
+    const file = snapshot.files.find((entry) => entry.path === 'untracked.txt')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getFileDiff({
+        target,
+        source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: { path: file!.path, revision: file!.revision }
+      })
+    ).resolves.toMatchObject({ status: 'ready' })
+  })
+
+  it('changes an unstaged revision when an untracked file is staged without changing content', async () => {
+    const { repo } = await createGitFixture()
+    await writeFile(join(repo, 'untracked.txt'), 'first\nsecond\n')
+    const source = { type: 'unstaged' as const }
+
+    const { snapshot } = await createReviewSnapshot({ gitRoot: repo, source })
+    const file = snapshot.files.find((entry) => entry.path === 'untracked.txt')
+    expect(file).toBeDefined()
+
+    git(repo, ['add', 'untracked.txt'])
+
+    await expect(
+      computeFileRevision({ gitRoot: repo, source, path: 'untracked.txt' })
+    ).resolves.not.toBe(file?.revision)
+  })
+
+  it('hashes literal and newline paths without putting the full path list in argv', async () => {
+    const { repo } = await createGitFixture()
+    const paths = ['quoted-"name".txt', 'line\nbreak.txt']
+    await Promise.all(paths.map((path) => writeFile(join(repo, path), 'before\n')))
+    const source = { type: 'unstaged' as const }
+
+    const { snapshot } = await createReviewSnapshot({ gitRoot: repo, source })
+    const revisions = new Map(snapshot.files.map((file) => [file.path, file.revision]))
+    expect([...revisions.keys()]).toEqual(expect.arrayContaining(paths))
+
+    await Promise.all(paths.map((path) => writeFile(join(repo, path), 'after\n')))
+    for (const path of paths) {
+      await expect(computeFileRevision({ gitRoot: repo, source, path })).resolves.not.toBe(
+        revisions.get(path)
+      )
+    }
+  })
+
+  it('keeps Git calls bounded for a 1000-file unstaged snapshot', async () => {
+    const { repo } = await createGitFixture()
+    await Promise.all(
+      Array.from({ length: 1000 }, (_, index) =>
+        writeFile(join(repo, `bulk-${index}.txt`), `before ${index}\n`)
+      )
+    )
+    git(repo, ['add', '.'])
+    git(repo, ['commit', '-m', 'add bulk files'])
+    await Promise.all(
+      Array.from({ length: 1000 }, (_, index) =>
+        writeFile(join(repo, `bulk-${index}.txt`), `after ${index}\n`)
+      )
+    )
+
+    const invocations: GitInvocationRecord[] = []
+    const restoreObserver = setGitInvocationObserver((record) => invocations.push(record))
+    try {
+      const { snapshot } = await createReviewSnapshot({
+        gitRoot: repo,
+        source: { type: 'unstaged' }
+      })
+
+      expect(snapshot.files).toHaveLength(1000)
+      expect(invocations.length).toBeLessThanOrEqual(25)
+      expect(
+        invocations.some(
+          (record) => record.args.includes('--raw') && record.args.includes('--numstat')
+        )
+      ).toBe(true)
+      expect(
+        invocations.some(
+          (record) => record.args.includes('hash-object') && record.args.includes('--stdin-paths')
+        )
+      ).toBe(true)
+      expect(Math.max(...invocations.map((record) => record.args.length))).toBeLessThan(100)
+      expect(
+        invocations.reduce((sum, record) => sum + record.durationMs, 0)
+      ).toBeGreaterThanOrEqual(0)
+    } finally {
+      restoreObserver()
+    }
+  }, 60_000)
+
+  it('measures largeDiff with a bounded diff read', async () => {
+    const { repo } = await createGitFixture()
+    await writeFile(join(repo, 'large.txt'), 'small\n')
+    git(repo, ['add', 'large.txt'])
+    git(repo, ['commit', '-m', 'add large file'])
+    await writeFile(join(repo, 'large.txt'), `${'changed\n'.repeat(20_000)}`)
+
+    const maxPatchBytes = 4096
+    const invocations: GitInvocationRecord[] = []
+    const restoreObserver = setGitInvocationObserver((record) => invocations.push(record))
+    try {
+      const { snapshot } = await createReviewSnapshot({
+        gitRoot: repo,
+        source: { type: 'unstaged' },
+        maxPatchBytes
+      })
+
+      expect(snapshot.largeDiff).toBe(true)
+      expect(
+        invocations.some(
+          (record) => record.args.includes('diff') && record.maxOutputBytes === maxPatchBytes + 1
+        )
+      ).toBe(true)
+    } finally {
+      restoreObserver()
+    }
+  })
+
+  it('returns largeDiff from LocalGitService when a worktree diff exceeds the output cap', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'large-service.txt'), 'small\n')
+    git(repo, ['add', 'large-service.txt'])
+    git(repo, ['commit', '-m', 'add service large file'])
+    await writeFile(join(repo, 'large-service.txt'), `${'changed\n'.repeat(300_000)}`)
+
+    const service = new LocalGitService({ projectService })
+
+    await expect(service.getSnapshot(gitTarget(repo), { type: 'unstaged' })).resolves.toMatchObject(
+      {
+        largeDiff: true,
+        files: [expect.objectContaining({ path: 'large-service.txt' })]
+      }
+    )
+  }, 60_000)
 })

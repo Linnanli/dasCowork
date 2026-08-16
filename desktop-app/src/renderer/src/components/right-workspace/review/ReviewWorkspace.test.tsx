@@ -137,6 +137,7 @@ vi.mock('@pierre/trees/react', () => ({
       paths: options.paths,
       resetPaths: pierreTreeResetPaths,
       setGitStatus: vi.fn(),
+      setSearch: vi.fn(),
       getItem: vi.fn((path: string) => ({
         select: vi.fn(),
         isDirectory: () => path.endsWith('/')
@@ -390,6 +391,26 @@ describe('ReviewWorkspace', () => {
     expect(container.textContent).toContain('README.md')
   })
 
+  it('preserves a pending tree filter when the file tree is hidden and shown again', async () => {
+    await renderReview()
+    const input = container.querySelector<HTMLInputElement>('[aria-label="筛选文件"]')
+
+    await act(async () => {
+      if (!input) throw new Error('Expected file filter input')
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(input, 'readme')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      container.querySelector<HTMLButtonElement>('[aria-label="隐藏文件树"]')?.click()
+      await new Promise((resolve) => window.setTimeout(resolve, 450))
+      container.querySelector<HTMLButtonElement>('[aria-label="显示文件树"]')?.click()
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector<HTMLInputElement>('[aria-label="筛选文件"]')?.value).toBe(
+      'readme'
+    )
+  })
+
   it('keeps review content search separate from the tree filter', async () => {
     vi.mocked(window.desktopApp.git.searchReview).mockImplementation(
       async ({ source, snapshotGeneration, query }) => ({
@@ -412,6 +433,8 @@ describe('ReviewWorkspace', () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(input, 'after')
       input?.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+      expect(container.textContent).toContain('查找中')
       await new Promise((resolve) => window.setTimeout(resolve, 220))
     })
 

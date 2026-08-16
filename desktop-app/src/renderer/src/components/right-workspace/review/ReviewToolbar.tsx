@@ -6,6 +6,7 @@ import {
   RefreshCwIcon,
   Rows3Icon
 } from 'lucide-react'
+import { useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -14,29 +15,37 @@ import { ReviewCommitControl } from './ReviewCommitControl'
 import { ReviewOptionsMenu } from './ReviewOptionsMenu'
 import { ReviewSourceMenu } from './ReviewSourceMenu'
 import { groupKey } from './reviewWorkspaceModel'
-import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
+import type { ReviewFileSection, ReviewWorkspaceController } from './reviewWorkspaceTypes'
 
 type Props = {
   controller: ReviewWorkspaceController
   lastTurnId?: string
-  onGitFeedback(feedback: { id?: string; tone: 'success' | 'info' | 'error'; message: string }): void
+  onGitFeedback(feedback: {
+    id?: string
+    tone: 'success' | 'info' | 'error'
+    message: string
+  }): void
 }
 
 export function ReviewToolbar({ controller, lastTurnId, onGitFeedback }: Props): React.JSX.Element {
-  const groups = controller.loadState.status === 'ready' ? controller.loadState.groups : []
-  const totals = groups.reduce(
-    (result, group) => ({
-      additions: result.additions + group.additions,
-      deletions: result.deletions + group.deletions
-    }),
-    { additions: 0, deletions: 0 }
-  )
-  const richPreviewAvailable = groups.some((group) =>
-    /\.(?:md|mdx|png|jpe?g|gif|webp|pdf)$/iu.test(group.path)
-  )
-  const stagedSection = groups
-    .flatMap((group) => group.sections)
-    .find((section) => section.kind === 'snapshot' && section.backendSource.type === 'staged')
+  const reviewSummary = useMemo(() => {
+    const groups = controller.loadState.status === 'ready' ? controller.loadState.groups : []
+    let additions = 0
+    let deletions = 0
+    let richPreviewAvailable = false
+    let stagedSection: Extract<ReviewFileSection, { kind: 'snapshot' }> | undefined
+    for (const group of groups) {
+      additions += group.additions
+      deletions += group.deletions
+      richPreviewAvailable ||= /\.(?:md|mdx|png|jpe?g|gif|webp|pdf)$/iu.test(group.path)
+      stagedSection ??= group.sections.find(
+        (section): section is Extract<ReviewFileSection, { kind: 'snapshot' }> =>
+          section.kind === 'snapshot' && section.backendSource.type === 'staged'
+      )
+    }
+    return { groups, richPreviewAvailable, stagedSection, totals: { additions, deletions } }
+  }, [controller.loadState])
+  const { groups, richPreviewAvailable, stagedSection, totals } = reviewSummary
   const allFilesCollapsed =
     groups.length > 0 &&
     groups.every((group) => controller.preferences.collapsedKeys.includes(groupKey(group)))

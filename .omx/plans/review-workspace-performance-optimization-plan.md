@@ -1,6 +1,6 @@
 # Review 工作区性能优化计划
 
-- 状态：Ready for execution
+- 状态：Ready for execution（已按 2026-08-14 Performance trace 更新优先级）
 - 规划模式：`$plan` direct
 - 日期：2026-08-14
 - 目标项目：`desktop-app`
@@ -17,17 +17,18 @@
 npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-best-practices
 ```
 
-本计划只确认该 skill 可安装，不执行安装；安装范围和非交互参数以当前 `skills` CLI 的提示为准。
-
 用户给出的 `Vercel (vercel@openai-curated-remote)` 推荐插件和这个 agent skill 是两套机制：前者是 Vercel 服务连接能力，后者是本地性能规则包。优化 Review 不需要安装 Vercel 连接插件，也不应把两者混为一谈。
 
-当前卡顿不应只归因于 React 重渲染。静态代码证据显示有三条同等重要的性能链路：
+三份 Performance trace 已经把 Renderer 侧的优先级拉开，不再把所有静态假设视为同等重要：
 
-1. Main 创建 snapshot 时可能产生随文件数增长的 Git 子进程风暴，并额外完整读取一次总 diff。
-2. Renderer 虽然按视口加载 diff 内容，但仍把全部文件块挂进 DOM。
-3. Controller、文件块和 diff props 的引用不稳定，单个 diff 加载或搜索状态变化可能放大成整棵 Review 树的重复工作。
+1. P0：`@pierre/diffs` 的 Shiki JavaScript 高亮在 Renderer 主线程执行；滚动 trace 中 `findNextMatchSync`/`#execCore` 分别采样 5.61s/2.64s，而当前代码显式设置 `disableWorkerPool`。
+2. P0：Controller、文件块和 diff props 的引用不稳定。14 文件 fixture 在打开、滚动、搜索记录中分别产生 70、224、168 次 `ReviewFileBlock` render，即 5、16、12 轮完整文件树 render。
+3. P1：全部文件块及其关闭状态的 Dialog/菜单子树仍被挂载，滚动记录达到 41,562 个 DOM 节点，并放大 Layout、Paint 与 GC。
+4. 待验证：Main 创建 snapshot 时可能存在随文件数增长的 Git 调用放大，但本批 Chromium trace 没有 Main process 证据。先插桩，只有证实占比后才实施 Git 批量化。
 
-因此采用“先建立端到端基线，再并行压低 Main snapshot 成本和 Renderer DOM/重渲染成本，最后评估 worker、React Compiler 和代码分包”的方案。单纯加 `memo`、CSS 裁剪或安装 skill 都不足以解决根因。
+因此采用“先补可区分的基线和插桩，再并行稳定 Renderer 渲染边界与验证 diff worker，然后窗口化 DOM；Main/Git 依据测量结果决定是否进入”的方案。搜索 deferred、CSS containment、React Compiler 和代码分包均排在根因之后。
+
+完整证据见 `.omx/analysis/review-performance-trace-analysis.md`。
 
 ## 2. 需求摘要
 
@@ -62,48 +63,48 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 | Git read 缓存 | `desktop-app/src/main/localGit/reviewSnapshot.ts:432-449` | 同一 review generation 的读取经 `runCachedGitRead` 缓存。 |
 | 输入/载荷上限 | `desktop-app/src/shared/localGitApi.ts:8-9,161,293` | 搜索最多 250 条、完整内容最多 5MB、snapshot 最多 10,000 文件。 |
 
-### 3.2 主要瓶颈假设（按优先级）
+### 3.2 静态瓶颈假设及 Trace 校准
 
-#### H1：snapshot 创建存在 O(文件数) 的 Git 子进程放大（高置信）
+#### H1：snapshot 创建可能存在 O(文件数) 的 Git 子进程放大（静态高风险，Trace 未覆盖）
 
 - `createReviewSnapshot()` 先并行读取文件列表、计数和 state hash，随后又串行执行 `diffSize()`：`desktop-app/src/main/localGit/reviewSnapshot.ts:71-102`。
 - `diffSize()` 通过 `getDiffForSource()` 读取完整 patch 后再算字节数：同文件 `:328-335`。
 - `listReviewFiles()` 对每个 tracked file 调 `computeFileRevision()`：同文件 `:245-312`。
 - 每个 `computeFileRevision()` 又并行请求一次单文件 diff 和一次 `git status -- path`：同文件 `:123-146`。
 
-在数百或数千文件场景中，这条链路可能在 Renderer 开始渲染之前就产生大量 Git 调用。它必须和前端 DOM 问题一起测，不能只优化 React。
+在数百或数千文件场景中，这条链路可能在 Renderer 开始渲染之前就产生大量 Git 调用。但本批 Chromium trace 只覆盖 Renderer，不能确认实际 Git invocation 数或 snapshot 占比。先加入 Main 分段 timing 和 Git invocation counter；只有 500/1000 文件 fixture 证实占比后才进入实现。
 
-#### H2：diff 内容懒加载，但文件块仍全量挂载（高置信）
+#### H2：diff 内容懒加载，但文件块仍全量挂载（Trace 已证实，高置信）
 
 - `ReviewDiffStack` 最终对全部 `groups` 执行 `map`：`desktop-app/src/renderer/src/components/right-workspace/review/ReviewDiffStack.tsx:93-99`。
 - 未加载 diff 的 section 可以返回 `null`，但每个文件的 header、actions、dialog 和 section 容器仍会创建：`desktop-app/src/renderer/src/components/right-workspace/review/ReviewFileBlock.tsx:58-211`。
 
 因此“没有取回全部 diff”不等于“没有创建全部 React/DOM 节点”。
 
-#### H3：单 section 更新可能制造全组引用变化和重复观察（高置信）
+#### H3：单 section 更新制造全组引用变化和重复观察（Trace 已证实，高置信）
 
 - `replaceSection()` 当前会 spread 每个 group，即使该 group 不包含目标 section：`useReviewWorkspaceController.ts:435-447`。
 - controller 每次 render 都返回新对象，并在 `:771-830` 内创建多组内联 action。
 - `ReviewDiffStack` 的加载 effect 和 `IntersectionObserver` effect 依赖整个 controller：`ReviewDiffStack.tsx:51-59,61-85`。
 - `ReviewFileBlock`、`ReviewDiffStack`、`ReviewToolbar` 等都接收完整 controller，当前没有 Review 专用的 memo/selector 边界。
 
-结果是某个文件完成加载、搜索输入变化或 pending 状态变化时，可能导致所有文件块重渲染并重建 observer。
+React Performance Track 直接显示 `controller` 在 Review 组件中每轮变化，并将二十余个 action 标记为引用不稳定。14 文件数据在打开、滚动、搜索中分别发生 5、16、12 轮完整 `ReviewFileBlock` render；这已从“可能”升级为已观测问题。
 
-#### H4：diff 解析在主线程，且 memo 依赖可能被不稳定对象击穿（中高置信）
+#### H4：diff 解析/高亮在主线程，且 memo 被不稳定对象击穿（Trace 已证实，高置信）
 
 - `ReviewFileDiff` 明确设置 `disableWorkerPool`：`desktop-app/src/renderer/src/components/right-workspace/review/ReviewFileDiff.tsx:132-159`。
 - `fullContentRequest` 和 `hunkActions` 在父组件 render 中按 section 重新创建：`desktop-app/src/renderer/src/components/right-workspace/review/ReviewFileBlock.tsx:363-405`。
 - `ParsedReviewFileDiff` 的 `fileDiff` memo 依赖整个 `fullContentRequest` 对象，options memo 依赖完整 `preferences` 对象：`ReviewFileDiff.tsx:80-117`。
 
-需要用 React Profiler 和 Performance trace 确认 `processFile`、语法高亮、DOM commit 各自占比，再决定是否启用 worker。
+CPU profile 已确认 `@shikijs/engine-javascript` 是首要可识别业务热点：滚动 trace 的 `findNextMatchSync` 为 5.61s、`#execCore` 为 2.64s；搜索 trace 分别为 3.36s、2.04s。worker packaged spike 不再是后期可选项，而是 P0 验证项。
 
-#### H5：搜索和导航有可消除的重复扫描（中置信）
+#### H5：搜索和导航有可消除的重复扫描（中置信，非当前首要瓶颈）
 
 - 每个远端搜索 item 都会重新 `flatMap(groups).find(...)`：`useReviewWorkspaceController.ts:348-375`。
 - `loadSectionDiff()` 也会对全部 section 做 `flatMap().find()`：同文件 `:462-469`。
 - last-turn 搜索会在 Renderer 同步 split 并遍历所有 diff 行：同文件 `:919-945`。
 
-这些成本可通过稳定 Map 索引、deferred input 和必要时的分片/worker 搜索消除。
+这些成本可通过稳定 Map 索引、deferred input 和必要时的分片/worker 搜索消除。但搜索 trace 的 6 次 input 单次最大 71.8ms，`ReviewFindBar` inclusive time 仅 4.8ms；优先级低于整树 render、高亮和 DOM 治理。
 
 #### H6：Review 与重型预览仍是静态入口（中置信）
 
@@ -111,6 +112,22 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 - 当前 Review 首次打开前，其组件和依赖已进入主 bundle；参考项目则对 Code view 使用 `Suspense` 边界。
 
 这主要影响应用启动和首次 workspace bundle 解析，不一定是打开 Review 后卡顿的第一根因，排在后续处理。
+
+### 3.3 Performance trace 基线（2026-08-14）
+
+| 指标 | 打开 Review | 连续滚动 | 搜索 |
+| --- | ---: | ---: | ---: |
+| 记录时长 | 12.05s | 48.68s | 54.11s |
+| `>200ms` Renderer RunTask | 10 | 27 | 23 |
+| DOM 节点峰值 | 10,707 | 41,562 | 30,097 |
+| JS heap 峰值 | 78.6MiB | 118.5MiB | 118.8MiB |
+| `ReviewFileBlock` render | 70 | 224 | 168 |
+| `findNextMatchSync` CPU sample | 571ms | 5,611ms | 3,360ms |
+| `#execCore` CPU sample | 129ms | 2,639ms | 2,037ms |
+
+交互解释：滚动 trace 的 153 次 wheel handler 总计仅 45.2ms、单次最大 9.3ms；搜索 trace 的 6 次 input 单次最大 71.8ms。主要阻塞发生在事件触发后的异步 diff 加载、高亮、React render 和布局，而不是 handler 本身。
+
+限制：滚动和搜索记录混入点击、弹窗及侧边栏活动；原始 `RunTask > 50ms` 总量不能直接当作纯 Review TBT。它们适合发现热点，不作为最终 before/after 硬门。下一轮必须用相同 fixture 分别录制 10–20 秒的单动作 trace，并加入 Main/Renderer instrumentation。
 
 ## 4. 参考项目“审阅”工作区的性能方法
 
@@ -168,9 +185,9 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 - 缺点：无法消除 snapshot 的 Git 调用放大和全量 DOM；容易得到“benchmark 几乎不变”的表面优化。
 - 结论：仅作为快速补充，不单独采用。
 
-### 方案 B：测量驱动的 Main + Renderer 分阶段优化（推荐）
+### 方案 B：测量驱动、Renderer 优先、Main 证据门控的分阶段优化（推荐）
 
-- 优点：同时处理打开慢、滚动卡和输入卡；每阶段都能独立回退和验证。
+- 优点：先处理 trace 已证实的高亮、重渲染和 DOM 热点，同时保留 Main instrumentation；每阶段都能独立回退和验证。
 - 缺点：需要先补 perf fixture，并处理虚拟化与滚动锚点的交互复杂度。
 - 结论：采用。
 
@@ -189,6 +206,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 - 新增 50、500、1000 个小文本变更文件和 1 个 2MB 大 diff 的确定性 fixture；相同 seed 生成相同路径和内容。
 - 每档输出：snapshot IPC 时长、底层 Git 调用数、Review 首个 header 时间、首个可见 diff 时间、初始 DOM 文件块数、搜索结果时间、滚动 long-task、React commit 次数。
 - 基线原始数据和优化后数据使用相同脚本与 fixture，JSON 中包含 schema version 和 fixture SHA-256。
+- 本批 3 个 trace 作为热点发现基线保留，但不直接作为最终时间预算；正式 before/after 每个场景单独从空闲状态录制 10–20 秒，不混入侧边栏、弹窗或其他 workspace 操作。
+- Renderer mark 必须能区分 controller update、diff parse/highlight、React commit 和 layout；Main mark 必须能区分 snapshot 子阶段及 Git invocation 数。
 
 ### AC-02 snapshot 不再随文件数产生无界 Git 子进程
 
@@ -201,18 +220,22 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 - 1000 文件 fixture 首屏挂载的 `[data-review-path]` 不超过 60；可视窗口上下各保留 4-8 个 overscan item。
 - 未进入窗口的 diff 不发 `getFileDiff`；现有最多 4 个并发请求约束保持。
 - 滚动遍历后 DOM 文件块数仍受窗口上限控制，不随已访问文件数累积到 1000。
+- 对当前 14 文件复现 fixture，连续滚动的 DOM 节点峰值从本批 41,562 降至 15,000 以下；关闭状态的每文件确认 Dialog/菜单内容不挂载。
 
 ### AC-04 打开和交互预算
 
 - 500 文件 fixture 中，“点击 Changes -> 首个文件 header” p95 ≤ 1.2s，“点击 -> 首个可见 diff” p95 ≤ 1.5s；若基线已经更快，则不得回退超过 10%。
 - 树筛选输入到可见结果更新 p95 ≤ 100ms；Review 内容搜索输入到状态/首个结果更新 p95 ≤ 300ms。
 - 连续滚动 5 秒期间不出现 >200ms 单个 long task，>50ms long task 的总阻塞时间相比基线至少下降 60%。
+- 搜索 input event p95 ≤ 50ms；结果计算与输入响应分别记录，不能用整段 trace 时长代替。
 
 ### AC-05 重渲染和解析受控
 
 - 加载一个 section diff 时，未变化的 `ReviewFileBlock` 不重新 render；用 Profiler/test instrumentation 证明 1000 文件中实际 render 的 block 数量受窗口大小约束。
+- 当前 14 文件 fixture 中，单 section 从 loading 变 ready 时 `ReviewFileBlock` render 不超过“变化文件 + 当前窗口”，固定录制目标不超过 4 个，不再出现 14 的整数倍整树 render。
 - 只改变 tree filter、active path 或 toolbar pending 状态时，已解析且内容 identity 未变化的 `processFile` 不重新执行。
 - `ReviewDiffStack` 的 observer 不因无关 controller 字段变化而重建。
+- worker 条件启用后，Renderer 主线程的 `findNextMatchSync` CPU sample time 相比相同 fixture 下降至少 90%，且没有可归因于高亮的 >200ms `RunMicrotasks`；packaged Electron 离线 smoke 和失败回退必须通过。
 
 ### AC-06 功能和安全不回退
 
@@ -225,6 +248,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 
 ### Step 0：建立端到端性能基线和可观测性
 
+状态：首批 Renderer trace 已完成热点发现；可重复 fixture、单动作短 trace 和 Main instrumentation 待实现。
+
 目标文件：
 
 - 新增 `desktop-app/tests/e2e/local-git-review-performance.e2e.ts`
@@ -236,12 +261,15 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 工作内容：
 
 1. 固定 50/500/1000 文件、2MB 单文件、250 capped search 和 last-turn 大 patch 场景。
-2. 用 Playwright trace、Chromium `PerformanceObserver` long-task、React `<Profiler>` 或测试 instrumentation 同时采集 Main IPC 与 Renderer 数据。
-3. 性能时间预算先在独立 perf job 报告，确定 3 次稳定运行后再转为阻断门；DOM 上限、请求并发和 Git invocation 数首轮即可设为确定性阻断门。
+2. 用 Playwright trace、Chromium `PerformanceObserver` long-task、React `<Profiler>` 或测试 instrumentation 同时采集 Main IPC 与 Renderer 数据；给 Review、Sidebar 和 Workspace root 分别标识，排除跨区域 render 干扰。
+3. 每个动作独立从空闲状态录制 10–20 秒：打开、连续滚动、搜索输入各一份；正式 before/after 不复用本批 49–54 秒混合操作 trace。
+4. 性能时间预算先在独立 perf job 报告，确定 3 次稳定运行后再转为阻断门；DOM 上限、请求并发和 Git invocation 数首轮即可设为确定性阻断门。
 
 停止条件：能在同一 commit 上重复运行 5 次，关键 p95 波动不超过 15%，并得到 H1-H6 的占比证据。
 
 ### Step 1：消除 snapshot 的 Git 调用放大
+
+进入条件：Step 0 的 Main instrumentation 在 500/1000 文件 fixture 中确认 snapshot/Git invocation 是打开 Review 的显著占比。未达到进入条件时保留本步骤，不提前改 Git revision 语义。
 
 目标文件：
 
@@ -279,6 +307,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 3. 把 controller 分成稳定 actions 和按组件需要的 view props；child 不再接收完整 controller。`ReviewDiffStack` effect 只依赖 `groups/loadSectionDiff/setActivePath` 等稳定项。
 4. 给 `ReviewFileBlock`、section actions、toolbar 派生值建立有证据的 memo 边界；不对简单 primitive 计算滥用 memo。
 5. 把 `fullContentRequest`、hunk actions、diff option props 改为稳定 identity；`processFile` cache key 只绑定真实内容身份（source/generation/path/revision/full-content），不把纯展示选项误纳入解析 key。
+6. 关闭状态下不为每个文件挂载确认 Dialog/菜单内容；只保留轻量 trigger，用户实际触发动作后再挂载交互子树。
 
 停止条件：满足 AC-05；Profiler 证明单 section ready 不再触发全部文件块 render。
 
@@ -305,6 +334,8 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 
 ### Step 4：降低 diff 解析、语法高亮和富预览主线程成本
 
+优先级：P0，与 Step 2 同一轮推进；Trace 已确认 Shiki JavaScript 高亮是首要 Renderer CPU 热点。
+
 目标文件：
 
 - `desktop-app/src/renderer/src/components/right-workspace/review/ReviewFileDiff.tsx`
@@ -315,14 +346,17 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-
 
 工作内容：
 
-1. 分别测量 `processFile`、Shiki/line DOM、full-file 扩展和 rich preview，确认热点后再调整。
-2. 优先修复 memo identity 和采用有容量的 parsed-diff LRU；revision/source/generation 变化自动失效，避免无限内存。
-3. 对 `disableWorkerPool` 做小范围 packaged spike：验证 worker bundle URL、CSP、app.asar、销毁、错误回退和内存。只有在大 diff p95 显著改善且 packaged smoke 通过时才条件启用。
-4. PDF、Markdown 等重型 rich preview 保持“用户选中且打开”才加载；必要时用 `React.lazy`/`Suspense` 拆 chunk。
+1. 给 `processFile`、Shiki tokenize/highlight、line DOM commit、full-file 扩展和 rich preview 加可清理的 measure，建立与当前 CPU profile 对得上的 before 数据。
+2. 对当前 `disableWorkerPool` 做 packaged spike：验证 worker bundle URL、CSP、app.asar、销毁、错误回退和内存，并比较 `shiki-js` 与 `shiki-wasm` 的主线程时间和总体延迟。
+3. packaged smoke 通过且满足 AC-05 时条件启用 worker；保留失败时主线程回退，并针对超长行/超大文件设置 `tokenizeMaxLineLength`、`maxLineDiffLength` 或纯文本降级预算，避免病态输入长期占用线程。
+4. 修复 memo identity，并仅在复测显示重复 parse 仍明显时采用有容量的 parsed-diff LRU；revision/source/generation 变化自动失效，避免无限内存。
+5. PDF、Markdown 等重型 rich preview 保持“用户选中且打开”才加载；必要时用 `React.lazy`/`Suspense` 拆 chunk。
 
 停止条件：`processFile` 对同一内容只执行一次；启用 worker 时所有 packaged 资源离线可用并有主线程回退。
 
 ### Step 5：优化高频输入、面板布局和代码分包
+
+优先级：P2。搜索 trace 显示 input 单次最大 71.8ms、`ReviewFindBar` 总 inclusive time 仅 4.8ms；先完成整树 render、高亮和 DOM 治理，再判断 deferred/分包的边际收益。
 
 目标文件：
 
@@ -404,11 +438,12 @@ npm --prefix desktop-app run test:e2e -- --reporter=line
 
 ## 11. 推荐执行顺序与停止规则
 
-推荐顺序：`Step 0 -> Step 1 与 Step 2 -> Step 3 -> Step 4 -> Step 5 -> Step 6`。
+证据更新后的推荐顺序：`Step 0 -> Step 2 与 Step 4 worker spike -> Step 3 -> 按 Main 证据决定 Step 1 -> Step 5 -> Step 6`。
 
-- Step 1 和 Step 2 可在基线完成后并行，但必须分别产出可独立回退的性能证据。
-- 如果 Step 1 已经使打开 p95 达标，仍执行 Step 3 的 DOM 上限治理，因为它解决的是文件数扩张和滚动稳定性。
-- 如果 Step 3 已达成交互预算，`content-visibility`、worker、React Compiler 只在有额外收益时继续。
+- Step 2 和 Step 4 是 Renderer P0，可在插桩到位后并行，但必须分别产出可独立回退的 before/after 证据。
+- Step 1 不再默认抢先实现；只有 Main instrumentation 证明 snapshot/Git 占比显著时才进入。若未证实，记录结果并跳过实现。
+- 即使 Step 2/4 已使当前 14 文件交互达标，仍执行 Step 3 的 DOM 上限治理，因为它解决文件数扩张和持续滚动稳定性。
+- worker 已从“有额外收益时再做”提升为 P0 spike；`content-visibility`、搜索 deferred、代码分包和 React Compiler 仍只在有独立收益时继续。
 - 当 AC-01 至 AC-06 全部满足、质量门通过、性能报告可复测时停止；不为了“把 Vercel 70 条规则全用一遍”继续改代码。
 
 本计划属于明确的性能优化项目；如进入执行，优先使用 `$performance-goal` 维护指标、基线和阶段验收，而不是把 skill 安装本身当作完成条件。

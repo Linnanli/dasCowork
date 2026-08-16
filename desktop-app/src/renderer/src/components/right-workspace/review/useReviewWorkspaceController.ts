@@ -28,6 +28,7 @@ import {
   shouldUseUncommittedDefault,
   sourceChanged
 } from './reviewWorkspaceStore'
+import { markReviewPerformance, measureFromMark } from './reviewPerformance'
 import type {
   ReviewBackendSource,
   ReviewDisplaySource,
@@ -94,6 +95,7 @@ export function useReviewWorkspaceController({
   const programmaticScrollUntilRef = useRef(0)
   const loadStateRef = useRef(loadState)
   const pendingGitChangeRefreshRef = useRef(false)
+  const reviewIndexesRef = useRef(createReviewIndexes(loadState))
   const reviewSearchIdentity = useMemo(
     () =>
       loadState.status === 'ready'
@@ -154,11 +156,21 @@ export function useReviewWorkspaceController({
     []
   )
 
+  const commitLoadState = useCallback((next: ReviewSourceLoadState) => {
+    loadStateRef.current = next
+    reviewIndexesRef.current = createReviewIndexes(next)
+    setLoadState(next)
+  }, [])
+
   const updateLoadState = useCallback(
     (updater: (current: ReviewSourceLoadState) => ReviewSourceLoadState) => {
       setLoadState((current) => {
         const next = updater(current)
         loadStateRef.current = next
+        if (next !== current) {
+          reviewIndexesRef.current = createReviewIndexes(next)
+          markReviewPerformance('controller-update')
+        }
         return next
       })
     },
@@ -167,9 +179,11 @@ export function useReviewWorkspaceController({
 
   const replaceGroups = useCallback(
     (updater: (groups: ReviewFileGroup[]) => ReviewFileGroup[]) => {
-      updateLoadState((current) =>
-        current.status === 'ready' ? { ...current, groups: updater(current.groups) } : current
-      )
+      updateLoadState((current) => {
+        if (current.status !== 'ready') return current
+        const groups = updater(current.groups)
+        return groups === current.groups ? current : { ...current, groups }
+      })
     },
     [updateLoadState]
   )
@@ -196,8 +210,7 @@ export function useReviewWorkspaceController({
           partialErrors: [],
           largeDiff: false
         }
-        loadStateRef.current = nextLoadState
-        setLoadState(nextLoadState)
+        commitLoadState(nextLoadState)
         loadedSourceIdentityRef.current = nextSourceIdentity
         setRefreshing(false)
         setMutationStale(false)
@@ -210,15 +223,13 @@ export function useReviewWorkspaceController({
           status: 'error',
           message: 'No Git repository is available for review.'
         }
-        loadStateRef.current = nextLoadState
-        setLoadState(nextLoadState)
+        commitLoadState(nextLoadState)
         setRefreshing(false)
         return false
       }
       if (!backgroundRefresh) {
         const nextLoadState: ReviewSourceLoadState = { status: 'loading' }
-        loadStateRef.current = nextLoadState
-        setLoadState(nextLoadState)
+        commitLoadState(nextLoadState)
       }
       const backendSources = backendSourcesForDisplay(nextSource)
       const settled = await Promise.allSettled(
@@ -249,8 +260,7 @@ export function useReviewWorkspaceController({
             status: 'error',
             message: partialErrors.map((error) => error.message).join('\n')
           }
-          loadStateRef.current = nextLoadState
-          setLoadState(nextLoadState)
+          commitLoadState(nextLoadState)
         } else {
           onFeedback?.({
             tone: 'error',
@@ -269,8 +279,7 @@ export function useReviewWorkspaceController({
         largeDiff: snapshots.some((snapshot) => snapshot.largeDiff),
         gitRoot: snapshots[0]?.gitRoot
       }
-      loadStateRef.current = nextLoadState
-      setLoadState(nextLoadState)
+      commitLoadState(nextLoadState)
       loadedSourceIdentityRef.current = nextSourceIdentity
       setRefreshing(false)
       setMutationStale(false)
@@ -282,7 +291,7 @@ export function useReviewWorkspaceController({
       )
       return true
     },
-    [displaySource, lastTurn, onFeedback, target]
+    [commitLoadState, displaySource, lastTurn, onFeedback, target]
   )
 
   useEffect(() => {
@@ -363,14 +372,9 @@ export function useReviewWorkspaceController({
           totalMatches += result.value.totalMatches
           isCapped ||= result.value.isCapped
           for (const item of result.value.items) {
-            const section = current.groups
-              .flatMap((group) => group.sections)
-              .find(
-                (candidate) =>
-                  candidate.kind === 'snapshot' &&
-                  candidate.snapshotGeneration === snapshot.snapshotGeneration &&
-                  candidate.file.path === item.path
-              )
+            const section = reviewIndexesRef.current.sectionBySnapshotPath.get(
+              snapshotPathKey(snapshot.snapshotGeneration, item.path)
+            )
             if (section) matches.push({ item, sectionKey: section.key })
           }
         })
@@ -414,7 +418,7 @@ export function useReviewWorkspaceController({
     (path: string, navigation?: ReviewNavigationTarget) => {
       const current = loadStateRef.current
       const group =
-        current.status === 'ready' ? current.groups.find((item) => item.path === path) : undefined
+        current.status === 'ready' ? reviewIndexesRef.current.groupByPath.get(path) : undefined
       const section = group?.sections.find((item) => item.kind !== 'partial-error')
       setSelectedPathState(path)
       setActivePathState(path)
@@ -434,14 +438,7 @@ export function useReviewWorkspaceController({
 
   const replaceSection = useCallback(
     (sectionKey: string, loadState: ReviewFileSection['loadState']) => {
-      replaceGroups((groups) =>
-        groups.map((group) => ({
-          ...group,
-          sections: group.sections.map((section) =>
-            section.key === sectionKey ? { ...section, loadState } : section
-          )
-        }))
-      )
+      replaceGroups((groups) => replaceReviewSection(groups, sectionKey, loadState))
     },
     [replaceGroups]
   )
@@ -463,9 +460,7 @@ export function useReviewWorkspaceController({
     (sectionKey: string) => {
       const current = loadStateRef.current
       if (current.status !== 'ready' || !target) return
-      const section = current.groups
-        .flatMap((group) => group.sections)
-        .find((item) => item.key === sectionKey)
+      const section = reviewIndexesRef.current.sectionByKey.get(sectionKey)
       if (
         !section ||
         section.loadState.status === 'loading' ||
@@ -490,6 +485,7 @@ export function useReviewWorkspaceController({
       const currentDiffOptionsGeneration = diffOptionsGenerationRef.current
       const task = (): void => {
         activeDiffLoadsRef.current += 1
+        const requestMark = markReviewPerformance('section-diff-request')
         void window.desktopApp.git
           .getFileDiff({
             target,
@@ -531,6 +527,7 @@ export function useReviewWorkspaceController({
             })
           })
           .finally(() => {
+            measureFromMark('section-diff-request', requestMark)
             activeDiffLoadsRef.current -= 1
             runNextDiffLoad(activeDiffLoadsRef, pendingDiffLoadsRef)
           })
@@ -656,14 +653,10 @@ export function useReviewWorkspaceController({
     (section: ReviewFileSection, action: 'stage' | 'unstage' | 'revert') => {
       const current = loadStateRef.current
       if (current.status !== 'ready' || section.kind !== 'snapshot') return
-      const files = current.groups
-        .flatMap((group) => group.sections)
-        .filter(
-          (candidate): candidate is Extract<ReviewFileSection, { kind: 'snapshot' }> =>
-            candidate.kind === 'snapshot' &&
-            sameReviewSource(candidate.backendSource, section.backendSource)
-        )
-        .map((candidate) => fileTarget(candidate.file))
+      const files =
+        reviewIndexesRef.current.fileTargetsBySource.get(
+          reviewBackendSourceKey(section.backendSource)
+        ) ?? []
       if (files.length === 0) return
       if (files.length > LOCAL_GIT_REVIEW_MUTATION_MAX_FILES) {
         onFeedback?.({
@@ -848,7 +841,7 @@ export function useReviewWorkspaceController({
       setSearch((current) => ({
         ...current,
         query: query.slice(0, 255),
-        status: 'idle',
+        status: hasQuery ? 'searching' : 'idle',
         matches: hasQuery ? current.matches : [],
         totalMatches: hasQuery ? current.totalMatches : 0,
         isCapped: hasQuery ? current.isCapped : false,
@@ -914,6 +907,79 @@ function emptyReviewSearchState(): ReviewSearchState {
     partialErrors: [],
     currentIndex: -1
   }
+}
+
+type ReviewIndexes = {
+  groupByPath: Map<string, ReviewFileGroup>
+  sectionByKey: Map<string, ReviewFileSection>
+  sectionBySnapshotPath: Map<string, Extract<ReviewFileSection, { kind: 'snapshot' }>>
+  fileTargetsBySource: Map<string, ReturnType<typeof fileTarget>[]>
+}
+
+function createReviewIndexes(loadState: ReviewSourceLoadState): ReviewIndexes {
+  const indexes: ReviewIndexes = {
+    groupByPath: new Map(),
+    sectionByKey: new Map(),
+    sectionBySnapshotPath: new Map(),
+    fileTargetsBySource: new Map()
+  }
+  if (loadState.status !== 'ready') return indexes
+
+  for (const group of loadState.groups) {
+    indexes.groupByPath.set(group.path, group)
+    for (const section of group.sections) {
+      indexes.sectionByKey.set(section.key, section)
+      if (section.kind !== 'snapshot') continue
+      indexes.sectionBySnapshotPath.set(
+        snapshotPathKey(section.snapshotGeneration, section.file.path),
+        section
+      )
+      const sourceKey = reviewBackendSourceKey(section.backendSource)
+      const targets = indexes.fileTargetsBySource.get(sourceKey) ?? []
+      targets.push(fileTarget(section.file))
+      indexes.fileTargetsBySource.set(sourceKey, targets)
+    }
+  }
+  return indexes
+}
+
+function replaceReviewSection(
+  groups: ReviewFileGroup[],
+  sectionKey: string,
+  loadState: ReviewFileSection['loadState']
+): ReviewFileGroup[] {
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex]
+    const sectionIndex = group.sections.findIndex((section) => section.key === sectionKey)
+    if (sectionIndex < 0) continue
+    const section = group.sections[sectionIndex]
+    if (!section || sameSectionLoadState(section.loadState, loadState)) return groups
+
+    const sections = group.sections.slice()
+    sections[sectionIndex] = { ...section, loadState }
+    const next = groups.slice()
+    next[groupIndex] = { ...group, sections }
+    return next
+  }
+  return groups
+}
+
+function sameSectionLoadState(
+  left: ReviewFileSection['loadState'],
+  right: ReviewFileSection['loadState']
+): boolean {
+  if (left.status !== right.status) return false
+  if (left.status === 'ready' && right.status === 'ready') return left.diff === right.diff
+  if (left.status === 'error' && right.status === 'error') return left.message === right.message
+  return true
+}
+
+function snapshotPathKey(snapshotGeneration: string, path: string): string {
+  return `${snapshotGeneration}\u0000${path}`
+}
+
+function reviewBackendSourceKey(source: ReviewBackendSource): string {
+  return JSON.stringify(source)
 }
 
 function searchLastTurnGroups(

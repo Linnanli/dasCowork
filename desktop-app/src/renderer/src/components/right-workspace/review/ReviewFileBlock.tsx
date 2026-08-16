@@ -7,7 +7,7 @@ import {
   PlusIcon,
   Undo2Icon
 } from 'lucide-react'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -36,7 +36,10 @@ type Props = {
   group: ReviewFileGroup
 }
 
-export function ReviewFileBlock({ controller, group }: Props): React.JSX.Element {
+export const ReviewFileBlock = memo(function ReviewFileBlock({
+  controller,
+  group
+}: Props): React.JSX.Element {
   const key = groupKey(group)
   const collapsed = controller.preferences.collapsedKeys.includes(key)
   const workspace = useOptionalRightWorkspace()
@@ -155,40 +158,35 @@ export function ReviewFileBlock({ controller, group }: Props): React.JSX.Element
           ))}
         </div>
       )}
-      <Dialog
-        open={Boolean(pendingRevert)}
-        onOpenChange={(open) => !open && setPendingRevert(undefined)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>还原文件更改？</DialogTitle>
-            <DialogDescription>此操作会丢弃该文件当前来源中的更改。</DialogDescription>
-          </DialogHeader>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              checked={controller.preferences.skipRevertConfirmation}
-              onCheckedChange={(checked) => controller.setSkipRevertConfirmation(checked === true)}
-            />
-            不再询问
-          </label>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setPendingRevert(undefined)}>
-              取消
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={
-                pendingRevert
-                  ? controller.isMutationDisabled(
-                      pendingRevert.section,
-                      pendingRevert.hunkIndex === undefined ? 'file' : 'hunk',
-                      pendingRevert.hunkIndex
-                    )
-                  : true
-              }
-              onClick={() => {
-                if (pendingRevert) {
+      {pendingRevert ? (
+        <Dialog open onOpenChange={(open) => !open && setPendingRevert(undefined)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>还原文件更改？</DialogTitle>
+              <DialogDescription>此操作会丢弃该文件当前来源中的更改。</DialogDescription>
+            </DialogHeader>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={controller.preferences.skipRevertConfirmation}
+                onCheckedChange={(checked) =>
+                  controller.setSkipRevertConfirmation(checked === true)
+                }
+              />
+              不再询问
+            </label>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setPendingRevert(undefined)}>
+                取消
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={controller.isMutationDisabled(
+                  pendingRevert.section,
+                  pendingRevert.hunkIndex === undefined ? 'file' : 'hunk',
+                  pendingRevert.hunkIndex
+                )}
+                onClick={() => {
                   if (pendingRevert.hunkIndex === undefined) {
                     controller.applyFileAction(group, pendingRevert.section, 'revert')
                   } else {
@@ -199,17 +197,72 @@ export function ReviewFileBlock({ controller, group }: Props): React.JSX.Element
                       pendingRevert.hunkIndex
                     )
                   }
-                }
-                setPendingRevert(undefined)
-              }}
-            >
-              还原
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                  setPendingRevert(undefined)
+                }}
+              >
+                还原
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </section>
   )
+}, areReviewFileBlockPropsEqual)
+
+function areReviewFileBlockPropsEqual(previous: Props, next: Props): boolean {
+  if (previous.group !== next.group) return false
+
+  const key = groupKey(previous.group)
+  const previousSelected = previous.controller.selectedPath === previous.group.path
+  const nextSelected = next.controller.selectedPath === next.group.path
+  if (previousSelected !== nextSelected) return false
+  if (
+    previous.controller.preferences.collapsedKeys.includes(key) !==
+      next.controller.preferences.collapsedKeys.includes(key) ||
+    previous.controller.preferences.skipRevertConfirmation !==
+      next.controller.preferences.skipRevertConfirmation ||
+    previous.controller.displaySource.type !== next.controller.displaySource.type ||
+    previous.controller.target !== next.controller.target ||
+    previous.controller.mutationStale !== next.controller.mutationStale ||
+    previous.controller.refreshing !== next.controller.refreshing ||
+    previous.controller.isMutationDisabled !== next.controller.isMutationDisabled
+  )
+    return false
+
+  if (previousSelected || nextSelected) {
+    if (
+      previous.controller.preferences.richPreview !== next.controller.preferences.richPreview ||
+      searchMatchKey(previous.controller, previous.group) !==
+        searchMatchKey(next.controller, next.group)
+    )
+      return false
+  }
+
+  return reviewDiffPreferencesEqual(previous.controller, next.controller)
+}
+
+function reviewDiffPreferencesEqual(
+  previous: ReviewWorkspaceController,
+  next: ReviewWorkspaceController
+): boolean {
+  return (
+    previous.preferences.diffMode === next.preferences.diffMode &&
+    previous.preferences.lineDiffType === next.preferences.lineDiffType &&
+    previous.preferences.wrap === next.preferences.wrap &&
+    previous.preferences.fullFiles === next.preferences.fullFiles &&
+    previous.preferences.ignoreWhitespace === next.preferences.ignoreWhitespace
+  )
+}
+
+function searchMatchKey(
+  controller: ReviewWorkspaceController,
+  group: ReviewFileGroup
+): string | undefined {
+  const match = controller.search.matches[controller.search.currentIndex]
+  if (!match || !group.sections.some((section) => section.key === match.sectionKey))
+    return undefined
+  return `${match.sectionKey}:${match.item.side}:${match.item.lineStart}:${match.item.lineEnd}`
 }
 
 function ReviewSectionFileActions({

@@ -8,6 +8,17 @@ export type GitCliResult = {
   stderr: string
 }
 
+export type GitInvocationRecord = {
+  target: string
+  args: readonly string[]
+  durationMs: number
+  success: boolean
+  exitCode?: number | null
+  maxOutputBytes?: number
+}
+
+export type GitInvocationObserver = (record: GitInvocationRecord) => void
+
 export type GitCliOptions = {
   input?: string
   timeoutMs?: number
@@ -21,6 +32,7 @@ export type GitDiffCliOptions = GitCliOptions & {
   configOverrides?: readonly string[]
 }
 
+export const gitOutputExceededLimitMessage = 'git output exceeded limit'
 export const gitDiffOutputLimitBytes = 32 * 1024 * 1024
 const gitDiffConfigOverrides = [
   'diff.mnemonicPrefix=false',
@@ -36,6 +48,8 @@ const gitDiffPrefix = [
   '--dst-prefix=b/'
 ] as const
 
+let gitInvocationObserver: GitInvocationObserver | undefined
+
 export class GitCliError extends Error {
   readonly code = 'GIT_COMMAND_FAILED'
 
@@ -49,20 +63,37 @@ export class GitCliError extends Error {
   }
 }
 
+export function setGitInvocationObserver(observer: GitInvocationObserver | undefined): () => void {
+  const previous = gitInvocationObserver
+  gitInvocationObserver = observer
+  return () => {
+    gitInvocationObserver = previous
+  }
+}
+
 export async function runGit(
   target: string | WorktreeRepository,
   args: readonly string[],
   options: GitCliOptions = {}
 ): Promise<GitCliResult> {
+  const start = Date.now()
   if (typeof target !== 'string') {
-    const result = await target.git(args, options)
-    if (result.success) return { stdout: result.stdout, stderr: result.stderr }
-    throw new GitCliError(
-      `git ${args.join(' ')} failed with exit code ${result.code ?? 'unknown'}`,
-      result.code,
-      result.stdout,
-      result.stderr
-    )
+    try {
+      const result = await target.git(args, options)
+      recordGitInvocation(target.root, args, start, result.success, result.code, options)
+      if (result.success) return { stdout: result.stdout, stderr: result.stderr }
+      throw new GitCliError(
+        `git ${args.join(' ')} failed with exit code ${result.code ?? 'unknown'}`,
+        result.code,
+        result.stdout,
+        result.stderr
+      )
+    } catch (error) {
+      if (!isGitCliError(error)) {
+        recordGitInvocation(target.root, args, start, false, undefined, options)
+      }
+      throw error
+    }
   }
 
   const timeoutMs = options.timeoutMs ?? 15_000
@@ -82,6 +113,7 @@ export async function runGit(
       if (settled) return
       settled = true
       child.kill('SIGKILL')
+      recordGitInvocation(target, args, start, false, undefined, options)
       reject(new GitCliError(`git ${args[0] ?? ''} timed out`, null, stdout, stderr))
     }, timeoutMs)
     const abort = (): void => {
@@ -89,6 +121,7 @@ export async function runGit(
       settled = true
       clearTimeout(timer)
       child.kill('SIGKILL')
+      recordGitInvocation(target, args, start, false, undefined, options)
       const error = new GitCliError('git process aborted', null, stdout, stderr)
       error.name = 'AbortError'
       reject(error)
@@ -98,7 +131,7 @@ export async function runGit(
       const next = current + chunk.toString('utf8')
       if (Buffer.byteLength(next) > maxOutputBytes) {
         child.kill('SIGKILL')
-        throw new GitCliError('git output exceeded limit', null, stdout, stderr)
+        throw new GitCliError(gitOutputExceededLimitMessage, null, stdout, stderr)
       }
       return next
     }
@@ -110,6 +143,7 @@ export async function runGit(
         if (!settled) {
           settled = true
           clearTimeout(timer)
+          recordGitInvocation(target, args, start, false, undefined, options)
           reject(error)
         }
       }
@@ -121,6 +155,7 @@ export async function runGit(
         if (!settled) {
           settled = true
           clearTimeout(timer)
+          recordGitInvocation(target, args, start, false, undefined, options)
           reject(error)
         }
       }
@@ -129,6 +164,7 @@ export async function runGit(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      recordGitInvocation(target, args, start, false, undefined, options)
       reject(error)
     })
     child.on('close', (exitCode) => {
@@ -136,6 +172,7 @@ export async function runGit(
       settled = true
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', abort)
+      recordGitInvocation(target, args, start, exitCode === 0, exitCode, options)
       if (exitCode === 0) {
         resolve({ stdout, stderr })
         return
@@ -157,6 +194,24 @@ export async function runGit(
     }
     if (options.input !== undefined) child.stdin.end(options.input)
     else child.stdin.end()
+  })
+}
+
+function recordGitInvocation(
+  target: string,
+  args: readonly string[],
+  start: number,
+  success: boolean,
+  exitCode?: number | null,
+  options?: GitCliOptions
+): void {
+  gitInvocationObserver?.({
+    target,
+    args: [...args],
+    durationMs: Date.now() - start,
+    success,
+    exitCode,
+    maxOutputBytes: options?.maxOutputBytes
   })
 }
 
@@ -214,4 +269,11 @@ export function createGitDiffArgs(
 
 export function isGitCliError(error: unknown): error is GitCliError {
   return error instanceof GitCliError
+}
+
+export function isGitOutputLimitError(error: unknown): error is GitCliError {
+  if (!isGitCliError(error)) return false
+  return [error.message, error.stderr, error.stdout].some(
+    (output) => output.trim() === gitOutputExceededLimitMessage
+  )
 }

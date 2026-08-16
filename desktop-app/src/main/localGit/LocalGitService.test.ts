@@ -77,6 +77,30 @@ describe('LocalGitService', () => {
     ).resolves.toEqual({ status: 'stale' })
   })
 
+  it('keeps a staged snapshot valid while reading its file diff', async () => {
+    const { repo, projectService } = await createGitFixture()
+    await writeFile(join(repo, 'tracked.txt'), 'one\nstaged\n')
+    git(repo, ['add', 'tracked.txt'])
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'staged' })
+    const file = snapshot.files.find((candidate) => candidate.path === 'tracked.txt')
+    expect(file).toBeDefined()
+
+    await expect(
+      service.getFileDiff({
+        target,
+        source: snapshot.source,
+        snapshotGeneration: snapshot.snapshotGeneration,
+        file: file!
+      })
+    ).resolves.toMatchObject({
+      status: 'ready',
+      snapshotGeneration: snapshot.snapshotGeneration,
+      file: { path: 'tracked.txt', revision: file!.revision }
+    })
+  })
+
   it('returns a stale file-diff result when the snapshot retires during the read', async () => {
     const { repo, projectService } = await createGitFixture()
     await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n')
@@ -676,6 +700,30 @@ describe('LocalGitService', () => {
           snippet: expect.objectContaining({ match: expect.stringContaining('needle') })
         })
       ])
+    })
+  })
+
+  it('searches a 2 MiB text diff without inheriting the snapshot size cap', async () => {
+    const { repo, projectService } = await createGitFixture()
+    const base = 'A'.repeat(2 * 1024 * 1024)
+    await writeFile(join(repo, 'large-search.txt'), base)
+    git(repo, ['add', 'large-search.txt'])
+    git(repo, ['commit', '-m', 'add large review search fixture'])
+    await writeFile(join(repo, 'large-search.txt'), `needle${'B'.repeat(2 * 1024 * 1024 - 6)}`)
+    const service = new LocalGitService({ projectService })
+    const target = gitTarget(repo)
+    const snapshot = await service.getSnapshot(target, { type: 'unstaged' })
+
+    await expect(
+      service.searchReview({
+        target,
+        source: { type: 'unstaged' },
+        snapshotGeneration: snapshot.snapshotGeneration,
+        query: 'needle'
+      })
+    ).resolves.toMatchObject({
+      totalMatches: 1,
+      items: [expect.objectContaining({ path: 'large-search.txt', side: 'additions' })]
     })
   })
 

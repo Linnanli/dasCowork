@@ -1,12 +1,13 @@
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { SearchIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { cn } from '@/lib/utils'
 import { FILE_WORKSPACE_API_VERSION } from '../../../../../shared/fileWorkspaceApi'
-import { buildReviewFileTreeModel, filterReviewGroups } from './reviewFileTreeModel'
+import { buildReviewFileTreeModel } from './reviewFileTreeModel'
+import { measureReviewPerformance } from './reviewPerformance'
 import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 
 const reviewFileTreeUnsafeCss = `
@@ -25,17 +26,54 @@ type Props = {
 }
 
 export function ReviewFileTree({ controller }: Props): React.JSX.Element | null {
+  const setTreeFilterRef = useRef(controller.setTreeFilter)
+  const controllerTreeFilterRef = useRef(controller.preferences.treeFilter)
+  const [treeFilterInput, setTreeFilterInput] = useState(controller.preferences.treeFilter)
+
+  useEffect(() => {
+    setTreeFilterRef.current = controller.setTreeFilter
+  }, [controller.setTreeFilter])
+
+  useEffect(() => {
+    if (controller.preferences.treeFilter === treeFilterInput) return
+    // Keep the filter outside the conditionally visible tree so hiding the panel does not
+    // cancel the pending persistence or discard what the user typed.
+    const timer = window.setTimeout(() => setTreeFilterRef.current(treeFilterInput), 400)
+    return () => window.clearTimeout(timer)
+  }, [controller.preferences.treeFilter, treeFilterInput])
+
+  useEffect(() => {
+    if (controllerTreeFilterRef.current === controller.preferences.treeFilter) return
+    controllerTreeFilterRef.current = controller.preferences.treeFilter
+    setTreeFilterInput(controller.preferences.treeFilter)
+  }, [controller.preferences.treeFilter])
+
+  return controller.treeVisible ? (
+    <VisibleReviewFileTree
+      controller={controller}
+      treeFilterInput={treeFilterInput}
+      setTreeFilterInput={setTreeFilterInput}
+    />
+  ) : null
+}
+
+function VisibleReviewFileTree({
+  controller,
+  treeFilterInput,
+  setTreeFilterInput
+}: Props & {
+  treeFilterInput: string
+  setTreeFilterInput(value: string): void
+}): React.JSX.Element {
   const workspace = useOptionalRightWorkspace()
   const callbacksRef = useRef({ controller })
-  const filteredGroups = useMemo(
+  const treeModel = useMemo(
     () =>
-      filterReviewGroups(
-        controller.loadState.status === 'ready' ? controller.loadState.groups : [],
-        controller.preferences.treeFilter
+      buildReviewFileTreeModel(
+        controller.loadState.status === 'ready' ? controller.loadState.groups : []
       ),
-    [controller.loadState, controller.preferences.treeFilter]
+    [controller.loadState]
   )
-  const treeModel = useMemo(() => buildReviewFileTreeModel(filteredGroups), [filteredGroups])
   const initialExpandedPaths = useMemo(
     () => treeModel.paths.filter((path) => path.endsWith('/')),
     [treeModel.paths]
@@ -91,9 +129,6 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
         const selected = paths.at(-1)
         if (!selected || selected.endsWith('/')) return
         callbacksRef.current.controller.setSelectedPath(selected)
-        document.querySelector(`[data-review-path="${cssEscape(selected)}"]`)?.scrollIntoView({
-          block: 'start'
-        })
       },
       paths: treeModel.paths,
       renderRowDecoration: ({ item }) => {
@@ -130,6 +165,10 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
   }, [initialExpandedPaths, model, treeModel.gitStatus, treeModel.paths])
 
   useEffect(() => {
+    model.setSearch(treeFilterInput || null)
+  }, [model, treeFilterInput])
+
+  useEffect(() => {
     const selectedPath = controller.activePath
     if (!selectedPath) return
     const frame = window.requestAnimationFrame(() => {
@@ -141,8 +180,6 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
     })
     return () => window.cancelAnimationFrame(frame)
   }, [controller.activePath, model, treeModel.paths])
-
-  if (!controller.treeVisible) return null
 
   return (
     <aside
@@ -164,8 +201,15 @@ export function ReviewFileTree({ controller }: Props): React.JSX.Element | null 
             aria-label="筛选文件"
             className="h-7 pl-7 text-xs"
             placeholder="筛选文件..."
-            value={controller.preferences.treeFilter}
-            onChange={(event) => controller.setTreeFilter(event.currentTarget.value)}
+            value={treeFilterInput}
+            onChange={(event) => {
+              const value = event.currentTarget.value
+              measureReviewPerformance('tree-filter-visible', () => {
+                // setSearch synchronously updates the tree projection and emits its render.
+                model.setSearch(value || null)
+              })
+              setTreeFilterInput(value)
+            }}
           />
         </div>
       </div>
@@ -266,11 +310,23 @@ function startResize(
   const startWidth = controller.preferences.treeWidth
   const pointerId = event.pointerId
   const element = event.currentTarget
+  let frame = 0
+  let pendingWidth: number | undefined
   element.setPointerCapture(pointerId)
   const onPointerMove = (moveEvent: PointerEvent): void => {
-    controller.setTreeWidth(startWidth - (moveEvent.clientX - startX))
+    pendingWidth = startWidth - (moveEvent.clientX - startX)
+    if (frame) return
+    frame = window.requestAnimationFrame(() => {
+      frame = 0
+      if (pendingWidth !== undefined) controller.setTreeWidth(pendingWidth)
+    })
   }
   const stop = (): void => {
+    if (frame) {
+      window.cancelAnimationFrame(frame)
+      frame = 0
+    }
+    if (pendingWidth !== undefined) controller.setTreeWidth(pendingWidth)
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', stop)
     window.removeEventListener('pointercancel', stop)
@@ -278,10 +334,4 @@ function startResize(
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', stop, { once: true })
   window.addEventListener('pointercancel', stop, { once: true })
-}
-
-function cssEscape(value: string): string {
-  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(value)
-    : value.replace(/"/gu, '\\"')
 }

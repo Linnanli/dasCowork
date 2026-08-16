@@ -123,8 +123,54 @@ test.describe('packaged local media smoke', () => {
     const review = page.locator('[data-slot="review-workspace"]')
     await expect(review).toContainText('preview.pdf')
     await review.getByRole('button', { name: '审阅选项', exact: true }).click()
-    await page.getByRole('menuitem', { name: '富预览（Markdown、图片和 PDF）', exact: true }).click()
+    await page
+      .getByRole('menuitem', { name: '富预览（Markdown、图片和 PDF）', exact: true })
+      .click()
     await expect(review.locator('.react-pdf__Page__canvas')).toBeVisible()
+  })
+
+  test('loads the packaged Review diff worker from app resources', async () => {
+    backend = await startMockBackend({
+      responses: [
+        assistantMessageResponse('packaged-diff-thread', 'packaged-diff-message', 'Ready')
+      ]
+    })
+    tempDir = await mkdtemp(join(tmpdir(), 'dascowork-packaged-diff-review-'))
+    const projectRoot = join(tempDir, 'project')
+    await mkdir(projectRoot, { recursive: true })
+    await execFile('git', ['init'], { cwd: projectRoot })
+    await execFile('git', ['config', 'user.email', 'packaged@example.test'], { cwd: projectRoot })
+    await execFile('git', ['config', 'user.name', 'Packaged Smoke'], { cwd: projectRoot })
+    await writeFile(join(projectRoot, 'example.ts'), 'export const value = 1\n', 'utf8')
+    await execFile('git', ['add', 'example.ts'], { cwd: projectRoot })
+    await execFile('git', ['commit', '-m', 'initial'], { cwd: projectRoot })
+    await writeFile(join(projectRoot, 'example.ts'), 'export const value = 2\n', 'utf8')
+
+    app = await launchApp(backend, [], {
+      executablePath: packagedExecutable,
+      args: [],
+      cwd: process.cwd()
+    })
+    const page = await app.firstWindow()
+    await trackReviewDiffWorkerUrls(page)
+    await createLocalProject(page, `Packaged diff ${Date.now().toString(36)}`, projectRoot)
+    await sendComposerMessage(page, 'Open the packaged diff worker review.')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Ready')
+
+    await page.locator('[data-slot="conversation-changes-row"]').click()
+    const review = page.locator('[data-slot="review-workspace"]')
+    await review.getByRole('button', { name: '隐藏文件树' }).click()
+    await expect(review.locator('[data-review-file-diff]')).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            (window as typeof window & { reviewDiffWorkerUrls?: string[] }).reviewDiffWorkerUrls ??
+            []
+          ).some((url) => /^app:\/\/-\/assets\/worker-[A-Za-z0-9_-]+\.js$/u.test(url))
+        )
+      )
+      .toBe(true)
   })
 })
 
@@ -142,9 +188,29 @@ function onePagePdf(): Buffer {
   }
   const xrefOffset = Buffer.byteLength(pdf, 'binary')
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
-  pdf += offsets.slice(1).map((offset) => `${offset.toString().padStart(10, '0')} 00000 n \n`).join('')
+  pdf += offsets
+    .slice(1)
+    .map((offset) => `${offset.toString().padStart(10, '0')} 00000 n \n`)
+    .join('')
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
   return Buffer.from(pdf, 'binary')
+}
+
+async function trackReviewDiffWorkerUrls(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const browserWindow = window as typeof window & { reviewDiffWorkerUrls?: string[] }
+    const NativeWorker = window.Worker
+    browserWindow.reviewDiffWorkerUrls = []
+    Object.defineProperty(window, 'Worker', {
+      configurable: true,
+      value: class TrackingWorker extends NativeWorker {
+        constructor(specifier: string | URL, options?: WorkerOptions) {
+          browserWindow.reviewDiffWorkerUrls?.push(String(specifier))
+          super(specifier, options)
+        }
+      }
+    })
+  })
 }
 
 async function openRightWorkspace(page: Page): Promise<void> {

@@ -44,6 +44,9 @@ export default defineConfig(({ mode }) => {
           '@renderer': resolve('src/renderer/src')
         }
       },
+      worker: {
+        format: 'es'
+      },
       plugins: [tailwindcss(), react()]
     }
   }

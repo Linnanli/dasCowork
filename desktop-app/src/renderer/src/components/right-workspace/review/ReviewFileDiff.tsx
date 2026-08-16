@@ -17,6 +17,11 @@ import type {
 import { Button } from '@/components/ui/button'
 import { ReviewDiffLoadingSkeleton } from './ReviewDiffLoadingSkeleton'
 import { reviewDiffOptions } from './reviewDiffOptions'
+import {
+  markReviewPerformance,
+  measureFromMark,
+  measureReviewPerformance
+} from './reviewPerformance'
 import type { ReviewWorkspacePreferences } from './reviewWorkspaceTypes'
 
 type Props = {
@@ -77,44 +82,62 @@ function ParsedReviewFileDiff({
   preferences,
   forcePartial = false
 }: Props & { forcePartial?: boolean }): React.JSX.Element {
+  const fullContentKey = fullContentRequestKey(fullContentRequest)
+  const stableFullContentRequest = useMemo(
+    () => parseFullContentRequest(fullContentKey),
+    [fullContentKey]
+  )
   const { content: fullContent, isLoading: isFullContentLoading } = useReviewDiffFullContent(
-    forcePartial ? undefined : fullContentRequest
+    forcePartial ? undefined : stableFullContentRequest
   )
   const fileDiff = useMemo(() => {
     const files =
-      !forcePartial && fullContent?.status === 'text' && fullContentRequest
+      !forcePartial && fullContent?.status === 'text' && stableFullContentRequest
         ? {
             oldFile: {
               name:
-                fullContentRequest.kind === 'snapshot'
-                  ? (fullContentRequest.file.previousPath ?? fullContentRequest.file.path)
-                  : fullContentRequest.path,
+                stableFullContentRequest.kind === 'snapshot'
+                  ? (stableFullContentRequest.file.previousPath ??
+                    stableFullContentRequest.file.path)
+                  : stableFullContentRequest.path,
               contents: fullContent.before
             },
             newFile: {
               name:
-                fullContentRequest.kind === 'snapshot'
-                  ? fullContentRequest.file.path
-                  : fullContentRequest.path,
+                stableFullContentRequest.kind === 'snapshot'
+                  ? stableFullContentRequest.file.path
+                  : stableFullContentRequest.path,
               contents: fullContent.after
             }
           }
         : undefined
-    const partialFileDiff = processFile(diff, { isGitDiff: true, cacheKey })
+    const partialFileDiff = measureReviewPerformance('diff-parse', () =>
+      processFile(diff, { isGitDiff: true, cacheKey })
+    )
     if (!files) return partialFileDiff
 
-    const fullFileDiff = processFile(diff, {
-      isGitDiff: true,
-      cacheKey: `${cacheKey}:full`,
-      ...files
-    })
+    const fullFileDiff = measureReviewPerformance('diff-parse-full', () =>
+      processFile(diff, {
+        isGitDiff: true,
+        cacheKey: `${cacheKey}:full`,
+        ...files
+      })
+    )
     return isCompatibleFullFileDiff(partialFileDiff, fullFileDiff) ? fullFileDiff : partialFileDiff
-  }, [cacheKey, diff, forcePartial, fullContent, fullContentRequest])
-  const options = useMemo(() => reviewDiffOptions<HunkActionAnnotation>(preferences), [preferences])
+  }, [cacheKey, diff, forcePartial, fullContent, stableFullContentRequest])
+  const { diffMode, fullFiles, lineDiffType, wrap } = preferences
+  const options = useMemo(
+    () => reviewDiffOptions<HunkActionAnnotation>({ diffMode, fullFiles, lineDiffType, wrap }),
+    [diffMode, fullFiles, lineDiffType, wrap]
+  )
   const hunkActionAnnotations = useMemo(
     () => createHunkActionAnnotations(fileDiff, hunkActions),
     [fileDiff, hunkActions]
   )
+  const commitMark = markReviewPerformance('diff-commit-start')
+  useEffect(() => {
+    measureFromMark('diff-commit', commitMark)
+  }, [commitMark])
 
   if (isFullContentLoading) return <ReviewDiffLoadingSkeleton />
 
@@ -155,7 +178,6 @@ function ParsedReviewFileDiff({
             />
           )
         }}
-        disableWorkerPool
       />
     </div>
   )
@@ -336,6 +358,11 @@ function useReviewDiffFullContent(request?: ReviewDiffFullContentRequest): {
 function fullContentRequestKey(request?: ReviewDiffFullContentRequest): string | undefined {
   if (!request) return undefined
   return JSON.stringify(request)
+}
+
+function parseFullContentRequest(key?: string): ReviewDiffFullContentRequest | undefined {
+  if (!key) return undefined
+  return JSON.parse(key) as ReviewDiffFullContentRequest
 }
 
 /**

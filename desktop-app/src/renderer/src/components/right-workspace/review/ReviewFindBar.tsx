@@ -1,8 +1,9 @@
 import { ChevronDownIcon, ChevronUpIcon, SearchIcon, XIcon } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { markReviewPerformance, measureFromMark } from './reviewPerformance'
 import type { ReviewWorkspaceController } from './reviewWorkspaceTypes'
 
 type Props = {
@@ -12,6 +13,7 @@ type Props = {
 export function ReviewFindBar({ controller }: Props): React.JSX.Element | null {
   const inputRef = useRef<HTMLInputElement>(null)
   const selectedMatchRef = useRef<string | undefined>(undefined)
+  const searchStatusStartMarkRef = useRef<string | undefined>(undefined)
   const { search } = controller
 
   useEffect(() => {
@@ -38,6 +40,12 @@ export function ReviewFindBar({ controller }: Props): React.JSX.Element | null {
     controller.selectSearchMatch(search.currentIndex)
   }, [controller, search.currentIndex, search.matches, search.query])
 
+  useLayoutEffect(() => {
+    if (search.status !== 'searching') return
+    measureFromMark('content-search-status', searchStatusStartMarkRef.current)
+    searchStatusStartMarkRef.current = undefined
+  }, [search.status])
+
   if (!search.open) return null
 
   const count = search.matches.length
@@ -62,7 +70,13 @@ export function ReviewFindBar({ controller }: Props): React.JSX.Element | null {
         aria-label="在审阅中查找"
         className="h-7 w-52 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
         value={search.query}
-        onChange={(event) => controller.setSearchQuery(event.currentTarget.value)}
+        onChange={(event) => {
+          const query = event.currentTarget.value
+          searchStatusStartMarkRef.current = query.trim()
+            ? markReviewPerformance('content-search-status:start')
+            : undefined
+          controller.setSearchQuery(query)
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') controller.setSearchOpen(false)
           if (event.key === 'Enter') controller.moveSearchMatch(event.shiftKey ? -1 : 1)
