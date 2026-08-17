@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { test, expect, type Locator } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import { planAssert } from '../../scripts/lib/test-plan-assertions.mjs'
 import {

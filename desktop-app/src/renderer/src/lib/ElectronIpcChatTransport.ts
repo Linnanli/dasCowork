@@ -1,9 +1,11 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 
 import type {
+  ComposerModeKind,
   CodexChatStreamError,
   CodexTurnLifecycleEvent,
-  DesktopCodexChatApi
+  DesktopCodexChatApi,
+  ThreadGoalSummary
 } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 
@@ -21,11 +23,17 @@ export type ElectronIpcChatTransportOptions = {
   chatBridge: DesktopCodexChatApi
   getActiveConversation?: () => ActiveConversationContext | undefined
   getProjectSelection?: () => ProjectSelection | undefined
+  getComposerModeKind?: () => ComposerModeKind
+  getGoalEditorActive?: () => boolean
+  /** Current Goal editor text, used only for a typed existing-thread control stream. */
+  getGoalEditorObjective?: () => string | undefined
   getConversationRevision?: () => number
   getSelectedModelId: () => string | undefined
   onStreamStarted?: () => void
   onThreadBound?: (context: StreamFinishedContext & { threadId: string }) => void
   onTurnLifecycle?: (event: CodexTurnLifecycleEvent) => void
+  onModeApplied?: (threadId: string, modeKind: ComposerModeKind) => void
+  onThreadGoal?: (threadId: string, goal: ThreadGoalSummary | null) => void
   onStreamAccepted?: () => void
   onStreamAborted?: () => void
   onStreamError?: (error: CodexChatStreamError) => void
@@ -52,13 +60,19 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly chatBridge: DesktopCodexChatApi
   private readonly getActiveConversation: () => ActiveConversationContext | undefined
   private readonly getProjectSelection: () => ProjectSelection | undefined
+  private readonly getComposerModeKind: () => ComposerModeKind
+  private readonly getGoalEditorActive: () => boolean
+  private readonly getGoalEditorObjective: () => string | undefined
   private readonly getConversationRevision: () => number
   private readonly getSelectedModelId: () => string | undefined
   private readonly onStreamStarted: (() => void) | undefined
   private readonly onThreadBound:
-    | ((context: StreamFinishedContext & { threadId: string }) => void)
-    | undefined
+    ((context: StreamFinishedContext & { threadId: string }) => void) | undefined
   private readonly onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void) | undefined
+  private readonly onModeApplied:
+    ((threadId: string, modeKind: ComposerModeKind) => void) | undefined
+  private readonly onThreadGoal:
+    ((threadId: string, goal: ThreadGoalSummary | null) => void) | undefined
   private readonly onStreamAccepted: (() => void) | undefined
   private readonly onStreamAborted: (() => void) | undefined
   private readonly onStreamError: ((error: CodexChatStreamError) => void) | undefined
@@ -68,11 +82,16 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     this.chatBridge = options.chatBridge
     this.getActiveConversation = options.getActiveConversation ?? (() => undefined)
     this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
+    this.getComposerModeKind = options.getComposerModeKind ?? (() => 'default')
+    this.getGoalEditorActive = options.getGoalEditorActive ?? (() => false)
+    this.getGoalEditorObjective = options.getGoalEditorObjective ?? (() => undefined)
     this.getConversationRevision = options.getConversationRevision ?? (() => 0)
     this.getSelectedModelId = options.getSelectedModelId
     this.onStreamStarted = options.onStreamStarted
     this.onThreadBound = options.onThreadBound
     this.onTurnLifecycle = options.onTurnLifecycle
+    this.onModeApplied = options.onModeApplied
+    this.onThreadGoal = options.onThreadGoal
     this.onStreamAccepted = options.onStreamAccepted
     this.onStreamAborted = options.onStreamAborted
     this.onStreamError = options.onStreamError
@@ -89,7 +108,11 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
 
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {
-        const trustedContext = this.createTrustedContext(options.body)
+        const trustedContext = this.createTrustedContext(
+          options.body,
+          options.messages,
+          options.trigger
+        )
         const startsFreshTerminalRetry = trustedContext.body?.retryTerminalTurn === true
         const abortSignal = options.abortSignal
         const streamContext = (threadId: string | undefined): StreamFinishedContext => ({
@@ -142,6 +165,16 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
               if (settled) return
               markAccepted()
               this.onTurnLifecycle?.(event)
+            },
+            onModeApplied: (threadId, modeKind) => {
+              if (settled) return
+              markAccepted()
+              this.onModeApplied?.(threadId, modeKind)
+            },
+            onThreadGoal: (threadId, goal) => {
+              if (settled) return
+              markAccepted()
+              this.onThreadGoal?.(threadId, goal)
             },
             onThreadBound: (threadId) => {
               if (settled) return
@@ -238,6 +271,16 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
           markAccepted()
           this.onTurnLifecycle?.(event)
         },
+        onModeApplied: (threadId, modeKind) => {
+          if (settled) return
+          markAccepted()
+          this.onModeApplied?.(threadId, modeKind)
+        },
+        onThreadGoal: (threadId, goal) => {
+          if (settled) return
+          markAccepted()
+          this.onThreadGoal?.(threadId, goal)
+        },
         onThreadBound: (threadId) => {
           if (settled) return
           markAccepted()
@@ -272,10 +315,24 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     }
   }
 
-  private createTrustedContext(body: unknown): TrustedRequestContext {
+  private createTrustedContext(
+    body: unknown,
+    messages: readonly UIMessage[],
+    trigger: string | undefined
+  ): TrustedRequestContext {
     const trustedBody = stripRendererExecutionHints(body)
     const activeConversation = this.getActiveConversation()
     const projectSelection = activeConversation?.projectSelection ?? this.getProjectSelection()
+    trustedBody.composerModeKind = this.getComposerModeKind()
+    if (this.getGoalEditorActive()) {
+      if (activeConversation?.threadId && trigger === 'goal-control') {
+        const objective = this.getGoalEditorObjective()?.trim()
+        if (objective) trustedBody.threadGoalControl = { objective }
+      } else {
+        const objective = latestUserMessageText(messages)
+        if (objective) trustedBody.threadGoalDraft = { objective }
+      }
+    }
     if (projectSelection) trustedBody.projectSelection = projectSelection
     if (activeConversation) {
       trustedBody.conversationId = activeConversation.conversationId
@@ -330,6 +387,10 @@ function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
     conversationId: _conversationId,
     threadId: _threadId,
     projectSelection: _projectSelection,
+    composerModeKind: _composerModeKind,
+    threadGoalDraft: _threadGoalDraft,
+    threadGoalControl: _threadGoalControl,
+    collaborationMode: _collaborationMode,
     ...trustedBody
   } = body as Record<string, unknown>
   void _cwd
@@ -337,5 +398,19 @@ function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
   void _conversationId
   void _threadId
   void _projectSelection
+  void _composerModeKind
+  void _threadGoalDraft
+  void _threadGoalControl
+  void _collaborationMode
   return trustedBody
+}
+
+function latestUserMessageText(messages: readonly UIMessage[]): string | undefined {
+  const message = [...messages].reverse().find((candidate) => candidate.role === 'user')
+  if (!message) return undefined
+  const text = message.parts
+    .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+    .join('')
+    .trim()
+  return text.length > 0 ? text : undefined
 }

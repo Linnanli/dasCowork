@@ -5,7 +5,8 @@ import type {
   CodexApprovalResponse,
   CodexModelList,
   SidebarConversation,
-  SidebarConversationActionPayload
+  SidebarConversationActionPayload,
+  ThreadGoalSummary
 } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 import type { ModelOption } from '../components/assistant-ui'
@@ -14,7 +15,10 @@ import {
   type ConversationChatEntry,
   type ConversationScrollSnapshot
 } from '../runtime/ConversationChatRegistry'
-import type { ConversationDraftAttachment } from '../runtime/ConversationDraftStore'
+import type {
+  ConversationComposerModeKind,
+  ConversationDraftAttachment
+} from '../runtime/ConversationDraftStore'
 import type { ActiveConversationContext } from '../lib/ElectronIpcChatTransport'
 import { useConversationFollowUpCoordinator } from './useConversationFollowUpCoordinator'
 
@@ -43,6 +47,13 @@ export type CodexIpcAssistantRuntimeState = {
   setActiveProjectSelection: (selection: ProjectSelection | undefined) => void
   setActiveDraft: (draft: string) => void
   setActiveDraftAttachments: (attachments: readonly ConversationDraftAttachment[]) => void
+  setActiveComposerModeKind: (composerModeKind: ConversationComposerModeKind) => void
+  setActiveGoalEditorActive: (goalEditorActive: boolean) => void
+  setActiveThreadGoal: (threadGoal: ThreadGoalSummary | null | undefined) => void
+  setActiveGoalOperation: (
+    goalOperation: ConversationChatEntry['goalOperation'],
+    goalError?: string
+  ) => void
   setActiveScroll: (scroll: ConversationScrollSnapshot) => void
   syncConversationMetadata: (conversations: readonly SidebarConversation[]) => void
   getConversationIndicator: (conversation: SidebarConversation) => ConversationRuntimeIndicator
@@ -81,7 +92,9 @@ export function useCodexIpcAssistantRuntime(
       new ConversationChatRegistry({
         chatBridge: window.desktopApp.chat,
         selectedModelId,
-        onStreamStarted: persistActiveConversationId
+        onStreamStarted: persistActiveConversationId,
+        loadThreadGoal: (threadId) =>
+          window.desktopApp.conversations.getConversationGoal({ conversationId: threadId })
       })
   )
   const registrySnapshot = useSyncExternalStore(
@@ -211,6 +224,25 @@ export function useCodexIpcAssistantRuntime(
       registry.setDraftAttachments(activeEntry, attachments),
     [activeEntry, registry]
   )
+  const setActiveComposerModeKind = useCallback(
+    (composerModeKind: ConversationComposerModeKind) =>
+      registry.setComposerModeKind(activeEntry, composerModeKind),
+    [activeEntry, registry]
+  )
+  const setActiveGoalEditorActive = useCallback(
+    (goalEditorActive: boolean) => registry.setGoalEditorActive(activeEntry, goalEditorActive),
+    [activeEntry, registry]
+  )
+  const setActiveThreadGoal = useCallback(
+    (threadGoal: ThreadGoalSummary | null | undefined) =>
+      registry.setThreadGoal(activeEntry, threadGoal),
+    [activeEntry, registry]
+  )
+  const setActiveGoalOperation = useCallback(
+    (goalOperation: ConversationChatEntry['goalOperation'], goalError?: string) =>
+      registry.setGoalOperation(activeEntry, goalOperation, goalError),
+    [activeEntry, registry]
+  )
   const setActiveScroll = useCallback(
     (scroll: ConversationScrollSnapshot) => registry.setScroll(activeEntry, scroll),
     [activeEntry, registry]
@@ -312,6 +344,10 @@ export function useCodexIpcAssistantRuntime(
     setActiveProjectSelection,
     setActiveDraft,
     setActiveDraftAttachments,
+    setActiveComposerModeKind,
+    setActiveGoalEditorActive,
+    setActiveThreadGoal,
+    setActiveGoalOperation,
     setActiveScroll,
     syncConversationMetadata,
     getConversationIndicator,

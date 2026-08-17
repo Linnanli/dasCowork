@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { expect, test } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import {
   appRoot,
@@ -660,8 +660,7 @@ test('P002-E2E-09 retries one broken React render unit without replaying the tur
 
     const injected = await page.evaluate(() => {
       const assistant = document.querySelector('[data-role="assistant"]') as
-        | (HTMLElement & Record<string, unknown>)
-        | null
+        (HTMLElement & Record<string, unknown>) | null
       if (!assistant) return false
       const fiberKey = Object.keys(assistant).find((key) => key.startsWith('__reactFiber$'))
       if (!fiberKey) return false

@@ -5,12 +5,16 @@ import {
 import type {
   SidebarConversationActionPayload,
   SidebarConversationListState,
+  SidebarConversationGoalSetPayload,
   SidebarConversationOpenResult,
   SidebarConversationRenamePayload,
-  SidebarPreferences
+  SidebarPreferences,
+  ThreadGoalLoadResult,
+  ThreadGoalSummary
 } from '../../shared/codexIpcApi'
 import type { ProjectState, ThreadProjectAssignment } from '../../shared/projects/projectTypes'
-import type { AppServerThreadRow } from './AppServerThreadClient'
+import type { CodexExperimentalFeature } from '@janole/ai-sdk-provider-codex-asp'
+import type { AppServerThreadGoal, AppServerThreadRow } from './AppServerThreadClient'
 import { normalizeLocalMediaUrls } from './localMediaUrls'
 
 export type ConversationThreadClientLike = {
@@ -23,6 +27,10 @@ export type ConversationThreadClientLike = {
   archiveThread(threadId: string): Promise<void>
   unarchiveThread(threadId: string): Promise<void>
   renameThread(threadId: string, name: string): Promise<void>
+  listExperimentalFeatures?(): Promise<CodexExperimentalFeature[]>
+  getThreadGoal?(threadId: string): Promise<AppServerThreadGoal | null>
+  setThreadGoal?(threadId: string, objective: string): Promise<AppServerThreadGoal>
+  clearThreadGoal?(threadId: string): Promise<boolean>
 }
 
 export type ConversationProjectStoreLike = {
@@ -194,9 +202,10 @@ export class ConversationApiService {
     // This is intentionally a point-in-time read. The renderer immediately
     // attaches to any active main-process run and replays the missing events.
     // Waiting here would turn a refresh into a silent full-turn delay.
-    const [projectState, thread] = await Promise.all([
+    const [projectState, thread, threadGoalResult] = await Promise.all([
       this.options.projectStore.getState(),
-      this.options.threadClient.readThreadWithFullTurns(input.conversationId)
+      this.options.threadClient.readThreadWithFullTurns(input.conversationId),
+      this.loadConversationGoal(input.conversationId)
     ])
     const messages = normalizeLocalMediaUrls(thread.messages ?? [])
 
@@ -207,8 +216,29 @@ export class ConversationApiService {
       messages,
       historyRevision: thread.updatedAt ?? null,
       projectAssignment: resolveAssignment(projectState, thread),
-      cwd: thread.cwd
+      cwd: thread.cwd,
+      threadGoalResult
     }
+  }
+
+  async getConversationGoal(conversationId: string): Promise<ThreadGoalLoadResult> {
+    return this.loadConversationGoal(conversationId)
+  }
+
+  async setConversationGoal(input: SidebarConversationGoalSetPayload): Promise<ThreadGoalSummary> {
+    if (!this.options.threadClient.setThreadGoal) {
+      throw new Error('Thread goals are not supported by this app-server')
+    }
+    return toThreadGoalSummary(
+      await this.options.threadClient.setThreadGoal(input.conversationId, input.objective)
+    )
+  }
+
+  async clearConversationGoal(conversationId: string): Promise<boolean> {
+    if (!this.options.threadClient.clearThreadGoal) {
+      throw new Error('Thread goals are not supported by this app-server')
+    }
+    return this.options.threadClient.clearThreadGoal(conversationId)
   }
 
   async archiveConversation(
@@ -248,6 +278,27 @@ export class ConversationApiService {
       collapsedGroupIds: input.collapsedGroupIds ?? this.preferences.collapsedGroupIds
     }
     return this.preferences
+  }
+
+  private async loadConversationGoal(conversationId: string): Promise<ThreadGoalLoadResult> {
+    if (!this.options.threadClient.getThreadGoal) {
+      return { status: 'unsupported', message: '当前 Codex 服务不支持任务目标' }
+    }
+    try {
+      if (this.options.threadClient.listExperimentalFeatures) {
+        const features = await this.options.threadClient.listExperimentalFeatures()
+        if (!features.some((feature) => feature.name === 'goals' && feature.enabled)) {
+          return { status: 'unsupported', message: '当前 Codex 服务未启用任务目标' }
+        }
+      }
+      const goal = await this.options.threadClient.getThreadGoal(conversationId)
+      return { status: 'loaded', goal: goal ? toThreadGoalSummary(goal) : null }
+    } catch (error) {
+      if (isUnsupportedGoalFeatureError(error)) {
+        return { status: 'unsupported', message: '当前 Codex 服务不支持任务目标' }
+      }
+      return { status: 'error', message: '无法读取已保存的任务目标' }
+    }
   }
 
   private storeObservedStartedThread(input: ObservedStartedThread): void {
@@ -501,6 +552,24 @@ function toCodexTurnInputItem(entry: unknown): CodexTurnInputItem | null {
     default:
       return null
   }
+}
+
+function toThreadGoalSummary(goal: AppServerThreadGoal): ThreadGoalSummary {
+  return {
+    threadId: goal.threadId,
+    objective: goal.objective,
+    status: goal.status,
+    tokenBudget: goal.tokenBudget,
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt
+  }
+}
+
+function isUnsupportedGoalFeatureError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  return message.includes('not supported') || message.includes('method not found')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -79,8 +79,8 @@ import {
 import {
   CodexProviderError,
   isCodedCodexProviderError,
-  type CodexProviderErrorCode
-} from '@janole/ai-sdk-provider-codex-asp'
+  type CodexProviderErrorCode,
+} from "@janole/ai-sdk-provider-codex-asp";
 ```
 
 当前恢复相关 code：
@@ -131,8 +131,8 @@ const thread = await codex.startThread({
   system: "You are a concise assistant.",
   callOptions: {
     cwd: "/absolute/project",
-    runtimeWorkspaceRoots: ["/absolute/project"]
-  }
+    runtimeWorkspaceRoots: ["/absolute/project"],
+  },
 });
 await codex.shutdown();
 ```
@@ -312,6 +312,20 @@ const result = streamText({
     model?: string;
     sandboxPolicy?: SandboxPolicy;
     summary?: "auto" | "concise" | "detailed" | "none";
+    collaborationMode?: {
+      mode: "default" | "plan";
+      settings: {
+        model: string;
+        reasoning_effort: string | null;
+        developer_instructions: string | null;
+      };
+    };
+    /** Existing-thread Goal control; it never creates a user turn. */
+    goalControlObjective?: string;
+    onThreadGoalUpdated?: (event: {
+      threadId: string;
+      goal: ThreadGoal | null;
+    }) => void | Promise<void>;
     approvals?: CodexApprovalCallbacks;
   }
 }
@@ -322,6 +336,16 @@ const result = streamText({
 1. per-call `codexCallOptions()`
 2. provider `defaultThreadSettings` / `defaultTurnSettings`
 3. app-server 默认配置
+
+### 5.1.1 Collaboration Mode 与线程 Goal
+
+`collaborationMode` 会原样写入 `turn/start.collaborationMode`；它不是追加到 user 或 system prompt 的文本。Desktop Renderer 只可提交 `default | plan` 枚举，Main 使用 `collaborationMode/list` 的 preset 和当前模型补齐完整 settings，并且每一轮都显式发送 Default 或 Plan，避免恢复 thread 后沿用旧模式。
+
+`CodexHistoryClient` 提供 `listCollaborationModes()` 及 `getThreadGoal()`、`setThreadGoal()`、`clearThreadGoal()`。无活动 owner 的读取和清除可以使用短连接；设置已有线程 Goal 必须传 `goalControlObjective`，provider 会创建 `CodexConversationSession`，依次 `thread/resume`、应用当前 thread settings，并由 `onSessionCreated` 在**同一条连接**发送 `thread/goal/set`，不发送 `turn/start`、不增加用户消息。新会话仍先完成唯一一次正常 `turn/start`，再在同一 session 写入 Goal。
+
+Goal session 使用 `goalContinuous` policy：自动 Goal turn 的 `turn/completed` 仅是一个 turn 边界，不关闭 conversation owner；终态 Goal、clear-drain、abort 或 transport error 才结束该 session。普通单轮聊天与 Goal 共享连接、审批和 packet mapper 基础设施。
+
+Goal 更新通知会通过 `onThreadGoalUpdated` 返回。调用方只能把必要的目标摘要传给 Renderer，不能把 app-server settings、provider 凭据或原始 protocol packet 透传出去。
 
 ### 5.2 Thread continuation（创建新 turn）
 
@@ -354,7 +378,7 @@ codexCallOptions({
   resumeActiveTurn: true,
   existingTurnRecoveryState,
   onExistingTurnRecoveryState: (state) => persistRecoveryState(state),
-})
+});
 ```
 
 这是一条恢复专用路径：provider 只执行 `initialize`、`initialized`、`thread/resume`，从 response 的 active turn snapshot 还原 text/item 状态，再接收同一 turn 的后续通知。它**绝不发送 `turn/start`**，也不重放旧 prompt。若 response 不含仍在运行的目标 turn，provider 以可识别的“active turn unavailable”错误结束；desktop main 必须保留已收到的历史并收敛为 `interrupted`，而不是自动开始新 turn。
@@ -381,8 +405,8 @@ const result = streamText({
       // 这里已经拿到 app-server 真实 threadId；
       // provider 随后会在同一条连接上发送首个 turn/start。
       showConversationInSidebar({ threadId, threadPath });
-    }
-  })
+    },
+  }),
 });
 ```
 
@@ -618,31 +642,31 @@ provider 当前映射规则：
 
 provider 通过 `CodexEventMapper` 把 app-server notifications 映射为 AI SDK `LanguageModelV3StreamPart`。
 
-| App Server 通知 | AI SDK stream part |
-| --- | --- |
-| `turn/started` | 确保发送 `stream-start`，记录 `turnId` |
-| `item/started` + `agentMessage` | `text-start` |
-| `item/agentMessage/delta` | `text-delta` |
-| `item/completed` + `agentMessage` | 必要时补 `text-delta`，然后 `text-end` |
-| `item/reasoning/textDelta` | `reasoning-start` / `reasoning-delta` |
-| `item/reasoning/summaryTextDelta` | `reasoning-start` / `reasoning-delta` |
-| `item/reasoning/summaryPartAdded` | `reasoning-delta`，内容为空行 |
-| `item/plan/delta` | `reasoning-start` / `reasoning-delta` |
-| `turn/plan/updated` | provider-executed `codex_plan_update` tool-call/tool-result |
-| `item/started` + `commandExecution` | provider-executed `codex_command_execution` tool-call |
-| `item/started` + `fileChange` | provider-executed `codex_file_change` tool-call |
-| `item/started` + `mcpToolCall` | provider-executed `mcp:<server>/<tool>` tool-call |
-| `item/started` + `collabAgentToolCall` | provider-executed `codex_collab_agent` tool-call |
-| `item/completed` for tracked native tool item | matching `tool-result` |
-| `item/mcpToolCall/progress` | preliminary `tool-result` with status message |
-| `item/tool/callStarted` | `tool-input-start` |
-| `item/tool/callDelta` | `tool-input-delta` |
-| `item/tool/callFinished` | `tool-input-end` |
-| `item/tool/call` 被路由进 mapper 时 | dynamic tool-call；主链路的 server request 由 tool dispatcher / cross-call handler 处理 |
-| `thread/tokenUsage/updated` | cache latest usage for final `finish` |
-| `item/completed` + `imageGeneration` | `file` part, `mediaType: "image/png"` |
-| `error` | 当前不直接 emit AI SDK error；等待 terminal `turn/completed.turn.error` |
-| `turn/completed` | close open text/reasoning/tool parts；失败时 emit `error`，随后 emit `finish` |
+| App Server 通知                               | AI SDK stream part                                                                      |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `turn/started`                                | 确保发送 `stream-start`，记录 `turnId`                                                  |
+| `item/started` + `agentMessage`               | `text-start`                                                                            |
+| `item/agentMessage/delta`                     | `text-delta`                                                                            |
+| `item/completed` + `agentMessage`             | 必要时补 `text-delta`，然后 `text-end`                                                  |
+| `item/reasoning/textDelta`                    | `reasoning-start` / `reasoning-delta`                                                   |
+| `item/reasoning/summaryTextDelta`             | `reasoning-start` / `reasoning-delta`                                                   |
+| `item/reasoning/summaryPartAdded`             | `reasoning-delta`，内容为空行                                                           |
+| `item/plan/delta`                             | `reasoning-start` / `reasoning-delta`                                                   |
+| `turn/plan/updated`                           | provider-executed `codex_plan_update` tool-call/tool-result                             |
+| `item/started` + `commandExecution`           | provider-executed `codex_command_execution` tool-call                                   |
+| `item/started` + `fileChange`                 | provider-executed `codex_file_change` tool-call                                         |
+| `item/started` + `mcpToolCall`                | provider-executed `mcp:<server>/<tool>` tool-call                                       |
+| `item/started` + `collabAgentToolCall`        | provider-executed `codex_collab_agent` tool-call                                        |
+| `item/completed` for tracked native tool item | matching `tool-result`                                                                  |
+| `item/mcpToolCall/progress`                   | preliminary `tool-result` with status message                                           |
+| `item/tool/callStarted`                       | `tool-input-start`                                                                      |
+| `item/tool/callDelta`                         | `tool-input-delta`                                                                      |
+| `item/tool/callFinished`                      | `tool-input-end`                                                                        |
+| `item/tool/call` 被路由进 mapper 时           | dynamic tool-call；主链路的 server request 由 tool dispatcher / cross-call handler 处理 |
+| `thread/tokenUsage/updated`                   | cache latest usage for final `finish`                                                   |
+| `item/completed` + `imageGeneration`          | `file` part, `mediaType: "image/png"`                                                   |
+| `error`                                       | 当前不直接 emit AI SDK error；等待 terminal `turn/completed.turn.error`                 |
+| `turn/completed`                              | close open text/reasoning/tool parts；失败时 emit `error`，随后 emit `finish`           |
 
 Error mapping：
 
@@ -742,13 +766,13 @@ AI SDK `tools` 会被转换成 `dynamicTools` schema。若 app-server 请求 `it
 
 provider 通过 `ApprovalsDispatcher` 处理 app-server 发起的 JSON-RPC server request。
 
-| App Server request | provider callback | 默认行为 |
-| --- | --- | --- |
-| `item/commandExecution/requestApproval` | `approvals.onCommandApproval` | `decline` |
-| `item/fileChange/requestApproval` | `approvals.onFileChangeApproval` | `decline` |
-| `item/tool/requestUserInput` | `approvals.onToolUserInput` | 每个问题选第一个 option |
-| `item/permissions/requestApproval` | `approvals.onPermissionsApproval` | `{ permissions: {}, scope: "turn" }`（未配置 callback 时） |
-| `mcpServer/elicitation/request` | `approvals.onElicitation` | `{ action: "accept", content: null, _meta: null }` |
+| App Server request                      | provider callback                 | 默认行为                                                   |
+| --------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `item/commandExecution/requestApproval` | `approvals.onCommandApproval`     | `decline`                                                  |
+| `item/fileChange/requestApproval`       | `approvals.onFileChangeApproval`  | `decline`                                                  |
+| `item/tool/requestUserInput`            | `approvals.onToolUserInput`       | 每个问题选第一个 option                                    |
+| `item/permissions/requestApproval`      | `approvals.onPermissionsApproval` | `{ permissions: {}, scope: "turn" }`（未配置 callback 时） |
+| `mcpServer/elicitation/request`         | `approvals.onElicitation`         | `{ action: "accept", content: null, _meta: null }`         |
 
 Command approval handler 返回：
 
@@ -757,19 +781,20 @@ type CommandApprovalDecision =
   | "accept"
   | "acceptForSession"
   | { acceptWithExecpolicyAmendment: { execpolicy_amendment: string[] } }
-  | { applyNetworkPolicyAmendment: { network_policy_amendment: { host: string; action: "allow" | "deny" } } }
+  | {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: string; action: "allow" | "deny" };
+      };
+    }
   | "decline"
-  | "cancel"
+  | "cancel";
 ```
 
 File change approval handler 返回：
 
 ```ts
 type FileChangeApprovalDecision =
-  | "accept"
-  | "acceptForSession"
-  | "decline"
-  | "cancel";
+  "accept" | "acceptForSession" | "decline" | "cancel";
 ```
 
 dasCowork 当前把这些 callback 转发到 `CodexApprovalBroker`，再由 renderer 审批面板回答。
@@ -781,7 +806,11 @@ dasCowork 当前把这些 callback 转发到 `CodexApprovalBroker`，再由 rend
 
 ```ts
 type CodexFileChangeApprovalRequest = FileChangeRequestApprovalParams & {
-  changes: Array<{ path: string; kind: "add" | "delete" | "update"; diff: string }>;
+  changes: Array<{
+    path: string;
+    kind: "add" | "delete" | "update";
+    diff: string;
+  }>;
 };
 ```
 

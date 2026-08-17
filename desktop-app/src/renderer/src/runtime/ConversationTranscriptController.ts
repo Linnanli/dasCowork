@@ -56,8 +56,7 @@ export type SteeringUserMessage = {
 }
 
 export type ConversationTranscriptMessage =
-  | ConversationTranscriptRegularMessage
-  | SteeringUserMessage
+  ConversationTranscriptRegularMessage | SteeringUserMessage
 
 export type ConversationTranscriptSnapshot = {
   readonly messages: readonly ConversationTranscriptMessage[]
@@ -88,6 +87,8 @@ type ActiveTurnLedger = {
   readonly sourceItemSequence: Map<string, number>
   readonly startedPartKeys: Set<string>
   readonly partSourceItemIds: Array<string | undefined>
+  /** Number of cumulative AI SDK parts that belong to earlier automatic turns. */
+  readonly streamMessagePartOffset: number
   readonly steeringMessages: SteeringUserMessage[]
   readonly unmatchedSteeringItems: Extract<
     CodexTurnLifecycleEvent,
@@ -195,6 +196,23 @@ export class ConversationTranscriptController {
     await accepted
   }
 
+  /**
+   * Resume a persisted thread and set its Goal without appending an empty or
+   * synthetic user message to the visible transcript.
+   */
+  async startGoalControlUntilAccepted(): Promise<void> {
+    this.assertReady()
+    const accepted = new Promise<void>((resolve, reject) => {
+      this.sendAcceptanceWaiter = { resolve, reject }
+    })
+
+    void this.startRequest('goal-control', undefined, {}).catch((error: unknown) => {
+      this.rejectSendAcceptance(toError(error))
+    })
+
+    await accepted
+  }
+
   async editMessage(
     parentId: string | null,
     message: UIMessage,
@@ -257,6 +275,7 @@ export class ConversationTranscriptController {
     this.activeTurn = {
       turnId: localTurnId,
       turnStartedAtMs: Date.now(),
+      streamMessagePartOffset: 0,
       retainedToolParts: new Map(),
       assistantIdentityScope: localTurnId,
       initialAssistantSourceMessageId: assistantSourceMessageId(localTurnId, 'initial'),
@@ -433,6 +452,23 @@ export class ConversationTranscriptController {
         ledger.steeringMessages[index] = { ...steering, targetTurnId: event.turnId }
       }
     } else if (event.threadId !== ledger.threadId || event.turnId !== ledger.turnId) {
+      // A Goal owner can start another automatic turn without ending its
+      // stream. Seal the completed turn before accepting the next one so
+      // each automatic response has an independent assistant transcript.
+      if (
+        event.type !== 'turn-started' ||
+        event.threadId !== ledger.threadId ||
+        ledger.outcome !== 'completed'
+      ) {
+        return
+      }
+      this.sealCompletedTurnForContinuation(ledger)
+      this.activeTurn = newActiveTurnLedger(
+        event.threadId,
+        event.turnId,
+        ledger.assistantMessage?.parts.length ?? 0
+      )
+      this.emit()
       return
     }
     if (
@@ -487,7 +523,7 @@ export class ConversationTranscriptController {
   }
 
   private async startRequest(
-    trigger: 'submit-message' | 'regenerate-message',
+    trigger: 'submit-message' | 'regenerate-message' | 'goal-control',
     messageId: string | undefined,
     options: ChatRequestOptions
   ): Promise<void> {
@@ -495,6 +531,7 @@ export class ConversationTranscriptController {
     this.activeTurn = {
       turnId: localTurnId,
       turnStartedAtMs: Date.now(),
+      streamMessagePartOffset: 0,
       retainedToolParts: new Map(),
       assistantIdentityScope: localTurnId,
       initialAssistantSourceMessageId: assistantSourceMessageId(localTurnId, 'initial'),
@@ -517,7 +554,10 @@ export class ConversationTranscriptController {
     try {
       const stream = await this.transport.sendMessages({
         chatId: this.id,
-        trigger,
+        // AI SDK's public ChatTransport union only names message submission
+        // and regeneration. The Electron bridge additionally owns this
+        // non-message control trigger and validates it again in Main.
+        trigger: trigger as Parameters<typeof this.transport.sendMessages>[0]['trigger'],
         messageId,
         messages: this.transportMessages(),
         abortSignal: abortController.signal,
@@ -560,7 +600,7 @@ export class ConversationTranscriptController {
     })) {
       if (!this.activeTurn) continue
       this.activeTurn.assistantMessage = mergeRetainedToolParts(
-        message,
+        messageForActiveTurn(message, this.activeTurn),
         this.activeTurn.retainedToolParts
       )
       this.alignPartSourceItemIds(this.activeTurn.assistantMessage.parts.length)
@@ -760,6 +800,15 @@ export class ConversationTranscriptController {
     this.emit()
   }
 
+  private sealCompletedTurnForContinuation(ledger: ActiveTurnLedger): void {
+    const acceptedSteeringMessages = ledger.steeringMessages.filter(
+      (message) => message.status === 'accepted'
+    )
+    ledger.steeringMessages.splice(0, ledger.steeringMessages.length, ...acceptedSteeringMessages)
+    this.baseMessages = removeEmptyAssistantPlaceholders(this.currentMessages(), ledger.turnId)
+    this.activeTurn = undefined
+  }
+
   private currentMessages(): ConversationTranscriptMessage[] {
     const ledger = this.activeTurn
     if (!ledger) return [...this.baseMessages]
@@ -918,6 +967,43 @@ export class ConversationTranscriptController {
       version: this.version
     }
   }
+}
+
+function newActiveTurnLedger(
+  threadId: string,
+  turnId: string,
+  streamMessagePartOffset = 0
+): ActiveTurnLedger {
+  return {
+    threadId,
+    turnId,
+    turnStartedAtMs: Date.now(),
+    retainedToolParts: new Map(),
+    assistantIdentityScope: turnId,
+    initialAssistantSourceMessageId: assistantSourceMessageId(turnId, 'initial'),
+    assistantSourceMessageIdsAfterSteer: new Map(),
+    sourceItemOrder: [],
+    sourceItemIds: new Set(),
+    sourceItemSequence: new Map(),
+    startedPartKeys: new Set(),
+    partSourceItemIds: [],
+    streamMessagePartOffset,
+    steeringMessages: [],
+    unmatchedSteeringItems: []
+  }
+}
+
+function messageForActiveTurn(message: UIMessage, ledger: ActiveTurnLedger): UIMessage {
+  // `readUIMessageStream` keeps a cumulative message while a stream stays
+  // open. Goal-continuous mode intentionally spans several turns, so after a
+  // lifecycle boundary retain only the trailing parts observed by the new
+  // ledger instead of leaking the previous turn into its assistant message.
+  const currentTurnParts = message.parts.slice(ledger.streamMessagePartOffset)
+  const activePartCount = ledger.partSourceItemIds.length
+  if (activePartCount === 0 || currentTurnParts.length <= activePartCount) {
+    return { ...message, parts: currentTurnParts }
+  }
+  return { ...message, parts: currentTurnParts.slice(-activePartCount) }
 }
 
 function assertUniqueRenderIds(

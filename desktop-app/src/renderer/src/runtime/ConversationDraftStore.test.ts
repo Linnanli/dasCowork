@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   ConversationDraftStore,
   conversationDraftStorageKey,
-  legacyConversationDraftStorageKey
+  legacyConversationDraftStorageKey,
+  previousConversationDraftStorageKey
 } from './ConversationDraftStore'
 
 class MemoryStorage {
@@ -51,7 +52,7 @@ describe('ConversationDraftStore', () => {
     expect(storage.getItem(conversationDraftStorageKey)).not.toContain('file contents')
   })
 
-  it('migrates legacy text-only drafts into the v2 in-memory shape', () => {
+  it('migrates legacy text-only drafts into the v3 in-memory shape', () => {
     const storage = new MemoryStorage()
     storage.setItem(
       legacyConversationDraftStorageKey,
@@ -61,6 +62,39 @@ describe('ConversationDraftStore', () => {
     const store = new ConversationDraftStore(storage)
     expect(store.get('thread-a')).toBe('legacy draft')
     expect(store.getAttachments('thread-a')).toEqual([])
+    expect(store.getComposerModeKind('thread-a')).toBe('default')
+  })
+
+  it('migrates v2 drafts with the default composer mode', () => {
+    const storage = new MemoryStorage()
+    storage.setItem(
+      previousConversationDraftStorageKey,
+      JSON.stringify({
+        version: 2,
+        drafts: {
+          'thread-a': {
+            text: 'existing draft',
+            attachments: []
+          }
+        }
+      })
+    )
+
+    const store = new ConversationDraftStore(storage)
+
+    expect(store.get('thread-a')).toBe('existing draft')
+    expect(store.getComposerModeKind('thread-a')).toBe('default')
+  })
+
+  it('persists plan mode even when the draft is empty', () => {
+    const storage = new MemoryStorage()
+    const store = new ConversationDraftStore(storage)
+    store.setComposerModeKind('thread-a', 'plan')
+
+    expect(new ConversationDraftStore(storage).getComposerModeKind('thread-a')).toBe('plan')
+
+    store.setComposerModeKind('thread-a', 'default')
+    expect(storage.getItem(conversationDraftStorageKey)).not.toContain('thread-a')
   })
 
   it('migrates a local draft to the bound thread and removes the local key', () => {

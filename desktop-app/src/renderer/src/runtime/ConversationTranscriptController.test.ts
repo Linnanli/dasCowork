@@ -48,6 +48,77 @@ describe('ConversationTranscriptController', () => {
     await vi.waitFor(() => expect(controller.getSnapshot().status).toBe('ready'))
   })
 
+  it('starts existing Goal control without appending a synthetic user message', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    const start = controller.startGoalControlUntilAccepted()
+
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    expect(transport.lastTrigger).toBe('goal-control')
+    expect(controller.getSnapshot().messages).not.toContainEqual(
+      expect.objectContaining({ role: 'user' })
+    )
+
+    controller.handleStreamAccepted()
+    await expect(start).resolves.toBeUndefined()
+    expect(controller.getSnapshot().status).toBe('streaming')
+
+    beginCanonicalTurn(controller, 'existing-goal-turn')
+    completeCanonicalTurn(controller, 'existing-goal-turn', 'completed', 2)
+    transport.close()
+    await vi.waitFor(() => expect(controller.getSnapshot().status).toBe('ready'))
+  })
+
+  it('seals each automatic Goal turn into a separate assistant transcript message', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    const send = controller.sendMessage({
+      id: 'goal-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'finish the work' }]
+    })
+
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    beginCanonicalTurn(controller, 'goal-turn-one')
+    transport.enqueue({ type: 'start', messageId: 'goal-assistant-one' })
+    transport.enqueue({ type: 'text-start', id: 'goal-text-one' })
+    transport.enqueue({ type: 'text-delta', id: 'goal-text-one', delta: 'first turn' })
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().messages.at(-1)?.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: 'first turn' })
+      ])
+    )
+    completeCanonicalTurn(controller, 'goal-turn-one', 'completed', 2)
+
+    controller.handleTurnLifecycle({
+      type: 'turn-started',
+      sequence: 1,
+      threadId: 'thread-one',
+      turnId: 'goal-turn-two'
+    })
+    transport.enqueue({ type: 'start', messageId: 'goal-assistant-two' })
+    transport.enqueue({ type: 'text-start', id: 'goal-text-two' })
+    transport.enqueue({ type: 'text-delta', id: 'goal-text-two', delta: 'second turn' })
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().messages.at(-1)?.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: 'second turn' })
+      ])
+    )
+    completeCanonicalTurn(controller, 'goal-turn-two', 'completed', 2)
+    transport.enqueue({ type: 'finish' })
+    transport.close()
+    await send
+
+    expect(
+      controller
+        .getSnapshot()
+        .messages.filter((message) => message.role === 'assistant')
+        .map((message) =>
+          message.parts.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        )
+    ).toEqual([['first turn'], ['second turn']])
+  })
+
   it('rejects a start-only send when the stream fails before acceptance', async () => {
     const transport = new ControlledTransport()
     const controller = createController(transport)
@@ -1521,14 +1592,17 @@ class ControlledTransport {
   private closed = false
   sendCount = 0
   lastBody: unknown
+  lastTrigger: string | undefined
   nextReconnectResult: 'stream' | 'null' = 'stream'
 
   async sendMessages(options?: {
     abortSignal?: AbortSignal
     body?: unknown
+    trigger?: string
   }): Promise<ReadableStream<UIMessageChunk>> {
     this.sendCount += 1
     this.lastBody = options?.body
+    this.lastTrigger = options?.trigger
     this.closed = false
     return new ReadableStream<UIMessageChunk>({
       start: (controller) => {

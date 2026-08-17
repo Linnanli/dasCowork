@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { expect, test } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import {
   attachDiagnostics,
@@ -23,7 +23,7 @@ import { assistantMessageResponse, startMockBackend } from './support/mockBacken
 
 const execFile = promisify(execFileCallback)
 
-test('uses one Composer panel for slash commands and opens MCP content without sending text', async ({
+test('uses one Composer panel for slash and @ commands without sending text', async ({
   browserName
 }, testInfo) => {
   test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
@@ -71,6 +71,152 @@ test('uses one Composer panel for slash commands and opens MCP content without s
 
     await expect.poll(() => composerInput.textContent()).toBe('')
     expect(backend.requests).toHaveLength(requestCountBeforeNewChat)
+
+    await composerInput.fill('/goal')
+    await expect(
+      commandPanel.getByRole('option', { name: /目标.*设置要持续追求的目标/ })
+    ).toBeVisible()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.aui-lexical-placeholder').last()).toHaveText(
+      '描述你的目标，定义可衡量的成果，以获得最佳效果'
+    )
+    await expect(page.getByRole('button', { name: '退出目标编辑' })).toBeVisible()
+
+    await composerInput.fill('/plan')
+    await expect(commandPanel.getByRole('option', { name: /计划模式.*开启计划模式/ })).toBeVisible()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.aui-lexical-placeholder').last()).toHaveText(
+      '描述你的任务以生成计划…'
+    )
+    await expect(page.getByRole('button', { name: '关闭计划模式' })).toBeVisible()
+
+    await page.getByRole('button', { name: '关闭计划模式' }).click()
+    await expect(page.locator('.aui-lexical-placeholder').last()).toHaveText(
+      '输入消息（@ 提及工具，/ 输入命令）'
+    )
+
+    await composerInput.fill('@')
+    const contextPanel = page.getByRole('listbox', { name: '添加上下文' })
+    await expect(
+      contextPanel.getByRole('option', { name: /目标.*设置要持续追求的目标/ })
+    ).toBeVisible()
+    await expect(contextPanel.getByRole('option', { name: /计划.*开启计划模式/ })).toBeVisible()
+    await contextPanel.getByRole('option', { name: /目标.*设置要持续追求的目标/ }).click()
+    await expect(page.locator('.aui-lexical-placeholder').last()).toHaveText(
+      '描述你的目标，定义可衡量的成果，以获得最佳效果'
+    )
+
+    await composerInput.fill('@')
+    await expect(contextPanel.getByRole('option', { name: /计划.*开启计划模式/ })).toBeVisible()
+    await contextPanel.getByRole('option', { name: /计划.*开启计划模式/ }).click()
+    await expect(page.locator('.aui-lexical-placeholder').last()).toHaveText(
+      '描述你的任务以生成计划…'
+    )
+
+    expect(backend.requests).toHaveLength(requestCountBeforeNewChat)
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('sends Plan as a real turn/start collaboration mode packet', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [assistantMessageResponse('plan-mode', 'plan-mode-message', 'Plan response')]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await ensureLocalProjectSelected(page)
+
+    const composerInput = page.locator('.aui-lexical-input[contenteditable="true"]').last()
+    await composerInput.fill('/plan')
+    await expect(
+      page.getByRole('listbox', { name: '命令' }).getByRole('option', { name: /计划模式/ })
+    ).toBeVisible()
+    await page.keyboard.press('Enter')
+    await sendComposerMessage(page, '为这项工作拟定一个计划。')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Plan response')
+
+    await expect
+      .poll(() => logs.some((line) => line.includes('"debug":"turn/start"')), {
+        timeout: 10_000
+      })
+      .toBe(true)
+    const turnStartPacket = logs.findLast((line) => line.includes('"debug":"turn/start"'))
+    expect(turnStartPacket).toContain('"collaborationMode":{"mode":"plan"')
+    expect(turnStartPacket).toContain('"developer_instructions":null')
+  } finally {
+    await attachDiagnostics(testInfo, logs, backend, app)
+    await closeApp(app)
+    await backend.close()
+  }
+})
+
+test('resumes an existing conversation Goal without adding a user turn', async ({
+  browserName
+}, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Electron E2E runs through Chromium')
+
+  const backend = await startMockBackend({
+    responses: [
+      assistantMessageResponse(
+        'existing-goal-initial',
+        'existing-goal-initial-message',
+        'Initial reply'
+      ),
+      assistantMessageResponse(
+        'existing-goal-continuation',
+        'existing-goal-continuation-message',
+        'Goal reply'
+      )
+    ]
+  })
+  const logs: string[] = []
+  let app: ElectronApplication | undefined
+
+  try {
+    app = await launchApp(backend, logs)
+    const page = await app.firstWindow()
+    collectRendererLogs(page, logs)
+    await ensureLocalProjectSelected(page)
+    await sendComposerMessage(page, '先创建这个已有会话。')
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Initial reply')
+
+    const turnStartCountBeforeGoal = logs.filter((line) =>
+      line.includes('"debug":"turn/start"')
+    ).length
+    const composerInput = page.locator('.aui-lexical-input[contenteditable="true"]').last()
+    await composerInput.fill('/goal')
+    await expect(
+      page.getByRole('listbox', { name: '命令' }).getByRole('option', { name: /目标/ })
+    ).toBeVisible()
+    await page.keyboard.press('Enter')
+    await composerInput.fill('继续完成这个已有任务。')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+
+    await expect
+      .poll(() => logs.some((line) => line.includes('"method":"thread/goal/set"')), {
+        timeout: 10_000
+      })
+      .toBe(true)
+    const goalControlLogs = logs.join('\n')
+    expect(goalControlLogs.indexOf('"debug":"thread/resume"')).toBeLessThan(
+      goalControlLogs.indexOf('"method":"thread/goal/set"')
+    )
+    expect(logs.filter((line) => line.includes('"debug":"turn/start"')).length).toBe(
+      turnStartCountBeforeGoal
+    )
+    await expect(page.getByRole('button', { name: '清除目标' })).toBeVisible()
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)

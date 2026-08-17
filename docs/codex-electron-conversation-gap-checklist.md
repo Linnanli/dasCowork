@@ -268,22 +268,19 @@
 
 ### P1-01 Goal、Plan、Review 模式与运行参数
 
-- [ ] Composer 支持 Goal、Plan 和 Code Review 模式。
+- [x] Composer 的 `/Goal` 与 `/Plan` 使用既有 slash command registry，分别支持独立编辑态/持久化 Goal 和 Default/Plan 模式；Goal、Plan footer 的关闭交互、动态 placeholder、线程恢复与 Goal 通知已接入。
+- [x] Plan 由 Main 根据 `collaborationMode/list` preset 构造完整 `turn/start.collaborationMode`；Renderer 不能提交 developer instructions 或完整 mode object，退出 Plan 也会显式发送 Default。
+- [x] Goal 通过 `thread/goal/get|set|clear` 持久化。首轮在同一 provider session 的 `turn/start` 成功后写入；已有线程按 `resume -> settings -> goal/set` 在同一 owner 上处理，不新增用户 turn；普通打开会话时读取失败不会阻断历史。
+- [ ] Code Review 模式。
 - [ ] Plan 完成后可明确选择进入实施。
 - [ ] Review 可选择未提交改动或与基准分支比较。
 - [ ] 模型选择器能够设置并实际传递 reasoning effort。
 - [ ] 支持用户配置审批策略、sandbox 范围和人格。
 - [ ] `/model`、`/reasoning`、`/plan` 和 Skill 命令具有真实行为。
 - [ ] 删除或实现当前三个空的 Slash Command，禁止保留无行为入口。
-- [ ] 覆盖模式切换、参数传递和 thread resume 后参数一致性的测试。
+- [x] 覆盖 Goal/Plan 切换、可信请求边界、preset 解析、Goal 读写/通知和 thread resume 后的显式 mode 传递；真实 Renderer → IPC → Main → Provider → app-server E2E 已验证 Plan 参数与已有线程 Goal 的无额外用户 turn 时序。
 
-状态：**部分实现**
-
-当前证据：
-
-- [当前三个 Slash Command 都执行空函数](../desktop-app/src/renderer/src/App.tsx#L249)
-- [Composer 当前只接入模型选择](../desktop-app/src/renderer/src/App.tsx#L2111)
-- [provider 当前固定 approval 与 sandbox 设置](../desktop-app/src/main/codexAspProvider.ts#L45)
+状态：**部分实现（2026-08-17）**。本轮范围和设计记录见 [Goal/Plan parity plan](../.omx/plans/goal-plan-composer-reference-parity-plan.md)。
 
 参考证据：
 

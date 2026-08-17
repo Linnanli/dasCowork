@@ -1,5 +1,8 @@
-const draftStorageKey = 'das-cowork.conversation-drafts.v2'
+const draftStorageKey = 'das-cowork.conversation-drafts.v3'
+const previousDraftStorageKey = 'das-cowork.conversation-drafts.v2'
 const legacyDraftStorageKey = 'das-cowork.conversation-drafts.v1'
+
+export type ConversationComposerModeKind = 'default' | 'plan'
 
 export type ConversationDraftAttachment = {
   capabilityToken?: string
@@ -11,12 +14,20 @@ export type ConversationDraftAttachment = {
 
 type ConversationDraftRecord = {
   attachments: ConversationDraftAttachment[]
+  composerModeKind: ConversationComposerModeKind
   text: string
 }
 
 type DraftStoragePayload = {
-  version: 2
+  version: 3
   drafts: Record<string, ConversationDraftRecord>
+}
+
+type PreviousConversationDraftRecord = Omit<ConversationDraftRecord, 'composerModeKind'>
+
+type PreviousDraftStoragePayload = {
+  version: 2
+  drafts: Record<string, PreviousConversationDraftRecord>
 }
 
 type LegacyDraftStoragePayload = {
@@ -43,11 +54,16 @@ export class ConversationDraftStore {
     return this.drafts[identity]?.attachments ?? []
   }
 
+  getComposerModeKind(identity: string): ConversationComposerModeKind {
+    return this.drafts[identity]?.composerModeKind ?? 'default'
+  }
+
   set(identity: string, text: string): void {
     const current = this.drafts[identity]
     this.setRecord(identity, {
       text,
-      attachments: current?.attachments ?? []
+      attachments: current?.attachments ?? [],
+      composerModeKind: current?.composerModeKind ?? 'default'
     })
   }
 
@@ -55,7 +71,17 @@ export class ConversationDraftStore {
     const current = this.drafts[identity]
     this.setRecord(identity, {
       text: current?.text ?? '',
-      attachments: dedupeAttachments(attachments)
+      attachments: dedupeAttachments(attachments),
+      composerModeKind: current?.composerModeKind ?? 'default'
+    })
+  }
+
+  setComposerModeKind(identity: string, composerModeKind: ConversationComposerModeKind): void {
+    const current = this.drafts[identity]
+    this.setRecord(identity, {
+      text: current?.text ?? '',
+      attachments: current?.attachments ?? [],
+      composerModeKind
     })
   }
 
@@ -84,7 +110,11 @@ export class ConversationDraftStore {
 
   private setRecord(identity: string, record: ConversationDraftRecord): void {
     const current = this.drafts[identity]
-    if (record.text.length === 0 && record.attachments.length === 0) {
+    if (
+      record.text.length === 0 &&
+      record.attachments.length === 0 &&
+      record.composerModeKind === 'default'
+    ) {
       this.clear(identity)
       return
     }
@@ -95,7 +125,7 @@ export class ConversationDraftStore {
 
   private persist(): void {
     if (!this.storage) return
-    const payload: DraftStoragePayload = { version: 2, drafts: this.drafts }
+    const payload: DraftStoragePayload = { version: 3, drafts: this.drafts }
     try {
       this.storage.setItem(draftStorageKey, JSON.stringify(payload))
     } catch {
@@ -107,22 +137,55 @@ export class ConversationDraftStore {
 function readDrafts(storage: StorageLike | undefined): Record<string, ConversationDraftRecord> {
   if (!storage) return {}
   try {
-    const raw = storage.getItem(draftStorageKey)
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<DraftStoragePayload>
-      if (parsed.version === 2 && isDraftRecordMap(parsed.drafts)) return cloneDrafts(parsed.drafts)
-    }
+    const current = readCurrentDrafts(storage)
+    if (current) return current
+
+    const previous = readPreviousDrafts(storage)
+    if (previous) return previous
 
     const legacyRaw = storage.getItem(legacyDraftStorageKey)
     if (!legacyRaw) return {}
     const legacy = JSON.parse(legacyRaw) as Partial<LegacyDraftStoragePayload>
     if (legacy.version !== 1 || !isLegacyDraftRecord(legacy.drafts)) return {}
     return Object.fromEntries(
-      Object.entries(legacy.drafts).map(([identity, text]) => [identity, { text, attachments: [] }])
+      Object.entries(legacy.drafts).map(([identity, text]) => [
+        identity,
+        { text, attachments: [], composerModeKind: 'default' }
+      ])
     )
   } catch {
     return {}
   }
+}
+
+function readCurrentDrafts(
+  storage: StorageLike
+): Record<string, ConversationDraftRecord> | undefined {
+  const raw = storage.getItem(draftStorageKey)
+  if (!raw) return undefined
+  const parsed = JSON.parse(raw) as Partial<DraftStoragePayload>
+  return parsed.version === 3 && isDraftRecordMap(parsed.drafts)
+    ? cloneDrafts(parsed.drafts)
+    : undefined
+}
+
+function readPreviousDrafts(
+  storage: StorageLike
+): Record<string, ConversationDraftRecord> | undefined {
+  const raw = storage.getItem(previousDraftStorageKey)
+  if (!raw) return undefined
+  const parsed = JSON.parse(raw) as Partial<PreviousDraftStoragePayload>
+  if (parsed.version !== 2 || !isPreviousDraftRecordMap(parsed.drafts)) return undefined
+  return Object.fromEntries(
+    Object.entries(parsed.drafts).map(([identity, draft]) => [
+      identity,
+      {
+        text: draft.text,
+        attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+        composerModeKind: 'default'
+      }
+    ])
+  )
 }
 
 function cloneDrafts(
@@ -131,7 +194,11 @@ function cloneDrafts(
   return Object.fromEntries(
     Object.entries(drafts).map(([identity, draft]) => [
       identity,
-      { text: draft.text, attachments: draft.attachments.map((attachment) => ({ ...attachment })) }
+      {
+        text: draft.text,
+        attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+        composerModeKind: draft.composerModeKind
+      }
     ])
   )
 }
@@ -147,8 +214,24 @@ function isDraftRecord(value: unknown): value is ConversationDraftRecord {
   return (
     typeof record.text === 'string' &&
     Array.isArray(record.attachments) &&
-    record.attachments.every(isDraftAttachment)
+    record.attachments.every(isDraftAttachment) &&
+    (record.composerModeKind === 'default' || record.composerModeKind === 'plan')
   )
+}
+
+function isPreviousDraftRecordMap(
+  value: unknown
+): value is Record<string, PreviousConversationDraftRecord> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.values(value).every((draft) => {
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return false
+    const record = draft as Partial<PreviousConversationDraftRecord>
+    return (
+      typeof record.text === 'string' &&
+      Array.isArray(record.attachments) &&
+      record.attachments.every(isDraftAttachment)
+    )
+  })
 }
 
 function isDraftAttachment(value: unknown): value is ConversationDraftAttachment {
@@ -185,6 +268,7 @@ function dedupeAttachments(
 function sameRecord(left: ConversationDraftRecord, right: ConversationDraftRecord): boolean {
   return (
     left.text === right.text &&
+    left.composerModeKind === right.composerModeKind &&
     JSON.stringify(left.attachments) === JSON.stringify(right.attachments)
   )
 }
@@ -198,4 +282,5 @@ function safeLocalStorage(): Storage | undefined {
 }
 
 export const conversationDraftStorageKey = draftStorageKey
+export const previousConversationDraftStorageKey = previousDraftStorageKey
 export const legacyConversationDraftStorageKey = legacyDraftStorageKey

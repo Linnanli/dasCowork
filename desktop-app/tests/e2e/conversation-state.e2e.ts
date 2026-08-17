@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import { planAssert } from '../../scripts/lib/test-plan-assertions.mjs'
 
@@ -247,7 +247,9 @@ test('M09/E12/F16 @recovery restores app-server history and delivers a queued fo
       scenarioId: 'M09',
       assertionId: 'turn started 数量',
       assertion: () =>
-        expect.poll(() => logs.filter((line) => line.includes('"method":"turn/started"')).length).toBe(2)
+        expect
+          .poll(() => logs.filter((line) => line.includes('"method":"turn/started"')).length)
+          .toBe(2)
     })
     await planAssert({
       scenarioId: 'M09',
@@ -413,7 +415,9 @@ test('M09/E12/F16 @recovery restores app-server history and delivers a queued fo
         ).toEqual([])
         expect(logs.filter((line) => /unhandled rejection/i.test(line))).toEqual([])
         await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
-        await expect(page.locator('.aui-lexical-input[contenteditable="true"]').last()).toBeEditable()
+        await expect(
+          page.locator('.aui-lexical-input[contenteditable="true"]').last()
+        ).toBeEditable()
       }
     })
   } finally {

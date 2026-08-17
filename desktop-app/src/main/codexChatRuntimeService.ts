@@ -1,11 +1,6 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import type {
-  LanguageModelV3FilePart,
-  LanguageModelV3Prompt,
-  LanguageModelV3TextPart
-} from '@ai-sdk/provider'
 import {
   convertToModelMessages,
   streamText as aiStreamText,
@@ -19,6 +14,7 @@ import {
   codexCallOptions,
   createCodexHistoryClient,
   type CodexCallOptions,
+  type CollaborationModeMask,
   type CodexAgentLifecycleEvent,
   type CodexLanguageModelSettings,
   type CodexModelProviderInfo,
@@ -30,6 +26,8 @@ import {
   type CodexSteerResult,
   type CodexTurnLifecycleEvent as ProviderTurnLifecycleEvent,
   type CodexTurnDiffUpdatedEvent,
+  type CodexThreadGoalUpdatedEvent,
+  type CodexThreadSettingsUpdatedEvent,
   type CommandApprovalHandler,
   type FileChangeApprovalHandler,
   type PermissionsApprovalHandler
@@ -61,10 +59,12 @@ import type {
   CodexChatStreamError,
   CodexChatStreamEvent,
   CodexChatTerminalEvent,
+  ComposerModeKind,
   CodexTurnLifecycleEvent,
   CodexModel,
   CodexModelList,
-  CodexStatus
+  CodexStatus,
+  ThreadGoalSummary
 } from '../shared/codexIpcApi'
 import type { ThreadProjectAssignment } from '../shared/projects/projectTypes'
 import type { LocalGitTarget } from '../shared/localGitApi'
@@ -115,16 +115,32 @@ type StreamTextLike = (input: {
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
+  onThreadSettingsUpdated?: CodexCallOptions['onThreadSettingsUpdated']
+  onThreadGoalUpdated?: CodexCallOptions['onThreadGoalUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
+  collaborationMode?: CodexCallOptions['collaborationMode']
+  goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
+  goalControlObjective?: CodexCallOptions['goalControlObjective']
+  goalContinuous?: CodexCallOptions['goalContinuous']
   approvals?: CodexCallOptions['approvals']
   onProviderToolCall?: (toolName: string) => void
 }) => Promise<StreamTextLikeResult> | StreamTextLikeResult
+
+/**
+ * Keep the main process on its declared provider boundary. The provider owns
+ * the AI SDK prompt type; Main only needs the prompt accepted by its safe
+ * session façade when it forwards a claimed follow-up.
+ */
+type CodexSteerPrompt = Parameters<CodexSession['steerPrompt']>[0]
+type CodexSteerPromptUserMessage = Extract<CodexSteerPrompt[number], { role: 'user' }>
+type CodexSteerPromptContentPart = CodexSteerPromptUserMessage['content'][number]
 
 type ActiveConversationRun = {
   runId: string
   conversationId: string
   baseMessages: readonly UIMessage[]
+  runKind: 'single-turn' | 'goal'
   threadId?: string
   turnId?: string
   existingTurnRecoveryState?: CodexExistingTurnRecoveryState
@@ -132,6 +148,9 @@ type ActiveConversationRun = {
   turnOutcome?: Extract<CodexTurnLifecycleEvent, { type: 'turn-completed' }>['outcome']
   canonicalOutcomeSource?: 'notification' | 'history-reconciliation'
   session?: CodexSession
+  initialThreadGoalApplied?: boolean
+  goalReachedTerminalStatus?: boolean
+  lastCompletedGoalOutcome?: Extract<CodexTurnLifecycleEvent, { type: 'turn-completed' }>['outcome']
   abortController: AbortController
   subscribers: Map<string, CodexPortLike>
   eventJournal: CodexChatStreamEnvelope[]
@@ -217,6 +236,7 @@ export type CodexChatRuntimeServiceOptions = {
     threadId: string,
     turnId: string
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
+  collaborationModeClient?: Pick<CodexHistoryClient, 'listCollaborationModes'>
   turnDiffStore?: TurnDiffStoreWriter
 }
 
@@ -253,8 +273,7 @@ export class CodexChatRuntimeService {
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
   private readonly onThreadBound:
-    | ((conversationId: string, threadId: string) => void | Promise<void>)
-    | undefined
+    ((conversationId: string, threadId: string) => void | Promise<void>) | undefined
   private readonly onTurnCompleted: (() => void) | undefined
   private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly steerConfirmationTimeoutMs: number
@@ -270,6 +289,11 @@ export class CodexChatRuntimeService {
     turnId: string
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
   private readonly turnDiffStore: TurnDiffStoreWriter | undefined
+  private readonly collaborationModeClient:
+    Pick<CodexHistoryClient, 'listCollaborationModes'> | undefined
+  private collaborationModeMasks: readonly CollaborationModeMask[] | undefined
+  private collaborationModeMasksPromise:
+    Promise<readonly CollaborationModeMask[] | undefined> | undefined
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private readonly recentTerminalRuns = new Map<string, ActiveConversationRun>()
   private acceptingStartAdmissions = true
@@ -303,6 +327,7 @@ export class CodexChatRuntimeService {
     this.projectService = options.projectService
     this.projectStore = options.projectStore
     this.turnDiffStore = options.turnDiffStore
+    this.collaborationModeClient = options.collaborationModeClient
     const historyClient = options.connection
       ? createCodexHistoryClient({
           clientInfo: {
@@ -404,6 +429,43 @@ export class CodexChatRuntimeService {
 
     this.selectedModelId = modelId
     return { selectedModelId: modelId }
+  }
+
+  private async resolveCollaborationMode(
+    mode: ComposerModeKind,
+    model: string
+  ): Promise<NonNullable<CodexCallOptions['collaborationMode']>> {
+    const masks = await this.loadCollaborationModeMasks()
+    const preset = masks?.find((candidate) => candidate.mode === mode)
+    if (mode === 'plan' && masks && !preset) {
+      throw new Error('当前 Codex 服务不支持计划模式')
+    }
+    return collaborationModeForComposerMode(
+      mode,
+      preset?.model ?? model,
+      preset?.reasoning_effort ?? null
+    )
+  }
+
+  private async loadCollaborationModeMasks(): Promise<
+    readonly CollaborationModeMask[] | undefined
+  > {
+    if (this.collaborationModeMasks) return this.collaborationModeMasks
+    if (!this.collaborationModeClient) return undefined
+    this.collaborationModeMasksPromise ??= this.collaborationModeClient
+      .listCollaborationModes()
+      .then((masks) => {
+        this.collaborationModeMasks = masks
+        return masks
+      })
+      .catch((error) => {
+        // Older app-server builds may not expose the catalog. Keep the
+        // explicit Default/Plan packet fallback for compatibility, while a
+        // successful catalog response remains authoritative when available.
+        console.warn('failed to load collaboration mode presets', error)
+        return undefined
+      })
+    return this.collaborationModeMasksPromise
   }
 
   async generateCommitMessage(input: {
@@ -575,9 +637,15 @@ export class CodexChatRuntimeService {
         ? await this.modelCatalog.resolveClientModel(modelId)
         : undefined
       const streamModelId = clientModel?.model_id ?? modelId
-      const localAttachmentCount = await validateLocalAttachmentsInLatestUserMessage(
-        effectiveRequest.messages
+      const threadGoalDraft = threadGoalDraftFromRequest(effectiveRequest)
+      const threadGoalControl = threadGoalControlFromRequest(effectiveRequest)
+      const collaborationMode = await this.resolveCollaborationMode(
+        effectiveRequest.body?.composerModeKind ?? 'default',
+        streamModelId
       )
+      const localAttachmentCount = threadGoalControl
+        ? 0
+        : await validateLocalAttachmentsInLatestUserMessage(effectiveRequest.messages)
       const conversation = await startConversation({
         request: effectiveRequest,
         projectService: this.projectService
@@ -704,6 +772,30 @@ export class CodexChatRuntimeService {
         if (activeRun.turnId && activeRun.turnId !== event.turnId) return
         activeRun.latestTurnDiff = event
       }
+      const onThreadGoalUpdated = (event: CodexThreadGoalUpdatedEvent): void => {
+        if (activeRun.terminalDelivered) return
+        if (activeRun.threadId && activeRun.threadId !== event.threadId) return
+        if (activeRun.runKind === 'goal' && isTerminalGoal(event.goal)) {
+          activeRun.goalReachedTerminalStatus = true
+          if (activeRun.lastCompletedGoalOutcome) {
+            this.setCanonicalOutcome(activeRun, activeRun.lastCompletedGoalOutcome, 'notification')
+          }
+        }
+        this.postStreamEvent(activeRun, port, {
+          type: 'thread-goal',
+          threadId: event.threadId,
+          goal: event.goal as ThreadGoalSummary | null
+        })
+      }
+      const onThreadSettingsUpdated = (event: CodexThreadSettingsUpdatedEvent): void => {
+        if (activeRun.terminalDelivered) return
+        if (activeRun.threadId && activeRun.threadId !== event.threadId) return
+        this.postStreamEvent(activeRun, port, {
+          type: 'mode-applied',
+          threadId: event.threadId,
+          modeKind: event.modeKind
+        })
+      }
       const startProviderStream = (
         resumeActiveTurn = false
       ): StreamTextLikeResult | Promise<StreamTextLikeResult> =>
@@ -726,15 +818,33 @@ export class CodexChatRuntimeService {
           onAgentLifecycle: this.onAgentLifecycle,
           onTurnLifecycle,
           onTurnDiffUpdated,
+          onThreadSettingsUpdated,
+          onThreadGoalUpdated,
+          collaborationMode,
+          ...(threadGoalDraft ? { goalFirstTurnObjective: threadGoalDraft.objective } : {}),
+          ...(threadGoalControl ? { goalControlObjective: threadGoalControl.objective } : {}),
+          ...(threadGoalDraft || threadGoalControl ? { goalContinuous: true } : {}),
           onExistingTurnRecoveryState: (state) => {
             activeRun.existingTurnRecoveryState = state
           },
           approvals: this.createRunApprovalHandlers(activeRun),
-          onSessionCreated: (session) => {
+          onSessionCreated: async (session) => {
             if (activeRun.terminalDelivered) return
             activeRun.session = session
             activeRun.turnId = session.turnId ?? activeRun.turnId
             this.bindActiveConversationRunAlias(activeRun, session.threadId)
+            const goalObjective = threadGoalDraft?.objective ?? threadGoalControl?.objective
+            if (goalObjective && !activeRun.initialThreadGoalApplied) {
+              if (!session.setThreadGoal) {
+                throw new Error('Thread goals are not supported by this app-server')
+              }
+              const goal = await session.setThreadGoal({
+                objective: goalObjective,
+                status: 'active'
+              })
+              activeRun.initialThreadGoalApplied = true
+              onThreadGoalUpdated({ threadId: session.threadId, goal })
+            }
             if (activeRun.stopRequested) void this.requestConversationInterrupt(activeRun)
           }
         })
@@ -788,7 +898,12 @@ export class CodexChatRuntimeService {
                 `Active conversation thread changed from ${activeRun.threadId} to ${threadId}`
               )
             }
-            if (activeRun.turnId && turnId && activeRun.turnId !== turnId) {
+            if (
+              activeRun.runKind !== 'goal' &&
+              activeRun.turnId &&
+              turnId &&
+              activeRun.turnId !== turnId
+            ) {
               continue
             }
             threadIdChanged = Boolean(
@@ -939,6 +1054,7 @@ export class CodexChatRuntimeService {
     return {
       runId: run.runId,
       conversationId: run.conversationId,
+      runKind: run.runKind,
       ...(run.threadId ? { threadId: run.threadId } : {}),
       lastSequence: run.lastEventSequence
     }
@@ -948,6 +1064,7 @@ export class CodexChatRuntimeService {
     return [...new Set(this.activeConversationRuns.values())].map((run) => ({
       runId: run.runId,
       conversationId: run.conversationId,
+      runKind: run.runKind,
       ...(run.threadId ? { threadId: run.threadId } : {}),
       lastSequence: run.lastEventSequence
     }))
@@ -962,6 +1079,7 @@ export class CodexChatRuntimeService {
       run: {
         runId: run.runId,
         conversationId: run.conversationId,
+        runKind: run.runKind,
         ...(run.threadId ? { threadId: run.threadId } : {}),
         lastSequence: run.lastEventSequence
       },
@@ -1155,6 +1273,43 @@ export class CodexChatRuntimeService {
       restoreLocalMediaFileUrlsForModel([message])[0] ?? message
     )
     return run.session.steerPrompt(prompt, { clientUserMessageId })
+  }
+
+  /**
+   * Goal mutations share an existing provider session when a thread is still
+   * running. This keeps the mutation on the thread's current app-server
+   * connection instead of racing it with a short-lived history connection.
+   */
+  async setThreadGoalOnActiveSession(
+    conversationId: string,
+    objective: string
+  ): Promise<ThreadGoalSummary | undefined> {
+    const run = this.activeRunForConversation(conversationId)
+    if (
+      !run?.session?.isActive() ||
+      !run.session.setThreadGoal ||
+      run.terminalDelivered ||
+      run.threadId !== conversationId
+    ) {
+      return undefined
+    }
+
+    const goal = await run.session.setThreadGoal({ objective, status: 'active' })
+    return goal as ThreadGoalSummary
+  }
+
+  async clearThreadGoalOnActiveSession(conversationId: string): Promise<boolean | undefined> {
+    const run = this.activeRunForConversation(conversationId)
+    if (
+      !run?.session?.isActive() ||
+      !run.session.clearThreadGoal ||
+      run.terminalDelivered ||
+      run.threadId !== conversationId
+    ) {
+      return undefined
+    }
+
+    return run.session.clearThreadGoal()
   }
 
   async steerClaimedFollowUp(
@@ -1490,6 +1645,8 @@ export class CodexChatRuntimeService {
       runId: randomUUID(),
       conversationId,
       baseMessages: cloneRecoveryMessages(request.messages),
+      runKind:
+        request.body?.threadGoalDraft || request.body?.threadGoalControl ? 'goal' : 'single-turn',
       threadId: request.body?.threadId,
       abortController: new AbortController(),
       subscribers: new Map(),
@@ -1650,7 +1807,17 @@ export class CodexChatRuntimeService {
     if (run.threadId && run.threadId !== event.threadId) return false
 
     if (event.type === 'turn-started') {
-      if (run.turnId && run.turnId !== event.turnId) return false
+      if (run.turnId && run.turnId !== event.turnId && run.runKind !== 'goal') return false
+      if (run.lastLifecycleSequence !== undefined && event.sequence <= run.lastLifecycleSequence) {
+        if (run.runKind === 'goal' && run.turnId !== event.turnId) {
+          run.lastLifecycleSequence = undefined
+        } else {
+          return false
+        }
+      }
+      if (run.runKind === 'goal' && run.turnId !== event.turnId) {
+        run.lastLifecycleSequence = undefined
+      }
       if (run.lastLifecycleSequence !== undefined && event.sequence <= run.lastLifecycleSequence) {
         return false
       }
@@ -1699,7 +1866,14 @@ export class CodexChatRuntimeService {
       if (event.outcome === 'failed' && providerFailureDetail) {
         run.canonicalFailureMessage = sanitizeUserFacingError(providerFailureDetail)
       }
-      this.setCanonicalOutcome(run, event.outcome, 'notification')
+      if (run.runKind === 'goal') {
+        run.lastCompletedGoalOutcome = event.outcome
+        if (run.goalReachedTerminalStatus || run.stopRequested) {
+          this.setCanonicalOutcome(run, event.outcome, 'notification')
+        }
+      } else {
+        this.setCanonicalOutcome(run, event.outcome, 'notification')
+      }
       await this.rejectUnacceptedSteerClaims(run, event.turnId, event.outcome)
     }
   }
@@ -2202,8 +2376,14 @@ async function defaultStreamText({
   onAgentLifecycle,
   onTurnLifecycle,
   onTurnDiffUpdated,
+  onThreadSettingsUpdated,
+  onThreadGoalUpdated,
   onSessionCreated,
   onExistingTurnRecoveryState,
+  collaborationMode,
+  goalFirstTurnObjective,
+  goalControlObjective,
+  goalContinuous,
   approvals,
   onProviderToolCall
 }: {
@@ -2221,8 +2401,14 @@ async function defaultStreamText({
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
+  onThreadSettingsUpdated?: CodexCallOptions['onThreadSettingsUpdated']
+  onThreadGoalUpdated?: CodexCallOptions['onThreadGoalUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
+  collaborationMode?: CodexCallOptions['collaborationMode']
+  goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
+  goalControlObjective?: CodexCallOptions['goalControlObjective']
+  goalContinuous?: CodexCallOptions['goalContinuous']
   approvals?: CodexCallOptions['approvals']
   onProviderToolCall?: (toolName: string) => void
 }): Promise<StreamTextLikeResult> {
@@ -2244,8 +2430,14 @@ async function defaultStreamText({
       onAgentLifecycle,
       onTurnLifecycle,
       onTurnDiffUpdated,
+      onThreadSettingsUpdated,
+      onThreadGoalUpdated,
       onSessionCreated,
       onExistingTurnRecoveryState,
+      collaborationMode,
+      goalFirstTurnObjective,
+      goalControlObjective,
+      goalContinuous,
       approvals
     })
   )
@@ -2280,8 +2472,14 @@ function codexCallOptionsInput({
   onAgentLifecycle,
   onTurnLifecycle,
   onTurnDiffUpdated,
+  onThreadSettingsUpdated,
+  onThreadGoalUpdated,
   onSessionCreated,
   onExistingTurnRecoveryState,
+  collaborationMode,
+  goalFirstTurnObjective,
+  goalControlObjective,
+  goalContinuous,
   approvals
 }: {
   modelId: string
@@ -2295,8 +2493,14 @@ function codexCallOptionsInput({
   onAgentLifecycle?: CodexCallOptions['onAgentLifecycle']
   onTurnLifecycle?: CodexCallOptions['onTurnLifecycle']
   onTurnDiffUpdated?: CodexCallOptions['onTurnDiffUpdated']
+  onThreadSettingsUpdated?: CodexCallOptions['onThreadSettingsUpdated']
+  onThreadGoalUpdated?: CodexCallOptions['onThreadGoalUpdated']
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
+  collaborationMode?: CodexCallOptions['collaborationMode']
+  goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
+  goalControlObjective?: CodexCallOptions['goalControlObjective']
+  goalContinuous?: CodexCallOptions['goalContinuous']
   approvals?: CodexCallOptions['approvals']
 }): CodexCallOptions {
   return {
@@ -2311,14 +2515,88 @@ function codexCallOptionsInput({
     ...(onAgentLifecycle ? { onAgentLifecycle } : {}),
     ...(onTurnLifecycle ? { onTurnLifecycle } : {}),
     ...(onTurnDiffUpdated ? { onTurnDiffUpdated } : {}),
+    ...(onThreadSettingsUpdated ? { onThreadSettingsUpdated } : {}),
+    ...(onThreadGoalUpdated ? { onThreadGoalUpdated } : {}),
     ...(onSessionCreated ? { onSessionCreated } : {}),
     ...(onExistingTurnRecoveryState ? { onExistingTurnRecoveryState } : {}),
+    ...(collaborationMode ? { collaborationMode } : {}),
+    ...(goalFirstTurnObjective ? { goalFirstTurnObjective } : {}),
+    ...(goalControlObjective ? { goalControlObjective } : {}),
+    ...(goalContinuous ? { goalContinuous: true } : {}),
     ...(approvals ? { approvals } : {}),
     ...(executionTarget?.cwd ? { cwd: executionTarget.cwd } : {}),
     ...(executionTarget?.runtimeWorkspaceRoots
       ? { runtimeWorkspaceRoots: executionTarget.runtimeWorkspaceRoots }
       : {})
   }
+}
+
+/**
+ * The renderer is intentionally limited to a small mode enum. The main
+ * process owns the complete app-server value so UI code cannot inject a model
+ * override or developer instructions into a turn request.
+ */
+function collaborationModeForComposerMode(
+  mode: ComposerModeKind,
+  model: string,
+  reasoningEffort: NonNullable<
+    CodexCallOptions['collaborationMode']
+  >['settings']['reasoning_effort'] = null
+): NonNullable<CodexCallOptions['collaborationMode']> {
+  return {
+    mode,
+    settings: {
+      model,
+      reasoning_effort: reasoningEffort,
+      developer_instructions: null
+    }
+  }
+}
+
+function threadGoalDraftFromRequest(
+  request: CodexChatRequest
+): NonNullable<CodexChatRequest['body']>['threadGoalDraft'] {
+  const draft = request.body?.threadGoalDraft
+  if (!draft) return undefined
+
+  const latestUserMessage = request.messages.findLast((message) => message.role === 'user')
+  const visibleText = latestUserMessage
+    ? extractVisibleUserRequest(
+        latestUserMessage.parts
+          .map((part) => (part.type === 'text' ? part.text : ''))
+          .filter((part): part is string => typeof part === 'string')
+          .join('\n')
+      ).trim()
+    : ''
+  if (visibleText !== draft.objective) {
+    throw new Error('The submitted goal must match the visible user request')
+  }
+  return draft
+}
+
+function threadGoalControlFromRequest(
+  request: CodexChatRequest
+): NonNullable<CodexChatRequest['body']>['threadGoalControl'] {
+  const control = request.body?.threadGoalControl
+  if (!control) return undefined
+  if (request.trigger !== 'goal-control' || !request.body?.threadId) {
+    throw new Error('Existing-thread Goal control requires a persisted conversation')
+  }
+  if (request.body.threadGoalDraft) {
+    throw new Error('Goal control cannot also create a new conversation Goal')
+  }
+  return control
+}
+
+function isTerminalGoal(goal: ThreadGoalSummary | null): boolean {
+  if (goal === null) return true
+  return (
+    goal.status === 'paused' ||
+    goal.status === 'blocked' ||
+    goal.status === 'usageLimited' ||
+    goal.status === 'budgetLimited' ||
+    goal.status === 'complete'
+  )
 }
 
 function shouldStartFreshTerminalRetry(request: CodexChatRequest): boolean {
@@ -2343,10 +2621,10 @@ function conversationTitleFromRequest(request: CodexChatRequest): string | null 
 
 function userMessageToLanguageModelV3Prompt(
   message: CodexChatRequest['messages'][number]
-): LanguageModelV3Prompt {
+): CodexSteerPrompt {
   if (message.role !== 'user') throw new Error('Steer requires a user message')
 
-  const content: Array<LanguageModelV3TextPart | LanguageModelV3FilePart> = []
+  const content: CodexSteerPromptContentPart[] = []
   for (const part of message.parts) {
     if (part.type === 'text') {
       content.push({ type: 'text', text: part.text })
@@ -2676,9 +2954,7 @@ function canResumeActiveTurnAfterTransportError(
 }
 
 type CodexProviderRecoveryErrorCode =
-  | 'app_server_transport_closed'
-  | 'app_server_transport_terminated'
-  | 'active_turn_unavailable'
+  'app_server_transport_closed' | 'app_server_transport_terminated' | 'active_turn_unavailable'
 
 function codexProviderRecoveryErrorCode(
   error: unknown

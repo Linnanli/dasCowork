@@ -4,16 +4,19 @@ import {
   mapCodexThreadItemToUiPart,
   type ThreadItem
 } from '@janole/ai-sdk-provider-codex-asp'
-import type {
-  LanguageModelV3,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3StreamPart,
-  LanguageModelV3StreamResult
-} from '@ai-sdk/provider'
-import { readUIMessageStream, streamText, type UIMessage } from 'ai'
+import { readUIMessageStream, streamText, type LanguageModel, type UIMessage } from 'ai'
 
 import { buildAssistantRenderUnits, displayNameForSubagentPath } from './assistantRenderUnits'
 import { assistantRenderUnitFixtures } from './__fixtures__/assistantRenderUnitFixtures'
+
+// The desktop package deliberately depends on `ai`, not its transitive
+// `@ai-sdk/provider` package. Derive the v3 test-double contract from the
+// public `LanguageModel` union so pnpm's strict resolver keeps that boundary.
+type LanguageModelV3 = Extract<LanguageModel, { specificationVersion: 'v3' }>
+type LanguageModelV3GenerateResult = Awaited<ReturnType<LanguageModelV3['doGenerate']>>
+type LanguageModelV3StreamResult = Awaited<ReturnType<LanguageModelV3['doStream']>>
+type LanguageModelV3StreamPart =
+  LanguageModelV3StreamResult['stream'] extends ReadableStream<infer Part> ? Part : never
 
 describe('buildAssistantRenderUnits', () => {
   it.each(assistantRenderUnitFixtures)('$name', (fixture) => {

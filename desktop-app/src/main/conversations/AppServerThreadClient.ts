@@ -1,9 +1,12 @@
 import {
   createCodexHistoryClient,
+  type CodexExperimentalFeature,
   mapCodexThreadToUiMessages,
+  type CodexThreadGoalSetParams,
   type CodexTurnListParams,
   type CodexHistoryClient,
-  type CodexThreadForUi
+  type CodexThreadForUi,
+  type ThreadGoal
 } from '@janole/ai-sdk-provider-codex-asp'
 import type { UIMessage } from 'ai'
 
@@ -33,6 +36,8 @@ export type AppServerThreadRow = {
   messages?: UIMessage[]
 }
 
+export type AppServerThreadGoal = ThreadGoal
+
 type AppServerTurnsPage = {
   data: CodexThreadForUi['turns']
   nextCursor?: string | null
@@ -51,6 +56,10 @@ export type AppServerHistoryClientLike = {
   archiveThread(threadId: string): Promise<void>
   unarchiveThread(threadId: string): Promise<void>
   renameThread(threadId: string, name: string): Promise<void>
+  listExperimentalFeatures?(): Promise<CodexExperimentalFeature[]>
+  getThreadGoal?(threadId: string): Promise<AppServerThreadGoal | null>
+  setThreadGoal?(threadId: string, params: CodexThreadGoalSetParams): Promise<AppServerThreadGoal>
+  clearThreadGoal?(threadId: string): Promise<boolean>
 }
 
 export type AppServerThreadClientOptions = {
@@ -118,6 +127,38 @@ export class AppServerThreadClient {
 
   async renameThread(threadId: string, name: string): Promise<void> {
     await this.withHistoryClient((client) => client.renameThread(threadId, name))
+  }
+
+  async getThreadGoal(threadId: string): Promise<AppServerThreadGoal | null> {
+    return this.withHistoryClient((client) => {
+      if (!client.getThreadGoal)
+        throw new Error('Thread goals are not supported by this app-server')
+      return client.getThreadGoal(threadId)
+    })
+  }
+
+  async listExperimentalFeatures(): Promise<CodexExperimentalFeature[]> {
+    return this.withHistoryClient((client) => {
+      if (!client.listExperimentalFeatures)
+        throw new Error('Experimental feature catalog is not supported by this app-server')
+      return client.listExperimentalFeatures()
+    })
+  }
+
+  async setThreadGoal(threadId: string, objective: string): Promise<AppServerThreadGoal> {
+    return this.withHistoryClient((client) => {
+      if (!client.setThreadGoal)
+        throw new Error('Thread goals are not supported by this app-server')
+      return client.setThreadGoal(threadId, { objective, status: 'active' })
+    })
+  }
+
+  async clearThreadGoal(threadId: string): Promise<boolean> {
+    return this.withHistoryClient((client) => {
+      if (!client.clearThreadGoal)
+        throw new Error('Thread goals are not supported by this app-server')
+      return client.clearThreadGoal(threadId)
+    })
   }
 
   private async withHistoryClient<T>(

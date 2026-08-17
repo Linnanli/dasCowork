@@ -142,11 +142,12 @@ export type SidebarConversationOpenResult = {
   historyRevision?: string | null
   projectAssignment?: ThreadProjectAssignment
   cwd?: string | null
+  threadGoalResult?: ThreadGoalLoadResult
 }
 
 export type CodexChatRequest = {
   chatId: string
-  trigger: 'submit-message' | 'regenerate-message'
+  trigger: 'submit-message' | 'regenerate-message' | 'goal-control'
   messageId?: string
   messages: UIMessage[]
   modelId?: string
@@ -154,11 +155,91 @@ export type CodexChatRequest = {
   body?: CodexChatRequestBody
 }
 
+/**
+ * Renderer-safe collaboration intent. The main process resolves this enum to
+ * the complete app-server collaboration mode so renderer code can never send
+ * model settings or developer instructions directly.
+ */
+export type ComposerModeKind = 'default' | 'plan'
+
+export const composerModeKindSchema = z.enum(['default', 'plan'])
+
+export type ThreadGoalStatus =
+  'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
+
+export type ThreadGoalSummary = {
+  threadId: string
+  objective: string
+  status: ThreadGoalStatus
+  tokenBudget: number | null
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type ThreadGoalLoadResult =
+  | { status: 'loaded'; goal: ThreadGoalSummary | null }
+  | { status: 'unsupported' | 'error'; message: string }
+
+export const threadGoalObjectiveSchema = z
+  .string()
+  .trim()
+  .refine((objective) => [...objective].length <= 4_000, {
+    message: 'goal objective must be at most 4,000 characters'
+  })
+  .min(1, 'goal objective is required')
+
+export const threadGoalStatusSchema = z.enum([
+  'active',
+  'paused',
+  'blocked',
+  'usageLimited',
+  'budgetLimited',
+  'complete'
+])
+
+export const threadGoalSummarySchema = z.object({
+  threadId: z.string().min(1),
+  objective: threadGoalObjectiveSchema,
+  status: threadGoalStatusSchema,
+  tokenBudget: z.number().int().positive().nullable(),
+  tokensUsed: z.number().int().nonnegative(),
+  timeUsedSeconds: z.number().nonnegative(),
+  createdAt: z.number().nonnegative(),
+  updatedAt: z.number().nonnegative()
+}) satisfies z.ZodType<ThreadGoalSummary>
+
+export const threadGoalDraftSchema = z.object({
+  objective: threadGoalObjectiveSchema
+})
+
+export type ThreadGoalDraft = z.infer<typeof threadGoalDraftSchema>
+
+/**
+ * A Goal mutation for an existing thread. Unlike {@link ThreadGoalDraft},
+ * this does not create a visible user message or a normal `turn/start`.
+ */
+export type ThreadGoalControl = z.infer<typeof threadGoalDraftSchema>
+
+export type SidebarConversationGoalSetPayload = {
+  conversationId: string
+  objective: string
+}
+
+export const sidebarConversationGoalSetPayloadSchema = z.object({
+  conversationId: z.string().min(1),
+  objective: threadGoalObjectiveSchema
+}) satisfies z.ZodType<SidebarConversationGoalSetPayload>
+
 export type CodexChatRequestBody = {
   system?: string
   projectSelection?: ProjectSelection
   conversationId?: string
   threadId?: string
+  composerModeKind?: ComposerModeKind
+  threadGoalDraft?: ThreadGoalDraft
+  threadGoalControl?: ThreadGoalControl
   retryTerminalTurn?: boolean
   followUpRequest?: FollowUpTurnStartRequest
 } & Record<string, unknown>
@@ -169,10 +250,13 @@ export const codexChatRequestBodySchema = z
     projectSelection: projectSelectionSchema.optional(),
     conversationId: z.string().min(1).optional(),
     threadId: z.string().min(1).optional(),
+    composerModeKind: composerModeKindSchema.optional(),
+    threadGoalDraft: threadGoalDraftSchema.optional(),
+    threadGoalControl: threadGoalDraftSchema.optional(),
     retryTerminalTurn: z.literal(true).optional(),
     followUpRequest: followUpTurnStartRequestSchema.optional()
   })
-  .catchall(z.unknown()) satisfies z.ZodType<CodexChatRequestBody>
+  .strict() satisfies z.ZodType<CodexChatRequestBody>
 
 export type CodexTurnLifecycleEvent =
   | {
@@ -205,10 +289,7 @@ export type CodexTurnLifecycleEvent =
  * display and must not be used to infer the recovery outcome.
  */
 export type CodexChatStreamFailureCode =
-  | 'run-unavailable'
-  | 'run-mismatch'
-  | 'journal-unavailable'
-  | 'unknown-recovery'
+  'run-unavailable' | 'run-mismatch' | 'journal-unavailable' | 'unknown-recovery'
 
 export type CodexChatStreamFailure = {
   readonly code: CodexChatStreamFailureCode
@@ -230,6 +311,8 @@ const codexChatStreamErrorSchema = z.union([
 export type CodexChatStreamEvent =
   | { type: 'thread-bound'; threadId: string }
   | { type: 'turn-lifecycle'; event: CodexTurnLifecycleEvent }
+  | { type: 'mode-applied'; threadId: string; modeKind: ComposerModeKind }
+  | { type: 'thread-goal'; threadId: string; goal: ThreadGoalSummary | null }
   | { type: 'chunk'; chunk: UIMessageChunk }
   | { type: 'resync-required'; reason: 'journal-overflow' }
   | { type: 'finish'; threadId?: string }
@@ -263,6 +346,8 @@ export type CodexChatAttachResult =
 export type CodexChatRunDescriptor = {
   readonly runId: string
   readonly conversationId: string
+  /** Distinguishes a long-running Goal from a regular one-turn chat stream. */
+  readonly runKind: 'single-turn' | 'goal'
   readonly threadId?: string
   readonly lastSequence: number
 }
@@ -287,12 +372,13 @@ export type CodexChatTerminalFallback = {
 }
 
 export type CodexChatControlMessage =
-  | { type: 'abort'; runId?: string }
-  | { type: 'thread-bound-ack'; threadId: string }
+  { type: 'abort'; runId?: string } | { type: 'thread-bound-ack'; threadId: string }
 
 export type CodexChatStreamCallbacks = {
   onThreadBound(threadId: string): void
   onTurnLifecycle?(event: CodexTurnLifecycleEvent): void
+  onModeApplied?(threadId: string, modeKind: ComposerModeKind): void
+  onThreadGoal?(threadId: string, goal: ThreadGoalSummary | null): void
   onChunk(chunk: UIMessageChunk): void
   onFinish(threadId?: string): void
   onAbort(): void
@@ -328,6 +414,16 @@ export const codexChatStreamEventSchema = z.discriminatedUnion('type', [
         outcome: z.enum(['completed', 'interrupted', 'failed'])
       })
     ])
+  }),
+  z.object({
+    type: z.literal('mode-applied'),
+    threadId: z.string().min(1),
+    modeKind: composerModeKindSchema
+  }),
+  z.object({
+    type: z.literal('thread-goal'),
+    threadId: z.string().min(1),
+    goal: threadGoalSummarySchema.nullable()
   }),
   z.object({ type: z.literal('chunk'), chunk: z.custom<UIMessageChunk>(isUiMessageChunk) }),
   z.object({ type: z.literal('resync-required'), reason: z.literal('journal-overflow') }),
@@ -384,7 +480,7 @@ export type LocalContextPickerPayload = {
 
 export const codexChatRequestSchema = z.object({
   chatId: z.string().min(1),
-  trigger: z.enum(['submit-message', 'regenerate-message']),
+  trigger: z.enum(['submit-message', 'regenerate-message', 'goal-control']),
   messageId: z.string().optional(),
   messages: z.array(z.custom<UIMessage>(isUiMessage)),
   modelId: z.string().min(1).optional(),
@@ -530,7 +626,14 @@ export const sidebarConversationOpenResultSchema = z.object({
   messages: z.array(z.custom<UIMessage>(isUiMessage)),
   historyRevision: z.string().nullable().optional(),
   projectAssignment: z.custom<ThreadProjectAssignment>().optional(),
-  cwd: z.string().nullable().optional()
+  cwd: z.string().nullable().optional(),
+  threadGoalResult: z
+    .discriminatedUnion('status', [
+      z.object({ status: z.literal('loaded'), goal: threadGoalSummarySchema.nullable() }),
+      z.object({ status: z.literal('unsupported'), message: z.string().min(1) }),
+      z.object({ status: z.literal('error'), message: z.string().min(1) })
+    ])
+    .optional()
 }) satisfies z.ZodType<SidebarConversationOpenResult>
 
 export const sidebarPreferencesSchema = z.object({
@@ -574,6 +677,9 @@ export type DesktopConversationsApi = {
   getConversationList(): Promise<SidebarConversationListState>
   refreshConversationList(): Promise<SidebarConversationListState>
   openConversation(input: SidebarConversationActionPayload): Promise<SidebarConversationOpenResult>
+  getConversationGoal(input: SidebarConversationActionPayload): Promise<ThreadGoalLoadResult>
+  setConversationGoal(input: SidebarConversationGoalSetPayload): Promise<ThreadGoalSummary>
+  clearConversationGoal(input: SidebarConversationActionPayload): Promise<boolean>
   archiveConversation(
     input: SidebarConversationActionPayload
   ): Promise<SidebarConversationListState>

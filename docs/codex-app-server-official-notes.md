@@ -222,6 +222,16 @@ send({ method: "thread/start", id: 1, params: { model: "gpt-5.4" } });
 - `experimentalFeature/enablement/set`：修改进程内 runtime feature enablement。
 - `collaborationMode/list`：列出协作模式 preset，实验 API。
 
+### Collaboration Mode 与 Goal
+
+- `turn/start.collaborationMode` 接收完整协作模式对象。其 settings 使用 `model`、`reasoning_effort`、`developer_instructions` 的 snake_case 字段；客户端应把 preset 补齐后发送，而不是把“计划模式”拼入提示词。
+- `thread/goal/get`、`thread/goal/set`、`thread/goal/clear` 读取、写入和清除持久化线程目标。Goal 属于 materialized thread，不应附着在 ephemeral thread。
+- `thread/goal/updated` 与 `thread/goal/cleared` 是状态变化通知。客户端应把它们与当前 thread 关联，更新目标摘要；读取或通知失败不能让普通对话历史无法打开。
+
+本项目的已有线程 Goal 走 provider 持有的连续 conversation owner：`thread/resume` 和当前 settings 应用完成后，在同一连接发送 `thread/goal/set`，不另起短连接，也不人为提交一条用户消息或 `turn/start`。随后自动 Goal turn 可连续到达；每个 `turn/completed` 只结束该 turn，目标终态、clear-drain、abort 或连接错误才结束 owner。
+
+本项目通过 provider fork 接入这些 RPC；Renderer 只拿到 `default | plan` 和已脱敏的 Goal 摘要，完整协作 settings 仍留在 Main、provider 与 app-server 之间。
+
 ### Skills / Plugins / Apps
 
 - `skills/list`：按 cwd 列出 skills，可 force reload。

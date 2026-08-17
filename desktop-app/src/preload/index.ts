@@ -20,6 +20,9 @@ import type {
   WorkspaceRecoveryPayload,
   SidebarConversationListState,
   SidebarConversationOpenResult,
+  ThreadGoalLoadResult,
+  ThreadGoalSummary,
+  SidebarConversationGoalSetPayload,
   SidebarPreferences
 } from '../shared/codexIpcApi'
 import {
@@ -244,6 +247,12 @@ const desktopConversations: DesktopConversationsApi = {
     ipcRenderer.invoke('codex:conversations:refresh-list') as Promise<SidebarConversationListState>,
   openConversation: (input) =>
     ipcRenderer.invoke('codex:conversations:open', input) as Promise<SidebarConversationOpenResult>,
+  getConversationGoal: (input) =>
+    ipcRenderer.invoke('codex:conversations:get-goal', input) as Promise<ThreadGoalLoadResult>,
+  setConversationGoal: (input: SidebarConversationGoalSetPayload) =>
+    ipcRenderer.invoke('codex:conversations:set-goal', input) as Promise<ThreadGoalSummary>,
+  clearConversationGoal: (input) =>
+    ipcRenderer.invoke('codex:conversations:clear-goal', input) as Promise<boolean>,
   archiveConversation: (input) =>
     ipcRenderer.invoke(
       'codex:conversations:archive',

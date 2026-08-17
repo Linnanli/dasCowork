@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 import {
   appRoot,
   attachDiagnostics,

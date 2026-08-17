@@ -850,6 +850,33 @@ describe('ConversationApiService', () => {
     })
   })
 
+  it('keeps normal conversation hydration available when Goals are disabled', async () => {
+    const threadClient = createClient()
+    vi.mocked(threadClient.readThreadWithFullTurns).mockResolvedValue({
+      id: 'thread-local',
+      title: 'Goal capability',
+      preview: 'Goal capability',
+      archived: false,
+      running: false,
+      cwd: '/repo/desktop-app',
+      messages: []
+    })
+    threadClient.listExperimentalFeatures = vi.fn(async () => [{ name: 'goals', enabled: false }])
+    threadClient.getThreadGoal = vi.fn()
+    const service = new ConversationApiService({
+      threadClient,
+      projectStore: { getState: async () => baseProjectState }
+    })
+
+    await expect(
+      service.openConversation({ conversationId: 'thread-local' })
+    ).resolves.toMatchObject({
+      threadGoalResult: { status: 'unsupported', message: '当前 Codex 服务未启用任务目标' },
+      messages: []
+    })
+    expect(threadClient.getThreadGoal).not.toHaveBeenCalled()
+  })
+
   it('does not preserve missing known threads without an explicit ensure request', async () => {
     const threadClient = createClient()
     const service = new ConversationApiService({
