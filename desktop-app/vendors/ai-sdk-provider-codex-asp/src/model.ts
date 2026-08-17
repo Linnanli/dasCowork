@@ -104,18 +104,33 @@ type StartedThreadCallbackInput = Parameters<NonNullable<CodexCallOptions['onThr
  * objective itself remains the only visible renderer user message; this
  * avoids creating a synthetic second transcript message.
  */
-function goalFirstTurnPrompt(objective: string): LanguageModelV3Prompt {
-  return [
-    {
-      role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: `Begin working toward this long-running goal.\n\nGoal:\n${objective}`
-        }
-      ]
+function goalFirstTurnPrompt(
+  objective: string,
+  prompt: LanguageModelV3Prompt
+): LanguageModelV3Prompt {
+  const framedObjective = {
+    type: 'text' as const,
+    text: `Begin working toward this long-running goal.\n\nGoal:\n${objective}`
+  }
+  let lastUserMessageIndex = -1
+  for (let index = prompt.length - 1; index >= 0; index--) {
+    if (prompt[index]?.role === 'user') {
+      lastUserMessageIndex = index
+      break
     }
-  ]
+  }
+
+  if (lastUserMessageIndex < 0) {
+    return [...prompt, { role: 'user', content: [framedObjective] }]
+  }
+
+  return prompt.map((message, index) => {
+    if (index !== lastUserMessageIndex || message.role !== 'user') return message
+    return {
+      ...message,
+      content: [framedObjective, ...message.content.filter((part) => part.type !== 'text')]
+    }
+  })
 }
 
 async function notifyThreadStarted({
@@ -907,12 +922,23 @@ export class CodexLanguageModel implements LanguageModelV3 {
     let interruptPromise: Promise<void> | undefined
     let awaitingExistingTurnSnapshot = resumeActiveTurn
     const bufferedExistingTurnNotifications: Array<{ method: string; params: unknown }> = []
+    let goalContinuous = callOptions?.goalContinuous === true
     let goalReachedTerminalStatus = false
 
+    const applySessionPolicy = (policy: 'single-turn' | 'goal-continuous'): void => {
+      goalContinuous = policy === 'goal-continuous'
+      if (goalContinuous) {
+        goalReachedTerminalStatus = false
+      }
+    }
+
     const observeGoalContinuousStatus = (method: string, params: unknown): void => {
-      if (!callOptions?.goalContinuous || method !== 'thread/goal/updated') {
+      if (!goalContinuous) return
+      if (method === 'thread/goal/cleared') {
+        goalReachedTerminalStatus = true
         return
       }
+      if (method !== 'thread/goal/updated') return
       const status = (params as { goal?: { status?: unknown } } | undefined)?.goal?.status
       goalReachedTerminalStatus =
         status === 'paused' ||
@@ -932,7 +958,7 @@ export class CodexLanguageModel implements LanguageModelV3 {
         // not the end of its shared conversation connection. Renderer
         // receives the separate lifecycle boundary and the final Goal
         // state allows the last finish through for normal teardown.
-        if (part.type === 'finish' && callOptions?.goalContinuous && !goalReachedTerminalStatus) {
+        if (part.type === 'finish' && goalContinuous && !goalReachedTerminalStatus) {
           continue
         }
         controller.enqueue(part)
@@ -1391,7 +1417,8 @@ export class CodexLanguageModel implements LanguageModelV3 {
                 turnId: activeTurnId,
                 interruptTimeoutMs,
                 fileResolver,
-                policy: callOptions?.goalContinuous ? 'goal-continuous' : 'single-turn'
+                policy: goalContinuous ? 'goal-continuous' : 'single-turn',
+                onPolicyChanged: applySessionPolicy
               })
               const onSessionCreated =
                 callOptions?.onSessionCreated ?? this.config.providerSettings.onSessionCreated
@@ -1410,7 +1437,7 @@ export class CodexLanguageModel implements LanguageModelV3 {
             })
 
             const promptForTurn = callOptions?.goalFirstTurnObjective
-              ? goalFirstTurnPrompt(callOptions.goalFirstTurnObjective)
+              ? goalFirstTurnPrompt(callOptions.goalFirstTurnObjective, options.prompt)
               : options.prompt
             const developerInstructions = mergeDeveloperInstructions(
               mapSystemPrompt(promptForTurn),
@@ -1599,7 +1626,8 @@ export class CodexLanguageModel implements LanguageModelV3 {
                 turnId: undefined,
                 interruptTimeoutMs,
                 fileResolver,
-                policy: 'goal-continuous'
+                policy: 'goal-continuous',
+                onPolicyChanged: applySessionPolicy
               })
               const onSessionCreated =
                 callOptions?.onSessionCreated ?? this.config.providerSettings.onSessionCreated
@@ -1672,7 +1700,8 @@ export class CodexLanguageModel implements LanguageModelV3 {
               turnId: activeTurnId,
               interruptTimeoutMs,
               fileResolver,
-              policy: callOptions?.goalContinuous ? 'goal-continuous' : 'single-turn'
+              policy: goalContinuous ? 'goal-continuous' : 'single-turn',
+              onPolicyChanged: applySessionPolicy
             })
             const onSessionCreated =
               callOptions?.onSessionCreated ?? this.config.providerSettings.onSessionCreated

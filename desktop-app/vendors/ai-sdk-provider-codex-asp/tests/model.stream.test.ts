@@ -202,6 +202,134 @@ class GoalContinuousTransport extends ScriptedTransport {
   }
 }
 
+class PromotedGoalTransport extends ScriptedTransport {
+  override async sendMessage(message: JsonRpcMessage): Promise<void> {
+    if (!('id' in message) || message.id === undefined || !('method' in message)) {
+      await super.sendMessage(message)
+      return
+    }
+
+    if (message.method === 'turn/start') {
+      await MockTransport.prototype.sendMessage.call(this, message)
+      this.emitMessage({ id: message.id, result: { turnId: 'promoted_turn_1' } })
+      this.emitMessage({
+        method: 'turn/started',
+        params: { threadId: 'thr_1', turn: { id: 'promoted_turn_1' } }
+      })
+      return
+    }
+
+    if (message.method !== 'thread/goal/set') {
+      await super.sendMessage(message)
+      return
+    }
+
+    await MockTransport.prototype.sendMessage.call(this, message)
+    this.emitMessage({
+      id: message.id,
+      result: {
+        goal: {
+          threadId: 'thr_1',
+          objective: 'continue after this turn',
+          status: 'active',
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 0,
+          updatedAt: 0
+        }
+      }
+    })
+    queueMicrotask(() => {
+      this.emitMessage({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr_1',
+          turn: { id: 'promoted_turn_1', items: [], status: 'completed', error: null }
+        }
+      })
+      this.emitMessage({
+        method: 'turn/started',
+        params: { threadId: 'thr_1', turn: { id: 'promoted_turn_2' } }
+      })
+      this.emitMessage({
+        method: 'item/started',
+        params: {
+          item: { type: 'agentMessage', id: 'promoted_item_2', text: '' },
+          threadId: 'thr_1',
+          turnId: 'promoted_turn_2'
+        }
+      })
+      this.emitMessage({
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thr_1',
+          turnId: 'promoted_turn_2',
+          itemId: 'promoted_item_2',
+          delta: 'continued goal turn'
+        }
+      })
+      this.emitMessage({
+        method: 'thread/goal/updated',
+        params: {
+          threadId: 'thr_1',
+          goal: {
+            threadId: 'thr_1',
+            objective: 'continue after this turn',
+            status: 'complete',
+            tokenBudget: null,
+            tokensUsed: 1,
+            timeUsedSeconds: 1,
+            createdAt: 0,
+            updatedAt: 1
+          }
+        }
+      })
+      this.emitMessage({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr_1',
+          turn: { id: 'promoted_turn_2', items: [], status: 'completed', error: null }
+        }
+      })
+    })
+  }
+}
+
+class ClearedGoalTransport extends ScriptedTransport {
+  override async sendMessage(message: JsonRpcMessage): Promise<void> {
+    if (
+      !('id' in message) ||
+      message.id === undefined ||
+      !('method' in message) ||
+      message.method !== 'turn/start'
+    ) {
+      await super.sendMessage(message)
+      return
+    }
+
+    await MockTransport.prototype.sendMessage.call(this, message)
+    this.emitMessage({ id: message.id, result: { turnId: 'cleared_goal_turn' } })
+    queueMicrotask(() => {
+      this.emitMessage({
+        method: 'turn/started',
+        params: { threadId: 'thr_1', turn: { id: 'cleared_goal_turn' } }
+      })
+      this.emitMessage({
+        method: 'thread/goal/cleared',
+        params: { threadId: 'thr_1' }
+      })
+      this.emitMessage({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thr_1',
+          turn: { id: 'cleared_goal_turn', items: [], status: 'completed', error: null }
+        }
+      })
+    })
+  }
+}
+
 class ExistingGoalControlTransport extends ScriptedTransport {
   override async sendMessage(message: JsonRpcMessage): Promise<void> {
     if (
@@ -988,7 +1116,7 @@ describe('CodexLanguageModel.doStream', () => {
     expect(defaultTurnStart?.params).toMatchObject({ collaborationMode: defaultMode })
   })
 
-  it("frames a new Goal's first turn without adding a second visible prompt", async () => {
+  it("frames a new Goal's first turn while preserving system instructions and attachments", async () => {
     const transport = new ScriptedTransport()
     const provider = createCodexAppServer({
       transportFactory: () => transport,
@@ -996,23 +1124,40 @@ describe('CodexLanguageModel.doStream', () => {
     })
 
     const { stream } = await provider.languageModel('gpt-5.5').doStream({
-      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ship Goal parity' }] }],
+      prompt: [
+        { role: 'system', content: 'Keep the implementation minimal.' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'ship Goal parity' },
+            { type: 'file', mediaType: 'image/png', data: new URL('https://example.test/goal.png') }
+          ]
+        }
+      ],
       providerOptions: codexCallOptions({
         goalFirstTurnObjective: 'ship Goal parity'
       })
     })
     await readAll(stream)
 
+    const threadStart = transport.sentMessages.find(
+      (message): message is { method: string; params?: unknown } =>
+        'method' in message && message.method === 'thread/start'
+    )
     const turnStart = transport.sentMessages.find(
       (message): message is { method: string; params?: { input?: unknown } } =>
         'method' in message && message.method === 'turn/start'
     )
+    expect(threadStart?.params).toMatchObject({
+      developerInstructions: 'Keep the implementation minimal.'
+    })
     expect(turnStart?.params?.input).toEqual([
       {
         type: 'text',
         text: 'Begin working toward this long-running goal.\n\nGoal:\nship Goal parity',
         text_elements: []
-      }
+      },
+      { type: 'image', url: 'https://example.test/goal.png' }
     ])
   })
 
@@ -1042,6 +1187,48 @@ describe('CodexLanguageModel.doStream', () => {
         (message) => 'method' in message && message.method === 'turn/start'
       )
     ).toHaveLength(1)
+  })
+
+  it('promotes an active single-turn session when a Goal is set through its control channel', async () => {
+    const transport = new PromotedGoalTransport()
+    const provider = createCodexAppServer({
+      transportFactory: () => transport,
+      clientInfo: { name: 'test-client', version: '1.0.0' }
+    })
+
+    const { stream } = await provider.languageModel('gpt-5.5').doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'start normally' }] }],
+      providerOptions: codexCallOptions({
+        onSessionCreated: async (session) => {
+          await session.setThreadGoal?.({
+            objective: 'continue after this turn',
+            status: 'active'
+          })
+        }
+      })
+    })
+    const parts = (await readAll(stream)) as Array<{ type: string; delta?: string }>
+
+    expect(parts.filter((part) => part.type === 'finish')).toHaveLength(1)
+    expect(parts).toContainEqual(
+      expect.objectContaining({ type: 'text-delta', delta: 'continued goal turn' })
+    )
+  })
+
+  it('finishes a continuous Goal stream after thread/goal/cleared', async () => {
+    const transport = new ClearedGoalTransport()
+    const provider = createCodexAppServer({
+      transportFactory: () => transport,
+      clientInfo: { name: 'test-client', version: '1.0.0' }
+    })
+
+    const { stream } = await provider.languageModel('gpt-5.5').doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'clear this goal' }] }],
+      providerOptions: codexCallOptions({ goalContinuous: true })
+    })
+    const parts = (await readAll(stream)) as Array<{ type: string }>
+
+    expect(parts.filter((part) => part.type === 'finish')).toHaveLength(1)
   })
 
   it('resumes an existing Goal before setting it and does not add turn/start', async () => {
