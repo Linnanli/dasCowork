@@ -3639,13 +3639,6 @@ function ComposerBody({
             <div className="flex min-w-0 items-center gap-1">
               <ComposerAddContextPopover />
               <ComposerModeIndicatorBar presentations={modePresentations} />
-              <ModelSelector
-                models={models}
-                value={selectedModelId}
-                onValueChange={onSelectedModelChange}
-                variant="ghost"
-                size="sm"
-              />
               {isRemoteExecution &&
               (gitRepository.status === 'unavailable' || gitRepository.status === 'error') ? (
                 <Button
@@ -3703,6 +3696,13 @@ function ComposerBody({
               ) : null}
             </div>
             <div className="flex items-center gap-1.5">
+              <ModelSelector
+                models={models}
+                value={selectedModelId}
+                onValueChange={onSelectedModelChange}
+                variant="ghost"
+                size="sm"
+              />
               {!editingFollowUp ? (
                 <AuiIf condition={(state) => !state.thread.isRunning}>
                   <ComposerPrimitive.Send asChild>
