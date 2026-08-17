@@ -1,5 +1,6 @@
 import { CodexProcessSessionClient } from '@janole/ai-sdk-provider-codex-asp'
 
+import { createCodexClientInfo } from '../codexClientInfo'
 import {
   assertSafeRemoteExecutable,
   assertSafeSshAlias,
@@ -32,11 +33,7 @@ export class CodexHostConnectionRegistry {
       new CodexProcessSessionClient({
         transport: createSshCodexAppServerTransport(hostId, remoteCodexCommand),
         experimentalApi: true,
-        clientInfo: {
-          name: 'dascowork_terminal',
-          title: 'dasCowork Terminal',
-          version: '1.0.0'
-        }
+        clientInfo: createCodexClientInfo('dascowork_terminal', 'dasCowork Terminal')
       })
     this.processClients.set(hostId, client)
     return client

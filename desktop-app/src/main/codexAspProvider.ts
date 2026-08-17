@@ -12,6 +12,7 @@ import {
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { CodexAppServerLaunchOptions } from './codexAppServerLaunch'
+import { createCodexClientInfo } from './codexClientInfo'
 import {
   readThreadTerminalToolResult,
   type ThreadTerminalReader
@@ -74,11 +75,7 @@ export function createCodexAspProviderSettings(
 
   return {
     defaultModel: input.defaultModel,
-    clientInfo: {
-      name: 'dascowork_desktop',
-      title: 'dasCowork Desktop',
-      version: '1.0.0'
-    },
+    clientInfo: createCodexClientInfo('dascowork_desktop', 'dasCowork Desktop'),
     experimentalApi: true,
     ...connectionSettings,
     defaultThreadSettings: {

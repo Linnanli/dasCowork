@@ -8,6 +8,7 @@ import {
 import type { UIMessage } from 'ai'
 
 import type { CodexAppServerLaunchOptions } from '../codexAppServerLaunch'
+import { createCodexClientInfo } from '../codexClientInfo'
 import type { TurnDiffStoreReader } from './TurnDiffStore'
 
 type AppServerHistoryThread = CodexThreadForUi & {
@@ -131,11 +132,7 @@ export class AppServerThreadClient {
     if (this.options.createHistoryClient) return this.options.createHistoryClient()
     if (!this.options.launch) throw new Error('Codex app-server launch options are required')
     return createCodexHistoryClient({
-      clientInfo: {
-        name: 'dascowork_desktop_sidebar',
-        title: 'dasCowork Desktop Sidebar',
-        version: '1.0.0'
-      },
+      clientInfo: createCodexClientInfo('dascowork_desktop_sidebar', 'dasCowork Desktop Sidebar'),
       experimentalApi: true,
       transport: {
         type: 'stdio',

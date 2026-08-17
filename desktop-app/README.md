@@ -46,6 +46,10 @@ $ npm run build:linux
 
 Build scripts only package the Electron app. GitHub prereleases upload installer files as
 release attachments, but the generic auto-update URL in `electron-builder.yml` stays unchanged.
+Release CI uses the exact `@openai/codex` version locked in `package-lock.json`; it does not
+execute a remote install script. Before publishing, CI mounts, installs, or extracts every
+published package from local media and launches its packaged executable. It also rejects missing,
+empty, stale, or unexpectedly named assets and publishes a `SHA256SUMS` manifest with them.
 
 ## Admin Backend Model Catalog
 

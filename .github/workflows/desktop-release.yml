@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -27,34 +28,6 @@ jobs:
             desktop-app/package-lock.json
             desktop-app/vendors/ai-sdk-provider-codex-asp/package-lock.json
 
-      - name: Install Codex CLI
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          curl -fsSL https://chatgpt.com/codex/install.sh | sh
-          codex_bin="$(find "$HOME" -type f -name codex -perm -111 -print -quit)"
-          if [ -z "$codex_bin" ]; then
-            echo "Codex CLI was not installed." >&2
-            exit 1
-          fi
-          codex_dir="$(dirname "$codex_bin")"
-          echo "$codex_dir" >> "$GITHUB_PATH"
-          "$codex_bin" --version
-
-      - name: Install Codex CLI on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Invoke-RestMethod https://chatgpt.com/codex/install.ps1 | Invoke-Expression
-          $codexBin = Get-ChildItem -Path $env:USERPROFILE -Filter codex.exe -File -Recurse |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $codexBin) {
-            throw 'Codex CLI was not installed.'
-          }
-          $codexDir = Split-Path -Parent $codexBin
-          Add-Content -Path $env:GITHUB_PATH -Value $codexDir
-          & $codexBin --version
-
       - name: Install provider dependencies
         run: npm ci
         working-directory: desktop-app/vendors/ai-sdk-provider-codex-asp
@@ -62,6 +35,12 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
         working-directory: desktop-app
+
+      - name: Use locked Codex CLI
+        shell: bash
+        run: |
+          echo "$GITHUB_WORKSPACE/desktop-app/node_modules/.bin" >> "$GITHUB_PATH"
+          node desktop-app/scripts/verify-pinned-codex-cli.mjs
 
       - name: Generate Codex app-server protocol types
         run: npm run codex:generate-types
@@ -124,7 +103,7 @@ jobs:
     name: Build ${{ matrix.name }}
     needs: verify
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -133,24 +112,28 @@ jobs:
             os: macos-15-intel
             command: build:mac
             arch: x64
+            smoke-kind: dmg
             artifact: desktop-macos-x64
             pattern: desktop-app/dist/*.dmg
           - name: macOS arm64 DMG
             os: macos-14
             command: build:mac
             arch: arm64
+            smoke-kind: dmg
             artifact: desktop-macos-arm64
             pattern: desktop-app/dist/*.dmg
           - name: Windows x64 NSIS
             os: windows-latest
             command: build:win
             arch: x64
+            smoke-kind: nsis
             artifact: desktop-windows-x64
             pattern: desktop-app/dist/*.exe
           - name: Linux x64 AppImage deb snap
             os: ubuntu-latest
             command: build:linux
             arch: x64
+            smoke-kind: appimage
             artifact: desktop-linux-x64
             pattern: |
               desktop-app/dist/*.AppImage
@@ -159,6 +142,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -176,33 +161,11 @@ jobs:
         run: npm ci
         working-directory: desktop-app
 
-      - name: Install Codex CLI
-        if: runner.os != 'Windows'
+      - name: Use locked Codex CLI
         shell: bash
         run: |
-          curl -fsSL https://chatgpt.com/codex/install.sh | sh
-          codex_bin="$(find "$HOME" -type f -name codex -perm -111 -print -quit)"
-          if [ -z "$codex_bin" ]; then
-            echo "Codex CLI was not installed." >&2
-            exit 1
-          fi
-          codex_dir="$(dirname "$codex_bin")"
-          echo "$codex_dir" >> "$GITHUB_PATH"
-          "$codex_bin" --version
-
-      - name: Install Codex CLI on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Invoke-RestMethod https://chatgpt.com/codex/install.ps1 | Invoke-Expression
-          $codexBin = Get-ChildItem -Path $env:USERPROFILE -Filter codex.exe -File -Recurse |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $codexBin) {
-            throw 'Codex CLI was not installed.'
-          }
-          $codexDir = Split-Path -Parent $codexBin
-          Add-Content -Path $env:GITHUB_PATH -Value $codexDir
-          & $codexBin --version
+          echo "$GITHUB_WORKSPACE/desktop-app/node_modules/.bin" >> "$GITHUB_PATH"
+          node desktop-app/scripts/verify-pinned-codex-cli.mjs
 
       - name: Generate Codex app-server protocol types
         run: npm run codex:generate-types
@@ -210,6 +173,36 @@ jobs:
 
       - name: Build installer
         run: npm run ${{ matrix.command }} -- --${{ matrix.arch }}
+        working-directory: desktop-app
+
+      - name: Enable Codex workspace sandbox on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes squashfs-tools
+          if sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sysctl -a 2>/dev/null | grep -q '^kernel.unprivileged_userns_clone'; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+      - name: Smoke-test Linux installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for kind in appimage deb snap; do
+            xvfb-run --auto-servernum node scripts/run-installer-local-media-smoke.mjs \
+              --kind "$kind" --arch "${{ matrix.arch }}"
+          done
+        working-directory: desktop-app
+
+      - name: Smoke-test macOS or Windows installer
+        if: runner.os != 'Linux'
+        run: >-
+          node scripts/run-installer-local-media-smoke.mjs
+          --kind ${{ matrix.smoke-kind }} --arch ${{ matrix.arch }}
         working-directory: desktop-app
 
       - name: Upload installer artifact
@@ -224,9 +217,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
 
       - name: Download installer artifacts
         uses: actions/download-artifact@v8
@@ -236,19 +237,7 @@ jobs:
           merge-multiple: true
 
       - name: Verify release assets
-        shell: bash
-        run: |
-          find release-assets -maxdepth 1 -type f -print
-          dmg_count="$(find release-assets -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')"
-          exe_count="$(find release-assets -maxdepth 1 -type f -name '*.exe' | wc -l | tr -d ' ')"
-          appimage_count="$(find release-assets -maxdepth 1 -type f -name '*.AppImage' | wc -l | tr -d ' ')"
-          deb_count="$(find release-assets -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')"
-          snap_count="$(find release-assets -maxdepth 1 -type f -name '*.snap' | wc -l | tr -d ' ')"
-          test "$dmg_count" -eq 2
-          test "$exe_count" -eq 1
-          test "$appimage_count" -eq 1
-          test "$deb_count" -eq 1
-          test "$snap_count" -eq 1
+        run: node desktop-app/scripts/verify-release-assets.mjs release-assets
 
       - name: Create or update GitHub prerelease
         env:
@@ -259,7 +248,7 @@ jobs:
           release_notes="$(printf '%s\n\n%s\n\n%s\n' \
             "Automated test prerelease for commit ${GITHUB_SHA}." \
             "These installers are prebuilt test artifacts from the main branch. macOS builds are not notarized and Windows builds are not signed, so first launch may show operating system security prompts." \
-            "This release does not include API keys, Codex login state, or backend credentials. The installed app requires the user's local Codex CLI to be installed, logged in, and visible on PATH."
+            "This release includes SHA256SUMS for asset verification. It does not include API keys, Codex login state, or backend credentials. The installed app requires the user's local Codex CLI to be installed, logged in, and visible on PATH."
           )"
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

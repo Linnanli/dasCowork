@@ -10,6 +10,7 @@ import {
 } from '@janole/ai-sdk-provider-codex-asp'
 
 import type { GitBytesResult, GitHost, GitRunOptions, GitRunResult } from './GitManager'
+import { createCodexClientInfo } from '../codexClientInfo'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -450,11 +451,7 @@ function createSshCommandClient(hostId: string, remoteCodexCommand: string): Cod
   return new CodexCommandClient({
     transport: createSshCodexAppServerTransport(hostId, remoteCodexCommand),
     experimentalApi: true,
-    clientInfo: {
-      name: 'dascowork_git',
-      title: 'dasCowork Git',
-      version: '1.0.0'
-    }
+    clientInfo: createCodexClientInfo('dascowork_git', 'dasCowork Git')
   })
 }
 

@@ -42,6 +42,7 @@ import {
   type CodexAppServerLaunchOptions
 } from './codexAppServerLaunch'
 import { createCodexAspProvider, type CodexAspSharedConnection } from './codexAspProvider'
+import { createCodexClientInfo } from './codexClientInfo'
 import type { ThreadTerminalReader } from './terminal/readThreadTerminalTool'
 import type { ModelCatalogService } from './modelCatalogService'
 import type { ProjectStoreLike, ProjectServiceLike } from './threads/startConversation'
@@ -305,11 +306,10 @@ export class CodexChatRuntimeService {
     this.turnDiffStore = options.turnDiffStore
     const historyClient = options.connection
       ? createCodexHistoryClient({
-          clientInfo: {
-            name: 'dascowork_desktop_terminal_reconciliation',
-            title: 'dasCowork Desktop Terminal Reconciliation',
-            version: '1.0.0'
-          },
+          clientInfo: createCodexClientInfo(
+            'dascowork_desktop_terminal_reconciliation',
+            'dasCowork Desktop Terminal Reconciliation'
+          ),
           experimentalApi: true,
           transportFactory: options.connection.transportFactory
         })

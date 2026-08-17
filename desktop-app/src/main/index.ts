@@ -23,6 +23,7 @@ import { createBeforeQuitHandler } from './appShutdown'
 import { CodexChatRuntimeService } from './codexChatRuntimeService'
 import { createCodexAspSharedConnection, type CodexAspSharedConnection } from './codexAspProvider'
 import { resolveCodexAppServerLaunchOptions } from './codexAppServerLaunch'
+import { createCodexClientInfo } from './codexClientInfo'
 import { AppServerThreadClient } from './conversations/AppServerThreadClient'
 import { TurnDiffStore } from './conversations/TurnDiffStore'
 import {
@@ -154,11 +155,7 @@ function createCodexRuntime(
   const connection = createCodexAspSharedConnection(launch)
   codexAppServerConnection = connection
   const historyClient = createCodexHistoryClient({
-    clientInfo: {
-      name: 'dascowork_desktop_sidebar',
-      title: 'dasCowork Desktop Sidebar',
-      version: '1.0.0'
-    },
+    clientInfo: createCodexClientInfo('dascowork_desktop_sidebar', 'dasCowork Desktop Sidebar'),
     experimentalApi: true,
     transportFactory: connection.transportFactory
   })
@@ -190,11 +187,10 @@ function createCodexRuntime(
     warn: (message) => console.warn(`[agent-role-catalog] ${message}`)
   })
   composerContextClient = createCodexContextCatalogClient({
-    clientInfo: {
-      name: 'dascowork_desktop_composer_context',
-      title: 'dasCowork Desktop Composer Context',
-      version: '1.0.0'
-    },
+    clientInfo: createCodexClientInfo(
+      'dascowork_desktop_composer_context',
+      'dasCowork Desktop Composer Context'
+    ),
     experimentalApi: true,
     connectionLifecycle: 'per-operation',
     transportFactory: connection.transportFactory
