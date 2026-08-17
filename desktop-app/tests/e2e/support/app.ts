@@ -1,9 +1,14 @@
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { expect, type Page, type TestInfo } from '@playwright/test'
+import {
+  _electron as electron,
+  expect,
+  type ElectronApplication,
+  type Page,
+  type TestInfo
+} from '@playwright/test'
 import electronExecutable from 'electron'
-import { _electron as electron, type ElectronApplication } from 'playwright'
 import type { MockBackend } from './mockBackend'
 
 export const appRoot = resolve(__dirname, '..', '..', '..')
@@ -400,8 +405,9 @@ export async function attachReleaseDiagnostics(
  * attach for every test without a production-only diagnostics bridge.
  */
 async function captureVisibleState(page: Page): Promise<unknown> {
-  const readiness = await page.evaluate(collectAppReadinessSnapshot).catch(
-    (error: unknown): AppReadinessSnapshot => ({
+  const readiness = await page
+    .evaluate(collectAppReadinessSnapshot)
+    .catch((error: unknown): AppReadinessSnapshot => ({
       bridgeReady: false,
       modelCatalogReady: false,
       composerMounted: false,
@@ -409,8 +415,7 @@ async function captureVisibleState(page: Page): Promise<unknown> {
       sendButtonPresent: false,
       stopButtonPresent: false,
       probeError: `E2E readiness snapshot unavailable: ${errorMessage(error)}`
-    })
-  )
+    }))
   return page.evaluate(
     async ({ readinessSnapshot }) => {
       const queueRoots = [...document.querySelectorAll('[data-slot="queued-follow-up-list"]')]

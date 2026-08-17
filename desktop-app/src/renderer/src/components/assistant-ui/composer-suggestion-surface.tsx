@@ -30,6 +30,7 @@ export type ComposerSuggestionSurfaceProps = {
     onSubmit(selection: ComposerReviewSelection): void | Promise<void>
   }
   commandContext: ComposerCommandContext
+  contextActions?: readonly ComposerSuggestionItem[]
   contextSections: readonly ComposerContextMenuSection[]
   localPickerEnabled: boolean
   onContextOpenChange: (open: boolean) => void
@@ -46,6 +47,7 @@ export type ComposerSuggestionSurfaceProps = {
 export function ComposerSuggestionSurface({
   codeReview,
   commandContext,
+  contextActions = [],
   contextSections,
   localPickerEnabled,
   onContextOpenChange,
@@ -65,28 +67,32 @@ export function ComposerSuggestionSurface({
       contextSections,
       controller.insertTriggerItem.bind(controller)
     )
-    if (!localPickerEnabled || query.trim()) return sections
-    const picker: ComposerSuggestionItem = {
-      id: 'context:files-and-folders',
-      kind: 'context',
-      label: 'Files and folders',
-      icon: <FolderOpenIcon className="size-4" />,
-      selection: {
-        type: 'action',
-        run: async () => {
-          await pickLocalContext('filesAndFolders')
+    if (query.trim()) return sections
+    const addItems = [...contextActions]
+    if (localPickerEnabled) {
+      addItems.push({
+        id: 'context:files-and-folders',
+        kind: 'context',
+        label: 'Files and folders',
+        icon: <FolderOpenIcon className="size-4" />,
+        selection: {
+          type: 'action',
+          run: async () => {
+            await pickLocalContext('filesAndFolders')
+          }
         }
-      }
+      })
     }
+    if (addItems.length === 0) return sections
     return [
       {
         id: 'context:add',
         label: '添加',
-        items: [picker]
+        items: addItems
       },
       ...sections
     ] satisfies ComposerSuggestionSection[]
-  }, [contextSections, controller, localPickerEnabled, pickLocalContext, query])
+  }, [contextActions, contextSections, controller, localPickerEnabled, pickLocalContext, query])
   const rootSections = useMemo(() => {
     if (state.open && (state.trigger === '@' || state.trigger === '+')) {
       return contextSuggestionSections

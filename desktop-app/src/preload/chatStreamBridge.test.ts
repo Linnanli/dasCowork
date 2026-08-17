@@ -58,8 +58,9 @@ describe('createChatStreamBridge', () => {
     const descriptor = {
       runId: 'run-local',
       conversationId: 'local-conversation',
+      runKind: 'single-turn',
       lastSequence: 2
-    }
+    } as const
     const bridge = createChatStreamBridge({
       createStreamId: () => 'stream-1',
       createMessageChannel: createFakeMessageChannel,
@@ -99,6 +100,26 @@ describe('createChatStreamBridge', () => {
     expect(callbacks.onChunk).toHaveBeenCalledWith({ type: 'text-start', id: 'replayed-text' })
   })
 
+  it('forwards the sanitized applied mode acknowledgement', () => {
+    const startedPorts: MessagePort[] = []
+    const callbacks = createCallbacks()
+    callbacks.onModeApplied = vi.fn()
+    const bridge = createChatStreamBridge({
+      createStreamId: () => 'mode-stream',
+      createMessageChannel: createFakeMessageChannel,
+      postStart: (_request, _streamId, port) => startedPorts.push(port)
+    })
+
+    bridge.startChatStream(createRequest('chat-mode'), callbacks)
+    startedPorts[0].postMessage({
+      type: 'mode-applied',
+      threadId: 'thread-mode',
+      modeKind: 'plan'
+    } satisfies CodexChatStreamEvent)
+
+    expect(callbacks.onModeApplied).toHaveBeenCalledWith('thread-mode', 'plan')
+  })
+
   it('keeps an initial no-active-run attach as a normal null result', async () => {
     const callbacks = createCallbacks()
     const bridge = createChatStreamBridge({
@@ -124,6 +145,7 @@ describe('createChatStreamBridge', () => {
       getActiveRun: async () => ({
         runId: 'run-current',
         conversationId: 'thread-live',
+        runKind: 'single-turn',
         threadId: 'thread-live',
         lastSequence: 4
       }),
@@ -149,6 +171,7 @@ describe('createChatStreamBridge', () => {
       getActiveRun: async () => ({
         runId: 'run-1',
         conversationId: 'chat-1',
+        runKind: 'single-turn',
         lastSequence: 3
       }),
       postAttach: (_conversationId, _streamId, port, runId, afterSequence) => {
@@ -228,6 +251,7 @@ describe('createChatStreamBridge', () => {
       getActiveRun: async () => ({
         runId: 'run-current',
         conversationId: 'chat-1',
+        runKind: 'single-turn',
         lastSequence: 2
       }),
       postAttach: (_conversationId, _streamId, port, runId, afterSequence) => {
@@ -647,8 +671,7 @@ describe('createChatStreamBridge', () => {
   it('C22/G11 uses the IPC terminal fallback exactly once after the MessagePort fails', async () => {
     let startedPort: MessagePort | undefined
     let terminalListener:
-      | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
-      | undefined
+      ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void) | undefined
     const callbacks = createCallbacks()
     const bridge = createChatStreamBridge({
       createStreamId: () => 'stream-1',
@@ -700,8 +723,7 @@ describe('createChatStreamBridge', () => {
     try {
       let startedPort: MessagePort | undefined
       let terminalListener:
-        | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
-        | undefined
+        ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void) | undefined
       const callbacks = createCallbacks()
       const bridge = createChatStreamBridge({
         createStreamId: () => 'stream-1',
@@ -739,8 +761,7 @@ describe('createChatStreamBridge', () => {
     try {
       let startedPort: MessagePort | undefined
       let terminalListener:
-        | ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void)
-        | undefined
+        ((fallback: { streamId: string; terminal: CodexChatTerminalEvent }) => void) | undefined
       const callbacks = createCallbacks()
       const bridge = createChatStreamBridge({
         createStreamId: () => 'stream-1',

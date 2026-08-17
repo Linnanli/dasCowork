@@ -142,6 +142,14 @@ export function createChatStreamBridge(
       callbacks.onTurnLifecycle?.(message.event)
       return
     }
+    if (message.type === 'mode-applied') {
+      callbacks.onModeApplied?.(message.threadId, message.modeKind)
+      return
+    }
+    if (message.type === 'thread-goal') {
+      callbacks.onThreadGoal?.(message.threadId, message.goal)
+      return
+    }
     if (message.type === 'chunk') {
       if (!activeStream.abortRequested) callbacks.onChunk(message.chunk)
       return

@@ -22,7 +22,7 @@ import {
 } from '@assistant-ui/react'
 import { getToolName, isToolUIPart, type UIMessage, type UIMessagePart } from 'ai'
 import { type DirectiveChipProps } from '@assistant-ui/react-lexical'
-import { Streamdown } from 'streamdown'
+import { Streamdown, type PluginConfig } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
 import { math } from '@streamdown/math'
@@ -31,6 +31,10 @@ import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
 import type { ComposerReviewSelection } from '@/components/assistant-ui/composer-code-review-command-content'
+import {
+  ComposerModeIndicatorBar,
+  type ComposerModePresentation
+} from '@/components/assistant-ui/composer-mode-indicator'
 import { ComposerSuggestionSurface } from '@/components/assistant-ui/composer-suggestion-surface'
 import { ComposerTurnStatusCard } from '@/components/assistant-ui/composer-turn-status-card'
 import {
@@ -75,6 +79,7 @@ import {
   createComposerCommandRegistry,
   useRegisterComposerCommand
 } from '@/composer/commands/composerCommandRegistry'
+import type { ComposerSuggestionItem } from '@/composer/composerSuggestionTypes'
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { buildCodeReviewPrompt } from '@/lib/codeReviewPrompt'
 import {
@@ -101,6 +106,7 @@ import {
   CopyIcon,
   FileIcon,
   FolderIcon,
+  LightbulbIcon,
   MessageSquareIcon,
   Maximize2Icon,
   Minimize2Icon,
@@ -115,6 +121,7 @@ import {
   QuoteIcon,
   SparklesIcon,
   SquareIcon,
+  TargetIcon,
   WrenchIcon
 } from 'lucide-react'
 import {
@@ -247,6 +254,12 @@ type SidebarHeaderSlotProps = {
 
 type ComposerProps = {
   activeConversation?: ActiveConversationContext
+  composerModeKind: ConversationChatEntry['composerModeKind']
+  goalEditorActive: boolean
+  threadGoal: ConversationChatEntry['threadGoal']
+  goalCapabilityStatus: ConversationChatEntry['goalCapabilityStatus']
+  goalOperation: ConversationChatEntry['goalOperation']
+  goalError?: string
   models: readonly ModelOption[]
   selectedModelId: string | undefined
   modelSelectionError?: string
@@ -257,12 +270,17 @@ type ComposerProps = {
   onSteerFollowUp: (
     itemId: string,
     message:
-      | MaterializedQueuedUserMessage
-      | QueuedUserMessageSnapshot
-      | QueuedUserMessageSnapshotInput
+      MaterializedQueuedUserMessage | QueuedUserMessageSnapshot | QueuedUserMessageSnapshotInput
   ) => Promise<void>
   onStartCodeReview: (prompt: string) => Promise<void>
   onCreateNewTask: () => void
+  onComposerModeKindChange: (composerModeKind: ConversationChatEntry['composerModeKind']) => void
+  onGoalEditorActiveChange: (goalEditorActive: boolean) => void
+  onThreadGoalChange: (threadGoal: ConversationChatEntry['threadGoal']) => void
+  onGoalOperationChange: (
+    goalOperation: ConversationChatEntry['goalOperation'],
+    goalError?: string
+  ) => void
 }
 
 type ChatThreadProps = ComposerProps & {
@@ -322,7 +340,16 @@ type RenderTargetScrollEventDetail = {
   focus?: boolean
 }
 
-const streamdownPlugins = { code, math, mermaid, cjk }
+// `streamdown` and its separately published plugins expose the same runtime
+// plugin API, while pnpm correctly preserves their different Shiki type
+// copies. Adapt only this composition boundary rather than leaking either
+// package's private highlighter types through the renderer.
+const streamdownPlugins: PluginConfig = {
+  code: code as unknown as PluginConfig['code'],
+  math,
+  mermaid,
+  cjk
+}
 
 const sidebarBaseClass =
   'hidden h-full shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none md:flex'
@@ -484,6 +511,10 @@ function App(): React.JSX.Element {
     setActiveProjectSelection,
     setActiveDraft,
     setActiveDraftAttachments,
+    setActiveComposerModeKind,
+    setActiveGoalEditorActive,
+    setActiveThreadGoal,
+    setActiveGoalOperation,
     setActiveScroll,
     syncConversationMetadata,
     getConversationIndicator
@@ -706,6 +737,10 @@ function App(): React.JSX.Element {
                       modelSelectionError={modelSelectionError}
                       onDraftChange={setActiveDraft}
                       onDraftAttachmentsChange={setActiveDraftAttachments}
+                      onComposerModeKindChange={setActiveComposerModeKind}
+                      onGoalEditorActiveChange={setActiveGoalEditorActive}
+                      onThreadGoalChange={setActiveThreadGoal}
+                      onGoalOperationChange={setActiveGoalOperation}
                       onRetryLoad={() => {
                         void openConversation({ conversationId: activeEntry.localId })
                       }}
@@ -740,6 +775,10 @@ function ActiveConversationPane({
   modelSelectionError,
   onDraftChange,
   onDraftAttachmentsChange,
+  onComposerModeKindChange,
+  onGoalEditorActiveChange,
+  onThreadGoalChange,
+  onGoalOperationChange,
   onRetryLoad,
   onOpenConversation,
   onScrollSnapshotChange,
@@ -760,6 +799,13 @@ function ActiveConversationPane({
   modelSelectionError?: string
   onDraftChange: (draft: string) => void
   onDraftAttachmentsChange: (attachments: readonly ConversationDraftAttachment[]) => void
+  onComposerModeKindChange: (composerModeKind: ConversationChatEntry['composerModeKind']) => void
+  onGoalEditorActiveChange: (goalEditorActive: boolean) => void
+  onThreadGoalChange: (threadGoal: ConversationChatEntry['threadGoal']) => void
+  onGoalOperationChange: (
+    goalOperation: ConversationChatEntry['goalOperation'],
+    goalError?: string
+  ) => void
   onRetryLoad: () => void
   onOpenConversation: OpenSubagentConversation
   onScrollSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
@@ -786,8 +832,53 @@ function ActiveConversationPane({
           (entry.status === 'submitted' || entry.status === 'streaming')
       ),
     onNew: async (message) => {
+      const submittedMessage = appendMessageToUIMessage(message)
+      if (entry.goalEditorActive && entry.context.threadId) {
+        const hasNonTextPart = submittedMessage.parts.some((part) => part.type !== 'text')
+        const objective = submittedMessage.parts
+          .filter(
+            (
+              part
+            ): part is Extract<UIMessagePart<Record<string, unknown>, never>, { type: 'text' }> =>
+              part.type === 'text'
+          )
+          .map((part) => part.text)
+          .join('\n')
+          .trim()
+
+        if (!objective) {
+          onGoalOperationChange('idle', '请输入目标后再保存')
+          return
+        }
+        if (hasNonTextPart) {
+          onGoalOperationChange('idle', '目标只能包含文字，请先移除附件')
+          return
+        }
+        if ([...objective].length > 4_000) {
+          onGoalOperationChange('idle', '目标不能超过 4,000 个字符')
+          return
+        }
+        if (
+          entry.threadGoal &&
+          entry.threadGoal.objective !== objective &&
+          !window.confirm('这会替换当前目标。要继续吗？')
+        ) {
+          return
+        }
+
+        onDraftChange(objective)
+        onGoalOperationChange('setting')
+        try {
+          await runTranscriptAction(entry.controller, () =>
+            entry.controller.startGoalControlUntilAccepted()
+          )
+        } catch {
+          onGoalOperationChange('idle', '无法保存目标，请稍后重试')
+        }
+        return
+      }
       await runTranscriptAction(entry.controller, () =>
-        entry.controller.sendMessage(appendMessageToUIMessage(message), {
+        entry.controller.sendMessage(submittedMessage, {
           metadata: message.runConfig
         })
       )
@@ -825,9 +916,7 @@ function ActiveConversationPane({
     async (
       itemId: string,
       message:
-        | MaterializedQueuedUserMessage
-        | QueuedUserMessageSnapshot
-        | QueuedUserMessageSnapshotInput
+        MaterializedQueuedUserMessage | QueuedUserMessageSnapshot | QueuedUserMessageSnapshotInput
     ): Promise<void> => {
       await steerFollowUpItemWithTranscript(message, entry, () => followUps.steerItem(itemId))
     },
@@ -873,6 +962,16 @@ function ActiveConversationPane({
         onSelectedModelChange={onSelectedModelChange}
         onCreateNewTask={onCreateNewTask}
         onStartCodeReview={startCodeReview}
+        composerModeKind={entry.composerModeKind}
+        goalEditorActive={entry.goalEditorActive}
+        threadGoal={entry.threadGoal}
+        goalCapabilityStatus={entry.goalCapabilityStatus}
+        goalOperation={entry.goalOperation}
+        goalError={entry.goalError}
+        onComposerModeKindChange={onComposerModeKindChange}
+        onGoalEditorActiveChange={onGoalEditorActiveChange}
+        onThreadGoalChange={onThreadGoalChange}
+        onGoalOperationChange={onGoalOperationChange}
         onRejectApproval={onRejectApproval}
         onSnoozeApproval={onSnoozeApproval}
         onRespondApproval={onRespondApproval}
@@ -1435,6 +1534,16 @@ function ChatThread({
   recoveryPhase,
   recoveryError,
   onCreateNewTask,
+  composerModeKind,
+  goalEditorActive,
+  threadGoal,
+  goalCapabilityStatus,
+  goalOperation,
+  goalError,
+  onComposerModeKindChange,
+  onGoalEditorActiveChange,
+  onThreadGoalChange,
+  onGoalOperationChange,
   onRejectApproval,
   onSnoozeApproval,
   onRespondApproval
@@ -1662,6 +1771,16 @@ function ChatThread({
                   onSteerFollowUp={onSteerFollowUp}
                   onStartCodeReview={onStartCodeReview}
                   onCreateNewTask={onCreateNewTask}
+                  composerModeKind={composerModeKind}
+                  goalEditorActive={goalEditorActive}
+                  threadGoal={threadGoal}
+                  goalCapabilityStatus={goalCapabilityStatus}
+                  goalOperation={goalOperation}
+                  goalError={goalError}
+                  onComposerModeKindChange={onComposerModeKindChange}
+                  onGoalEditorActiveChange={onGoalEditorActiveChange}
+                  onThreadGoalChange={onThreadGoalChange}
+                  onGoalOperationChange={onGoalOperationChange}
                   projectState={projectState}
                   editingFollowUp={editingFollowUp}
                   onEditingFollowUpChange={setEditingFollowUp}
@@ -2887,6 +3006,12 @@ function Composer(props: ComposerComponentProps): React.JSX.Element {
 
 function ComposerBody({
   activeConversation,
+  composerModeKind,
+  goalEditorActive,
+  threadGoal,
+  goalCapabilityStatus,
+  goalOperation,
+  goalError,
   composerContextCatalog,
   disabled,
   followUps,
@@ -2897,6 +3022,10 @@ function ComposerBody({
   onSteerFollowUp,
   onStartCodeReview,
   onCreateNewTask,
+  onComposerModeKindChange,
+  onGoalEditorActiveChange,
+  onThreadGoalChange,
+  onGoalOperationChange,
   projectState,
   editingFollowUp,
   onEditingFollowUpChange,
@@ -2923,6 +3052,93 @@ function ComposerBody({
     mode: FollowUpMode
     snapshot: QueuedUserMessageSnapshotInput
   } | null>(null)
+  const goalBusy = goalOperation !== 'idle'
+  const clearThreadGoal = useCallback(async (): Promise<boolean> => {
+    if (!threadGoal) {
+      onGoalEditorActiveChange(false)
+      return true
+    }
+    const threadId = activeConversation?.threadId
+    if (!threadId) {
+      onGoalOperationChange('idle', '当前对话尚未创建，无法清除目标')
+      return false
+    }
+    onGoalOperationChange('clearing')
+    try {
+      const cleared = await window.desktopApp.conversations.clearConversationGoal({
+        conversationId: threadId
+      })
+      if (!cleared) throw new Error('未能清除目标')
+      onThreadGoalChange(null)
+      onGoalEditorActiveChange(false)
+      return true
+    } catch {
+      onGoalOperationChange('idle', '无法清除目标，请稍后重试')
+      return false
+    }
+  }, [
+    activeConversation?.threadId,
+    onGoalEditorActiveChange,
+    onGoalOperationChange,
+    onThreadGoalChange,
+    threadGoal
+  ])
+  const enterGoalEditor = useCallback(() => {
+    onComposerModeKindChange('default')
+    onGoalEditorActiveChange(true)
+  }, [onComposerModeKindChange, onGoalEditorActiveChange])
+  const exitGoalEditor = useCallback(() => {
+    onGoalEditorActiveChange(false)
+  }, [onGoalEditorActiveChange])
+  const enterPlanMode = useCallback(async () => {
+    if (threadGoal && !(await clearThreadGoal())) return
+    onGoalEditorActiveChange(false)
+    onComposerModeKindChange('plan')
+  }, [clearThreadGoal, onComposerModeKindChange, onGoalEditorActiveChange, threadGoal])
+  const exitPlanMode = useCallback(() => {
+    onComposerModeKindChange('default')
+  }, [onComposerModeKindChange])
+  const composerPlaceholder = goalEditorActive
+    ? '描述你的目标，定义可衡量的成果，以获得最佳效果'
+    : composerModeKind === 'plan'
+      ? '描述你的任务以生成计划…'
+      : '输入消息（@ 提及工具，/ 输入命令）'
+  const modePresentations = useMemo<readonly ComposerModePresentation[]>(() => {
+    if (goalEditorActive || threadGoal) {
+      return [
+        {
+          id: 'goal',
+          label: '目标',
+          tooltip: goalBusy ? '正在更新目标' : threadGoal ? '清除目标' : '退出目标编辑',
+          dismissLabel: threadGoal ? '清除目标' : '退出目标编辑',
+          Icon: TargetIcon,
+          onDismiss: threadGoal ? () => void clearThreadGoal() : exitGoalEditor,
+          busy: goalBusy
+        }
+      ]
+    }
+    if (composerModeKind === 'plan') {
+      return [
+        {
+          id: 'plan',
+          label: '计划',
+          tooltip: '关闭计划模式',
+          dismissLabel: '关闭计划模式',
+          Icon: LightbulbIcon,
+          onDismiss: exitPlanMode
+        }
+      ]
+    }
+    return []
+  }, [
+    clearThreadGoal,
+    composerModeKind,
+    exitGoalEditor,
+    exitPlanMode,
+    goalBusy,
+    goalEditorActive,
+    threadGoal
+  ])
   const selectedTaskIds = useMemo(
     () => [
       ...new Set(
@@ -3121,6 +3337,36 @@ function ComposerBody({
     selection: { type: 'action', run: onCreateNewTask }
   })
   useRegisterComposerCommand({
+    id: 'goal',
+    title: '目标',
+    description: '设置要持续追求的目标',
+    group: 'General',
+    searchAliases: ['goal', '目标'],
+    triggers: ['/'],
+    requiresEmptyComposer: false,
+    // Goal changes target the thread owner and are safe while that owner is
+    // active; disabling this would make an active Goal impossible to replace
+    // or clear without first interrupting its turn.
+    enabled: !editingFollowUp && !goalBusy && goalCapabilityStatus !== 'unsupported',
+    selection: { type: 'action', run: enterGoalEditor }
+  })
+  useRegisterComposerCommand({
+    id: 'plan-mode',
+    title: '计划模式',
+    description: composerModeKind === 'plan' ? '关闭计划模式' : '开启计划模式',
+    group: 'General',
+    searchAliases: ['plan', '计划', 'planning'],
+    triggers: ['/'],
+    requiresEmptyComposer: false,
+    // Entering Plan clears any persisted Goal before changing local intent.
+    // That mutation is routed to the existing owner when a turn is active.
+    enabled: !editingFollowUp && !goalBusy,
+    selection: {
+      type: 'action',
+      run: composerModeKind === 'plan' ? exitPlanMode : enterPlanMode
+    }
+  })
+  useRegisterComposerCommand({
     id: 'code-review',
     title: 'Code review',
     description: '审核当前 Git 工作区的改动',
@@ -3141,6 +3387,42 @@ function ComposerBody({
     enabled: !editingFollowUp,
     selection: { type: 'content', contentId: 'mcp', placement: 'panel' }
   })
+  const contextActions = useMemo<readonly ComposerSuggestionItem[]>(
+    () => [
+      {
+        id: 'context:add:goal',
+        kind: 'context',
+        label: '目标',
+        description: '设置要持续追求的目标',
+        icon: <TargetIcon className="size-4" />,
+        searchTerms: ['goal', '目标'],
+        disabled: Boolean(editingFollowUp) || goalBusy || goalCapabilityStatus === 'unsupported',
+        selection: { type: 'action', run: enterGoalEditor }
+      },
+      {
+        id: 'context:add:plan',
+        kind: 'context',
+        label: '计划',
+        description: composerModeKind === 'plan' ? '关闭计划模式' : '开启计划模式',
+        icon: <LightbulbIcon className="size-4" />,
+        searchTerms: ['plan', '计划', 'planning'],
+        disabled: Boolean(editingFollowUp) || goalBusy,
+        selection: {
+          type: 'action',
+          run: composerModeKind === 'plan' ? exitPlanMode : enterPlanMode
+        }
+      }
+    ],
+    [
+      composerModeKind,
+      editingFollowUp,
+      enterGoalEditor,
+      enterPlanMode,
+      exitPlanMode,
+      goalBusy,
+      goalCapabilityStatus
+    ]
+  )
   const enqueueRunningFollowUp = useCallback(
     async (mode: FollowUpMode) => {
       const id = editingFollowUp?.itemId ?? crypto.randomUUID()
@@ -3351,11 +3633,12 @@ function ComposerBody({
             className="aui-composer-input relative max-h-32 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:inset-x-0 [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1 [&_.aui-lexical-placeholder]:text-muted-foreground/80 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300"
             directiveChip={DirectiveChip}
             formatter={composerContextDirectiveFormatter}
-            placeholder="输入消息（@ 提及工具，/ 输入命令）"
+            placeholder={composerPlaceholder}
           />
           <div className="aui-composer-action-wrapper flex items-center justify-between">
             <div className="flex min-w-0 items-center gap-1">
               <ComposerAddContextPopover />
+              <ComposerModeIndicatorBar presentations={modePresentations} />
               <ModelSelector
                 models={models}
                 value={selectedModelId}
@@ -3390,6 +3673,16 @@ function ComposerBody({
                   {modelSelectionError}
                 </span>
               )}
+              {goalError ? (
+                <span
+                  role="alert"
+                  data-slot="composer-goal-error"
+                  className="max-w-56 truncate text-xs text-destructive"
+                  title={goalError}
+                >
+                  {goalError}
+                </span>
+              ) : null}
               {cannotSendImages ? (
                 <span
                   role="alert"
@@ -3488,6 +3781,7 @@ function ComposerBody({
             onSubmit: submitCodeReview
           }}
           commandContext={commandContext}
+          contextActions={contextActions}
           contextSections={contextSections}
           localPickerEnabled={localContextPickerEnabled}
           onContextOpenChange={setContextSearchOpen}

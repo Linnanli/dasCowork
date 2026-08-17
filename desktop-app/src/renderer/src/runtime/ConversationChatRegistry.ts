@@ -7,14 +7,20 @@ import {
 import type {
   DesktopCodexChatApi,
   SidebarConversation,
-  SidebarConversationOpenResult
+  SidebarConversationOpenResult,
+  ThreadGoalLoadResult,
+  ThreadGoalSummary
 } from '../../../shared/codexIpcApi'
 import type { ProjectSelection } from '../../../shared/projects/projectTypes'
 import {
   ElectronIpcChatTransport,
   type ActiveConversationContext
 } from '../lib/ElectronIpcChatTransport'
-import { ConversationDraftStore, type ConversationDraftAttachment } from './ConversationDraftStore'
+import {
+  ConversationDraftStore,
+  type ConversationComposerModeKind,
+  type ConversationDraftAttachment
+} from './ConversationDraftStore'
 import {
   ConversationTranscriptController,
   type ConversationTranscriptMessage
@@ -29,6 +35,7 @@ export type ConversationScrollSnapshot = {
 
 export type ConversationEntryStatus = 'loading' | ChatStatus
 export type ConversationRecoveryPhase = 'attached' | 'needs_resume' | 'resuming' | 'resumed'
+export type GoalCapabilityStatus = 'unknown' | 'available' | 'unsupported' | 'error'
 
 export type ConversationChatEntry = {
   readonly localId: string
@@ -45,6 +52,12 @@ export type ConversationChatEntry = {
   unread: boolean
   draft: string
   draftAttachments: readonly ConversationDraftAttachment[]
+  composerModeKind: ConversationComposerModeKind
+  goalEditorActive: boolean
+  threadGoal: ThreadGoalSummary | null | undefined
+  goalCapabilityStatus: GoalCapabilityStatus
+  goalOperation: 'idle' | 'setting' | 'clearing'
+  goalError?: string
   scroll?: ConversationScrollSnapshot
   loaded: boolean
   recoveryPhase: ConversationRecoveryPhase
@@ -63,6 +76,7 @@ export type ConversationChatRegistryOptions = {
   transcriptRecoveryStore?: ConversationTranscriptRecoveryStore
   createId?: () => string
   onStreamStarted?: (conversationId: string) => void
+  loadThreadGoal?: (threadId: string) => Promise<ThreadGoalLoadResult>
 }
 
 type InternalConversationChatEntry = ConversationChatEntry & {
@@ -79,6 +93,7 @@ export class ConversationChatRegistry {
   private readonly transcriptRecoveryStore: ConversationTranscriptRecoveryStore
   private readonly createId: () => string
   private readonly onStreamStarted: ((conversationId: string) => void) | undefined
+  private readonly loadThreadGoal: ((threadId: string) => Promise<ThreadGoalLoadResult>) | undefined
   private readonly entriesByLocalId = new Map<string, InternalConversationChatEntry>()
   private readonly aliases = new Map<string, InternalConversationChatEntry>()
   private readonly conversationMetadata = new Map<string, SidebarConversation>()
@@ -100,6 +115,7 @@ export class ConversationChatRegistry {
       options.transcriptRecoveryStore ?? new ConversationTranscriptRecoveryStore()
     this.createId = options.createId ?? createLocalConversationId
     this.onStreamStarted = options.onStreamStarted
+    this.loadThreadGoal = options.loadThreadGoal
     this.activeEntry = this.createEntry({
       localId: this.createId(),
       projectSelection: undefined,
@@ -278,6 +294,7 @@ export class ConversationChatRegistry {
     }
     entry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     entry.draftAttachments = this.draftStore.getAttachments(threadId)
+    entry.composerModeKind = this.draftStore.getComposerModeKind(threadId)
     this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
     entry.loaded = true
     this.emit()
@@ -343,6 +360,53 @@ export class ConversationChatRegistry {
     if (JSON.stringify(entry.draftAttachments) === JSON.stringify(attachments)) return
     entry.draftAttachments = attachments.map((attachment) => ({ ...attachment }))
     this.draftStore.setAttachments(entry.context.threadId ?? entry.localId, entry.draftAttachments)
+    this.emit()
+  }
+
+  setComposerModeKind(
+    entryOrIdentity: ConversationChatEntry | string,
+    composerModeKind: ConversationComposerModeKind
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    if (entry.composerModeKind === composerModeKind) return
+    entry.composerModeKind = composerModeKind
+    if (composerModeKind !== 'default') entry.goalEditorActive = false
+    this.draftStore.setComposerModeKind(entry.context.threadId ?? entry.localId, composerModeKind)
+    this.emit()
+  }
+
+  setGoalEditorActive(
+    entryOrIdentity: ConversationChatEntry | string,
+    goalEditorActive: boolean
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    if (goalEditorActive && entry.composerModeKind !== 'default') {
+      this.setComposerModeKind(entry, 'default')
+    }
+    if (entry.goalEditorActive === goalEditorActive) return
+    entry.goalEditorActive = goalEditorActive
+    this.emit()
+  }
+
+  setThreadGoal(
+    entryOrIdentity: ConversationChatEntry | string,
+    threadGoal: ThreadGoalSummary | null | undefined
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    entry.threadGoal = threadGoal
+    entry.goalOperation = 'idle'
+    entry.goalError = undefined
+    this.emit()
+  }
+
+  setGoalOperation(
+    entryOrIdentity: ConversationChatEntry | string,
+    goalOperation: ConversationChatEntry['goalOperation'],
+    goalError?: string
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    entry.goalOperation = goalOperation
+    entry.goalError = goalError
     this.emit()
   }
 
@@ -442,6 +506,19 @@ export class ConversationChatRegistry {
         cwd: result.cwd
       }
       entry.historyRevision = result.historyRevision
+      if (result.threadGoalResult?.status === 'loaded') {
+        entry.threadGoal = result.threadGoalResult.goal
+        entry.goalCapabilityStatus = 'available'
+        entry.goalError = undefined
+      } else if (result.threadGoalResult?.status === 'unsupported') {
+        entry.threadGoal = undefined
+        entry.goalCapabilityStatus = 'unsupported'
+        entry.goalError = result.threadGoalResult.message
+      } else if (result.threadGoalResult?.status === 'error') {
+        entry.threadGoal = undefined
+        entry.goalCapabilityStatus = 'error'
+        entry.goalError = result.threadGoalResult.message
+      }
       this.recoveryHydrations.add(entry)
       try {
         entry.controller.replaceMessages(
@@ -490,6 +567,9 @@ export class ConversationChatRegistry {
       chatBridge: this.chatBridge,
       getActiveConversation: () => entry.context,
       getProjectSelection: () => entry.context.projectSelection,
+      getComposerModeKind: () => entry.composerModeKind,
+      getGoalEditorActive: () => entry.goalEditorActive,
+      getGoalEditorObjective: () => entry.draft,
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
       onStreamStarted: () => {
         this.onStreamStarted?.(entry.context.threadId ?? entry.localId)
@@ -504,11 +584,28 @@ export class ConversationChatRegistry {
         }
       },
       onTurnLifecycle: (event) => entry.controller.handleTurnLifecycle(event),
+      onModeApplied: (threadId, modeKind) => {
+        if (entry.context.threadId && entry.context.threadId !== threadId) return
+        this.setComposerModeKind(entry, modeKind)
+      },
+      onThreadGoal: (threadId, goal) => {
+        if (entry.context.threadId && entry.context.threadId !== threadId) return
+        entry.threadGoal = goal
+        entry.goalCapabilityStatus = 'available'
+        const shouldClearGoalDraft = entry.goalEditorActive && goal !== null
+        entry.goalEditorActive = false
+        entry.goalOperation = 'idle'
+        entry.goalError = undefined
+        if (shouldClearGoalDraft) this.clearDraft(entry)
+        this.emit()
+      },
       onStreamAccepted: () => entry.controller.handleStreamAccepted(),
       onStreamAborted: () => entry.controller.handleStreamAborted(),
       onStreamError: (error) => entry.controller.handleStreamError(error),
       onStreamFinished: ({ threadId }) => {
-        if (threadId) this.bindThread(entry, threadId)
+        if (!threadId) return
+        this.bindThread(entry, threadId)
+        if (entry.goalEditorActive) void this.refreshThreadGoalAfterFirstTurn(entry, threadId)
       }
     })
     const context: ActiveConversationContext = {
@@ -529,6 +626,11 @@ export class ConversationChatRegistry {
       unread: false,
       draft: this.draftStore.get(stableDraftIdentity),
       draftAttachments: this.draftStore.getAttachments(stableDraftIdentity),
+      composerModeKind: this.draftStore.getComposerModeKind(stableDraftIdentity),
+      goalEditorActive: false,
+      threadGoal: undefined,
+      goalCapabilityStatus: 'unknown',
+      goalOperation: 'idle',
       loaded: input.loaded,
       recoveryPhase: 'attached',
       recoveryAttempts: 0,
@@ -571,7 +673,10 @@ export class ConversationChatRegistry {
           }
         }
       }
-      if (controller.takeCurrentSendAcceptance()) this.clearDraft(entry)
+      // A new Goal is only accepted after the provider has persisted it on
+      // the freshly-created thread. Keep its objective recoverable when the
+      // first turn succeeds but thread/goal/set fails.
+      if (controller.takeCurrentSendAcceptance() && !entry.goalEditorActive) this.clearDraft(entry)
       if (entry !== this.activeEntry && isRunningStatus(entry.status)) entry.unread = true
       this.emit()
     })
@@ -580,11 +685,35 @@ export class ConversationChatRegistry {
     return entry
   }
 
+  private async refreshThreadGoalAfterFirstTurn(
+    entry: InternalConversationChatEntry,
+    threadId: string
+  ): Promise<void> {
+    if (!this.loadThreadGoal || this.destroyed) return
+    try {
+      const result = await this.loadThreadGoal(threadId)
+      if (this.destroyed || entry.context.threadId !== threadId || result.status !== 'loaded')
+        return
+      entry.threadGoal = result.goal
+      entry.goalEditorActive = false
+      entry.goalOperation = 'idle'
+      entry.goalError = undefined
+      this.clearDraft(entry)
+      this.emit()
+    } catch {
+      // The completed turn remains valid if Goal metadata cannot be refreshed.
+      // Leave the editor open so the user can retry rather than hiding an
+      // unconfirmed objective.
+    }
+  }
+
   private clearDraft(entry: InternalConversationChatEntry): void {
     if (!entry.draft && entry.draftAttachments.length === 0) return
     entry.draft = ''
     entry.draftAttachments = []
-    this.draftStore.clear(entry.context.threadId ?? entry.localId)
+    const identity = entry.context.threadId ?? entry.localId
+    this.draftStore.set(identity, '')
+    this.draftStore.setAttachments(identity, [])
   }
 
   private resumeEntry(entry: InternalConversationChatEntry): void {

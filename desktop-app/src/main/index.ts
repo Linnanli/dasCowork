@@ -113,6 +113,7 @@ import {
   followUpSetDefaultModePayloadSchema,
   followUpSteerItemPayloadSchema,
   sidebarConversationActionPayloadSchema,
+  sidebarConversationGoalSetPayloadSchema,
   sidebarConversationRenamePayloadSchema,
   sidebarPreferencesPatchSchema
 } from '../shared/codexIpcApi'
@@ -257,6 +258,7 @@ function createCodexRuntime(
     projectService: projectRuntimeServices.projectService,
     projectStore: projectRuntimeServices.projectStore,
     turnDiffStore,
+    collaborationModeClient: historyClient,
     followUpQueue,
     onTurnCompleted: () => manager.handleAppEvent({ type: 'turnComplete' }),
     onAgentLifecycle: (event) => {
@@ -828,6 +830,27 @@ app.whenReady().then(() => {
   ipcMain.handle('codex:conversations:open', (_, payload: unknown) => {
     const request = sidebarConversationActionPayloadSchema.parse(payload)
     return requireConversationApi().openConversation(request)
+  })
+  ipcMain.handle('codex:conversations:get-goal', (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    return requireConversationApi().getConversationGoal(request.conversationId)
+  })
+  ipcMain.handle('codex:conversations:set-goal', async (_, payload: unknown) => {
+    const request = sidebarConversationGoalSetPayloadSchema.parse(payload)
+    const activeGoal = await codexRuntime?.setThreadGoalOnActiveSession(
+      request.conversationId,
+      request.objective
+    )
+    if (activeGoal) return activeGoal
+    throw new Error('目标只能通过当前对话的连续会话设置')
+  })
+  ipcMain.handle('codex:conversations:clear-goal', async (_, payload: unknown) => {
+    const request = sidebarConversationActionPayloadSchema.parse(payload)
+    const clearedOnActiveSession = await codexRuntime?.clearThreadGoalOnActiveSession(
+      request.conversationId
+    )
+    if (clearedOnActiveSession !== undefined) return clearedOnActiveSession
+    return requireConversationApi().clearConversationGoal(request.conversationId)
   })
   ipcMain.handle('codex:conversations:archive', async (_, payload: unknown) => {
     const request = sidebarConversationActionPayloadSchema.parse(payload)

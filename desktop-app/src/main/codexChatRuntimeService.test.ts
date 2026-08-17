@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CodexProviderError,
   CodexSteerError,
+  type CodexCallOptions,
   type CodexCommandApprovalRequest,
   type CodexSession
 } from '@janole/ai-sdk-provider-codex-asp'
@@ -125,6 +126,16 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 }
 
 type RuntimeStreamTextInput = {
+  collaborationMode?: {
+    mode: 'default' | 'plan'
+    settings: {
+      model: string
+      reasoning_effort: string | null
+      developer_instructions: string | null
+    }
+  }
+  goalControlObjective?: string
+  goalContinuous?: boolean
   resumeThreadId?: string
   resumeActiveTurn?: boolean
   existingTurnRecoveryState?: {
@@ -141,6 +152,8 @@ type RuntimeStreamTextInput = {
     turnId: string
     diff: string
   }) => void | Promise<void>
+  onThreadSettingsUpdated?: CodexCallOptions['onThreadSettingsUpdated']
+  onThreadGoalUpdated?: CodexCallOptions['onThreadGoalUpdated']
   onSessionCreated?: (session: CodexSession) => void
   onExistingTurnRecoveryState?: (
     state: NonNullable<RuntimeStreamTextInput['existingTurnRecoveryState']>
@@ -185,6 +198,18 @@ function activeSession(
     isActive: () => true,
     injectMessage: async () => undefined,
     steerPrompt: async () => ({ turnId }),
+    getThreadGoal: async () => null,
+    setThreadGoal: async () => ({
+      threadId,
+      objective: 'goal',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 0,
+      updatedAt: 0
+    }),
+    clearThreadGoal: async () => true,
     interrupt
   }
 }
@@ -342,6 +367,390 @@ describe('CodexChatRuntimeService', () => {
         })
       })
     )
+  })
+
+  it('resolves renderer composer mode into an explicit app-server collaboration mode', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-plan-mode' })
+      await completeCanonicalTurn(input, 'thread-plan-mode', 'turn-plan-mode')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-plan-mode',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { composerModeKind: 'plan' }
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationMode: {
+          mode: 'plan',
+          settings: {
+            model: 'gpt-test',
+            reasoning_effort: null,
+            developer_instructions: null
+          }
+        }
+      })
+    )
+  })
+
+  it('uses the app-server Plan preset when the collaboration catalog is available', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-plan-preset' })
+      await completeCanonicalTurn(input, 'thread-plan-preset', 'turn-plan-preset')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const listCollaborationModes = vi.fn().mockResolvedValue([
+      { name: 'Default', mode: 'default', model: null, reasoning_effort: null },
+      { name: 'Plan', mode: 'plan', model: 'preset-model', reasoning_effort: 'high' }
+    ])
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      collaborationModeClient: { listCollaborationModes } as never
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-plan-preset',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { composerModeKind: 'plan' }
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationMode: {
+          mode: 'plan',
+          settings: {
+            model: 'preset-model',
+            reasoning_effort: 'high',
+            developer_instructions: null
+          }
+        }
+      })
+    )
+    expect(listCollaborationModes).toHaveBeenCalledOnce()
+  })
+
+  it('rejects Plan when an advertised collaboration catalog omits its preset', async () => {
+    const streamText = vi.fn()
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText,
+      collaborationModeClient: {
+        listCollaborationModes: vi
+          .fn()
+          .mockResolvedValue([
+            { name: 'Default', mode: 'default', model: null, reasoning_effort: null }
+          ])
+      } as never
+    })
+
+    const port = new FakePort()
+    await service.startChatStream(
+      {
+        chatId: 'chat-plan-unsupported',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { composerModeKind: 'plan' }
+      },
+      port
+    )
+    expect(port.messages).toContainEqual({
+      type: 'error',
+      error: '当前 Codex 服务不支持计划模式'
+    })
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
+  it('binds a new Goal immediately after its thread is created', async () => {
+    const port = new FakePort()
+    const setThreadGoal = vi.fn().mockResolvedValue({
+      threadId: 'thread-goal-mode',
+      objective: '完成参考实现的功能对齐',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 0,
+      updatedAt: 0
+    })
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-goal-mode' })
+      await input.onSessionCreated?.({
+        ...activeSession('thread-goal-mode', 'turn-goal-mode', async () => undefined),
+        setThreadGoal
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-goal-mode',
+        turnId: 'turn-goal-mode'
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-goal-mode',
+        turnId: 'turn-goal-mode',
+        outcome: 'completed'
+      })
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-goal-mode',
+        trigger: 'submit-message',
+        messages: [
+          {
+            id: 'goal-user-message',
+            role: 'user',
+            parts: [{ type: 'text', text: '完成参考实现的功能对齐' }]
+          }
+        ],
+        modelId: 'gpt-test',
+        body: {
+          threadGoalDraft: { objective: '完成参考实现的功能对齐' }
+        }
+      },
+      port
+    )
+
+    expect(setThreadGoal).toHaveBeenCalledWith({
+      objective: '完成参考实现的功能对齐',
+      status: 'active'
+    })
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        goalFirstTurnObjective: '完成参考实现的功能对齐',
+        goalContinuous: true
+      })
+    )
+  })
+
+  it('resumes an existing thread Goal on one continuous owner without a user turn', async () => {
+    const port = new FakePort()
+    const setThreadGoal = vi.fn().mockResolvedValue({
+      threadId: 'thread-existing-goal',
+      objective: '完成遗留任务',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 0,
+      updatedAt: 0
+    })
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onSessionCreated?.({
+        ...activeSession('thread-existing-goal', 'turn-placeholder', async () => undefined),
+        turnId: undefined,
+        setThreadGoal
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-started',
+        sequence: 1,
+        threadId: 'thread-existing-goal',
+        turnId: 'turn-existing-goal'
+      })
+      await input.onTurnLifecycle?.({
+        type: 'turn-completed',
+        sequence: 2,
+        threadId: 'thread-existing-goal',
+        turnId: 'turn-existing-goal',
+        outcome: 'completed'
+      })
+      await input.onThreadGoalUpdated?.({
+        threadId: 'thread-existing-goal',
+        goal: {
+          threadId: 'thread-existing-goal',
+          objective: '完成遗留任务',
+          status: 'complete',
+          tokenBudget: null,
+          tokensUsed: 1,
+          timeUsedSeconds: 1,
+          createdAt: 0,
+          updatedAt: 1
+        }
+      })
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'thread-existing-goal',
+        trigger: 'goal-control',
+        messages: [],
+        modelId: 'gpt-test',
+        body: {
+          conversationId: 'thread-existing-goal',
+          threadId: 'thread-existing-goal',
+          threadGoalControl: { objective: '完成遗留任务' }
+        }
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeThreadId: 'thread-existing-goal',
+        goalControlObjective: '完成遗留任务',
+        goalContinuous: true
+      })
+    )
+    expect(setThreadGoal).toHaveBeenCalledTimes(1)
+    expect(setThreadGoal).toHaveBeenCalledWith({ objective: '完成遗留任务', status: 'active' })
+    expect(port.messages).toContainEqual({
+      type: 'thread-goal',
+      threadId: 'thread-existing-goal',
+      goal: expect.objectContaining({ objective: '完成遗留任务', status: 'active' })
+    })
+  })
+
+  it('forwards Goal updates from the provider as renderer-safe stream events', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-goal-events' })
+      await input.onThreadGoalUpdated?.({
+        threadId: 'thread-goal-events',
+        goal: {
+          threadId: 'thread-goal-events',
+          objective: '完成参考实现的功能对齐',
+          status: 'active',
+          tokenBudget: 1200,
+          tokensUsed: 12,
+          timeUsedSeconds: 3,
+          createdAt: 1,
+          updatedAt: 2
+        }
+      })
+      await completeCanonicalTurn(input, 'thread-goal-events', 'turn-goal-events')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-goal-events',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(port.messages).toContainEqual({
+      type: 'thread-goal',
+      threadId: 'thread-goal-events',
+      goal: {
+        threadId: 'thread-goal-events',
+        objective: '完成参考实现的功能对齐',
+        status: 'active',
+        tokenBudget: 1200,
+        tokensUsed: 12,
+        timeUsedSeconds: 3,
+        createdAt: 1,
+        updatedAt: 2
+      }
+    })
+  })
+
+  it('forwards the applied collaboration mode without exposing thread settings', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-mode-events' })
+      await input.onThreadSettingsUpdated?.({
+        threadId: 'thread-mode-events',
+        modeKind: 'plan',
+        model: 'internal-model-configuration',
+        effort: 'high'
+      })
+      await completeCanonicalTurn(input, 'thread-mode-events', 'turn-mode-events')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-mode-events',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test'
+      },
+      port
+    )
+
+    expect(port.messages).toContainEqual({
+      type: 'mode-applied',
+      threadId: 'thread-mode-events',
+      modeKind: 'plan'
+    })
   })
 
   it('returns the exact advertised command policy decision instead of renderer-provided policy data', () => {
@@ -2993,7 +3402,7 @@ describe('CodexChatRuntimeService', () => {
       streamText: async (input: RuntimeStreamTextInput) => {
         invocation += 1
         if (invocation === 1) {
-          input.onSessionCreated?.({
+          await input.onSessionCreated?.({
             threadId: 'thread-shared',
             turnId: 'turn-first',
             isActive: () => true,
@@ -3005,7 +3414,7 @@ describe('CodexChatRuntimeService', () => {
             toUIMessageStream: () => waitThenEnd(firstFinish.promise)
           }
         }
-        input.onSessionCreated?.({
+        await input.onSessionCreated?.({
           threadId: 'thread-shared',
           turnId: 'turn-mismatched',
           isActive: () => true,

@@ -10,7 +10,8 @@ import type {
   CodexChatStreamCallbacks,
   DesktopCodexChatApi,
   SidebarConversation,
-  SidebarConversationOpenResult
+  SidebarConversationOpenResult,
+  ThreadGoalLoadResult
 } from '../../../shared/codexIpcApi'
 import { LOCAL_FILE_ATTACHMENT_MEDIA_TYPE } from '../../../shared/composerContext'
 import { ConversationDraftStore } from './ConversationDraftStore'
@@ -53,7 +54,11 @@ class MemoryStorage {
   }
 }
 
-function registryFixture(): {
+function registryFixture(
+  options: {
+    loadThreadGoal?: (threadId: string) => Promise<ThreadGoalLoadResult>
+  } = {}
+): {
   bridge: DesktopCodexChatApi
   callbacks: Map<string, CodexChatStreamCallbacks>
   registry: ConversationChatRegistry
@@ -76,7 +81,8 @@ function registryFixture(): {
     selectedModelId: 'gpt-test',
     draftStore: new ConversationDraftStore(new MemoryStorage()),
     transcriptRecoveryStore,
-    createId: () => `local-${sequence++}`
+    createId: () => `local-${sequence++}`,
+    loadThreadGoal: options.loadThreadGoal
   })
   return { bridge, callbacks, registry, transcriptRecoveryStore, recoveryStorage }
 }
@@ -98,6 +104,85 @@ describe('ConversationChatRegistry', () => {
     expect(registry.resolve('thread-real')).toBe(entry)
     expect(registry.getSnapshot().entries).toHaveLength(1)
     expect(entry.controller.id).toBe('local-0')
+  })
+
+  it('keeps Plan mode on a local chat when it receives a stable thread id', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+
+    registry.setComposerModeKind(entry, 'plan')
+    registry.bindThread(entry, 'thread-plan-mode')
+
+    expect(entry.composerModeKind).toBe('plan')
+    expect(registry.resolve('thread-plan-mode')?.composerModeKind).toBe('plan')
+  })
+
+  it('uses the server acknowledgement to correct a conversation mode intent', async () => {
+    const { callbacks, registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.setComposerModeKind(entry, 'plan')
+
+    await entry.transport.sendMessages({
+      chatId: entry.controller.id,
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    callbacks.get(entry.controller.id)?.onModeApplied?.('thread-plan-mode', 'default')
+
+    expect(entry.composerModeKind).toBe('default')
+  })
+
+  it('leaves Plan mode before opening the Goal editor', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    registry.setComposerModeKind(entry, 'plan')
+
+    registry.setGoalEditorActive(entry, true)
+
+    expect(entry).toMatchObject({ composerModeKind: 'default', goalEditorActive: true })
+  })
+
+  it('hydrates a newly saved Goal after the first turn finishes', async () => {
+    const loadThreadGoal = vi.fn().mockResolvedValue({
+      status: 'loaded',
+      goal: {
+        threadId: 'thread-goal',
+        objective: '完成目标',
+        status: 'active',
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1
+      }
+    })
+    const { callbacks, registry } = registryFixture({ loadThreadGoal })
+    const entry = registry.getSnapshot().activeEntry
+
+    registry.setGoalEditorActive(entry, true)
+    await entry.transport.sendMessages({
+      chatId: entry.controller.id,
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [
+        {
+          id: 'goal-user-message',
+          role: 'user',
+          parts: [{ type: 'text', text: '完成目标' }]
+        }
+      ],
+      abortSignal: undefined
+    })
+    callbacks.get(entry.controller.id)?.onThreadBound('thread-goal')
+    callbacks.get(entry.controller.id)?.onFinish('thread-goal')
+
+    await vi.waitFor(() => {
+      expect(entry.threadGoal?.objective).toBe('完成目标')
+      expect(entry.goalEditorActive).toBe(false)
+    })
+    expect(loadThreadGoal).toHaveBeenCalledWith('thread-goal')
   })
 
   it('persists the local identity as soon as a new stream starts', async () => {
@@ -183,6 +268,7 @@ describe('ConversationChatRegistry', () => {
             run: {
               runId: 'run-local-recovery',
               conversationId,
+              runKind: 'single-turn' as const,
               lastSequence: 0
             },
             baseMessages: [

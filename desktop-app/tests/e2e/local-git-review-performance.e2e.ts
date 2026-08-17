@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises'
 
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import {
   attachDiagnostics,

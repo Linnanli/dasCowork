@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { expect, test, type Page } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 
 import { toAppMediaUrl } from '../../src/main/localMediaProtocol'
 import { closeApp, launchApp } from './support/app'

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
-import type { ElectronApplication } from 'playwright'
+import type { ElectronApplication } from '@playwright/test'
 import {
   attachDiagnostics,
   closeApp,

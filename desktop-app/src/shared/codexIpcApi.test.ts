@@ -13,9 +13,11 @@ import {
   mcpServerListResultSchema,
   projectCreateBlankPayloadSchema,
   sidebarConversationActionPayloadSchema,
+  sidebarConversationGoalSetPayloadSchema,
   sidebarConversationOpenResultSchema,
   sidebarConversationRenamePayloadSchema,
-  sidebarPreferencesPatchSchema
+  sidebarPreferencesPatchSchema,
+  threadGoalObjectiveSchema
 } from './codexIpcApi'
 
 describe('codex IPC schemas', () => {
@@ -30,6 +32,24 @@ describe('codex IPC schemas', () => {
       codexChatStreamEventSchema.safeParse({ type: 'thread-bound', threadId: '' }).success
     ).toBe(false)
     expect(codexChatStreamEventSchema.safeParse({ type: 'chunk', chunk: {} }).success).toBe(false)
+  })
+
+  it('exposes only the renderer-safe collaboration mode acknowledgement', () => {
+    expect(
+      codexChatStreamEventSchema.safeParse({
+        type: 'mode-applied',
+        threadId: 'thread-1',
+        modeKind: 'plan'
+      }).success
+    ).toBe(true)
+    expect(
+      codexChatStreamEventSchema.safeParse({
+        type: 'mode-applied',
+        threadId: 'thread-1',
+        modeKind: 'review',
+        settings: { developer_instructions: 'forged' }
+      }).success
+    ).toBe(false)
   })
 
   it('validates thread binding acknowledgements', () => {
@@ -86,6 +106,35 @@ describe('codex IPC schemas', () => {
         ]
       }).success
     ).toBe(false)
+  })
+
+  it('accepts only trusted Goal and Plan request fields', () => {
+    expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: {
+          composerModeKind: 'plan',
+          threadGoalDraft: { objective: 'Ship the release' }
+        }
+      }).success
+    ).toBe(true)
+    expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: { collaborationMode: { mode: 'plan', settings: {} } }
+      }).success
+    ).toBe(false)
+    expect(
+      sidebarConversationGoalSetPayloadSchema.safeParse({
+        conversationId: 'thread-1',
+        objective: '  Ship the release  '
+      }).data
+    ).toEqual({ conversationId: 'thread-1', objective: 'Ship the release' })
+    expect(threadGoalObjectiveSchema.safeParse('😀'.repeat(4_001)).success).toBe(false)
   })
 
   it('allows only http and https external URLs', () => {

@@ -288,6 +288,7 @@ describe('ElectronIpcChatTransport', () => {
     expect(bridge.startChatStream).toHaveBeenCalledWith(
       expect.objectContaining({
         body: {
+          composerModeKind: 'default',
           projectSelection: { projectKind: 'path', path: '/repo' }
         }
       }),
@@ -299,7 +300,107 @@ describe('ElectronIpcChatTransport', () => {
     await assertPlanEvidence(['G01'], securityAssertionIds, () => {
       expect(request.body).not.toHaveProperty('conversationId')
       expect(request.body).not.toHaveProperty('threadId')
-      expect(request.body).toEqual({ projectSelection: { projectKind: 'path', path: '/repo' } })
+      expect(request.body).toEqual({
+        composerModeKind: 'default',
+        projectSelection: { projectKind: 'path', path: '/repo' }
+      })
+    })
+  })
+
+  it('injects Plan mode from renderer-owned conversation state', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getComposerModeKind: () => 'plan',
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-plan-mode',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+      body: { composerModeKind: 'default' }
+    })
+
+    expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      composerModeKind: 'plan'
+    })
+  })
+
+  it('injects a Goal draft from the visible user message only', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getGoalEditorActive: () => true,
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-goal-mode',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [
+        {
+          id: 'goal-user-message',
+          role: 'user',
+          parts: [{ type: 'text', text: '完成参考实现的功能对齐' }]
+        }
+      ],
+      abortSignal: undefined,
+      body: {
+        threadGoalDraft: { objective: 'renderer forged goal' },
+        collaborationMode: { mode: 'plan' }
+      }
+    })
+
+    expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      composerModeKind: 'default',
+      threadGoalDraft: { objective: '完成参考实现的功能对齐' }
+    })
+  })
+
+  it('routes an existing Goal through typed control instead of a new user draft', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getActiveConversation: () => ({
+        conversationId: 'conversation-existing-goal',
+        threadId: 'thread-existing-goal'
+      }),
+      getGoalEditorActive: () => true,
+      getGoalEditorObjective: () => '继续完成遗留任务',
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'thread-existing-goal',
+      // The public AI SDK union omits the Electron-owned Goal control trigger.
+      trigger: 'goal-control' as never,
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+      body: {
+        threadGoalDraft: { objective: 'renderer forged goal' },
+        threadGoalControl: { objective: 'renderer forged control' }
+      }
+    })
+
+    expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      composerModeKind: 'default',
+      conversationId: 'conversation-existing-goal',
+      threadId: 'thread-existing-goal',
+      threadGoalControl: { objective: '继续完成遗留任务' }
     })
   })
 
@@ -334,7 +435,8 @@ describe('ElectronIpcChatTransport', () => {
         body: {
           conversationId: 'conversation-1',
           threadId: 'thread-1',
-          projectSelection: { projectKind: 'path', path: '/repo' }
+          projectSelection: { projectKind: 'path', path: '/repo' },
+          composerModeKind: 'default'
         }
       }),
       expect.any(Object)
@@ -374,7 +476,8 @@ describe('ElectronIpcChatTransport', () => {
             projectKind: 'remote',
             projectId: 'remote-app',
             hostId: 'ssh-dev'
-          }
+          },
+          composerModeKind: 'default'
         }
       }),
       expect.any(Object)
