@@ -98,7 +98,9 @@ export class CodexConversationSession implements CodexSession {
   private readonly client: AppServerClient
   private readonly interruptTimeoutMs: number
   private readonly fileResolver: PromptFileResolver
-  readonly policy: 'single-turn' | 'goal-continuous'
+  private readonly onPolicyChanged:
+    ((policy: 'single-turn' | 'goal-continuous') => void) | undefined
+  private _policy: 'single-turn' | 'goal-continuous'
   private readonly interruptPromises = new Map<string, Promise<void>>()
 
   constructor(opts: {
@@ -108,13 +110,15 @@ export class CodexConversationSession implements CodexSession {
     interruptTimeoutMs: number
     fileResolver: PromptFileResolver
     policy?: 'single-turn' | 'goal-continuous'
+    onPolicyChanged?: (policy: 'single-turn' | 'goal-continuous') => void
   }) {
     this.client = opts.client
     this._threadId = opts.threadId
     this._turnId = opts.turnId
     this.interruptTimeoutMs = opts.interruptTimeoutMs
     this.fileResolver = opts.fileResolver
-    this.policy = opts.policy ?? 'single-turn'
+    this._policy = opts.policy ?? 'single-turn'
+    this.onPolicyChanged = opts.onPolicyChanged
   }
 
   get threadId(): string {
@@ -123,6 +127,16 @@ export class CodexConversationSession implements CodexSession {
 
   get turnId(): string | undefined {
     return this._turnId
+  }
+
+  get policy(): 'single-turn' | 'goal-continuous' {
+    return this._policy
+  }
+
+  private setPolicy(policy: 'single-turn' | 'goal-continuous'): void {
+    if (policy === this._policy) return
+    this._policy = policy
+    this.onPolicyChanged?.(policy)
   }
 
   /** @internal Called by the model when turn/started arrives with a turnId. */
@@ -282,11 +296,24 @@ export class CodexConversationSession implements CodexSession {
   }
 
   async setThreadGoal(params: Omit<ThreadGoalSetParams, 'threadId'>): Promise<ThreadGoal> {
-    const response = await this.client.request<ThreadGoalSetResponse>('thread/goal/set', {
-      threadId: this._threadId,
-      ...params
-    })
-    return response.goal
+    const previousPolicy = this._policy
+    if (params.status === 'active') {
+      this.setPolicy('goal-continuous')
+    }
+
+    try {
+      const response = await this.client.request<ThreadGoalSetResponse>('thread/goal/set', {
+        threadId: this._threadId,
+        ...params
+      })
+      if (response.goal.status !== 'active') {
+        this.setPolicy(previousPolicy)
+      }
+      return response.goal
+    } catch (error) {
+      this.setPolicy(previousPolicy)
+      throw error
+    }
   }
 
   async clearThreadGoal(): Promise<boolean> {

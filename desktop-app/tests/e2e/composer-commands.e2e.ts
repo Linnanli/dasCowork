@@ -217,6 +217,24 @@ test('resumes an existing conversation Goal without adding a user turn', async (
       turnStartCountBeforeGoal
     )
     await expect(page.getByRole('button', { name: '清除目标' })).toBeVisible()
+
+    const goalSetCountBeforeEdit = logs.filter((line) =>
+      line.includes('"method":"thread/goal/set"')
+    ).length
+    const userMessageCountBeforeEdit = await page.locator('[data-role="user"]').count()
+    await page.getByRole('button', { name: '编辑目标' }).click()
+    const goalEditor = page.getByRole('textbox', { name: '目标内容' })
+    await expect(goalEditor).toHaveValue('继续完成这个已有任务。')
+    await goalEditor.fill('调整为新的持续目标。')
+    await page.getByRole('button', { name: '保存目标' }).click()
+
+    await expect
+      .poll(() => logs.filter((line) => line.includes('"method":"thread/goal/set"')).length, {
+        timeout: 10_000
+      })
+      .toBe(goalSetCountBeforeEdit + 1)
+    await expect(page.getByRole('textbox', { name: '目标内容' })).toHaveCount(0)
+    await expect(page.locator('[data-role="user"]')).toHaveCount(userMessageCountBeforeEdit)
   } finally {
     await attachDiagnostics(testInfo, logs, backend, app)
     await closeApp(app)

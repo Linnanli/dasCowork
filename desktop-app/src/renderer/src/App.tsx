@@ -281,6 +281,7 @@ type ComposerProps = {
     goalOperation: ConversationChatEntry['goalOperation'],
     goalError?: string
   ) => void
+  onSaveThreadGoal: (objective: string, hasAttachments?: boolean) => Promise<boolean>
 }
 
 type ChatThreadProps = ComposerProps & {
@@ -821,6 +822,52 @@ function ActiveConversationPane({
   sidebarCollapsed: boolean
 }): React.JSX.Element {
   const reloadInFlight = useRef<{ entryId: string; request: symbol } | null>(null)
+  const saveThreadGoal = useCallback(
+    async (objective: string, hasAttachments = false): Promise<boolean> => {
+      const trimmedObjective = objective.trim()
+      const threadId = entry.context.threadId
+      if (!threadId) {
+        onGoalOperationChange('idle', '当前对话尚未创建，无法保存目标')
+        return false
+      }
+      if (!trimmedObjective) {
+        onGoalOperationChange('idle', '请输入目标后再保存')
+        return false
+      }
+      if (hasAttachments) {
+        onGoalOperationChange('idle', '目标只能包含文字，请先移除附件')
+        return false
+      }
+      if ([...trimmedObjective].length > 4_000) {
+        onGoalOperationChange('idle', '目标不能超过 4,000 个字符')
+        return false
+      }
+
+      onGoalOperationChange('setting')
+      try {
+        if (entry.status === 'submitted' || entry.status === 'streaming') {
+          const goal = await window.desktopApp.conversations.setConversationGoal({
+            conversationId: threadId,
+            objective: trimmedObjective
+          })
+          onThreadGoalChange(goal)
+          onGoalEditorActiveChange(false)
+          return true
+        }
+
+        onDraftChange(trimmedObjective)
+        onGoalEditorActiveChange(true)
+        await runTranscriptAction(entry.controller, () =>
+          entry.controller.startGoalControlUntilAccepted()
+        )
+        return true
+      } catch {
+        onGoalOperationChange('idle', '无法保存目标，请稍后重试')
+        return false
+      }
+    },
+    [entry, onDraftChange, onGoalEditorActiveChange, onGoalOperationChange, onThreadGoalChange]
+  )
   const runtime = useExternalStoreRuntime<ConversationTranscriptMessage>({
     messages: entry.messages,
     isRunning: entry.status === 'submitted' || entry.status === 'streaming',
@@ -845,36 +892,7 @@ function ActiveConversationPane({
           .map((part) => part.text)
           .join('\n')
           .trim()
-
-        if (!objective) {
-          onGoalOperationChange('idle', '请输入目标后再保存')
-          return
-        }
-        if (hasNonTextPart) {
-          onGoalOperationChange('idle', '目标只能包含文字，请先移除附件')
-          return
-        }
-        if ([...objective].length > 4_000) {
-          onGoalOperationChange('idle', '目标不能超过 4,000 个字符')
-          return
-        }
-        if (
-          entry.threadGoal &&
-          entry.threadGoal.objective !== objective &&
-          !window.confirm('这会替换当前目标。要继续吗？')
-        ) {
-          return
-        }
-
-        onDraftChange(objective)
-        onGoalOperationChange('setting')
-        try {
-          await runTranscriptAction(entry.controller, () =>
-            entry.controller.startGoalControlUntilAccepted()
-          )
-        } catch {
-          onGoalOperationChange('idle', '无法保存目标，请稍后重试')
-        }
+        await saveThreadGoal(objective, hasNonTextPart)
         return
       }
       await runTranscriptAction(entry.controller, () =>
@@ -972,6 +990,7 @@ function ActiveConversationPane({
         onGoalEditorActiveChange={onGoalEditorActiveChange}
         onThreadGoalChange={onThreadGoalChange}
         onGoalOperationChange={onGoalOperationChange}
+        onSaveThreadGoal={saveThreadGoal}
         onRejectApproval={onRejectApproval}
         onSnoozeApproval={onSnoozeApproval}
         onRespondApproval={onRespondApproval}
@@ -1544,6 +1563,7 @@ function ChatThread({
   onGoalEditorActiveChange,
   onThreadGoalChange,
   onGoalOperationChange,
+  onSaveThreadGoal,
   onRejectApproval,
   onSnoozeApproval,
   onRespondApproval
@@ -1781,6 +1801,7 @@ function ChatThread({
                   onGoalEditorActiveChange={onGoalEditorActiveChange}
                   onThreadGoalChange={onThreadGoalChange}
                   onGoalOperationChange={onGoalOperationChange}
+                  onSaveThreadGoal={onSaveThreadGoal}
                   projectState={projectState}
                   editingFollowUp={editingFollowUp}
                   onEditingFollowUpChange={setEditingFollowUp}
@@ -3026,6 +3047,7 @@ function ComposerBody({
   onGoalEditorActiveChange,
   onThreadGoalChange,
   onGoalOperationChange,
+  onSaveThreadGoal,
   projectState,
   editingFollowUp,
   onEditingFollowUpChange,
@@ -3052,6 +3074,8 @@ function ComposerBody({
     mode: FollowUpMode
     snapshot: QueuedUserMessageSnapshotInput
   } | null>(null)
+  const [goalEditDialogOpen, setGoalEditDialogOpen] = useState(false)
+  const [goalEditObjective, setGoalEditObjective] = useState('')
   const goalBusy = goalOperation !== 'idle'
   const clearThreadGoal = useCallback(async (): Promise<boolean> => {
     if (!threadGoal) {
@@ -3071,6 +3095,7 @@ function ComposerBody({
       if (!cleared) throw new Error('未能清除目标')
       onThreadGoalChange(null)
       onGoalEditorActiveChange(false)
+      setGoalEditDialogOpen(false)
       return true
     } catch {
       onGoalOperationChange('idle', '无法清除目标，请稍后重试')
@@ -3085,11 +3110,28 @@ function ComposerBody({
   ])
   const enterGoalEditor = useCallback(() => {
     onComposerModeKindChange('default')
+    if (threadGoal && activeConversation?.threadId) {
+      onGoalEditorActiveChange(false)
+      setGoalEditObjective(threadGoal.objective)
+      setGoalEditDialogOpen(true)
+      return
+    }
     onGoalEditorActiveChange(true)
-  }, [onComposerModeKindChange, onGoalEditorActiveChange])
+  }, [activeConversation?.threadId, onComposerModeKindChange, onGoalEditorActiveChange, threadGoal])
   const exitGoalEditor = useCallback(() => {
     onGoalEditorActiveChange(false)
   }, [onGoalEditorActiveChange])
+  const goalEditCharacterCount = [...goalEditObjective].length
+  const normalizedGoalEditObjective = goalEditObjective.trim()
+  const canSaveGoalEdit =
+    Boolean(normalizedGoalEditObjective) &&
+    normalizedGoalEditObjective !== threadGoal?.objective &&
+    goalEditCharacterCount <= 4_000 &&
+    !goalBusy
+  const saveGoalEdit = useCallback(async (): Promise<void> => {
+    if (!canSaveGoalEdit) return
+    if (await onSaveThreadGoal(goalEditObjective)) setGoalEditDialogOpen(false)
+  }, [canSaveGoalEdit, goalEditObjective, onSaveThreadGoal])
   const enterPlanMode = useCallback(async () => {
     if (threadGoal && !(await clearThreadGoal())) return
     onGoalEditorActiveChange(false)
@@ -3536,6 +3578,49 @@ function ComposerBody({
 
   return (
     <>
+      <Dialog open={goalEditDialogOpen && Boolean(threadGoal)} onOpenChange={setGoalEditDialogOpen}>
+        <DialogContent data-slot="thread-goal-edit-dialog">
+          <DialogHeader>
+            <DialogTitle>编辑目标</DialogTitle>
+            <DialogDescription>更新后，Codex 会继续围绕新目标推进当前任务。</DialogDescription>
+          </DialogHeader>
+          <textarea
+            autoFocus
+            aria-label="目标内容"
+            className="min-h-40 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            maxLength={4_000}
+            value={goalEditObjective}
+            onChange={(event) => setGoalEditObjective(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) return
+              event.preventDefault()
+              void saveGoalEdit()
+            }}
+          />
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>按 Ctrl/⌘ + Enter 保存</span>
+            <span>{goalEditCharacterCount.toLocaleString()} / 4,000</span>
+          </div>
+          {goalError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {goalError}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={goalBusy}
+              onClick={() => setGoalEditDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button type="button" disabled={!canSaveGoalEdit} onClick={() => void saveGoalEdit()}>
+              {goalBusy ? '保存中…' : '保存目标'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={pausedSubmission !== null}
         onOpenChange={(open) => {
@@ -3639,6 +3724,17 @@ function ComposerBody({
             <div className="flex min-w-0 items-center gap-1">
               <ComposerAddContextPopover />
               <ComposerModeIndicatorBar presentations={modePresentations} />
+              {threadGoal ? (
+                <IconButton
+                  className="size-7 rounded-full bg-transparent hover:bg-muted"
+                  disabled={goalBusy}
+                  label="编辑目标"
+                  title="编辑目标"
+                  onClick={enterGoalEditor}
+                >
+                  <PencilIcon className="size-3.5" />
+                </IconButton>
+              ) : null}
               <ModelSelector
                 models={models}
                 value={selectedModelId}
