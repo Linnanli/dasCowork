@@ -2692,17 +2692,27 @@ describe('CodexLanguageModel.doStream', () => {
     })
   })
 
-  it('passes approvalsReviewer defaults through thread/start and turn/start', async () => {
+  it('passes approve-for-me packets through thread/start and turn/start', async () => {
     const transport = new ScriptedTransport()
 
     const provider = createCodexAppServer({
       transportFactory: () => transport,
       clientInfo: { name: 'test-client', version: '1.0.0' },
       defaultThreadSettings: {
-        approvalsReviewer: 'guardian_subagent'
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'auto_review',
+        sandbox: 'workspace-write'
       },
       defaultTurnSettings: {
-        approvalsReviewer: 'guardian_subagent'
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'auto_review',
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: ['/tmp/project'],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false
+        }
       }
     })
 
@@ -2724,10 +2734,68 @@ describe('CodexLanguageModel.doStream', () => {
     )
 
     expect(threadStartMessage?.params).toMatchObject({
-      approvalsReviewer: 'guardian_subagent'
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandbox: 'workspace-write'
     })
     expect(turnStartMessage?.params).toMatchObject({
-      approvalsReviewer: 'guardian_subagent'
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: ['/tmp/project'],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false
+      }
+    })
+  })
+
+  it('passes full-access packets through thread/start and turn/start', async () => {
+    const transport = new ScriptedTransport()
+
+    const provider = createCodexAppServer({
+      transportFactory: () => transport,
+      clientInfo: { name: 'test-client', version: '1.0.0' },
+      defaultThreadSettings: {
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandbox: 'danger-full-access'
+      },
+      defaultTurnSettings: {
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandboxPolicy: { type: 'dangerFullAccess' }
+      }
+    })
+
+    const model = provider.languageModel('gpt-5.5')
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]
+    })
+
+    await readAll(stream)
+
+    const threadStartMessage = transport.sentMessages.find(
+      (message): message is { method: string; params?: unknown } =>
+        'method' in message && message.method === 'thread/start'
+    )
+
+    const turnStartMessage = transport.sentMessages.find(
+      (message): message is { method: string; params?: unknown } =>
+        'method' in message && message.method === 'turn/start'
+    )
+
+    expect(threadStartMessage?.params).toMatchObject({
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandbox: 'danger-full-access'
+    })
+    expect(turnStartMessage?.params).toMatchObject({
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'dangerFullAccess' }
     })
   })
 
@@ -2762,17 +2830,21 @@ describe('CodexLanguageModel.doStream', () => {
     })
   })
 
-  it('passes per-call approvalsReviewer overrides through thread/resume and turn/start', async () => {
+  it('passes request-approval override when resuming from full-access defaults', async () => {
     const transport = new ScriptedTransport()
 
     const provider = createCodexAppServer({
       transportFactory: () => transport,
       clientInfo: { name: 'test-client', version: '1.0.0' },
       defaultThreadSettings: {
-        approvalsReviewer: 'user'
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandbox: 'danger-full-access'
       },
       defaultTurnSettings: {
-        approvalsReviewer: 'user'
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandboxPolicy: { type: 'dangerFullAccess' }
       }
     })
 
@@ -2788,11 +2860,18 @@ describe('CodexLanguageModel.doStream', () => {
         },
         { role: 'user', content: [{ type: 'text', text: 'continue' }] }
       ],
-      providerOptions: {
-        [CODEX_PROVIDER_ID]: {
-          approvalsReviewer: 'guardian_subagent'
+      providerOptions: codexCallOptions({
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'user',
+        sandbox: 'workspace-write',
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: ['/tmp/project'],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false
         }
-      }
+      })
     })
 
     await readAll(stream)
@@ -2807,10 +2886,20 @@ describe('CodexLanguageModel.doStream', () => {
     )
 
     expect(threadResumeMessage?.params).toMatchObject({
-      approvalsReviewer: 'guardian_subagent'
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandbox: 'workspace-write'
     })
     expect(turnStartMessage?.params).toMatchObject({
-      approvalsReviewer: 'guardian_subagent'
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: ['/tmp/project'],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false
+      }
     })
   })
 

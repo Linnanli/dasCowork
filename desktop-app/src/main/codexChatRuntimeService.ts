@@ -54,6 +54,7 @@ import type {
   CodexApprovalResponse,
   CodexChatRequest,
   CodexChatAttachResult,
+  ApprovalModeKind,
   CodexChatRecoverySnapshot,
   CodexChatRunDescriptor,
   CodexChatStreamEnvelope,
@@ -121,6 +122,7 @@ type StreamTextLike = (input: {
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   collaborationMode?: CodexCallOptions['collaborationMode']
+  approvalSettings?: ApprovalSettings
   goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
   goalControlObjective?: CodexCallOptions['goalControlObjective']
   goalContinuous?: CodexCallOptions['goalContinuous']
@@ -209,6 +211,10 @@ const defaultShutdownTimeoutMs = 10_000
 const unknownStopOutcomeError = '停止结果无法确认，请重新打开任务检查状态'
 const canonicalFailureError = '模型响应未完成，请重试。'
 
+type ApprovalSettings = Required<
+  Pick<CodexCallOptions, 'approvalPolicy' | 'approvalsReviewer' | 'sandbox' | 'sandboxPolicy'>
+>
+
 export type ModelCatalogLike = Pick<
   ModelCatalogService,
   'listModels' | 'setSelectedModel' | 'resolveClientModel'
@@ -274,7 +280,8 @@ export class CodexChatRuntimeService {
   private readonly streamText: StreamTextLike
   private readonly onAgentLifecycle: CodexCallOptions['onAgentLifecycle']
   private readonly onThreadBound:
-    ((conversationId: string, threadId: string) => void | Promise<void>) | undefined
+    | ((conversationId: string, threadId: string) => void | Promise<void>)
+    | undefined
   private readonly onTurnCompleted: (() => void) | undefined
   private readonly followUpQueue: ConversationFollowUpQueueService | undefined
   private readonly steerConfirmationTimeoutMs: number
@@ -291,10 +298,12 @@ export class CodexChatRuntimeService {
   ) => Promise<'completed' | 'interrupted' | 'failed' | undefined>
   private readonly turnDiffStore: TurnDiffStoreWriter | undefined
   private readonly collaborationModeClient:
-    Pick<CodexHistoryClient, 'listCollaborationModes'> | undefined
+    | Pick<CodexHistoryClient, 'listCollaborationModes'>
+    | undefined
   private collaborationModeMasks: readonly CollaborationModeMask[] | undefined
   private collaborationModeMasksPromise:
-    Promise<readonly CollaborationModeMask[] | undefined> | undefined
+    | Promise<readonly CollaborationModeMask[] | undefined>
+    | undefined
   private readonly activeConversationRuns = new Map<string, ActiveConversationRun>()
   private readonly recentTerminalRuns = new Map<string, ActiveConversationRun>()
   private acceptingStartAdmissions = true
@@ -650,6 +659,11 @@ export class CodexChatRuntimeService {
         request: effectiveRequest,
         projectService: this.projectService
       })
+      const approvalSettings = approvalSettingsForMode(
+        effectiveRequest.body?.approvalModeKind ?? 'request-approval',
+        conversation.executionTarget,
+        this.cwd
+      )
       if (localAttachmentCount > 0 && conversation.projectAssignment?.projectKind === 'remote') {
         throw new Error('Local attachments are not available for remote execution')
       }
@@ -821,6 +835,7 @@ export class CodexChatRuntimeService {
           onThreadSettingsUpdated,
           onThreadGoalUpdated,
           collaborationMode,
+          approvalSettings,
           ...(threadGoalDraft ? { goalFirstTurnObjective: threadGoalDraft.objective } : {}),
           ...(threadGoalControl ? { goalControlObjective: threadGoalControl.objective } : {}),
           ...(threadGoalDraft || threadGoalControl ? { goalContinuous: true } : {}),
@@ -2381,6 +2396,7 @@ async function defaultStreamText({
   onSessionCreated,
   onExistingTurnRecoveryState,
   collaborationMode,
+  approvalSettings,
   goalFirstTurnObjective,
   goalControlObjective,
   goalContinuous,
@@ -2406,6 +2422,7 @@ async function defaultStreamText({
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   collaborationMode?: CodexCallOptions['collaborationMode']
+  approvalSettings?: ApprovalSettings
   goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
   goalControlObjective?: CodexCallOptions['goalControlObjective']
   goalContinuous?: CodexCallOptions['goalContinuous']
@@ -2435,6 +2452,7 @@ async function defaultStreamText({
       onSessionCreated,
       onExistingTurnRecoveryState,
       collaborationMode,
+      approvalSettings,
       goalFirstTurnObjective,
       goalControlObjective,
       goalContinuous,
@@ -2477,6 +2495,7 @@ function codexCallOptionsInput({
   onSessionCreated,
   onExistingTurnRecoveryState,
   collaborationMode,
+  approvalSettings,
   goalFirstTurnObjective,
   goalControlObjective,
   goalContinuous,
@@ -2498,6 +2517,7 @@ function codexCallOptionsInput({
   onSessionCreated?: CodexCallOptions['onSessionCreated']
   onExistingTurnRecoveryState?: CodexCallOptions['onExistingTurnRecoveryState']
   collaborationMode?: CodexCallOptions['collaborationMode']
+  approvalSettings?: ApprovalSettings
   goalFirstTurnObjective?: CodexCallOptions['goalFirstTurnObjective']
   goalControlObjective?: CodexCallOptions['goalControlObjective']
   goalContinuous?: CodexCallOptions['goalContinuous']
@@ -2520,6 +2540,7 @@ function codexCallOptionsInput({
     ...(onSessionCreated ? { onSessionCreated } : {}),
     ...(onExistingTurnRecoveryState ? { onExistingTurnRecoveryState } : {}),
     ...(collaborationMode ? { collaborationMode } : {}),
+    ...(approvalSettings ?? {}),
     ...(goalFirstTurnObjective ? { goalFirstTurnObjective } : {}),
     ...(goalControlObjective ? { goalControlObjective } : {}),
     ...(goalContinuous ? { goalContinuous: true } : {}),
@@ -2551,6 +2572,42 @@ function collaborationModeForComposerMode(
       developer_instructions: null
     }
   }
+}
+
+export function approvalSettingsForMode(
+  approvalModeKind: ApprovalModeKind,
+  executionTarget: ConversationExecutionTarget | undefined,
+  fallbackCwd: string
+): ApprovalSettings {
+  if (approvalModeKind === 'full-access') {
+    return {
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' }
+    }
+  }
+
+  return {
+    approvalPolicy: 'on-request',
+    approvalsReviewer: approvalModeKind === 'approve-for-me' ? 'auto_review' : 'user',
+    sandbox: 'workspace-write',
+    sandboxPolicy: {
+      type: 'workspaceWrite',
+      writableRoots: writableRootsForApproval(executionTarget, fallbackCwd),
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false
+    }
+  }
+}
+
+function writableRootsForApproval(
+  executionTarget: ConversationExecutionTarget | undefined,
+  fallbackCwd: string
+): string[] {
+  if (executionTarget?.runtimeWorkspaceRoots?.length) return executionTarget.runtimeWorkspaceRoots
+  return [executionTarget?.cwd ?? fallbackCwd]
 }
 
 function threadGoalDraftFromRequest(
@@ -2954,7 +3011,9 @@ function canResumeActiveTurnAfterTransportError(
 }
 
 type CodexProviderRecoveryErrorCode =
-  'app_server_transport_closed' | 'app_server_transport_terminated' | 'active_turn_unavailable'
+  | 'app_server_transport_closed'
+  | 'app_server_transport_terminated'
+  | 'active_turn_unavailable'
 
 function codexProviderRecoveryErrorCode(
   error: unknown

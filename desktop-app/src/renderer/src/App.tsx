@@ -30,6 +30,7 @@ import { mermaid } from '@streamdown/mermaid'
 import { MessageTiming } from '@/components/assistant-ui/message-timing'
 import { ComposerAttachments, UserMessageAttachments } from '@/components/assistant-ui/attachment'
 import { ComposerAddContextPopover } from '@/components/assistant-ui/composer-add-context-popover'
+import { ComposerApprovalModeSelector } from '@/components/assistant-ui/composer-approval-mode-selector'
 import type { ComposerReviewSelection } from '@/components/assistant-ui/composer-code-review-command-content'
 import {
   ComposerModeIndicatorBar,
@@ -255,6 +256,7 @@ type SidebarHeaderSlotProps = {
 type ComposerProps = {
   activeConversation?: ActiveConversationContext
   composerModeKind: ConversationChatEntry['composerModeKind']
+  approvalModeKind: ConversationChatEntry['approvalModeKind']
   goalEditorActive: boolean
   threadGoal: ConversationChatEntry['threadGoal']
   goalCapabilityStatus: ConversationChatEntry['goalCapabilityStatus']
@@ -270,11 +272,14 @@ type ComposerProps = {
   onSteerFollowUp: (
     itemId: string,
     message:
-      MaterializedQueuedUserMessage | QueuedUserMessageSnapshot | QueuedUserMessageSnapshotInput
+      | MaterializedQueuedUserMessage
+      | QueuedUserMessageSnapshot
+      | QueuedUserMessageSnapshotInput
   ) => Promise<void>
   onStartCodeReview: (prompt: string) => Promise<void>
   onCreateNewTask: () => void
   onComposerModeKindChange: (composerModeKind: ConversationChatEntry['composerModeKind']) => void
+  onApprovalModeKindChange: (approvalModeKind: ConversationChatEntry['approvalModeKind']) => void
   onGoalEditorActiveChange: (goalEditorActive: boolean) => void
   onThreadGoalChange: (threadGoal: ConversationChatEntry['threadGoal']) => void
   onGoalOperationChange: (
@@ -513,6 +518,7 @@ function App(): React.JSX.Element {
     setActiveDraft,
     setActiveDraftAttachments,
     setActiveComposerModeKind,
+    setActiveApprovalModeKind,
     setActiveGoalEditorActive,
     setActiveThreadGoal,
     setActiveGoalOperation,
@@ -739,6 +745,7 @@ function App(): React.JSX.Element {
                       onDraftChange={setActiveDraft}
                       onDraftAttachmentsChange={setActiveDraftAttachments}
                       onComposerModeKindChange={setActiveComposerModeKind}
+                      onApprovalModeKindChange={setActiveApprovalModeKind}
                       onGoalEditorActiveChange={setActiveGoalEditorActive}
                       onThreadGoalChange={setActiveThreadGoal}
                       onGoalOperationChange={setActiveGoalOperation}
@@ -777,6 +784,7 @@ function ActiveConversationPane({
   onDraftChange,
   onDraftAttachmentsChange,
   onComposerModeKindChange,
+  onApprovalModeKindChange,
   onGoalEditorActiveChange,
   onThreadGoalChange,
   onGoalOperationChange,
@@ -801,6 +809,7 @@ function ActiveConversationPane({
   onDraftChange: (draft: string) => void
   onDraftAttachmentsChange: (attachments: readonly ConversationDraftAttachment[]) => void
   onComposerModeKindChange: (composerModeKind: ConversationChatEntry['composerModeKind']) => void
+  onApprovalModeKindChange: (approvalModeKind: ConversationChatEntry['approvalModeKind']) => void
   onGoalEditorActiveChange: (goalEditorActive: boolean) => void
   onThreadGoalChange: (threadGoal: ConversationChatEntry['threadGoal']) => void
   onGoalOperationChange: (
@@ -934,7 +943,9 @@ function ActiveConversationPane({
     async (
       itemId: string,
       message:
-        MaterializedQueuedUserMessage | QueuedUserMessageSnapshot | QueuedUserMessageSnapshotInput
+        | MaterializedQueuedUserMessage
+        | QueuedUserMessageSnapshot
+        | QueuedUserMessageSnapshotInput
     ): Promise<void> => {
       await steerFollowUpItemWithTranscript(message, entry, () => followUps.steerItem(itemId))
     },
@@ -981,12 +992,14 @@ function ActiveConversationPane({
         onCreateNewTask={onCreateNewTask}
         onStartCodeReview={startCodeReview}
         composerModeKind={entry.composerModeKind}
+        approvalModeKind={entry.approvalModeKind}
         goalEditorActive={entry.goalEditorActive}
         threadGoal={entry.threadGoal}
         goalCapabilityStatus={entry.goalCapabilityStatus}
         goalOperation={entry.goalOperation}
         goalError={entry.goalError}
         onComposerModeKindChange={onComposerModeKindChange}
+        onApprovalModeKindChange={onApprovalModeKindChange}
         onGoalEditorActiveChange={onGoalEditorActiveChange}
         onThreadGoalChange={onThreadGoalChange}
         onGoalOperationChange={onGoalOperationChange}
@@ -1554,12 +1567,14 @@ function ChatThread({
   recoveryError,
   onCreateNewTask,
   composerModeKind,
+  approvalModeKind,
   goalEditorActive,
   threadGoal,
   goalCapabilityStatus,
   goalOperation,
   goalError,
   onComposerModeKindChange,
+  onApprovalModeKindChange,
   onGoalEditorActiveChange,
   onThreadGoalChange,
   onGoalOperationChange,
@@ -1792,12 +1807,14 @@ function ChatThread({
                   onStartCodeReview={onStartCodeReview}
                   onCreateNewTask={onCreateNewTask}
                   composerModeKind={composerModeKind}
+                  approvalModeKind={approvalModeKind}
                   goalEditorActive={goalEditorActive}
                   threadGoal={threadGoal}
                   goalCapabilityStatus={goalCapabilityStatus}
                   goalOperation={goalOperation}
                   goalError={goalError}
                   onComposerModeKindChange={onComposerModeKindChange}
+                  onApprovalModeKindChange={onApprovalModeKindChange}
                   onGoalEditorActiveChange={onGoalEditorActiveChange}
                   onThreadGoalChange={onThreadGoalChange}
                   onGoalOperationChange={onGoalOperationChange}
@@ -3028,6 +3045,7 @@ function Composer(props: ComposerComponentProps): React.JSX.Element {
 function ComposerBody({
   activeConversation,
   composerModeKind,
+  approvalModeKind,
   goalEditorActive,
   threadGoal,
   goalCapabilityStatus,
@@ -3044,6 +3062,7 @@ function ComposerBody({
   onStartCodeReview,
   onCreateNewTask,
   onComposerModeKindChange,
+  onApprovalModeKindChange,
   onGoalEditorActiveChange,
   onThreadGoalChange,
   onGoalOperationChange,
@@ -3723,6 +3742,11 @@ function ComposerBody({
           <div className="aui-composer-action-wrapper flex items-center justify-between">
             <div className="flex min-w-0 items-center gap-1">
               <ComposerAddContextPopover />
+              <ComposerApprovalModeSelector
+                approvalModeKind={approvalModeKind}
+                disabled={disabled || isThreadRunning}
+                onApprovalModeKindChange={onApprovalModeKindChange}
+              />
               <ComposerModeIndicatorBar presentations={modePresentations} />
               {threadGoal ? (
                 <IconButton

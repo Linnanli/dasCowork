@@ -81,6 +81,7 @@ export {
   isCodexProviderErrorCode
 } from './errors'
 export type {
+  CodexExperimentalFeature,
   CodexHistoryClientSettings,
   CodexHistoryJsonRpcClientLike,
   CodexHistorySortDirection,
@@ -88,7 +89,6 @@ export type {
   CodexThreadForkParams,
   CodexThreadForkResponse,
   CodexThreadGoalSetParams,
-  CodexExperimentalFeature,
   CodexThreadListParams,
   CodexThreadListResponse,
   CodexThreadReadParams,

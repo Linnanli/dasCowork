@@ -18,6 +18,7 @@ import {
 } from '../lib/ElectronIpcChatTransport'
 import {
   ConversationDraftStore,
+  type ConversationApprovalModeKind,
   type ConversationComposerModeKind,
   type ConversationDraftAttachment
 } from './ConversationDraftStore'
@@ -53,6 +54,7 @@ export type ConversationChatEntry = {
   draft: string
   draftAttachments: readonly ConversationDraftAttachment[]
   composerModeKind: ConversationComposerModeKind
+  approvalModeKind: ConversationApprovalModeKind
   goalEditorActive: boolean
   threadGoal: ThreadGoalSummary | null | undefined
   goalCapabilityStatus: GoalCapabilityStatus
@@ -295,6 +297,7 @@ export class ConversationChatRegistry {
     entry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     entry.draftAttachments = this.draftStore.getAttachments(threadId)
     entry.composerModeKind = this.draftStore.getComposerModeKind(threadId)
+    entry.approvalModeKind = this.draftStore.getApprovalModeKind(threadId)
     this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
     entry.loaded = true
     this.emit()
@@ -372,6 +375,17 @@ export class ConversationChatRegistry {
     entry.composerModeKind = composerModeKind
     if (composerModeKind !== 'default') entry.goalEditorActive = false
     this.draftStore.setComposerModeKind(entry.context.threadId ?? entry.localId, composerModeKind)
+    this.emit()
+  }
+
+  setApprovalModeKind(
+    entryOrIdentity: ConversationChatEntry | string,
+    approvalModeKind: ConversationApprovalModeKind
+  ): void {
+    const entry = this.internalEntry(entryOrIdentity)
+    if (entry.approvalModeKind === approvalModeKind) return
+    entry.approvalModeKind = approvalModeKind
+    this.draftStore.setApprovalModeKind(entry.context.threadId ?? entry.localId, approvalModeKind)
     this.emit()
   }
 
@@ -568,6 +582,7 @@ export class ConversationChatRegistry {
       getActiveConversation: () => entry.context,
       getProjectSelection: () => entry.context.projectSelection,
       getComposerModeKind: () => entry.composerModeKind,
+      getApprovalModeKind: () => entry.approvalModeKind,
       getGoalEditorActive: () => entry.goalEditorActive,
       getGoalEditorObjective: () => entry.draft,
       getSelectedModelId: () => entry.selectedModelId ?? this.defaultSelectedModelId,
@@ -627,6 +642,7 @@ export class ConversationChatRegistry {
       draft: this.draftStore.get(stableDraftIdentity),
       draftAttachments: this.draftStore.getAttachments(stableDraftIdentity),
       composerModeKind: this.draftStore.getComposerModeKind(stableDraftIdentity),
+      approvalModeKind: this.draftStore.getApprovalModeKind(stableDraftIdentity),
       goalEditorActive: false,
       threadGoal: undefined,
       goalCapabilityStatus: 'unknown',
@@ -820,6 +836,8 @@ export class ConversationChatRegistry {
     }
     liveEntry.draft = this.draftStore.migrate(previousDraftIdentity, threadId)
     liveEntry.draftAttachments = this.draftStore.getAttachments(threadId)
+    liveEntry.composerModeKind = this.draftStore.getComposerModeKind(threadId)
+    liveEntry.approvalModeKind = this.draftStore.getApprovalModeKind(threadId)
     this.transcriptRecoveryStore.migrate(previousDraftIdentity, threadId)
     liveEntry.scroll ??= placeholder.scroll
     liveEntry.loaded = true

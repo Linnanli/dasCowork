@@ -1,6 +1,7 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 
 import type {
+  ApprovalModeKind,
   ComposerModeKind,
   CodexChatStreamError,
   CodexTurnLifecycleEvent,
@@ -24,6 +25,7 @@ export type ElectronIpcChatTransportOptions = {
   getActiveConversation?: () => ActiveConversationContext | undefined
   getProjectSelection?: () => ProjectSelection | undefined
   getComposerModeKind?: () => ComposerModeKind
+  getApprovalModeKind?: () => ApprovalModeKind | string | undefined
   getGoalEditorActive?: () => boolean
   /** Current Goal editor text, used only for a typed existing-thread control stream. */
   getGoalEditorObjective?: () => string | undefined
@@ -56,23 +58,30 @@ type TrustedRequestContext = {
   conversationRevision: number
 }
 
+const APPROVAL_MODE_KINDS = ['request-approval', 'approve-for-me', 'full-access'] as const
+const DEFAULT_APPROVAL_MODE_KIND = 'request-approval'
+
 export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
   private readonly chatBridge: DesktopCodexChatApi
   private readonly getActiveConversation: () => ActiveConversationContext | undefined
   private readonly getProjectSelection: () => ProjectSelection | undefined
   private readonly getComposerModeKind: () => ComposerModeKind
+  private readonly getApprovalModeKind: () => ApprovalModeKind | string | undefined
   private readonly getGoalEditorActive: () => boolean
   private readonly getGoalEditorObjective: () => string | undefined
   private readonly getConversationRevision: () => number
   private readonly getSelectedModelId: () => string | undefined
   private readonly onStreamStarted: (() => void) | undefined
   private readonly onThreadBound:
-    ((context: StreamFinishedContext & { threadId: string }) => void) | undefined
+    | ((context: StreamFinishedContext & { threadId: string }) => void)
+    | undefined
   private readonly onTurnLifecycle: ((event: CodexTurnLifecycleEvent) => void) | undefined
   private readonly onModeApplied:
-    ((threadId: string, modeKind: ComposerModeKind) => void) | undefined
+    | ((threadId: string, modeKind: ComposerModeKind) => void)
+    | undefined
   private readonly onThreadGoal:
-    ((threadId: string, goal: ThreadGoalSummary | null) => void) | undefined
+    | ((threadId: string, goal: ThreadGoalSummary | null) => void)
+    | undefined
   private readonly onStreamAccepted: (() => void) | undefined
   private readonly onStreamAborted: (() => void) | undefined
   private readonly onStreamError: ((error: CodexChatStreamError) => void) | undefined
@@ -83,6 +92,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     this.getActiveConversation = options.getActiveConversation ?? (() => undefined)
     this.getProjectSelection = options.getProjectSelection ?? (() => undefined)
     this.getComposerModeKind = options.getComposerModeKind ?? (() => 'default')
+    this.getApprovalModeKind = options.getApprovalModeKind ?? (() => DEFAULT_APPROVAL_MODE_KIND)
     this.getGoalEditorActive = options.getGoalEditorActive ?? (() => false)
     this.getGoalEditorObjective = options.getGoalEditorObjective ?? (() => undefined)
     this.getConversationRevision = options.getConversationRevision ?? (() => 0)
@@ -324,6 +334,7 @@ export class ElectronIpcChatTransport implements ChatTransport<UIMessage> {
     const activeConversation = this.getActiveConversation()
     const projectSelection = activeConversation?.projectSelection ?? this.getProjectSelection()
     trustedBody.composerModeKind = this.getComposerModeKind()
+    trustedBody.approvalModeKind = normalizeApprovalModeKind(this.getApprovalModeKind())
     if (this.getGoalEditorActive()) {
       if (activeConversation?.threadId && trigger === 'goal-control') {
         const objective = this.getGoalEditorObjective()?.trim()
@@ -382,8 +393,14 @@ function isRecoveryFailure(error: unknown): error is Exclude<CodexChatStreamErro
 function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return {}
   const {
+    approvalMode: _approvalMode,
+    approvalModeKind: _approvalModeKind,
+    approvalPolicy: _approvalPolicy,
+    approvalsReviewer: _approvalsReviewer,
     cwd: _cwd,
     runtimeWorkspaceRoots: _runtimeWorkspaceRoots,
+    sandbox: _sandbox,
+    sandboxPolicy: _sandboxPolicy,
     conversationId: _conversationId,
     threadId: _threadId,
     projectSelection: _projectSelection,
@@ -393,8 +410,14 @@ function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
     collaborationMode: _collaborationMode,
     ...trustedBody
   } = body as Record<string, unknown>
+  void _approvalMode
+  void _approvalModeKind
+  void _approvalPolicy
+  void _approvalsReviewer
   void _cwd
   void _runtimeWorkspaceRoots
+  void _sandbox
+  void _sandboxPolicy
   void _conversationId
   void _threadId
   void _projectSelection
@@ -403,6 +426,12 @@ function stripRendererExecutionHints(body: unknown): Record<string, unknown> {
   void _threadGoalControl
   void _collaborationMode
   return trustedBody
+}
+
+function normalizeApprovalModeKind(value: string | undefined): ApprovalModeKind {
+  const modeKind = APPROVAL_MODE_KINDS.find((candidate) => candidate === value)
+  if (modeKind) return modeKind
+  return DEFAULT_APPROVAL_MODE_KIND
 }
 
 function latestUserMessageText(messages: readonly UIMessage[]): string | undefined {

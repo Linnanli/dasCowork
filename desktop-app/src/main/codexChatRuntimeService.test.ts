@@ -52,6 +52,7 @@ vi.mock('electron', () => ({
 
 import {
   CodexChatRuntimeService,
+  approvalSettingsForMode,
   commandApprovalDecisionFromResponse,
   mcpElicitationResponseFromApprovalResponse,
   permissionsApprovalResponseFromApprovalResponse,
@@ -134,6 +135,10 @@ type RuntimeStreamTextInput = {
       developer_instructions: string | null
     }
   }
+  approvalSettings?: Pick<
+    CodexCallOptions,
+    'approvalPolicy' | 'approvalsReviewer' | 'sandbox' | 'sandboxPolicy'
+  >
   goalControlObjective?: string
   goalContinuous?: boolean
   resumeThreadId?: string
@@ -406,6 +411,88 @@ describe('CodexChatRuntimeService', () => {
             reasoning_effort: null,
             developer_instructions: null
           }
+        }
+      })
+    )
+  })
+
+  it('maps approval mode kinds into provider approval and sandbox settings', () => {
+    expect(
+      approvalSettingsForMode(
+        'request-approval',
+        { cwd: '/repo', runtimeWorkspaceRoots: ['/repo'] },
+        '/fallback'
+      )
+    ).toEqual({
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandbox: 'workspace-write',
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: ['/repo'],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false
+      }
+    })
+    expect(
+      approvalSettingsForMode(
+        'approve-for-me',
+        { cwd: '/repo', runtimeWorkspaceRoots: ['/repo'] },
+        '/fallback'
+      )
+    ).toMatchObject({
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandbox: 'workspace-write',
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false }
+    })
+    expect(approvalSettingsForMode('full-access', undefined, '/fallback')).toEqual({
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' }
+    })
+    expect(approvalSettingsForMode('request-approval', undefined, '/fallback')).toMatchObject({
+      sandboxPolicy: { writableRoots: ['/fallback'] }
+    })
+  })
+
+  it('passes the current approval mode snapshot to the provider stream', async () => {
+    const port = new FakePort()
+    const streamText = vi.fn(async (input: RuntimeStreamTextInput) => {
+      await input.onThreadStarted?.({ threadId: 'thread-full-access' })
+      await completeCanonicalTurn(input, 'thread-full-access', 'turn-full-access')
+      return { toUIMessageStream: () => emptyUiMessageStream() }
+    })
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      launch: {
+        command: '/bin/codex-app-server',
+        args: ['--listen', 'stdio://'],
+        displayBinary: '/bin/codex-app-server --listen stdio://'
+      },
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-full-access',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { approvalModeKind: 'full-access' }
+      },
+      port
+    )
+
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalSettings: {
+          approvalPolicy: 'never',
+          approvalsReviewer: 'user',
+          sandbox: 'danger-full-access',
+          sandboxPolicy: { type: 'dangerFullAccess' }
         }
       })
     )

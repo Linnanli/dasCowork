@@ -147,6 +147,8 @@ const runtimeState = vi.hoisted<{
     unread: boolean
     draft: string
     draftAttachments: []
+    composerModeKind: 'default' | 'plan'
+    approvalModeKind: 'request-approval' | 'approve-for-me' | 'full-access'
     loaded: boolean
     messages: []
     controller: {
@@ -180,6 +182,8 @@ const runtimeState = vi.hoisted<{
   restoreSingleActiveConversation: ReturnType<typeof vi.fn>
   setActiveDraft: ReturnType<typeof vi.fn>
   setActiveDraftAttachments: ReturnType<typeof vi.fn>
+  setActiveComposerModeKind: ReturnType<typeof vi.fn>
+  setActiveApprovalModeKind: ReturnType<typeof vi.fn>
   setActiveScroll: ReturnType<typeof vi.fn>
 }>(() => ({
   activeEntry: {
@@ -190,6 +194,8 @@ const runtimeState = vi.hoisted<{
     unread: false,
     draft: '',
     draftAttachments: [],
+    composerModeKind: 'default',
+    approvalModeKind: 'request-approval',
     loaded: true,
     messages: [],
     controller: {
@@ -222,6 +228,8 @@ const runtimeState = vi.hoisted<{
   restoreSingleActiveConversation: vi.fn(async () => false),
   setActiveDraft: vi.fn(),
   setActiveDraftAttachments: vi.fn(),
+  setActiveComposerModeKind: vi.fn(),
+  setActiveApprovalModeKind: vi.fn(),
   setActiveScroll: vi.fn()
 }))
 
@@ -350,6 +358,8 @@ function resetThreadMessageState(): void {
   runtimeState.activeEntry.messages = []
   runtimeState.activeEntry.draft = ''
   runtimeState.activeEntry.draftAttachments = []
+  runtimeState.activeEntry.composerModeKind = 'default'
+  runtimeState.activeEntry.approvalModeKind = 'request-approval'
   for (const method of Object.values(runtimeState.activeEntry.controller)) {
     method.mockClear()
   }
@@ -656,6 +666,8 @@ vi.mock('./hooks/useCodexIpcAssistantRuntime', () => {
       setActiveProjectSelection: runtimeState.setActiveProjectSelection,
       setActiveDraft: runtimeState.setActiveDraft,
       setActiveDraftAttachments: runtimeState.setActiveDraftAttachments,
+      setActiveComposerModeKind: runtimeState.setActiveComposerModeKind,
+      setActiveApprovalModeKind: runtimeState.setActiveApprovalModeKind,
       setActiveScroll: runtimeState.setActiveScroll,
       syncConversationMetadata: vi.fn(),
       getConversationIndicator: (conversation: { running?: boolean; unread?: boolean }) => ({
@@ -1220,6 +1232,42 @@ describe('App composer', () => {
     ).toBe(true)
     expect(container.querySelector('[data-testid="plain-composer-input"]')).toBeNull()
     expect(container.querySelector('[data-testid="composer-trigger-popover"]')).toBeNull()
+  })
+
+  it('places the approval selector between the add-context control and mode indicator', () => {
+    runtimeState.activeEntry.composerModeKind = 'plan'
+    act(() => {
+      root.render(<App />)
+    })
+
+    const addContext = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加文件和更多"]'
+    )
+    const approvalSelector = container.querySelector<HTMLElement>(
+      '[data-slot="composer-approval-mode-selector"]'
+    )
+    const modeIndicator = container.querySelector<HTMLElement>(
+      '[data-slot="composer-mode-indicator-bar"]'
+    )
+
+    expect(addContext).not.toBeNull()
+    expect(approvalSelector?.getAttribute('data-mode')).toBe('request-approval')
+    expect(modeIndicator).not.toBeNull()
+    expect(
+      addContext && approvalSelector
+        ? Boolean(
+            addContext.compareDocumentPosition(approvalSelector) & Node.DOCUMENT_POSITION_FOLLOWING
+          )
+        : false
+    ).toBe(true)
+    expect(
+      approvalSelector && modeIndicator
+        ? Boolean(
+            approvalSelector.compareDocumentPosition(modeIndicator) &
+            Node.DOCUMENT_POSITION_FOLLOWING
+          )
+        : false
+    ).toBe(true)
   })
 
   it('attaches queued follow-ups to the Composer without a persistent mode toggle', async () => {

@@ -68,13 +68,13 @@ export default [
 
             'max-lines': ['warn', { max: 2000, skipBlankLines: true, skipComments: true }],
 
-            '@stylistic/brace-style': ['error', 'allman', { allowSingleLine: true }],
-            '@stylistic/quotes': ['error', 'double'],
-            '@stylistic/comma-dangle': ['error', 'always-multiline'],
-            '@stylistic/indent': ['error', 4],
-            '@stylistic/eol-last': ['error', 'always'],
-            '@stylistic/object-curly-spacing': ['error', 'always'],
-            '@stylistic/semi': ['error', 'always'],
+            '@stylistic/brace-style': 'off',
+            '@stylistic/quotes': 'off',
+            '@stylistic/comma-dangle': 'off',
+            '@stylistic/indent': 'off',
+            '@stylistic/eol-last': 'off',
+            '@stylistic/object-curly-spacing': 'off',
+            '@stylistic/semi': 'off',
         },
     },
     {

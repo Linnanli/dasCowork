@@ -35,6 +35,7 @@ import { createPickLocalContextHandler } from './localContextPicker'
 import { LocalImageCapabilityStore } from './localImageCapabilityStore'
 import { LocalPathCapabilityStore } from './localPathCapabilityStore'
 import { createOpenLocalPathHandler } from './localPathOpen'
+import { sendToActiveRenderer } from './rendererIpc'
 import {
   createAppRendererUrl,
   registerAppProtocol,
@@ -215,7 +216,7 @@ function createCodexRuntime(
         (window) => window.webContents.id === ownerWebContentsId
       )
       if (ownerWindow && !ownerWindow.isDestroyed()) {
-        ownerWindow.webContents.send('codex:composer-context-search-update', event)
+        sendToActiveRenderer(ownerWindow.webContents, 'codex:composer-context-search-update', event)
       }
     }
   })
@@ -353,13 +354,17 @@ function broadcastStatus(): void {
   if (!codexRuntime) return
   const status = codexRuntime.getStatus()
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('codex:status-change', status)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, 'codex:status-change', status)
+    }
   }
 }
 
 function broadcastFollowUpChange(event: FollowUpQueueChangeEvent): void {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('codex:follow-ups:changed', event)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, 'codex:follow-ups:changed', event)
+    }
   }
 }
 
@@ -367,7 +372,9 @@ async function broadcastProjectState(stateOverride?: ProjectState): Promise<void
   if (!projectApi) return
   const state = stateOverride ?? (await projectApi.getState())
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('codex:projects-state-change', state)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, 'codex:projects-state-change', state)
+    }
   }
   const conversationState = conversationApi?.applyProjectState(state)
   if (conversationState?.loaded) sendConversationState(conversationState)
@@ -375,7 +382,9 @@ async function broadcastProjectState(stateOverride?: ProjectState): Promise<void
 
 function broadcastComposerContextChange(event: ComposerContextCatalogChangeEvent): void {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('codex:composer-context-change', event)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, 'codex:composer-context-change', event)
+    }
   }
 }
 
@@ -423,7 +432,9 @@ function sendConversationState(
   state: Awaited<ReturnType<ConversationApiService['refreshConversationList']>>
 ): void {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('codex:conversations-state-change', state)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, 'codex:conversations-state-change', state)
+    }
   }
   composerContextChanges?.notify({ sectionIds: ['chats'] })
 }
@@ -498,12 +509,12 @@ function createWindow(runtime: CodexChatRuntimeService): void {
 
   const unsubscribeApprovals = runtime.onApprovalRequest((request) => {
     if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('codex:approval-request', request)
+      sendToActiveRenderer(mainWindow.webContents, 'codex:approval-request', request)
     }
   })
   const unsubscribeSettledApprovals = runtime.onApprovalSettled((requestId) => {
     if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('codex:approval-settled', requestId)
+      sendToActiveRenderer(mainWindow.webContents, 'codex:approval-settled', requestId)
     }
   })
   mainWindow.on('closed', () => {
@@ -914,9 +925,7 @@ app.whenReady().then(() => {
             void broadcastConversationState({ awaitThreadId: threadId })
           },
           onTerminal: (terminal) => {
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('codex-chat:terminal', { streamId, terminal })
-            }
+            sendToActiveRenderer(event.sender, 'codex-chat:terminal', { streamId, terminal })
           }
         },
         streamId

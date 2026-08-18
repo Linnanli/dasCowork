@@ -164,8 +164,17 @@ export type ComposerModeKind = 'default' | 'plan'
 
 export const composerModeKindSchema = z.enum(['default', 'plan'])
 
+export type ApprovalModeKind = 'request-approval' | 'approve-for-me' | 'full-access'
+
+export const approvalModeKindSchema = z.enum(['request-approval', 'approve-for-me', 'full-access'])
+
 export type ThreadGoalStatus =
-  'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete'
 
 export type ThreadGoalSummary = {
   threadId: string
@@ -238,6 +247,7 @@ export type CodexChatRequestBody = {
   conversationId?: string
   threadId?: string
   composerModeKind?: ComposerModeKind
+  approvalModeKind?: ApprovalModeKind
   threadGoalDraft?: ThreadGoalDraft
   threadGoalControl?: ThreadGoalControl
   retryTerminalTurn?: boolean
@@ -251,6 +261,7 @@ export const codexChatRequestBodySchema = z
     conversationId: z.string().min(1).optional(),
     threadId: z.string().min(1).optional(),
     composerModeKind: composerModeKindSchema.optional(),
+    approvalModeKind: approvalModeKindSchema.optional(),
     threadGoalDraft: threadGoalDraftSchema.optional(),
     threadGoalControl: threadGoalDraftSchema.optional(),
     retryTerminalTurn: z.literal(true).optional(),
@@ -289,7 +300,10 @@ export type CodexTurnLifecycleEvent =
  * display and must not be used to infer the recovery outcome.
  */
 export type CodexChatStreamFailureCode =
-  'run-unavailable' | 'run-mismatch' | 'journal-unavailable' | 'unknown-recovery'
+  | 'run-unavailable'
+  | 'run-mismatch'
+  | 'journal-unavailable'
+  | 'unknown-recovery'
 
 export type CodexChatStreamFailure = {
   readonly code: CodexChatStreamFailureCode
@@ -372,7 +386,8 @@ export type CodexChatTerminalFallback = {
 }
 
 export type CodexChatControlMessage =
-  { type: 'abort'; runId?: string } | { type: 'thread-bound-ack'; threadId: string }
+  | { type: 'abort'; runId?: string }
+  | { type: 'thread-bound-ack'; threadId: string }
 
 export type CodexChatStreamCallbacks = {
   onThreadBound(threadId: string): void

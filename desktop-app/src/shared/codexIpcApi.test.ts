@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  approvalModeKindSchema,
   codexChatRequestSchema,
   codexChatControlMessageSchema,
   codexChatStreamEventSchema,
@@ -116,6 +117,7 @@ describe('codex IPC schemas', () => {
         messages: [],
         body: {
           composerModeKind: 'plan',
+          approvalModeKind: 'approve-for-me',
           threadGoalDraft: { objective: 'Ship the release' }
         }
       }).success
@@ -129,12 +131,57 @@ describe('codex IPC schemas', () => {
       }).success
     ).toBe(false)
     expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: {
+          approvalModeKind: 'auto-approve'
+        }
+      }).success
+    ).toBe(false)
+    expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: {
+          approvalModeKind: 'full-access',
+          sandboxPolicy: { type: 'dangerFullAccess' }
+        }
+      }).success
+    ).toBe(false)
+    expect(
       sidebarConversationGoalSetPayloadSchema.safeParse({
         conversationId: 'thread-1',
         objective: '  Ship the release  '
       }).data
     ).toEqual({ conversationId: 'thread-1', objective: 'Ship the release' })
     expect(threadGoalObjectiveSchema.safeParse('😀'.repeat(4_001)).success).toBe(false)
+  })
+
+  it('accepts only trusted approval mode values', () => {
+    expect(approvalModeKindSchema.safeParse('request-approval').success).toBe(true)
+    expect(approvalModeKindSchema.safeParse('approve-for-me').success).toBe(true)
+    expect(approvalModeKindSchema.safeParse('full-access').success).toBe(true)
+    expect(approvalModeKindSchema.safeParse('auto-approve').success).toBe(false)
+    expect(approvalModeKindSchema.safeParse('danger-full-access').success).toBe(false)
+    expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: { approvalModeKind: 'approve-for-me' }
+      }).success
+    ).toBe(true)
+    expect(
+      codexChatRequestSchema.safeParse({
+        chatId: 'chat-1',
+        trigger: 'submit-message',
+        messages: [],
+        body: { approvalPolicy: 'never' }
+      }).success
+    ).toBe(false)
   })
 
   it('allows only http and https external URLs', () => {

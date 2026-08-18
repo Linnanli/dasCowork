@@ -233,6 +233,16 @@ const codexRuntime = new CodexChatRuntimeService()
 | `toolTimeoutMs` | `120000` | 工具超时 2 分钟。 |
 | `interruptTimeoutMs` | `10000` | 中断超时 10 秒。 |
 
+Composer 还会按**每个对话**保存审批类型，并在每次发送时由 Main 进程覆盖上述 provider 默认值。Renderer 只能通过 IPC 发送 `request-approval`、`approve-for-me` 或 `full-access` 这三个安全枚举；它不能指定底层审批者或沙箱配置。Main 将其映射为：
+
+| Composer 审批类型 | `approvalPolicy` / 审批者 | thread / turn 沙箱 |
+| --- | --- | --- |
+| 请求批准 | `on-request` / `user` | `workspace-write` / `workspaceWrite`（无网络，仅当前运行工作区可写） |
+| 帮我批准 | `on-request` / `auto_review` | `workspace-write` / `workspaceWrite`（仍受限，不是自动允许） |
+| 完全访问权限 | `never` / `user` | `danger-full-access` / `dangerFullAccess` |
+
+该映射是 Main 进程的唯一所有者。即使现有 thread 从完全访问切回请求批准，下一次 `thread/resume` 和 `turn/start` 也会显式发送安全设置，不能继承先前 turn 的危险配置。
+
 ### 6.3 Runtime 状态机
 
 `CodexChatRuntimeService` 暴露的状态：

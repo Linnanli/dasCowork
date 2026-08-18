@@ -56,6 +56,7 @@ class MemoryStorage {
 
 function registryFixture(
   options: {
+    draftStore?: ConversationDraftStore
     loadThreadGoal?: (threadId: string) => Promise<ThreadGoalLoadResult>
   } = {}
 ): {
@@ -79,7 +80,7 @@ function registryFixture(
   const registry = new ConversationChatRegistry({
     chatBridge: bridge,
     selectedModelId: 'gpt-test',
-    draftStore: new ConversationDraftStore(new MemoryStorage()),
+    draftStore: options.draftStore ?? new ConversationDraftStore(new MemoryStorage()),
     transcriptRecoveryStore,
     createId: () => `local-${sequence++}`,
     loadThreadGoal: options.loadThreadGoal
@@ -115,6 +116,75 @@ describe('ConversationChatRegistry', () => {
 
     expect(entry.composerModeKind).toBe('plan')
     expect(registry.resolve('thread-plan-mode')?.composerModeKind).toBe('plan')
+  })
+
+  it('keeps approval mode on a local chat when it receives a stable thread id', () => {
+    const { registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+
+    registry.setApprovalModeKind(entry, 'full-access')
+    registry.bindThread(entry, 'thread-approval-mode')
+
+    expect(entry.approvalModeKind).toBe('full-access')
+    expect(registry.resolve('thread-approval-mode')?.approvalModeKind).toBe('full-access')
+  })
+
+  it('starts new conversations with request approval', () => {
+    const { registry } = registryFixture()
+
+    expect(registry.getSnapshot().activeEntry.approvalModeKind).toBe('request-approval')
+    expect(registry.startNewConversation().approvalModeKind).toBe('request-approval')
+  })
+
+  it('keeps approval modes isolated per conversation and sends each entry snapshot', async () => {
+    const { bridge, registry } = registryFixture()
+    const entryA = registry.getSnapshot().activeEntry
+    registry.setApprovalModeKind(entryA, 'approve-for-me')
+    registry.setDraft(entryA, 'draft A')
+    registry.setComposerModeKind(entryA, 'plan')
+
+    const entryB = registry.startNewConversation()
+    registry.setApprovalModeKind(entryB, 'full-access')
+
+    expect(entryA.approvalModeKind).toBe('approve-for-me')
+    expect(entryB.approvalModeKind).toBe('full-access')
+    expect(entryA.draft).toBe('draft A')
+    expect(entryA.composerModeKind).toBe('plan')
+
+    await entryA.transport.sendMessages({
+      chatId: entryA.controller.id,
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+    await entryB.transport.sendMessages({
+      chatId: entryB.controller.id,
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+
+    const requests = vi.mocked(bridge.startChatStream).mock.calls.map(([request]) => request)
+    expect(requests.find((request) => request.chatId === entryA.controller.id)?.body).toMatchObject(
+      {
+        approvalModeKind: 'approve-for-me'
+      }
+    )
+    expect(requests.find((request) => request.chatId === entryB.controller.id)?.body).toMatchObject(
+      {
+        approvalModeKind: 'full-access'
+      }
+    )
+  })
+
+  it('restores per-conversation approval mode from persisted drafts', () => {
+    const draftStore = new ConversationDraftStore(new MemoryStorage())
+    draftStore.setApprovalModeKind('local-0', 'approve-for-me')
+    const { registry } = registryFixture({ draftStore })
+
+    expect(registry.getSnapshot().activeEntry.approvalModeKind).toBe('approve-for-me')
   })
 
   it('uses the server acknowledgement to correct a conversation mode intent', async () => {
@@ -684,10 +754,12 @@ describe('ConversationChatRegistry', () => {
     )
 
     registry.setDraft(placeholder, 'late draft')
+    registry.setApprovalModeKind(placeholder, 'approve-for-me')
     registry.setSelectedModel(placeholder, 'late model')
     registry.setScroll(placeholder, { scrollTop: 64, followBottom: false })
 
     expect(liveEntry.draft).toBe('late draft')
+    expect(liveEntry.approvalModeKind).toBe('approve-for-me')
     expect(liveEntry.selectedModelId).toBe('late model')
     expect(liveEntry.scroll).toEqual({ scrollTop: 64, followBottom: false })
   })
@@ -730,10 +802,12 @@ describe('ConversationChatRegistry', () => {
     })
 
     registry.setDraft(placeholder, 'canonical draft')
+    registry.setApprovalModeKind(placeholder, 'full-access')
     registry.setSelectedModel(placeholder, 'model-after-merge')
     registry.setScroll(placeholder, { scrollTop: 120, followBottom: false })
 
     expect(liveEntry.draft).toBe('canonical draft')
+    expect(liveEntry.approvalModeKind).toBe('full-access')
     expect(liveEntry.selectedModelId).toBe('model-after-merge')
     expect(liveEntry.scroll).toEqual({ scrollTop: 120, followBottom: false })
   })

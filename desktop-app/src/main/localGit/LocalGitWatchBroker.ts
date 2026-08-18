@@ -6,6 +6,7 @@ import {
   type LocalGitChangeEvent,
   type LocalGitChangeType
 } from '../../shared/localGitApi'
+import { sendToActiveRenderer } from '../rendererIpc'
 import type { LocalGitTarget } from './types'
 
 export type LocalGitWatchState = {
@@ -236,9 +237,7 @@ export class LocalGitWatchBroker {
 
   private publish(event: LocalGitChangeEvent): void {
     for (const subscriber of this.subscribers.values()) {
-      if (!subscriber.webContents.isDestroyed()) {
-        subscriber.webContents.send(gitIpcChannels.changed, event)
-      }
+      sendToActiveRenderer(subscriber.webContents, gitIpcChannels.changed, event)
     }
   }
 

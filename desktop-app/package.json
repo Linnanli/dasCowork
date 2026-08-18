@@ -9,6 +9,7 @@
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "test": "vitest run && npm run test:release-contract",
+    "test:unit": "vitest run",
     "test:release-contract": "node --test scripts/tests/release-workflow.node-test.mjs scripts/tests/release-artifacts.node-test.mjs",
     "test:plan-coverage": "npm run test:plan-coverage:validator && node scripts/test-plan-coverage.mjs",
     "test:plan-coverage:validator": "node --test scripts/tests/verify-test-plan-coverage.node-test.mjs",

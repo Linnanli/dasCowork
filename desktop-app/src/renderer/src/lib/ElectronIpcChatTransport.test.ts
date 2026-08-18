@@ -288,6 +288,7 @@ describe('ElectronIpcChatTransport', () => {
     expect(bridge.startChatStream).toHaveBeenCalledWith(
       expect.objectContaining({
         body: {
+          approvalModeKind: 'request-approval',
           composerModeKind: 'default',
           projectSelection: { projectKind: 'path', path: '/repo' }
         }
@@ -301,9 +302,104 @@ describe('ElectronIpcChatTransport', () => {
       expect(request.body).not.toHaveProperty('conversationId')
       expect(request.body).not.toHaveProperty('threadId')
       expect(request.body).toEqual({
+        approvalModeKind: 'request-approval',
         composerModeKind: 'default',
         projectSelection: { projectKind: 'path', path: '/repo' }
       })
+    })
+  })
+
+  it('G01 replaces forged approval execution hints with the trusted approval mode kind', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getApprovalModeKind: () => 'full-access',
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-approval-mode',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+      body: {
+        approvalMode: 'renderer-forged-mode',
+        approvalModeKind: 'read-only',
+        approvalPolicy: 'never',
+        approvalsReviewer: 'forged-reviewer',
+        sandbox: { mode: 'danger-full-access' },
+        sandboxPolicy: { type: 'dangerFullAccess' },
+        cwd: '/renderer/cwd',
+        runtimeWorkspaceRoots: ['/renderer/root']
+      }
+    })
+
+    const request = vi.mocked(bridge.startChatStream).mock.calls[0][0]
+    expect(request.body).toEqual({
+      approvalModeKind: 'full-access',
+      composerModeKind: 'default'
+    })
+    expect(request.body).not.toHaveProperty('approvalMode')
+    expect(request.body).not.toHaveProperty('approvalPolicy')
+    expect(request.body).not.toHaveProperty('approvalsReviewer')
+    expect(request.body).not.toHaveProperty('sandbox')
+    expect(request.body).not.toHaveProperty('sandboxPolicy')
+    expect(request.body).not.toHaveProperty('cwd')
+    expect(request.body).not.toHaveProperty('runtimeWorkspaceRoots')
+  })
+
+  it('defaults forged or invalid approval mode kinds to request approval', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getApprovalModeKind: () => 'invalid-renderer-kind',
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-invalid-approval-mode',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined,
+      body: { approvalModeKind: 'full-access' }
+    })
+
+    expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      approvalModeKind: 'request-approval',
+      composerModeKind: 'default'
+    })
+  })
+
+  it('falls back to request approval for legacy approval mode aliases', async () => {
+    const bridge: DesktopCodexChatApi = {
+      startChatStream: vi.fn(() => 'stream-1'),
+      abortChatStream: vi.fn()
+    }
+    const transport = new ElectronIpcChatTransport({
+      chatBridge: bridge,
+      getApprovalModeKind: () => 'auto-approve',
+      getSelectedModelId: () => 'gpt-test'
+    })
+
+    await transport.sendMessages({
+      chatId: 'chat-legacy-approval-mode',
+      trigger: 'submit-message',
+      messageId: undefined,
+      messages: [],
+      abortSignal: undefined
+    })
+
+    expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      approvalModeKind: 'request-approval',
+      composerModeKind: 'default'
     })
   })
 
@@ -328,6 +424,7 @@ describe('ElectronIpcChatTransport', () => {
     })
 
     expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      approvalModeKind: 'request-approval',
       composerModeKind: 'plan'
     })
   })
@@ -362,6 +459,7 @@ describe('ElectronIpcChatTransport', () => {
     })
 
     expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      approvalModeKind: 'request-approval',
       composerModeKind: 'default',
       threadGoalDraft: { objective: '完成参考实现的功能对齐' }
     })
@@ -397,6 +495,7 @@ describe('ElectronIpcChatTransport', () => {
     })
 
     expect(vi.mocked(bridge.startChatStream).mock.calls[0][0].body).toEqual({
+      approvalModeKind: 'request-approval',
       composerModeKind: 'default',
       conversationId: 'conversation-existing-goal',
       threadId: 'thread-existing-goal',
@@ -433,6 +532,7 @@ describe('ElectronIpcChatTransport', () => {
     expect(bridge.startChatStream).toHaveBeenCalledWith(
       expect.objectContaining({
         body: {
+          approvalModeKind: 'request-approval',
           conversationId: 'conversation-1',
           threadId: 'thread-1',
           projectSelection: { projectKind: 'path', path: '/repo' },
@@ -470,6 +570,7 @@ describe('ElectronIpcChatTransport', () => {
     expect(bridge.startChatStream).toHaveBeenCalledWith(
       expect.objectContaining({
         body: {
+          approvalModeKind: 'request-approval',
           conversationId: 'conversation-1',
           threadId: 'thread-1',
           projectSelection: {

@@ -16,6 +16,7 @@ import {
   type ConversationScrollSnapshot
 } from '../runtime/ConversationChatRegistry'
 import type {
+  ConversationApprovalModeKind,
   ConversationComposerModeKind,
   ConversationDraftAttachment
 } from '../runtime/ConversationDraftStore'
@@ -48,6 +49,7 @@ export type CodexIpcAssistantRuntimeState = {
   setActiveDraft: (draft: string) => void
   setActiveDraftAttachments: (attachments: readonly ConversationDraftAttachment[]) => void
   setActiveComposerModeKind: (composerModeKind: ConversationComposerModeKind) => void
+  setActiveApprovalModeKind: (approvalModeKind: ConversationApprovalModeKind) => void
   setActiveGoalEditorActive: (goalEditorActive: boolean) => void
   setActiveThreadGoal: (threadGoal: ThreadGoalSummary | null | undefined) => void
   setActiveGoalOperation: (
@@ -229,6 +231,11 @@ export function useCodexIpcAssistantRuntime(
       registry.setComposerModeKind(activeEntry, composerModeKind),
     [activeEntry, registry]
   )
+  const setActiveApprovalModeKind = useCallback(
+    (approvalModeKind: ConversationApprovalModeKind) =>
+      registry.setApprovalModeKind(activeEntry, approvalModeKind),
+    [activeEntry, registry]
+  )
   const setActiveGoalEditorActive = useCallback(
     (goalEditorActive: boolean) => registry.setGoalEditorActive(activeEntry, goalEditorActive),
     [activeEntry, registry]
@@ -345,6 +352,7 @@ export function useCodexIpcAssistantRuntime(
     setActiveDraft,
     setActiveDraftAttachments,
     setActiveComposerModeKind,
+    setActiveApprovalModeKind,
     setActiveGoalEditorActive,
     setActiveThreadGoal,
     setActiveGoalOperation,

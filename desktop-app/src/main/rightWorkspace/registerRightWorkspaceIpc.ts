@@ -47,6 +47,7 @@ import {
   terminalWorkspaceWriteRequestSchema
 } from '../../shared/terminalWorkspaceApi'
 import type { ProjectService } from '../projects/ProjectService'
+import { sendToActiveRenderer } from '../rendererIpc'
 import { LocalPtyTerminalBackend } from '../terminal/LocalPtyTerminalBackend'
 import { TerminalBackendFactory } from '../terminal/TerminalBackendFactory'
 import { TerminalSessionManager } from '../terminal/TerminalSessionManager'
@@ -101,7 +102,7 @@ export function registerRightWorkspaceIpc({
     const sessionId = event.type === 'data' ? event.sessionId : event.session.sessionId
     const services = servicesByOwner.get(terminalManager.ownerForSession(sessionId) ?? -1)
     if (services && !services.window.isDestroyed()) {
-      services.window.webContents.send(terminalWorkspaceIpcChannels.event, event)
+      sendToActiveRenderer(services.window.webContents, terminalWorkspaceIpcChannels.event, event)
     }
   })
 
@@ -164,7 +165,11 @@ export function registerRightWorkspaceIpc({
     const services = requireOwnedRoot(event, request.rootId)
     return services.files.startSearchSession(request, (searchEvent) => {
       if (!services.window.isDestroyed()) {
-        services.window.webContents.send(rightWorkspaceIpcChannels.fileSearchEvent, searchEvent)
+        sendToActiveRenderer(
+          services.window.webContents,
+          rightWorkspaceIpcChannels.fileSearchEvent,
+          searchEvent
+        )
       }
     })
   })
@@ -376,7 +381,9 @@ function createWindowServices(
   })
   const browser = new BrowserWorkspaceService({ host: createBrowserHost(window) })
   const removeBrowserListener = browser.onEvent((event) => {
-    if (!window.isDestroyed()) window.webContents.send(browserWorkspaceIpcChannels.event, event)
+    if (!window.isDestroyed()) {
+      sendToActiveRenderer(window.webContents, browserWorkspaceIpcChannels.event, event)
+    }
   })
 
   return {
@@ -416,7 +423,11 @@ function watchWorkspaceRoot(
         ...(path ? { path } : {})
       })
       if (!services.window.isDestroyed()) {
-        services.window.webContents.send(rightWorkspaceIpcChannels.fileEvent, event)
+        sendToActiveRenderer(
+          services.window.webContents,
+          rightWorkspaceIpcChannels.fileEvent,
+          event
+        )
       }
     }
   }
