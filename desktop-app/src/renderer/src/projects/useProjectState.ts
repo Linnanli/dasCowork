@@ -112,18 +112,30 @@ export function useProjectState(): ProjectStateController {
 
   const summary = useMemo(() => describeProjectState(state), [state])
 
-  return {
-    state,
-    hasSelection: summary.hasSelection,
-    currentLabel: summary.label,
-    currentDetail: summary.detail,
-    pickWorkspaceRoot,
-    createBlankProject,
-    createLocalProject,
-    selectProject,
-    renameProject,
-    removeProject
-  }
+  return useMemo(
+    () => ({
+      state,
+      hasSelection: summary.hasSelection,
+      currentLabel: summary.label,
+      currentDetail: summary.detail,
+      pickWorkspaceRoot,
+      createBlankProject,
+      createLocalProject,
+      selectProject,
+      renameProject,
+      removeProject
+    }),
+    [
+      createBlankProject,
+      createLocalProject,
+      pickWorkspaceRoot,
+      removeProject,
+      renameProject,
+      selectProject,
+      state,
+      summary
+    ]
+  )
 }
 
 function applyProjectSelection(state: ProjectState, selection: ProjectSelection): ProjectState {

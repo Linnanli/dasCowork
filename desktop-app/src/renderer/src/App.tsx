@@ -128,6 +128,7 @@ import {
 import {
   createContext,
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useEffectEvent,
@@ -157,6 +158,7 @@ import {
 import { ComposerProjectCard } from './projects/ComposerProjectCard'
 import { useProjectState, type ProjectStateController } from './projects/useProjectState'
 import { SidebarRoot } from './sidebar/SidebarRoot'
+import { ConversationRuntimeIndicatorProvider } from './sidebar/ConversationRuntimeIndicatorProvider'
 import {
   useConversationState,
   type ConversationStateController
@@ -187,6 +189,7 @@ import type {
   ConversationChatEntry,
   ConversationScrollSnapshot
 } from './runtime/ConversationChatRegistry'
+import type { ConversationRuntimeIndicatorStore } from './runtime/ConversationRuntimeIndicatorStore'
 import {
   type ConversationTranscriptController,
   safeTurnErrorMessage,
@@ -240,6 +243,7 @@ type CodexSidebarProps = {
   nativeBackdrop: boolean
   projectState: ProjectStateController
   conversationState: ConversationStateController
+  conversationIndicators: ConversationRuntimeIndicatorStore
   onNewChat: () => void
 }
 
@@ -524,7 +528,7 @@ function App(): React.JSX.Element {
     setActiveGoalOperation,
     setActiveScroll,
     syncConversationMetadata,
-    getConversationIndicator
+    conversationIndicators
   } = useCodexIpcAssistantRuntime({
     projectSelection: storedProjectSelection
   })
@@ -545,10 +549,10 @@ function App(): React.JSX.Element {
     },
     [persistProjectSelection, setActiveProjectSelection, storedProjectSelection]
   )
-  const projectState: ProjectStateController = {
-    ...storedProjectState,
-    selectProject
-  }
+  const projectState = useMemo<ProjectStateController>(
+    () => ({ ...storedProjectState, selectProject }),
+    [selectProject, storedProjectState]
+  )
   const visibleApprovalRequests = useMemo(() => {
     const activeRequestIds = new Set(activeServerRequests.map((request) => request.id))
     const contextlessRequests = serverRequests.filter(
@@ -558,7 +562,6 @@ function App(): React.JSX.Element {
   }, [activeServerRequests, serverRequests])
   const conversationState = useConversationState({
     openConversation,
-    getConversationIndicator,
     syncConversationMetadata
   })
   const restoredActiveConversation = useRef(false)
@@ -660,10 +663,10 @@ function App(): React.JSX.Element {
   const handleSelectedModelChange = (modelId: string): void => {
     void setSelectedModelId(modelId).catch(() => undefined)
   }
-  const handleStartNewConversation = (): void => {
+  const handleStartNewConversation = useCallback((): void => {
     clearActiveConversationId()
     startNewConversation()
-  }
+  }, [startNewConversation])
   const handleOpenConversation = useCallback<OpenSubagentConversation>(
     (conversationId) => {
       void openConversation({ conversationId })
@@ -708,6 +711,7 @@ function App(): React.JSX.Element {
         nativeBackdrop={nativeBackdrop}
         projectState={projectState}
         conversationState={conversationState}
+        conversationIndicators={conversationIndicators}
         onNewChat={handleStartNewConversation}
       />
       <RightWorkspaceProvider
@@ -1287,36 +1291,39 @@ function WorkspaceCloseGuardDialog({
   )
 }
 
-function CodexSidebar({
+const CodexSidebar = memo(function CodexSidebar({
   collapsed,
   nativeBackdrop,
   projectState,
   conversationState,
+  conversationIndicators,
   onNewChat
 }: CodexSidebarProps): React.JSX.Element {
   return (
-    <aside
-      data-slot="codex-sidebar"
-      aria-hidden={collapsed}
-      inert={collapsed}
-      className={cn(
-        sidebarBaseClass,
-        nativeBackdrop && nativeBackdropSurfaceClass,
-        nativeBackdrop && sidebarGlassClass
-      )}
-      style={{ width: collapsed ? 0 : expandedSidebarWidth }}
-    >
-      <div className="relative min-h-0 flex-1 overflow-hidden pt-14">
-        <SidebarRoot
-          nativeBackdrop={nativeBackdrop}
-          projectState={projectState}
-          conversationState={conversationState}
-          onNewChat={onNewChat}
-        />
-      </div>
-    </aside>
+    <ConversationRuntimeIndicatorProvider store={conversationIndicators}>
+      <aside
+        data-slot="codex-sidebar"
+        aria-hidden={collapsed}
+        inert={collapsed}
+        className={cn(
+          sidebarBaseClass,
+          nativeBackdrop && nativeBackdropSurfaceClass,
+          nativeBackdrop && sidebarGlassClass
+        )}
+        style={{ width: collapsed ? 0 : expandedSidebarWidth }}
+      >
+        <div className="relative min-h-0 flex-1 overflow-hidden pt-14">
+          <SidebarRoot
+            nativeBackdrop={nativeBackdrop}
+            projectState={projectState}
+            conversationState={conversationState}
+            onNewChat={onNewChat}
+          />
+        </div>
+      </aside>
+    </ConversationRuntimeIndicatorProvider>
   )
-}
+})
 
 function SidebarHeaderSlot({ collapsed, onToggle }: SidebarHeaderSlotProps): React.JSX.Element {
   const toggleLabel = collapsed ? '显示侧栏' : '隐藏侧栏'

@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { PencilIcon } from 'lucide-react'
 
 import { Button } from '../components/ui/button'
@@ -22,6 +23,11 @@ export function SidebarChatsSection({
 }): React.JSX.Element {
   const chats = showChronological ? chronologicalChats : quickChats
   const quickChatActionLabel = 'New quick chat'
+  const { openConversation: openConversationInRuntime } = conversationState
+  const openConversation = useCallback(
+    (conversationId: string) => void openConversationInRuntime({ conversationId }),
+    [openConversationInRuntime]
+  )
   return (
     <section
       className="min-w-0 space-y-1"
@@ -56,9 +62,7 @@ export function SidebarChatsSection({
               key={conversation.id}
               conversation={conversation}
               nativeBackdrop={nativeBackdrop}
-              onOpen={() =>
-                void conversationState.openConversation({ conversationId: conversation.id })
-              }
+              onOpenConversation={openConversation}
             />
           ))
         )}

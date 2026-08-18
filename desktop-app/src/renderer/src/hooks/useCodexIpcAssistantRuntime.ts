@@ -21,14 +21,8 @@ import type {
   ConversationDraftAttachment
 } from '../runtime/ConversationDraftStore'
 import type { ActiveConversationContext } from '../lib/ElectronIpcChatTransport'
+import { ConversationRuntimeIndicatorStore } from '../runtime/ConversationRuntimeIndicatorStore'
 import { useConversationFollowUpCoordinator } from './useConversationFollowUpCoordinator'
-
-export type ConversationRuntimeIndicator = {
-  active: boolean
-  attention: boolean
-  running: boolean
-  unread: boolean
-}
 
 export type CodexIpcAssistantRuntimeState = {
   activeEntry: ConversationChatEntry
@@ -58,7 +52,7 @@ export type CodexIpcAssistantRuntimeState = {
   ) => void
   setActiveScroll: (scroll: ConversationScrollSnapshot) => void
   syncConversationMetadata: (conversations: readonly SidebarConversation[]) => void
-  getConversationIndicator: (conversation: SidebarConversation) => ConversationRuntimeIndicator
+  conversationIndicators: ConversationRuntimeIndicatorStore
   getConversationTitle: (threadId: string | undefined) => string | undefined
   respondToServerRequest: (
     request: CodexApprovalRequest,
@@ -99,6 +93,7 @@ export function useCodexIpcAssistantRuntime(
           window.desktopApp.conversations.getConversationGoal({ conversationId: threadId })
       })
   )
+  const [conversationIndicators] = useState(() => new ConversationRuntimeIndicatorStore(registry))
   const registrySnapshot = useSyncExternalStore(
     registry.subscribe,
     registry.getSnapshot,
@@ -108,6 +103,16 @@ export function useCodexIpcAssistantRuntime(
     registrySnapshot.entries,
     window.desktopApp.followUps as typeof window.desktopApp.followUps | undefined
   )
+
+  useLayoutEffect(() => {
+    conversationIndicators.setAttentionThreadIds(
+      new Set(
+        serverRequests.flatMap((request) =>
+          request.context?.threadId ? [request.context.threadId] : []
+        )
+      )
+    )
+  }, [conversationIndicators, serverRequests])
   const activeEntry = registrySnapshot.activeEntry
   const activeConversation =
     activeEntry.newConversation && !activeEntry.context.threadId ? undefined : activeEntry.context
@@ -163,10 +168,13 @@ export function useCodexIpcAssistantRuntime(
   }, [registry])
 
   useEffect(() => {
-    const destroyRegistry = (): void => registry.destroy()
+    const destroyRegistry = (): void => {
+      conversationIndicators.destroy()
+      registry.destroy()
+    }
     window.addEventListener('beforeunload', destroyRegistry)
     return () => window.removeEventListener('beforeunload', destroyRegistry)
-  }, [registry])
+  }, [conversationIndicators, registry])
 
   const openConversation = useCallback(
     async (input: SidebarConversationActionPayload) => {
@@ -261,31 +269,6 @@ export function useCodexIpcAssistantRuntime(
     [registry]
   )
 
-  const getConversationIndicator = useCallback(
-    (conversation: SidebarConversation): ConversationRuntimeIndicator => {
-      void registrySnapshot.version
-      const entry = registry.resolve(conversation.threadId) ?? registry.resolve(conversation.id)
-      const requestThreadIds = new Set(
-        serverRequests.flatMap((request) =>
-          request.context?.threadId ? [request.context.threadId] : []
-        )
-      )
-      const attention = Boolean(
-        (conversation.threadId && requestThreadIds.has(conversation.threadId)) ||
-        requestThreadIds.has(conversation.id)
-      )
-      return {
-        active: entry === activeEntry,
-        attention,
-        running: entry
-          ? entry.status === 'submitted' || entry.status === 'streaming'
-          : Boolean(conversation.running),
-        unread: entry ? entry.unread : Boolean(conversation.unread)
-      }
-    },
-    [activeEntry, registry, registrySnapshot, serverRequests]
-  )
-
   const getConversationTitle = useCallback(
     (threadId: string | undefined): string | undefined => {
       void registrySnapshot.version
@@ -358,7 +341,7 @@ export function useCodexIpcAssistantRuntime(
     setActiveGoalOperation,
     setActiveScroll,
     syncConversationMetadata,
-    getConversationIndicator,
+    conversationIndicators,
     getConversationTitle,
     respondToServerRequest,
     rejectServerRequest,

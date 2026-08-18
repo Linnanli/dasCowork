@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { PlusIcon } from 'lucide-react'
 
 import { Button } from '../components/ui/button'
@@ -19,6 +20,11 @@ export function SidebarProjectsSection({
   conversationState: ConversationStateController
   onNewChat: () => void
 }): React.JSX.Element {
+  const { openConversation: openConversationInRuntime } = conversationState
+  const openConversation = useCallback(
+    (conversationId: string) => void openConversationInRuntime({ conversationId }),
+    [openConversationInRuntime]
+  )
   const startProjectConversation = async (group: SidebarProjectGroup): Promise<void> => {
     await projectState.selectProject(group.selection)
     onNewChat()
@@ -69,9 +75,7 @@ export function SidebarProjectsSection({
               onToggleCollapsed={() => toggleGroupCollapsed(group)}
               onNewChat={() => void startProjectConversation(group)}
               onRemoveProject={() => void projectState.removeProject(group.selection)}
-              onOpenConversation={(conversationId) =>
-                void conversationState.openConversation({ conversationId })
-              }
+              onOpenConversation={openConversation}
             />
           ))
         )}

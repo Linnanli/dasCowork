@@ -1,24 +1,32 @@
+import { memo, useCallback } from 'react'
 import { LoaderIcon } from 'lucide-react'
 
 import { cn } from '../lib/utils'
+import type { ConversationRuntimeIndicator } from '../runtime/ConversationRuntimeIndicatorStore'
 import type { SidebarConversationView } from './sidebarTypes'
+import { useConversationRuntimeIndicator } from './useConversationRuntimeIndicator'
 
-export function ConversationRow({
+export const ConversationRow = memo(function ConversationRow({
   conversation,
   projectLabel,
   nativeBackdrop,
-  onOpen
+  onOpenConversation
 }: {
   conversation: SidebarConversationView
   projectLabel?: string
   nativeBackdrop: boolean
-  onOpen: () => void
+  onOpenConversation: (conversationId: string) => void
 }): React.JSX.Element {
+  const { active, attention, running, unread } = useConversationRuntimeIndicator(conversation)
+  const onOpen = useCallback(
+    () => onOpenConversation(conversation.id),
+    [conversation.id, onOpenConversation]
+  )
   const title = conversation.title ?? 'New Chat'
   return (
     <button
-      aria-current={conversation.active ? 'page' : undefined}
-      aria-label={conversationAriaLabel(conversation, title)}
+      aria-current={active ? 'page' : undefined}
+      aria-label={conversationAriaLabel(title, { attention, running, unread })}
       className={cn(
         'group flex min-h-8 w-full min-w-0 cursor-default items-center gap-1 rounded-md transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
         nativeBackdrop
@@ -31,10 +39,10 @@ export function ConversationRow({
       <div className="flex min-w-0 flex-1 flex-col px-3 py-1 text-left text-sm text-foreground">
         <span className="block w-full min-w-0 truncate">{title}</span>
         <span className="block w-full min-w-0 truncate text-[11px] font-normal text-muted-foreground">
-          {projectLabel ?? formatConversationMeta(conversation)}
+          {projectLabel ?? formatConversationMeta(conversation, { attention, running })}
         </span>
       </div>
-      {conversation.running ? (
+      {running ? (
         <span
           className="grid size-6 shrink-0 place-items-center text-muted-foreground"
           aria-hidden="true"
@@ -43,14 +51,14 @@ export function ConversationRow({
           <LoaderIcon className="size-3.5 animate-spin [animation-duration:1.4s]" />
         </span>
       ) : null}
-      {conversation.attention ? (
+      {attention ? (
         <span
           aria-hidden="true"
           className="size-2 shrink-0 rounded-full bg-amber-500"
           title={`${title} needs attention`}
         />
       ) : null}
-      {conversation.unread ? (
+      {unread ? (
         <span
           aria-hidden="true"
           className="mr-2 size-2 shrink-0 rounded-full bg-primary"
@@ -59,20 +67,26 @@ export function ConversationRow({
       ) : null}
     </button>
   )
-}
+})
 
-function formatConversationMeta(conversation: SidebarConversationView): string {
-  if (conversation.attention) return 'Needs attention'
-  if (conversation.running) return 'Running'
+function formatConversationMeta(
+  conversation: SidebarConversationView,
+  indicator: Pick<ConversationRuntimeIndicator, 'attention' | 'running'>
+): string {
+  if (indicator.attention) return 'Needs attention'
+  if (indicator.running) return 'Running'
   if (conversation.updatedAt) return new Date(conversation.updatedAt).toLocaleString()
   return conversation.cwd ?? 'Conversation'
 }
 
-function conversationAriaLabel(conversation: SidebarConversationView, title: string): string {
+function conversationAriaLabel(
+  title: string,
+  indicator: Pick<ConversationRuntimeIndicator, 'attention' | 'running' | 'unread'>
+): string {
   const states = [
-    conversation.running ? 'running' : '',
-    conversation.unread ? 'unread' : '',
-    conversation.attention ? 'needs attention' : ''
+    indicator.running ? 'running' : '',
+    indicator.unread ? 'unread' : '',
+    indicator.attention ? 'needs attention' : ''
   ].filter(Boolean)
   return states.length > 0 ? `${title}, ${states.join(', ')}` : title
 }

@@ -25,7 +25,7 @@ describe('ConversationRow', () => {
             unread: true
           }}
           nativeBackdrop={false}
-          onOpen={onOpen}
+          onOpenConversation={onOpen}
         />
       )
     })

@@ -186,7 +186,7 @@ function ProjectGroupConversations({
                 key={conversation.id}
                 conversation={conversation}
                 nativeBackdrop={nativeBackdrop}
-                onOpen={() => onOpenConversation(conversation.id)}
+                onOpenConversation={onOpenConversation}
               />
             ))
           )}
