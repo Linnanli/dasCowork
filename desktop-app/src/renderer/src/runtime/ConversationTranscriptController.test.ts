@@ -27,6 +27,41 @@ async function recordPlanAssertions({
 }
 
 describe('ConversationTranscriptController', () => {
+  it('coalesces rapid text deltas before publishing the transcript snapshot', async () => {
+    const transport = new ControlledTransport()
+    const controller = createController(transport)
+    const send = controller.sendMessage({
+      id: 'user-message',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Write a response.' }]
+    })
+
+    await vi.waitFor(() => expect(transport.sendCount).toBe(1))
+    beginCanonicalTurn(controller, 'rapid-stream-turn')
+    let notifications = 0
+    controller.subscribe(() => {
+      notifications += 1
+    })
+
+    transport.enqueue({ type: 'start', messageId: 'assistant-one' })
+    transport.enqueue({ type: 'text-start', id: 'text-one' })
+    const deltas = Array.from({ length: 24 }, (_, index) => `${index}`)
+    for (const delta of deltas) {
+      transport.enqueue({ type: 'text-delta', id: 'text-one', delta })
+    }
+
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().messages.at(-1)?.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: deltas.join('') })
+      ])
+    )
+    expect(notifications).toBeLessThan(4)
+
+    completeCanonicalTurn(controller, 'rapid-stream-turn', 'completed', 2)
+    transport.close()
+    await expect(send).resolves.toBeUndefined()
+  })
+
   it('resolves a start-only send after the stream is accepted without waiting for completion', async () => {
     const transport = new ControlledTransport()
     const controller = createController(transport)

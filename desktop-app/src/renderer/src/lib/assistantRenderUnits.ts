@@ -148,6 +148,7 @@ export type AssistantRenderUnit =
       partIndex: number
       text: string
       phase?: AssistantMessagePhase
+      streaming?: boolean
     })
   | (AssistantRenderUnitBase & {
       type: 'review-comments'
@@ -960,6 +961,7 @@ function toRenderUnit(
         target: targetForUnit(`text:${unit.partIndex}`, unit),
         text: unit.text,
         phase: unit.phase,
+        streaming: isMessageRunning,
         showThinkingFallback: false
       }
     case 'unknown':

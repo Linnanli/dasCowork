@@ -77,6 +77,16 @@ describe('ConversationRuntimeIndicatorProvider', () => {
         ['background', 2]
       ])
     )
+
+    backgroundEntry.status = 'streaming'
+    await act(async () => registry.emit())
+
+    expect(renderCounts).toEqual(
+      new Map([
+        ['active', 1],
+        ['background', 3]
+      ])
+    )
     store.destroy()
   })
 })

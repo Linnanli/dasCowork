@@ -7,6 +7,7 @@ import {
 
 const recoveryStorageKey = 'das-cowork.transcript-recovery.v1'
 const recoveryStorageVersion = 8
+const ACTIVE_TEXT_PERSIST_INTERVAL_MS = 250
 export const TRANSCRIPT_RECOVERY_MAX_CONVERSATIONS = 100
 export const TRANSCRIPT_RECOVERY_MAX_STORAGE_BYTES = 5 * 1024 * 1024
 export const TRANSCRIPT_RECOVERY_OVERLAY_TTL_MS = 7 * 24 * 60 * 60 * 1_000
@@ -117,6 +118,11 @@ type V7RecoveryStoragePayload = {
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 type AttachmentOverlaySource = Pick<UIMessage, 'id' | 'parts'>
 type TerminalRecoverySource = Pick<UIMessage, 'id' | 'role' | 'parts' | 'metadata'>
+type ActiveTextRecoverySource = Pick<UIMessage, 'id' | 'role' | 'parts'>
+type PendingActiveTextFallback = {
+  messages: readonly ActiveTextRecoverySource[]
+  baseRevision?: string | null
+}
 
 /**
  * Stores renderer-owned local attachment metadata and a short-lived terminal
@@ -128,6 +134,8 @@ export class ConversationTranscriptRecoveryStore {
   private readonly storage: StorageLike | undefined
   private readonly now: () => number
   private recoveries: Record<string, RecoveryRecord>
+  private readonly pendingActiveTextFallbacks = new Map<string, PendingActiveTextFallback>()
+  private readonly activeTextFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(storage: StorageLike | undefined = safeLocalStorage(), now: () => number = Date.now) {
     this.storage = storage
@@ -242,18 +250,61 @@ export class ConversationTranscriptRecoveryStore {
    */
   saveActiveTextFallback(
     identity: string,
-    messages: readonly Pick<UIMessage, 'id' | 'role' | 'parts'>[],
+    messages: readonly ActiveTextRecoverySource[],
+    baseRevision?: string | null
+  ): void {
+    this.discardPendingActiveTextFallback(identity)
+    this.persistActiveTextFallback(identity, messages, baseRevision)
+  }
+
+  /**
+   * Streaming text is updated far more often than recovery needs to be
+   * written. Keep the latest visible text in memory and batch synchronous
+   * localStorage writes so they do not block the renderer on every delta.
+   */
+  saveActiveTextFallbackDeferred(
+    identity: string,
+    messages: readonly ActiveTextRecoverySource[],
+    baseRevision?: string | null
+  ): void {
+    if (!identity) return
+    this.pendingActiveTextFallbacks.set(identity, { messages, baseRevision })
+    if (this.activeTextFallbackTimers.has(identity)) return
+    const timer = setTimeout(() => {
+      this.activeTextFallbackTimers.delete(identity)
+      this.flushPendingActiveTextFallback(identity)
+    }, ACTIVE_TEXT_PERSIST_INTERVAL_MS)
+    this.activeTextFallbackTimers.set(identity, timer)
+  }
+
+  flushPendingActiveTextFallbacks(): void {
+    for (const identity of [...this.pendingActiveTextFallbacks.keys()]) {
+      this.flushPendingActiveTextFallback(identity)
+    }
+  }
+
+  private persistActiveTextFallback(
+    identity: string,
+    messages: readonly ActiveTextRecoverySource[],
     baseRevision?: string | null
   ): void {
     if (!identity) return
     const activeTextByMessageId = activeTextByMessageIdFromMessages(messages)
     if (Object.keys(activeTextByMessageId).length === 0) return
     const existing = this.recoveries[identity]
+    const resolvedBaseRevision = baseRevision ?? existing?.baseRevision ?? null
+    if (
+      existing &&
+      existing.baseRevision === resolvedBaseRevision &&
+      sameTextRecord(existing.activeTextByMessageId, activeTextByMessageId)
+    ) {
+      return
+    }
     this.recoveries = {
       ...this.recoveries,
       [identity]: {
         createdAt: this.now(),
-        baseRevision: baseRevision ?? existing?.baseRevision ?? null,
+        baseRevision: resolvedBaseRevision,
         attachmentsByMessageId: existing?.attachmentsByMessageId ?? {},
         terminalByMessageId: existing?.terminalByMessageId ?? {},
         toolsByMessageId: existing?.toolsByMessageId ?? {},
@@ -264,6 +315,7 @@ export class ConversationTranscriptRecoveryStore {
   }
 
   clearActiveTextFallback(identity: string): void {
+    this.discardPendingActiveTextFallback(identity)
     const recovery = this.recoveries[identity]
     if (!recovery || Object.keys(recovery.activeTextByMessageId).length === 0) return
     const next = { ...this.recoveries }
@@ -391,6 +443,7 @@ export class ConversationTranscriptRecoveryStore {
 
   migrate(fromIdentity: string, toIdentity: string): void {
     if (!fromIdentity || !toIdentity || fromIdentity === toIdentity) return
+    this.flushPendingActiveTextFallback(fromIdentity)
     const source = this.recoveries[fromIdentity]
     if (!source || this.recoveries[toIdentity]) return
     const next = { ...this.recoveries, [toIdentity]: source }
@@ -410,6 +463,23 @@ export class ConversationTranscriptRecoveryStore {
     } catch {
       reportRecoveryDiagnostic('storage-write-failed')
     }
+  }
+
+  private flushPendingActiveTextFallback(identity: string): void {
+    const timer = this.activeTextFallbackTimers.get(identity)
+    if (timer !== undefined) clearTimeout(timer)
+    this.activeTextFallbackTimers.delete(identity)
+    const pending = this.pendingActiveTextFallbacks.get(identity)
+    this.pendingActiveTextFallbacks.delete(identity)
+    if (!pending) return
+    this.persistActiveTextFallback(identity, pending.messages, pending.baseRevision)
+  }
+
+  private discardPendingActiveTextFallback(identity: string): void {
+    const timer = this.activeTextFallbackTimers.get(identity)
+    if (timer !== undefined) clearTimeout(timer)
+    this.activeTextFallbackTimers.delete(identity)
+    this.pendingActiveTextFallbacks.delete(identity)
   }
 }
 
@@ -698,7 +768,9 @@ function migrateV6Recoveries(
   )
 }
 
-function migrateV7Recoveries(recoveries: Record<string, V7RecoveryRecord>): Record<string, RecoveryRecord> {
+function migrateV7Recoveries(
+  recoveries: Record<string, V7RecoveryRecord>
+): Record<string, RecoveryRecord> {
   return Object.fromEntries(
     Object.entries(recoveries).flatMap(([identity, record]) => {
       if (!isRecoveryRecordV7(record)) return []
@@ -804,7 +876,7 @@ function emptyRecoveryRecord(
 }
 
 function activeTextByMessageIdFromMessages(
-  messages: readonly Pick<UIMessage, 'id' | 'role' | 'parts'>[]
+  messages: readonly ActiveTextRecoverySource[]
 ): Record<string, string> {
   return Object.fromEntries(
     messages.flatMap((message) => {
@@ -815,6 +887,12 @@ function activeTextByMessageIdFromMessages(
       return text ? [[message.id, text]] : []
     })
   )
+}
+
+function sameTextRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key])
 }
 
 function terminalByMessageIdFromMessages(

@@ -130,6 +130,49 @@ describe('ConversationTranscriptRecoveryStore', () => {
     expect(restored[1]?.metadata).toBeUndefined()
   })
 
+  it('batches stream recovery writes and flushes the latest visible text on teardown', () => {
+    vi.useFakeTimers()
+    try {
+      const storage = new MemoryStorage()
+      const setItem = vi.spyOn(storage, 'setItem')
+      const store = new ConversationTranscriptRecoveryStore(storage)
+      const first = {
+        id: 'assistant:local-turn-1:initial',
+        role: 'assistant' as const,
+        parts: [{ type: 'text' as const, text: 'Visible' }]
+      }
+      const latest = {
+        ...first,
+        parts: [{ type: 'text' as const, text: 'Visible partial response.' }]
+      }
+
+      store.saveActiveTextFallbackDeferred('thread-1', [first])
+      store.saveActiveTextFallbackDeferred('thread-1', [latest])
+      expect(setItem).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(250)
+      expect(setItem).toHaveBeenCalledTimes(1)
+      expect(
+        new ConversationTranscriptRecoveryStore(storage).mergeActiveTextFallback('thread-1', [])
+      ).toEqual([latest])
+
+      const newest = {
+        ...latest,
+        parts: [{ type: 'text' as const, text: 'Visible partial response, newest.' }]
+      }
+      store.saveActiveTextFallbackDeferred('thread-1', [newest])
+      store.flushPendingActiveTextFallbacks()
+      vi.runAllTimers()
+
+      expect(setItem).toHaveBeenCalledTimes(2)
+      expect(
+        new ConversationTranscriptRecoveryStore(storage).mergeActiveTextFallback('thread-1', [])
+      ).toEqual([newest])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('migrates a legacy terminal fallback without overriding canonical history', () => {
     const storage = new MemoryStorage()
     storage.setItem(

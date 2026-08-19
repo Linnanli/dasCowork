@@ -12,12 +12,14 @@ import type {
   CodexChatStreamError,
   ElectronIpcChatTransport
 } from '../lib/ElectronIpcChatTransport'
+import { markConversationStreamPublish } from './conversationStreamPerformance'
 
 const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const DEFAULT_TURN_ERROR_MESSAGE = '模型响应未完成，请重试。'
 const UNKNOWN_RECOVERY_ERROR_MESSAGE = '无法确认后台任务状态，请重试。'
 const UNKNOWN_RECOVERY_ERROR_CODE = 'unknown-recovery'
 const MAX_TURN_ERROR_MESSAGE_LENGTH = 2_000
+const STREAM_RENDER_INTERVAL_MS = 33
 
 export type CodexTurnMessageMetadata = {
   readonly turnId: string
@@ -56,7 +58,8 @@ export type SteeringUserMessage = {
 }
 
 export type ConversationTranscriptMessage =
-  ConversationTranscriptRegularMessage | SteeringUserMessage
+  | ConversationTranscriptRegularMessage
+  | SteeringUserMessage
 
 export type ConversationTranscriptSnapshot = {
   readonly messages: readonly ConversationTranscriptMessage[]
@@ -122,6 +125,7 @@ export class ConversationTranscriptController {
   private turnSequence = 0
   private activeStreamAccepted = false
   private acceptedCurrentSend = false
+  private streamRenderTimer: ReturnType<typeof setTimeout> | undefined
   private sendAcceptanceWaiter:
     | {
         resolve: () => void
@@ -604,7 +608,7 @@ export class ConversationTranscriptController {
         this.activeTurn.retainedToolParts
       )
       this.alignPartSourceItemIds(this.activeTurn.assistantMessage.parts.length)
-      this.emit()
+      this.scheduleStreamRender()
     }
   }
 
@@ -811,7 +815,7 @@ export class ConversationTranscriptController {
 
   private currentMessages(): ConversationTranscriptMessage[] {
     const ledger = this.activeTurn
-    if (!ledger) return [...this.baseMessages]
+    if (!ledger) return this.baseMessages
 
     const assistant = ledger.assistantMessage
     const insertionOrder = new Map(
@@ -948,9 +952,22 @@ export class ConversationTranscriptController {
   }
 
   private emit(): void {
+    if (this.streamRenderTimer !== undefined) {
+      clearTimeout(this.streamRenderTimer)
+      this.streamRenderTimer = undefined
+    }
     this.version += 1
     this.snapshot = this.buildSnapshot()
+    markConversationStreamPublish(this.id, this.version)
     for (const listener of this.listeners) listener()
+  }
+
+  private scheduleStreamRender(): void {
+    if (this.streamRenderTimer !== undefined) return
+    this.streamRenderTimer = setTimeout(() => {
+      this.streamRenderTimer = undefined
+      this.emit()
+    }, STREAM_RENDER_INTERVAL_MS)
   }
 
   private buildSnapshot(): ConversationTranscriptSnapshot {

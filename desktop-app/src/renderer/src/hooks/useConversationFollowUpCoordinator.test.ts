@@ -29,6 +29,8 @@ import {
   useConversationFollowUpCoordinator
 } from './useConversationFollowUpCoordinator'
 
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
 const steerAssertionIds = [
   '已显示回答保持不变',
   '复用原 turn，不能额外启动 turn',
@@ -423,6 +425,43 @@ describe('conversation follow-up coordinator', () => {
 
       expect(sendMessage).toHaveBeenCalledTimes(2)
       expect(api.getState).toHaveBeenCalledTimes(3)
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
+  it('parks a queued follow-up during streaming and dispatches after a ready status update', async () => {
+    const item = createItem('queue')
+    const entry = createEntry()
+    const sendMessage = vi.mocked(entry.controller.sendMessage)
+    const api = createApi({
+      getState: vi
+        .fn()
+        .mockResolvedValueOnce(createState([item]))
+        .mockResolvedValue(createState([])),
+      prepareNextTurn: vi.fn(async () => preparedTurn(item))
+    })
+    const root = createRoot(document.createElement('div'))
+
+    try {
+      await act(async () => {
+        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
+        await flushPromises()
+        await flushPromises()
+      })
+
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(api.prepareNextTurn).not.toHaveBeenCalled()
+
+      entry.status = 'ready'
+      await act(async () => {
+        root.render(createElement(CoordinatorProbe, { api, entries: [entry] }))
+        await flushPromises()
+        await flushPromises()
+      })
+
+      expect(api.prepareNextTurn).toHaveBeenCalledOnce()
+      expect(sendMessage).toHaveBeenCalledOnce()
     } finally {
       act(() => root.unmount())
     }

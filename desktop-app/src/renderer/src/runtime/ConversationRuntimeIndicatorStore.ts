@@ -21,9 +21,9 @@ type CachedIndicator = {
 /**
  * Provides sidebar rows with stable, conversation-specific runtime state.
  *
- * The chat registry emits for every streamed text fragment. Returning the
- * exact same snapshot for rows whose visible state is unchanged lets
- * useSyncExternalStore skip their React re-render.
+ * The chat registry owns semantic conversation state. Returning the exact same
+ * snapshot for rows whose visible state is unchanged lets useSyncExternalStore
+ * skip their React re-render if a non-visible registry update is emitted.
  */
 export class ConversationRuntimeIndicatorStore {
   private readonly listeners = new Set<() => void>()

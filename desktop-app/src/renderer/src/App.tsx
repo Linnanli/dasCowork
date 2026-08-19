@@ -137,6 +137,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ButtonHTMLAttributes,
   type FC,
   type ReactNode
@@ -198,6 +199,12 @@ import {
 } from './runtime/ConversationTranscriptController'
 import type { ConversationDraftAttachment } from './runtime/ConversationDraftStore'
 import { captureConversationScroll, restoreConversationScroll } from './runtime/conversationScroll'
+import {
+  countConversationStreamPerformance,
+  markConversationStreamCommit,
+  markConversationStreamEvent,
+  scheduleConversationStreamNextFrame
+} from './runtime/conversationStreamPerformance'
 import { createQueuedFollowUpSnapshot } from './runtime/queuedFollowUpSnapshot'
 import { restoreQueuedFollowUpToComposerDraft } from './runtime/restoreQueuedFollowUpToComposer'
 import type {
@@ -359,6 +366,12 @@ const streamdownPlugins: PluginConfig = {
   math,
   mermaid,
   cjk
+}
+const streamdownAnimation = {
+  animation: 'fadeIn',
+  duration: 120,
+  sep: 'word' as const,
+  stagger: 12
 }
 
 const sidebarBaseClass =
@@ -834,6 +847,16 @@ function ActiveConversationPane({
   projectState: ProjectStateController
   sidebarCollapsed: boolean
 }): React.JSX.Element {
+  countConversationStreamPerformance('activeConversationPane')
+  const transcriptSnapshot = useSyncExternalStore(
+    entry.controller.subscribe,
+    entry.controller.getSnapshot,
+    entry.controller.getSnapshot
+  )
+  useLayoutEffect(() => {
+    markConversationStreamCommit(entry.controller.id, transcriptSnapshot.version)
+    scheduleConversationStreamNextFrame(entry.controller.id, transcriptSnapshot.version)
+  }, [entry.controller, transcriptSnapshot.version])
   const reloadInFlight = useRef<{ entryId: string; request: symbol } | null>(null)
   const saveThreadGoal = useCallback(
     async (objective: string, hasAttachments = false): Promise<boolean> => {
@@ -858,7 +881,10 @@ function ActiveConversationPane({
 
       onGoalOperationChange('setting')
       try {
-        if (entry.status === 'submitted' || entry.status === 'streaming') {
+        if (
+          transcriptSnapshot.status === 'submitted' ||
+          transcriptSnapshot.status === 'streaming'
+        ) {
           const goal = await window.desktopApp.conversations.setConversationGoal({
             conversationId: threadId,
             objective: trimmedObjective
@@ -879,18 +905,27 @@ function ActiveConversationPane({
         return false
       }
     },
-    [entry, onDraftChange, onGoalEditorActiveChange, onGoalOperationChange, onThreadGoalChange]
+    [
+      entry,
+      onDraftChange,
+      onGoalEditorActiveChange,
+      onGoalOperationChange,
+      onThreadGoalChange,
+      transcriptSnapshot.status
+    ]
   )
+  const isRunning =
+    transcriptSnapshot.status === 'submitted' || transcriptSnapshot.status === 'streaming'
+  const messageCount = transcriptSnapshot.messages.length
   const runtime = useExternalStoreRuntime<ConversationTranscriptMessage>({
-    messages: entry.messages,
-    isRunning: entry.status === 'submitted' || entry.status === 'streaming',
+    messages: transcriptSnapshot.messages,
+    isRunning,
     isDisabled: !entry.loaded,
-    convertMessage: (message, index) =>
-      transcriptMessageToThreadMessageLike(
-        message,
-        index === entry.messages.length - 1 &&
-          (entry.status === 'submitted' || entry.status === 'streaming')
-      ),
+    convertMessage: useCallback(
+      (message, index) =>
+        transcriptMessageToThreadMessageLike(message, index === messageCount - 1 && isRunning),
+      [isRunning, messageCount]
+    ),
     onNew: async (message) => {
       const submittedMessage = appendMessageToUIMessage(message)
       if (entry.goalEditorActive && entry.context.threadId) {
@@ -967,7 +1002,7 @@ function ActiveConversationPane({
       <ConversationDraftBridge
         draft={entry.draft}
         draftAttachments={entry.draftAttachments}
-        status={entry.status}
+        status={transcriptSnapshot.status}
         onDraftChange={onDraftChange}
         onDraftAttachmentsChange={onDraftAttachmentsChange}
       />
@@ -1029,6 +1064,7 @@ function ConversationWorkspaceLayout({
   target: GitConversationTarget
   workspaceId: string
 }): React.JSX.Element {
+  countConversationStreamPerformance('conversationWorkspaceLayout')
   const container = useWorkspaceContainer()
   const registry = useMemo(() => createWorkspaceContentRegistry(), [])
   const terminalCloseDialog = useTerminalCloseDialog()
@@ -1590,15 +1626,24 @@ function ChatThread({
   onSnoozeApproval,
   onRespondApproval
 }: ChatThreadProps): React.JSX.Element {
+  countConversationStreamPerformance('chatThread')
   const isEmpty = useAuiState(isNewChatView)
   const showNewConversationView = isEmpty && !loading && !loadError
   const canChangeProject = showNewConversationView && !activeConversation?.threadId
   const viewportRef = useRef<HTMLDivElement>(null)
+  useViewportIdentityProbe(viewportRef)
   const aui = useAui()
   const composerText = useAuiState((state) => state.composer.text)
   const composerAttachments = useAuiState((state) => state.composer.attachments)
   const [editingFollowUp, setEditingFollowUp] = useState<EditingFollowUpSession | null>(null)
-  useConversationScrollRestoration(viewportRef, scrollSnapshot, onScrollSnapshotChange)
+  const scrollRestoreKey =
+    activeConversation?.threadId ?? activeConversation?.conversationId ?? 'new-conversation'
+  useConversationScrollRestoration(
+    viewportRef,
+    scrollSnapshot,
+    onScrollSnapshotChange,
+    scrollRestoreKey
+  )
   const effectiveProjectSelection = activeConversation
     ? activeConversation.projectSelection
     : projectState.state?.activeProjectSelection
@@ -1980,25 +2025,83 @@ function ConversationFocusBridge({ entryId }: { entryId: string }): null {
 function useConversationScrollRestoration(
   viewportRef: React.RefObject<HTMLDivElement | null>,
   snapshot: ConversationScrollSnapshot | undefined,
-  onSnapshotChange: (snapshot: ConversationScrollSnapshot) => void
+  onSnapshotChange: (snapshot: ConversationScrollSnapshot) => void,
+  restoreKey: string
 ): void {
+  const snapshotRef = useRef(snapshot)
+  const onSnapshotChangeRef = useRef(onSnapshotChange)
+
   useLayoutEffect(() => {
+    snapshotRef.current = snapshot
+  }, [snapshot])
+
+  useLayoutEffect(() => {
+    onSnapshotChangeRef.current = onSnapshotChange
+  }, [onSnapshotChange])
+
+  useLayoutEffect(() => {
+    countConversationStreamPerformance('scrollRestoreSetupCount')
+    markConversationStreamEvent('scroll-restore-setup')
     const viewport = viewportRef.current
     if (!viewport) return
     let restoreFrame = 0
     const layoutFrame = window.requestAnimationFrame(() => {
-      if (!snapshot) return
+      countConversationStreamPerformance('scrollRestoreScheduleCount')
+      markConversationStreamEvent('scroll-restore-schedule')
+      const snapshotToRestore = snapshotRef.current
+      if (!snapshotToRestore) return
       restoreFrame = window.requestAnimationFrame(() => {
-        restoreConversationScroll(viewport, snapshot)
+        countConversationStreamPerformance('scrollRestoreApplyCount')
+        markConversationStreamEvent('scroll-restore-apply')
+        restoreConversationScroll(viewport, snapshotToRestore)
       })
     })
 
     return () => {
+      countConversationStreamPerformance('scrollRestoreCleanupCount')
+      markConversationStreamEvent('scroll-restore-cleanup')
       window.cancelAnimationFrame(layoutFrame)
       window.cancelAnimationFrame(restoreFrame)
-      onSnapshotChange(captureConversationScroll(viewport))
     }
-  }, [onSnapshotChange, snapshot, viewportRef])
+  }, [restoreKey, viewportRef])
+
+  useLayoutEffect(
+    () => () => {
+      const viewport = viewportRef.current
+      if (viewport) onSnapshotChangeRef.current(captureConversationScroll(viewport))
+    },
+    [restoreKey, viewportRef]
+  )
+}
+
+function useViewportIdentityProbe(viewportRef: React.RefObject<HTMLDivElement | null>): void {
+  const previousNodeRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport || viewport === previousNodeRef.current) return
+
+    if (previousNodeRef.current) {
+      countConversationStreamPerformance('forwardedRefDetachCount')
+      markConversationStreamEvent('viewport-ref-detach')
+      countConversationStreamPerformance('nodeReplacementCount')
+      markConversationStreamEvent('viewport-node-replaced')
+    }
+
+    countConversationStreamPerformance('forwardedRefAttachCount')
+    markConversationStreamEvent('viewport-ref-attach')
+    previousNodeRef.current = viewport
+  })
+
+  useEffect(
+    () => () => {
+      if (!previousNodeRef.current) return
+      countConversationStreamPerformance('forwardedRefDetachCount')
+      markConversationStreamEvent('viewport-ref-detach')
+      previousNodeRef.current = null
+    },
+    []
+  )
 }
 
 function ThreadWelcome(): React.JSX.Element {
@@ -2036,6 +2139,7 @@ function AssistantMessage({
   canOpenLocalPaths: boolean
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
+  countConversationStreamPerformance('assistantMessage')
   const message = useAuiState((state) => state.message)
   const isThreadRunning = useAuiState((state) => state.thread.isRunning)
   const textPartMetadata = useMemo(() => codexTextPartMetadataFor(message), [message])
@@ -2720,7 +2824,13 @@ function AssistantText({
 }): React.JSX.Element {
   return (
     <div data-slot="assistant-render-text" {...renderUnitAttributes(unit)}>
-      <Streamdown caret="block" mode="streaming" plugins={streamdownPlugins}>
+      <Streamdown
+        animated={streamdownAnimation}
+        caret="block"
+        isAnimating={unit?.type === 'text' && unit.streaming === true}
+        mode="streaming"
+        plugins={streamdownPlugins}
+      >
         {text}
       </Streamdown>
     </div>

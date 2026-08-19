@@ -152,6 +152,8 @@ const runtimeState = vi.hoisted<{
     loaded: boolean
     messages: []
     controller: {
+      id: string
+      subscribe: ReturnType<typeof vi.fn>
       sendMessage: ReturnType<typeof vi.fn>
       sendMessageUntilAccepted: ReturnType<typeof vi.fn>
       getSnapshot: ReturnType<typeof vi.fn>
@@ -199,9 +201,16 @@ const runtimeState = vi.hoisted<{
     loaded: true,
     messages: [],
     controller: {
+      id: 'local-test',
+      subscribe: vi.fn(() => () => undefined),
       sendMessage: vi.fn(async () => undefined),
       sendMessageUntilAccepted: vi.fn(async () => undefined),
-      getSnapshot: vi.fn(() => ({ status: 'ready' })),
+      getSnapshot: vi.fn(() =>
+        transcriptSnapshotState.forEntry(
+          runtimeState.activeEntry.messages,
+          runtimeState.activeEntry.status
+        )
+      ),
       editMessage: vi.fn(async () => undefined),
       regenerate: vi.fn(async () => undefined),
       stop: vi.fn(),
@@ -232,6 +241,18 @@ const runtimeState = vi.hoisted<{
   setActiveApprovalModeKind: vi.fn(),
   setActiveScroll: vi.fn()
 }))
+
+const transcriptSnapshotState = vi.hoisted(() => {
+  let snapshot = { messages: [] as [], status: 'ready', version: 0 }
+  return {
+    forEntry(messages: [], status: typeof snapshot.status) {
+      if (snapshot.messages !== messages || snapshot.status !== status) {
+        snapshot = { messages, status, version: snapshot.version + 1 }
+      }
+      return snapshot
+    }
+  }
+})
 
 const mentionAdapterState = vi.hoisted<{
   calls: unknown[]
@@ -361,6 +382,7 @@ function resetThreadMessageState(): void {
   runtimeState.activeEntry.composerModeKind = 'default'
   runtimeState.activeEntry.approvalModeKind = 'request-approval'
   for (const method of Object.values(runtimeState.activeEntry.controller)) {
+    if (!isMockFunction(method)) continue
     method.mockClear()
   }
   runtimeState.activeEntry.controller.getActiveTurnId.mockReturnValue('turn-active')
@@ -369,6 +391,10 @@ function resetThreadMessageState(): void {
   mentionAdapterState.calls = []
   modelContextState.tools = undefined
   aiSdkRuntimeState.options = undefined
+}
+
+function isMockFunction(value: unknown): value is { mockClear: () => void } {
+  return typeof value === 'function' && 'mockClear' in value
 }
 
 function setDesktopPlatform(platform: NodeJS.Platform): void {
@@ -2816,7 +2842,14 @@ describe('App composer', () => {
 
     expect(container.querySelector('[data-testid="streamdown-text"]')).not.toBeNull()
     expect(streamdownPropsState.lastProps).toMatchObject({
+      animated: {
+        animation: 'fadeIn',
+        duration: 120,
+        sep: 'word',
+        stagger: 12
+      },
       caret: 'block',
+      isAnimating: false,
       mode: 'streaming',
       plugins: {
         code: { plugin: 'code' },
@@ -2826,6 +2859,20 @@ describe('App composer', () => {
       }
     })
     expect(streamdownPropsState.lastProps?.children).toBe('# 标题\n\n- 条目')
+  })
+
+  it('animates streamed assistant text while the turn is running', () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'running' }
+    threadMessageState.message.content = [{ type: 'text', text: 'Partial response' }]
+
+    act(() => {
+      root.render(<App />)
+    })
+
+    expect(streamdownPropsState.lastProps).toMatchObject({
+      isAnimating: true
+    })
   })
 
   it('renders semantic exploration labels for single assistant read tool parts', () => {

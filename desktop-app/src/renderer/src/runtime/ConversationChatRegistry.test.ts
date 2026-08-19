@@ -963,6 +963,39 @@ describe('ConversationChatRegistry', () => {
     })
   })
 
+  it('does not publish a registry snapshot for a text-only streaming delta', async () => {
+    const { callbacks, registry } = registryFixture()
+    const entry = registry.getSnapshot().activeEntry
+    const send = entry.controller.sendMessage({
+      id: 'streaming-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'stream a response' }]
+    })
+    void send.catch(() => undefined)
+    await vi.waitFor(() => expect(callbacks.get(entry.controller.id)).toBeDefined())
+    const stream = callbacks.get(entry.controller.id)
+    stream?.onChunk({ type: 'start', messageId: 'streaming-assistant' })
+    stream?.onChunk({ type: 'text-start', id: 'streaming-text' })
+    await vi.waitFor(() => expect(entry.status).toBe('streaming'))
+
+    let notifications = 0
+    const unsubscribe = registry.subscribe(() => {
+      notifications += 1
+    })
+    stream?.onChunk({ type: 'text-delta', id: 'streaming-text', delta: 'Visible text' })
+
+    await vi.waitFor(() =>
+      expect(entry.messages.at(-1)?.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: 'Visible text' })
+      ])
+    )
+    expect(notifications).toBe(0)
+    stream?.onError('finish stream')
+    await expect(send).rejects.toThrow('finish stream')
+    expect(notifications).toBe(1)
+    unsubscribe()
+  })
+
   it('A13 preserves a pending Steer while navigating away from and back to its running conversation', async () => {
     const { bridge, callbacks, registry } = registryFixture()
     const entryA = registry.getSnapshot().activeEntry

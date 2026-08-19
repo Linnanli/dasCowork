@@ -483,6 +483,7 @@ export class ConversationChatRegistry {
     this.conversationMetadata.clear()
     this.inFlightHistoryLoads.clear()
     this.listeners.clear()
+    this.transcriptRecoveryStore.flushPendingActiveTextFallbacks()
   }
 
   private async loadConversationHistory(
@@ -653,11 +654,17 @@ export class ConversationChatRegistry {
       unsubscribeController: () => undefined
     } satisfies InternalConversationChatEntry)
     let previousControllerStatus = controller.getSnapshot().status
+    let previousControllerError = controller.getSnapshot().error
     entry.unsubscribeController = controller.subscribe(() => {
       const snapshot = controller.getSnapshot()
+      const previousEntryDraft = entry.draft
+      const previousEntryDraftAttachments = entry.draftAttachments
       const completedSuccessfulTurn =
         isRunningStatus(previousControllerStatus) && snapshot.status === 'ready' && !snapshot.error
+      const semanticStatusChanged =
+        previousControllerStatus !== snapshot.status || previousControllerError !== snapshot.error
       previousControllerStatus = snapshot.status
+      previousControllerError = snapshot.error
       entry.messages = snapshot.messages
       entry.status = snapshot.status
       entry.error = snapshot.error
@@ -681,7 +688,7 @@ export class ConversationChatRegistry {
             entry.historyRevision
           )
           if (isRunningStatus(snapshot.status)) {
-            this.transcriptRecoveryStore.saveActiveTextFallback(
+            this.transcriptRecoveryStore.saveActiveTextFallbackDeferred(
               recoveryIdentity,
               terminalRecoverySourceFromTranscript(snapshot.messages),
               entry.historyRevision
@@ -693,8 +700,17 @@ export class ConversationChatRegistry {
       // the freshly-created thread. Keep its objective recoverable when the
       // first turn succeeds but thread/goal/set fails.
       if (controller.takeCurrentSendAcceptance() && !entry.goalEditorActive) this.clearDraft(entry)
-      if (entry !== this.activeEntry && isRunningStatus(entry.status)) entry.unread = true
-      this.emit()
+      const unreadChanged =
+        entry !== this.activeEntry && isRunningStatus(entry.status) && !entry.unread
+      if (unreadChanged) entry.unread = true
+      if (
+        semanticStatusChanged ||
+        unreadChanged ||
+        previousEntryDraft !== entry.draft ||
+        previousEntryDraftAttachments !== entry.draftAttachments
+      ) {
+        this.emit()
+      }
     })
     this.entriesByLocalId.set(entry.localId, entry)
     this.aliases.set(entry.localId, entry)

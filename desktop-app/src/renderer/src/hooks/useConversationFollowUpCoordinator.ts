@@ -103,7 +103,6 @@ export function useConversationFollowUpCoordinator(
       }
       const running = entry.status === 'submitted' || entry.status === 'streaming'
       if (running) {
-        requestWake(CHAT_STATUS_POLL_INTERVAL_MS)
         continue
       }
       if (entry.status !== 'ready' && entry.status !== 'error') {

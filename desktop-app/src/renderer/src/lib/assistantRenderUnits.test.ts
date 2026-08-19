@@ -19,6 +19,17 @@ type LanguageModelV3StreamPart =
   LanguageModelV3StreamResult['stream'] extends ReadableStream<infer Part> ? Part : never
 
 describe('buildAssistantRenderUnits', () => {
+  it('marks text as streaming only while the assistant message is running', () => {
+    const content = [{ type: 'text', text: 'Visible response' }]
+
+    expect(buildAssistantRenderUnits({ status: { type: 'running' }, content }).units).toMatchObject(
+      [{ type: 'text', streaming: true }]
+    )
+    expect(
+      buildAssistantRenderUnits({ status: { type: 'complete' }, content }).units
+    ).toMatchObject([{ type: 'text', streaming: false }])
+  })
+
   it.each(assistantRenderUnitFixtures)('$name', (fixture) => {
     const model = buildAssistantRenderUnits({
       status: fixture.status,
