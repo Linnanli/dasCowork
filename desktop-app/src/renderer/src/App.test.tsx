@@ -419,7 +419,55 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
     codex: {
       openExternalHttpUrl: vi.fn(async () => undefined),
       openLocalPath: vi.fn(async () => undefined),
+      revealLocalPath: vi.fn(async () => undefined),
+      listExistingLocalPaths: vi.fn(async ({ paths }) => ({ existingPaths: paths })),
       pickLocalContext: vi.fn(async () => [])
+    },
+    workspace: {
+      dispose: vi.fn(async () => undefined),
+      files: {
+        prepareRoot: vi.fn(async () => ({ rootId: 'resource-root', label: 'Project files' })),
+        listDirectory: vi.fn(async ({ rootId, path }) => ({
+          version: 1,
+          rootId,
+          path: path ?? '',
+          entries: [],
+          truncated: false
+        })),
+        readFile: vi.fn(),
+        search: vi.fn(async () => ({ matches: [] })),
+        startSearch: vi.fn(async () => ({
+          version: 1,
+          rootId: 'resource-root',
+          sessionId: 'search-1'
+        })),
+        updateSearch: vi.fn(async () => undefined),
+        stopSearch: vi.fn(async () => undefined),
+        openWithSystem: vi.fn(async () => undefined),
+        onEvent: vi.fn(() => () => undefined),
+        onSearchEvent: vi.fn(() => () => undefined)
+      },
+      browser: {
+        create: vi.fn(async ({ url }) => ({
+          viewId: 'resource-browser',
+          title: 'Resource browser',
+          url,
+          loading: false,
+          canGoBack: false,
+          canGoForward: false
+        })),
+        setBounds: vi.fn(async () => ({
+          viewId: 'resource-browser',
+          url: 'about:blank',
+          loading: false,
+          canGoBack: false,
+          canGoForward: false
+        })),
+        show: vi.fn(async () => undefined),
+        hide: vi.fn(async () => undefined),
+        destroy: vi.fn(async () => undefined),
+        onEvent: vi.fn(() => () => undefined)
+      }
     },
     chat: {},
     git: {
@@ -444,7 +492,7 @@ function installDesktopApp(projects?: Partial<DesktopProjectsApi>): void {
         branch: 'main'
       })),
       listCommits: vi.fn(async () => []),
-      getReviewSnapshot: vi.fn(),
+      getReviewSnapshot: vi.fn(async () => ({ files: [] })),
       getFileDiff: vi.fn(),
       applyReviewAction: vi.fn(),
       applyTurnPatch: vi.fn(async () => ({
@@ -1146,6 +1194,7 @@ describe('App composer', () => {
   let root: Root
 
   beforeEach(() => {
+    window.localStorage.clear()
     resetThreadMessageState()
     composerState.attachments = []
     composerState.isEmpty = true
@@ -1193,6 +1242,7 @@ describe('App composer', () => {
       root.unmount()
     })
     container.remove()
+    window.localStorage.clear()
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })
@@ -2848,7 +2898,6 @@ describe('App composer', () => {
         sep: 'word',
         stagger: 12
       },
-      caret: 'block',
       isAnimating: false,
       mode: 'streaming',
       plugins: {
@@ -2858,6 +2907,7 @@ describe('App composer', () => {
         cjk: { plugin: 'cjk' }
       }
     })
+    expect(streamdownPropsState.lastProps).not.toHaveProperty('caret')
     expect(streamdownPropsState.lastProps?.children).toBe('# 标题\n\n- 条目')
   })
 
@@ -3853,8 +3903,10 @@ describe('App composer', () => {
       })
     ]
 
-    act(() => {
+    await act(async () => {
       root.render(<App />)
+      await Promise.resolve()
+      await Promise.resolve()
     })
 
     expect(container.querySelector('[data-slot="todo-list-entry-unit"]')).toBeNull()
@@ -3864,8 +3916,8 @@ describe('App composer', () => {
     expect(container.querySelector('[data-slot="generated-image-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('已生成 1 张图片')
     expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-slot="end-resource-card-unit"]')).toHaveLength(4)
     expect(container.textContent).toContain('Report')
-    expect(container.textContent).toContain('显示更多 1 条')
     await act(async () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="打开 Report"]')?.click()
     })
@@ -3875,9 +3927,11 @@ describe('App composer', () => {
     })
     await act(async () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="打开 Drive doc"]')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
     })
-    expect(window.desktopApp.codex.openExternalHttpUrl).toHaveBeenCalledWith(
-      'https://drive.example/doc'
+    expect(window.desktopApp.workspace.browser.create).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://drive.example/doc' })
     )
     expect(container.querySelector('[data-slot="review-comments-entry-unit"]')).not.toBeNull()
     expect(container.textContent).toContain('First')
@@ -3893,6 +3947,128 @@ describe('App composer', () => {
       container.querySelector('[data-slot="automatic-approval-review-entry-unit"]')
     ).not.toBeNull()
     expect(container.textContent).toContain('自动审批已通过')
+  })
+
+  it('opens a local website end resource with the system file handler', async () => {
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('local-website', 'endResources', 'endResources', {
+        resources: [
+          {
+            type: 'website',
+            path: '/repo/.codex/visualizations/2026/08/19/agent_123/security-market-analysis.html',
+            title: 'Security market analysis'
+          }
+        ]
+      })
+    ]
+
+    await act(async () => {
+      root.render(<App />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="打开 Security market analysis"]')
+        ?.click()
+    })
+
+    expect(window.desktopApp.codex.openLocalPath).toHaveBeenCalledWith({
+      path: '/repo/.codex/visualizations/2026/08/19/agent_123/security-market-analysis.html',
+      line: undefined
+    })
+
+    await act(async () => {
+      const menuTrigger = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Security market analysis 的更多操作"]'
+      )
+      menuTrigger?.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true, button: 0, ctrlKey: false })
+      )
+      await Promise.resolve()
+    })
+    const revealAction = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('在文件夹中显示'))
+    expect(revealAction).not.toBeUndefined()
+    await act(async () => {
+      revealAction?.click()
+    })
+    expect(window.desktopApp.codex.revealLocalPath).toHaveBeenCalledWith({
+      path: '/repo/.codex/visualizations/2026/08/19/agent_123/security-market-analysis.html'
+    })
+  })
+
+  it('does not show a resource card when a completed reply names a local HTML file as inline code', async () => {
+    const cwd =
+      '/Users/nallylin/Library/Application Support/desktop-app/projectless/ai-agent-html-edc2de110440'
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-inline-resource',
+      threadId: 'thread-inline-resource',
+      cwd,
+      projectSelection: { projectKind: 'projectless' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      {
+        type: 'text',
+        text: '页面已生成并校验通过：`out/index.html`（自包含单文件，双击即可打开）。'
+      }
+    ]
+
+    await act(async () => {
+      root.render(<App />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).toBeNull()
+    expect(container.textContent).toContain('index.html')
+    expect(window.desktopApp.codex.listExistingLocalPaths).not.toHaveBeenCalled()
+  })
+
+  it('opens local file resources inside the workspace when their project path is known', async () => {
+    runtimeState.activeConversation = {
+      conversationId: 'conversation-resources',
+      threadId: 'thread-resources',
+      cwd: '/repo',
+      projectSelection: { projectKind: 'path', path: '/repo' }
+    }
+    runtimeState.activeEntry.context = runtimeState.activeConversation
+    threadMessageState.message.role = 'assistant'
+    threadMessageState.message.status = { type: 'complete' }
+    threadMessageState.message.content = [
+      genericToolPart('local-file', 'endResources', 'endResources', {
+        resources: [
+          {
+            type: 'file',
+            path: '/repo/exports/results.json',
+            cwd: '/repo',
+            title: 'Results'
+          }
+        ]
+      })
+    ]
+
+    await act(async () => {
+      root.render(<App />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 Results"]')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.desktopApp.workspace.files.prepareRoot).toHaveBeenCalled()
+    expect(window.desktopApp.codex.openLocalPath).not.toHaveBeenCalled()
   })
 
   it('applies only complete persisted turn patch batches from the rendered history item', async () => {

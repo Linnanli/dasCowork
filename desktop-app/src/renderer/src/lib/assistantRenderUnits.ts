@@ -26,6 +26,7 @@ type AssistantMessageLike = {
   detailLevel?: AssistantRenderDetailLevel
   workspaceCwd?: string
   canOpenLocalPaths?: boolean
+  metadata?: unknown
 }
 
 type AssistantActivityPhase =
@@ -315,9 +316,59 @@ const THINKING_FALLBACK_TOOL_GROUP_KINDS = new Set<ToolGroupKind>([
   'mcp',
   'dynamic'
 ])
+const END_RESOURCE_SOURCE_FILE_EXTENSIONS = new Set([
+  'bash',
+  'c',
+  'cc',
+  'cjs',
+  'cpp',
+  'cs',
+  'css',
+  'cxx',
+  'fish',
+  'go',
+  'gql',
+  'graphql',
+  'h',
+  'html',
+  'hpp',
+  'java',
+  'js',
+  'jsx',
+  'kt',
+  'kts',
+  'less',
+  'mjs',
+  'php',
+  'ps1',
+  'py',
+  'rb',
+  'rs',
+  'sass',
+  'scala',
+  'scss',
+  'sh',
+  'sql',
+  'svelte',
+  'swift',
+  'ts',
+  'tsx',
+  'vue',
+  'zsh'
+])
+const WEBSITE_FILE_EXTENSIONS = new Set(['htm', 'html'])
 type SubagentRenderContext = {
   displayNamesByThreadId: ReadonlyMap<string, string>
   activityStatusesByPartIndex: ReadonlyMap<number, SubagentActivityDisplayStatus>
+}
+
+type DerivedEndResource = {
+  type: 'file' | 'website' | 'google-drive' | 'appgen-app'
+  path?: string
+  url?: string
+  title: string
+  line?: number
+  cwd?: string
 }
 
 type SubagentActivityNormalizedPart = Extract<NormalizedPart, { kind: 'tool' | 'entry' }> & {
@@ -359,19 +410,555 @@ export function buildAssistantRenderUnits(message: AssistantMessageLike): Assist
   const visibleUnits = activityCollapsed.map((unit, index) =>
     toRenderUnit(unit, index, isRunning, subagentContext)
   )
-  const groupedUnits = groupAssistantProcess(visibleUnits, isRunning, message.processDurationMs)
-  const unitsWithThinking = applyThinkingPresentation(groupedUnits, {
+  const { processUnits, completedTurnDiffs } = partitionCompletedTurnDiffs(visibleUnits, isRunning)
+  const groupedUnits = groupAssistantProcess(processUnits, isRunning, message.processDurationMs)
+  const orderedUnits = [...groupedUnits, ...completedTurnDiffs]
+  const unitsWithThinking = applyThinkingPresentation(orderedUnits, {
     isRunning,
     hasBlockingRequest: message.hasBlockingRequest === true
   })
-  const units = deriveReviewCommentsUnit(
+  const unitsWithReviewComments = deriveReviewCommentsUnit(
     unitsWithThinking,
     message.status?.type === undefined || message.status.type === 'complete',
     message.workspaceCwd,
     message.canOpenLocalPaths !== false
   )
+  const units = deriveEndResourcesUnit(
+    unitsWithReviewComments,
+    normalized,
+    message.status?.type === undefined || message.status.type === 'complete',
+    message.workspaceCwd,
+    message.canOpenLocalPaths !== false,
+    message.metadata
+  )
 
   return { isThinkingOnly: units.length === 1 && units[0]?.type === 'message-thinking', units }
+}
+
+function partitionCompletedTurnDiffs(
+  units: readonly AssistantRenderUnit[],
+  isRunning: boolean
+): {
+  processUnits: readonly AssistantRenderUnit[]
+  completedTurnDiffs: readonly AssistantRenderUnit[]
+} {
+  if (isRunning) return { processUnits: units, completedTurnDiffs: [] }
+
+  const completedTurnDiffs: AssistantRenderUnit[] = []
+  const processUnits: AssistantRenderUnit[] = []
+
+  for (const unit of units) {
+    if (isCompletedTurnDiffEntry(unit)) {
+      completedTurnDiffs.push(unit)
+    } else {
+      processUnits.push(unit)
+    }
+  }
+
+  return { processUnits, completedTurnDiffs }
+}
+
+function isCompletedTurnDiffEntry(
+  unit: AssistantRenderUnit
+): unit is Extract<AssistantRenderUnit, { type: 'entry' }> {
+  return unit.type === 'entry' && unit.itemType === 'turnDiff' && unit.item?.status === 'completed'
+}
+
+function deriveEndResourcesUnit(
+  units: readonly AssistantRenderUnit[],
+  parts: readonly NormalizedPart[],
+  shouldDerive: boolean,
+  workspaceCwd: string | undefined,
+  canOpenLocalPaths: boolean,
+  metadata: unknown
+): AssistantRenderUnit[] {
+  if (
+    !shouldDerive ||
+    units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+  ) {
+    return [...units]
+  }
+
+  const { resources, sourcePartIndices, sourceItemIds } = deriveEndResources(
+    parts,
+    workspaceCwd,
+    metadata,
+    canOpenLocalPaths
+  )
+  if (resources.length === 0) return [...units]
+
+  return [
+    ...units,
+    {
+      type: 'entry',
+      key: 'end-resources:generated-files',
+      partIndex: sourcePartIndices.at(-1) ?? 0,
+      partIndices: sourcePartIndices,
+      target: {
+        id: 'end-resources:generated-files',
+        itemIds: sourceItemIds
+      },
+      part: { type: 'endResources' },
+      item: {
+        id: 'end-resources:generated-files',
+        type: 'endResources',
+        status: 'completed',
+        resources
+      },
+      itemType: 'endResources',
+      renderMode: 'custom',
+      active: false,
+      showThinkingFallback: false
+    }
+  ]
+}
+
+function deriveEndResources(
+  parts: readonly NormalizedPart[],
+  workspaceCwd: string | undefined,
+  metadata: unknown,
+  canOpenLocalPaths: boolean
+): {
+  resources: readonly DerivedEndResource[]
+  sourcePartIndices: readonly number[]
+  sourceItemIds: readonly string[]
+} {
+  const resourcesByKey = new Map<string, DerivedEndResource>()
+  const sourcePartIndices: number[] = []
+  const sourceItemIds = new Set<string>()
+  const externalUrls = new Set<string>()
+
+  for (const resource of artifactResourcesFromMetadata(metadata, workspaceCwd)) {
+    addEndResource(resourcesByKey, resource)
+  }
+
+  for (const part of parts) {
+    if (part.kind === 'text') {
+      const textResources = endResourcesFromAssistantText(part.text, workspaceCwd)
+      for (const resource of textResources.resources) {
+        addEndResource(resourcesByKey, resource)
+      }
+      for (const url of textResources.externalUrls) externalUrls.add(url)
+      if (textResources.resources.length > 0 || textResources.externalUrls.length > 0) {
+        sourcePartIndices.push(part.partIndex)
+        const textPartId = stringValue(part.part.id)
+        if (textPartId) sourceItemIds.add(textPartId)
+      }
+      continue
+    }
+
+    if (part.kind !== 'tool' || !part.item || isFailedToolPart(part.part, part.item)) continue
+
+    const resources =
+      part.itemType === 'fileChange'
+        ? arrayValue(part.item.changes)
+            .map((change) => endResourceForFileChange(change, workspaceCwd))
+            .filter(isDefined)
+        : [endResourceForMcpItem(part.item)]
+    const artifactResources = artifactResourcesFromPart(part, workspaceCwd)
+    resources.push(...artifactResources)
+    for (const resource of resources) {
+      addEndResource(resourcesByKey, resource)
+    }
+
+    const urls = externalUrlsFromRecord(part.item)
+    for (const url of urls) externalUrls.add(url)
+    if (resources.length === 0 && urls.length === 0) continue
+    sourcePartIndices.push(part.partIndex)
+    const itemId = stringValue(part.item.id)
+    if (itemId) sourceItemIds.add(itemId)
+  }
+
+  for (const url of externalUrls) {
+    addEndResource(resourcesByKey, endResourceForHttpUrl(url))
+  }
+
+  const resources = [...resourcesByKey.values()].filter(
+    (resource) => canOpenLocalPaths || !resource.path
+  )
+  resources.sort((left, right) => {
+    const rank = { 'appgen-app': 0, website: 1, file: 2, 'google-drive': 3 }
+    const typeOrder = rank[left.type] - rank[right.type]
+    if (typeOrder !== 0) return typeOrder
+    return (left.path ?? left.url ?? left.title).localeCompare(
+      right.path ?? right.url ?? right.title
+    )
+  })
+
+  return { resources, sourcePartIndices, sourceItemIds: [...sourceItemIds] }
+}
+
+function addEndResource(
+  resourcesByKey: Map<string, DerivedEndResource>,
+  resource: DerivedEndResource | undefined
+): void {
+  if (!resource) return
+  const key = resourceKey(resource)
+  if (!resourcesByKey.has(key)) resourcesByKey.set(key, resource)
+}
+
+function resourceKey(resource: DerivedEndResource): string {
+  const value = resource.path ?? resource.url ?? resource.title
+  return `${resource.type}:${value.replace(/\\/g, '/')}`
+}
+
+function endResourcesFromAssistantText(
+  text: string,
+  workspaceCwd: string | undefined
+): { resources: DerivedEndResource[]; externalUrls: string[] } {
+  const resources: DerivedEndResource[] = []
+  const externalUrls = new Set<string>()
+  for (const link of markdownLinksOutsideCodeFences(text)) {
+    const destination = link.destination
+    const googleDriveUrl = googleDriveUrlFor(destination)
+    if (googleDriveUrl) {
+      resources.push({
+        type: 'google-drive',
+        url: googleDriveUrl,
+        title: link.label || googleDriveUrl
+      })
+      continue
+    }
+
+    const websiteUrl = websitePreviewUrlFor(destination)
+    if (websiteUrl) {
+      externalUrls.add(websiteUrl)
+      continue
+    }
+
+    const localPath = localMarkdownPath(destination)
+    const resource = localPath
+      ? endResourceForPath(localPath.path, workspaceCwd, link.label, false, localPath.line)
+      : undefined
+    if (resource) resources.push(resource)
+  }
+
+  for (const inlineCode of inlineCodeSpansOutsideCodeFences(text)) {
+    const localPath = localMarkdownPath(inlineCode)
+    const resource = localPath
+      ? endResourceForPath(localPath.path, workspaceCwd, undefined, false, localPath.line)
+      : undefined
+    if (resource) resources.push(resource)
+  }
+
+  for (const url of text.match(/https?:\/\/[^\s<>)"'`]+/gi) ?? []) {
+    const normalizedUrl = trimUrlPunctuation(url)
+    const googleDriveUrl = googleDriveUrlFor(normalizedUrl)
+    if (googleDriveUrl) {
+      resources.push({
+        type: 'google-drive',
+        url: googleDriveUrl,
+        title: websiteTitle(googleDriveUrl)
+      })
+      continue
+    }
+    const websiteUrl = websitePreviewUrlFor(normalizedUrl)
+    if (websiteUrl) externalUrls.add(websiteUrl)
+  }
+
+  return { resources, externalUrls: [...externalUrls] }
+}
+
+function markdownLinksOutsideCodeFences(text: string): { label: string; destination: string }[] {
+  const links: { label: string; destination: string }[] = []
+  let inFence = false
+  for (const line of text.split(/\r?\n/u)) {
+    if (/^ {0,3}(`{3,}|~{3,})/u.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+
+    const linkPattern = /!?\[([^\]]*)\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/g
+    for (const match of line.matchAll(linkPattern)) {
+      const label = match[1]?.trim() ?? ''
+      const destination = match[2]?.replace(/^<|>$/g, '')
+      if (destination) links.push({ label, destination })
+    }
+  }
+  return links
+}
+
+function inlineCodeSpansOutsideCodeFences(text: string): string[] {
+  const spans: string[] = []
+  let inFence = false
+  for (const line of text.split(/\r?\n/u)) {
+    if (/^ {0,3}(`{3,}|~{3,})/u.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+
+    for (const match of line.matchAll(/(`+)([^`]+?)\1/g)) {
+      const value = match[2]?.trim()
+      if (value) spans.push(value)
+    }
+  }
+  return spans
+}
+
+function decodeMarkdownDestination(destination: string): string {
+  try {
+    return decodeURIComponent(destination)
+  } catch {
+    return destination
+  }
+}
+
+function trimUrlPunctuation(value: string): string {
+  return value.replace(/[.,;!?]+$/u, '')
+}
+
+function localMarkdownPath(destination: string): { path: string; line?: number } | undefined {
+  let path: string
+  if (destination.startsWith('file://')) {
+    try {
+      const url = new URL(destination)
+      if (url.protocol !== 'file:') return undefined
+      path = decodeURIComponent(url.pathname)
+    } catch {
+      return undefined
+    }
+  } else {
+    if (hasUrlScheme(destination)) return undefined
+    path = decodeMarkdownDestination(destination.split(/[?#]/u, 1)[0] ?? '')
+  }
+
+  const match = path.match(/^(.*):(\d+)$/u)
+  const line = match?.[2] ? Number.parseInt(match[2], 10) : undefined
+  return {
+    path: match?.[1] ?? path,
+    ...(line && line > 0 ? { line } : {})
+  }
+}
+
+function googleDriveUrlFor(value: string): string | undefined {
+  const url = externalHttpUrlValue(value)
+  if (!url) return undefined
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return /(?:^|\.)google(?:usercontent)?\.com$/u.test(host) ||
+      /(?:^|\.)(?:drive|docs|sheets|slides)\.google\.com$/u.test(host)
+      ? url
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function externalHttpUrlValue(value: string): string | undefined {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function websitePreviewUrlFor(value: string): string | undefined {
+  return externalHttpUrlValue(value)
+}
+
+function endResourceForPath(
+  path: string | undefined,
+  workspaceCwd: string | undefined,
+  title?: string,
+  allowMarkdown = true,
+  line?: number
+): DerivedEndResource | undefined {
+  if (!path) return undefined
+  const openTarget = endResourceOpenTarget(path, workspaceCwd)
+  if (!openTarget) return undefined
+  const extension = fileExtension(path)
+  if (!extension || END_RESOURCE_SOURCE_FILE_EXTENSIONS.has(extension)) return undefined
+  if (!allowMarkdown && (extension === 'md' || extension === 'mdx')) return undefined
+  return {
+    type: WEBSITE_FILE_EXTENSIONS.has(extension) ? 'website' : 'file',
+    title: title || resourceTitle(path),
+    ...(line ? { line } : {}),
+    ...openTarget
+  }
+}
+
+function endResourceForMcpItem(item: Record<string, unknown>): DerivedEndResource | undefined {
+  const result = recordValue(item.result)
+  const structuredContent =
+    recordValue(result?.structuredContent) ?? recordValue(item.structuredContent)
+  if (!structuredContent) return undefined
+  const url = [
+    stringValue(structuredContent.current_live_url),
+    stringValue(structuredContent.current_preview_url),
+    stringValue(structuredContent.deployment_url),
+    stringValue(structuredContent.url)
+  ]
+    .map((value) => externalHttpUrlValue(value ?? ''))
+    .find(isDefined)
+  if (!url) return undefined
+  if (!isAppgenMcpItem(item)) return endResourceForHttpUrl(url)
+  return {
+    type: 'appgen-app',
+    url,
+    title: stringValue(structuredContent.title)?.trim() || 'Generated app'
+  }
+}
+
+function endResourceForHttpUrl(url: string): DerivedEndResource {
+  const googleDriveUrl = googleDriveUrlFor(url)
+  return googleDriveUrl
+    ? { type: 'google-drive', url: googleDriveUrl, title: websiteTitle(googleDriveUrl) }
+    : { type: 'website', url, title: websiteTitle(url) }
+}
+
+function isAppgenMcpItem(item: Record<string, unknown>): boolean {
+  const server = stringValue(item.server)?.toLowerCase()
+  const tool = stringValue(item.tool)?.toLowerCase() ?? ''
+  return server === 'sites' || tool.startsWith('sites_') || tool.startsWith('codex_apps__sites_')
+}
+
+function artifactResourcesFromPart(
+  part: Extract<NormalizedPart, { kind: 'tool' }>,
+  workspaceCwd: string | undefined
+): DerivedEndResource[] {
+  const candidates = [part.part, part.item]
+    .flatMap((value) => {
+      const record = recordValue(value)
+      const artifacts = recordValue(record?.artifacts)
+      return [
+        ...arrayValue(artifacts?.editedFilePaths),
+        ...arrayValue(artifacts?.referencedFilePaths),
+        ...arrayValue(record?.editedFilePaths),
+        ...arrayValue(record?.referencedFilePaths)
+      ]
+    })
+    .map(stringValue)
+    .filter(isDefined)
+  const diffPaths = [
+    ...arrayValue(part.item?.patchBatches).flatMap((batch) => {
+      const record = recordValue(batch)
+      return diffPathsFromUnifiedDiff(stringValue(record?.diff))
+    }),
+    ...diffPathsFromUnifiedDiff(stringValue(part.item?.diff))
+  ]
+  return [...candidates, ...diffPaths]
+    .map((path) => endResourceForPath(path, workspaceCwd))
+    .filter(isDefined)
+}
+
+function artifactResourcesFromMetadata(
+  metadata: unknown,
+  workspaceCwd: string | undefined
+): DerivedEndResource[] {
+  const record = recordValue(metadata)
+  const candidates = [record, recordValue(record?.artifacts), recordValue(record?.codexArtifacts)]
+    .flatMap((value) => [
+      ...arrayValue(value?.editedFilePaths),
+      ...arrayValue(value?.referencedFilePaths),
+      ...arrayValue(value?.files)
+    ])
+    .map((value) => {
+      const file = recordValue(value)
+      return stringValue(file?.path) ?? stringValue(value)
+    })
+    .filter(isDefined)
+  return candidates.map((path) => endResourceForPath(path, workspaceCwd)).filter(isDefined)
+}
+
+function diffPathsFromUnifiedDiff(diff: string | undefined): string[] {
+  if (!diff) return []
+  const paths: string[] = []
+  for (const line of diff.split(/\r?\n/u)) {
+    const match = line.match(/^\+\+\+ (.*?)(?:\t.*)?$/u)
+    const path = match?.[1]?.replace(/^[ab]\//u, '')
+    if (path && path !== '/dev/null') paths.push(path)
+  }
+  return paths
+}
+
+function externalUrlsFromRecord(item: Record<string, unknown>): string[] {
+  return [
+    stringValue(item.url),
+    stringValue(item.current_live_url),
+    stringValue(item.current_preview_url),
+    stringValue(item.deployment_url)
+  ]
+    .map((value) => externalHttpUrlValue(value ?? ''))
+    .filter(isDefined)
+}
+
+function websiteTitle(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return 'Website'
+  }
+}
+
+function endResourceForFileChange(
+  value: unknown,
+  workspaceCwd: string | undefined
+): DerivedEndResource | undefined {
+  const change = recordValue(value)
+  const kind = recordValue(change?.kind)
+  if (stringValue(kind?.type) === 'delete') return undefined
+
+  const path =
+    (stringValue(kind?.type) === 'update' ? stringValue(kind?.move_path) : undefined) ??
+    stringValue(change?.path)
+  if (!path) return undefined
+
+  return endResourceForPath(path, workspaceCwd)
+}
+
+function isFailedToolPart(part: AssistantMessagePart, item: Record<string, unknown>): boolean {
+  const partStatus = recordValue(part.status)
+  const result = recordValue(part.result) ?? recordValue(part.output)
+  return (
+    ['failed', 'declined', 'cancelled', 'error', 'output-error'].includes(
+      stringValue(item.status) ?? ''
+    ) ||
+    ['error', 'output-error'].includes(stringValue(partStatus?.type) ?? '') ||
+    part.isError === true ||
+    result?.isError === true ||
+    item.success === false ||
+    recordValue(item.error) !== undefined
+  )
+}
+
+function endResourceOpenTarget(
+  path: string,
+  workspaceCwd: string | undefined
+): { path: string; cwd?: string } | undefined {
+  if (isAbsoluteLocalPath(path)) {
+    return isAbsoluteLocalPath(workspaceCwd ?? '') ? { path, cwd: workspaceCwd } : { path }
+  }
+  if (!isSafeRelativeLocalPath(path) || !isAbsoluteLocalPath(workspaceCwd ?? '')) return undefined
+  return { path, cwd: workspaceCwd }
+}
+
+function isAbsoluteLocalPath(path: string): boolean {
+  return (path.startsWith('/') && !path.startsWith('//')) || /^[A-Za-z]:[\\/]/.test(path)
+}
+
+function isSafeRelativeLocalPath(path: string): boolean {
+  if (!path || path.includes('\0') || path.startsWith('\\') || hasUrlScheme(path)) return false
+  const segments = path.replace(/\\/g, '/').split('/')
+  return !segments.some((segment) => segment === '.' || segment === '..')
+}
+
+function fileExtension(path: string): string | undefined {
+  const fileName = resourceTitle(path)
+  const separator = fileName.lastIndexOf('.')
+  if (separator <= 0 || separator === fileName.length - 1) return undefined
+  return fileName.slice(separator + 1).toLowerCase()
+}
+
+function resourceTitle(path: string): string {
+  const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  return normalizedPath.slice(normalizedPath.lastIndexOf('/') + 1) || path
+}
+
+function hasUrlScheme(value: string): boolean {
+  return /^[a-z][a-z\d+.-]*:/i.test(value)
 }
 
 function deriveReviewCommentsUnit(

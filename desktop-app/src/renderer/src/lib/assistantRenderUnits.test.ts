@@ -91,6 +91,44 @@ describe('buildAssistantRenderUnits', () => {
     expect(JSON.stringify(model.units)).not.toContain('Confirming reasoning visibility')
   })
 
+  it('moves a completed live turn diff after the final answer', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        { type: 'text', text: '我会创建页面。' },
+        toolPart('live-diff', 'turnDiff', {
+          diff: 'diff --git a/report.html b/report.html\n+new file mode 100644\n'
+        }),
+        { type: 'text', text: '页面已创建。' }
+      ],
+      textPhases: ['commentary', 'final_answer']
+    })
+
+    expect(model.units.map((unit) => unit.type)).toEqual(['reasoning-group', 'text', 'entry'])
+    expect(model.units[1]).toMatchObject({ text: '页面已创建。', phase: 'final_answer' })
+    expect(model.units[2]).toMatchObject({
+      itemType: 'turnDiff',
+      item: { status: 'completed' }
+    })
+  })
+
+  it('keeps an unphased final answer outside the process group before a completed turn diff', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('patch', 'fileChange'),
+        { type: 'text', text: '文件已更新。' },
+        toolPart('live-diff', 'turnDiff', {
+          diff: 'diff --git a/report.html b/report.html\n+new file mode 100644\n'
+        })
+      ]
+    })
+
+    expect(model.units.map((unit) => unit.type)).toEqual(['reasoning-group', 'text', 'entry'])
+    expect(model.units[1]).toMatchObject({ text: '文件已更新。' })
+    expect(model.units[2]).toMatchObject({ itemType: 'turnDiff' })
+  })
+
   it('extracts completed final-answer code comments, removes directives, and appends one card', () => {
     const model = buildAssistantRenderUnits({
       status: { type: 'complete' },
@@ -151,6 +189,362 @@ describe('buildAssistantRenderUnits', () => {
     expect(JSON.stringify(commentary.units)).toContain('::code-comment')
     expect(running.units.some((unit) => unit.type === 'review-comments')).toBe(false)
     expect(JSON.stringify(running.units)).toContain('::code-comment')
+  })
+
+  it('derives completed output resources but excludes HTML files', () => {
+    const visualizationPath =
+      '/repo/.codex/visualizations/2026/08/19/agent_123/security-market-analysis.html'
+    const htmlExportPath = '/repo/exports/metrics-dashboard.html'
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      content: [
+        toolPart('generated-files', 'fileChange', {
+          changes: [
+            { path: '/repo/report.pdf', kind: { type: 'add' }, diff: '' },
+            { path: visualizationPath, kind: { type: 'add' }, diff: '' },
+            { path: htmlExportPath, kind: { type: 'add' }, diff: '' },
+            { path: 'exports/metrics.xlsx', kind: { type: 'add' }, diff: '' },
+            { path: '/repo/src/index.ts', kind: { type: 'add' }, diff: '' },
+            { path: '/repo/removed.csv', kind: { type: 'delete' }, diff: '' },
+            { path: '/repo/report.pdf', kind: { type: 'update', move_path: null }, diff: '' }
+          ]
+        })
+      ]
+    })
+
+    const resourcesUnit = model.units.find(
+      (unit) => unit.type === 'entry' && unit.itemType === 'endResources'
+    )
+
+    expect(resourcesUnit).toMatchObject({
+      key: 'end-resources:generated-files',
+      partIndices: [0],
+      target: { itemIds: ['generated-files'] },
+      item: {
+        resources: [
+          { type: 'file', path: '/repo/report.pdf', title: 'report.pdf', cwd: '/repo' },
+          { type: 'file', path: 'exports/metrics.xlsx', title: 'metrics.xlsx', cwd: '/repo' }
+        ]
+      }
+    })
+    expect(JSON.stringify(resourcesUnit)).not.toContain(visualizationPath)
+    expect(JSON.stringify(resourcesUnit)).not.toContain(htmlExportPath)
+  })
+
+  it('does not derive HTML output resources for historical messages without an explicit status', () => {
+    const model = buildAssistantRenderUnits({
+      workspaceCwd: '/repo',
+      content: [
+        toolPart('historical-html', 'fileChange', {
+          changes: [
+            {
+              path: '/repo/outputs/security-market.html',
+              kind: { type: 'add' },
+              diff: '<!doctype html>'
+            }
+          ]
+        })
+      ]
+    })
+
+    expect(
+      model.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
+  })
+
+  it('does not derive local HTML resources from inline-code paths in final replies', () => {
+    const message = {
+      workspaceCwd:
+        '/Users/nallylin/Library/Application Support/desktop-app/projectless/ai-agent-html-edc2de110440',
+      content: [
+        {
+          type: 'text',
+          text: '页面已生成并校验通过：`out/index.html`（自包含单文件，双击即可打开）。'
+        }
+      ]
+    }
+    const models = [
+      buildAssistantRenderUnits({ ...message, status: { type: 'complete' } }),
+      buildAssistantRenderUnits(message)
+    ]
+
+    for (const model of models) {
+      expect(
+        model.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+      ).toBe(false)
+    }
+  })
+
+  it('does not derive generated file resources before completion or for remote conversations', () => {
+    const content = [
+      toolPart('generated-html', 'fileChange', {
+        changes: [
+          {
+            path: '/repo/.codex/visualizations/2026/08/19/agent_123/preview.html',
+            kind: { type: 'add' },
+            diff: ''
+          }
+        ]
+      })
+    ]
+
+    const running = buildAssistantRenderUnits({
+      status: { type: 'running' },
+      workspaceCwd: '/repo',
+      content
+    })
+    const remote = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      canOpenLocalPaths: false,
+      content
+    })
+
+    expect(
+      running.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
+    expect(
+      remote.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
+  })
+
+  it('keeps external resources available for remote conversations', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      canOpenLocalPaths: false,
+      content: [{ type: 'text', text: '部署地址：https://example.test/reports/latest' }]
+    })
+
+    const resourcesUnit = model.units.find(
+      (unit) => unit.type === 'entry' && unit.itemType === 'endResources'
+    )
+
+    expect(resourcesUnit).toMatchObject({
+      item: {
+        resources: [
+          { type: 'website', url: 'https://example.test/reports/latest', title: 'example.test' }
+        ]
+      }
+    })
+  })
+
+  it('preserves encoded URL paths and keeps case-distinct local files separate', () => {
+    const encodedUrl = 'https://example.test/downloads/report%2F2026'
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      content: [
+        { type: 'text', text: `[下载](${encodedUrl})` },
+        toolPart('case-distinct-files', 'fileChange', {
+          changes: [
+            { path: '/repo/Report.pdf', kind: { type: 'add' }, diff: '' },
+            { path: '/repo/report.pdf', kind: { type: 'add' }, diff: '' }
+          ]
+        })
+      ]
+    })
+
+    const resourcesUnit = model.units.find(
+      (unit) => unit.type === 'entry' && unit.itemType === 'endResources'
+    )
+
+    expect(resourcesUnit).toMatchObject({
+      item: {
+        resources: [
+          { type: 'website', url: encodedUrl },
+          { type: 'file', path: '/repo/report.pdf' },
+          { type: 'file', path: '/repo/Report.pdf' }
+        ]
+      }
+    })
+    expect(JSON.stringify(model.units)).not.toContain('https://example.test/downloads/report/2026')
+  })
+
+  it('derives markdown links, drive links, websites, and appgen results', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      content: [
+        {
+          type: 'text',
+          text: [
+            '文件：[报告](/repo/report.pdf)',
+            '云文档：[表格](https://docs.google.com/spreadsheets/d/sheet-1/edit)',
+            '网站：https://example.test:4173/dashboard'
+          ].join('\n')
+        },
+        toolPart('sites-1', 'mcpToolCall', {
+          server: 'sites',
+          tool: 'publish',
+          result: {
+            structuredContent: {
+              current_preview_url: 'https://preview.example.test/app',
+              title: '市场分析应用'
+            }
+          }
+        })
+      ]
+    })
+
+    const resourcesUnit = model.units.find(
+      (unit) => unit.type === 'entry' && unit.itemType === 'endResources'
+    )
+    expect(resourcesUnit).toMatchObject({
+      item: {
+        resources: [
+          { type: 'appgen-app', url: 'https://preview.example.test/app', title: '市场分析应用' },
+          { type: 'website', url: 'https://example.test:4173/dashboard', title: 'example.test' },
+          { type: 'file', path: '/repo/report.pdf', title: '报告' },
+          {
+            type: 'google-drive',
+            url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            title: '表格'
+          }
+        ]
+      }
+    })
+    const websiteOnlyModel = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [{ type: 'text', text: '网站：https://example.test:4173/dashboard' }]
+    })
+    expect(JSON.stringify(websiteOnlyModel.units)).toContain('https://example.test:4173/dashboard')
+
+    const ordinaryLinkModel = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [{ type: 'text', text: '参考：https://example.test/dashboard' }]
+    })
+    expect(JSON.stringify(ordinaryLinkModel.units)).toContain('https://example.test/dashboard')
+
+    const visualizationOnlyModel = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('visualization-only', 'fileChange', {
+          changes: [
+            {
+              path: '/repo/.codex/visualizations/2026/08/19/agent_123/preview.html',
+              kind: { type: 'add' },
+              diff: ''
+            }
+          ]
+        })
+      ]
+    })
+    expect(JSON.stringify(visualizationOnlyModel.units)).toContain('preview.html')
+  })
+
+  it('does not derive a resource card from a local HTML Markdown link', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        {
+          type: 'text',
+          text: '[市场分析](/Users/nallylin/Documents/Codex/2026-08-19/ai-agent-html/outputs/ai-agent-security-market.html:1)'
+        }
+      ]
+    })
+
+    expect(model.units).toMatchObject([{ type: 'text' }])
+    expect(
+      model.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
+  })
+
+  it('derives generic output files and every completed remote resource', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      content: [
+        {
+          type: 'text',
+          text: [
+            '[结果数据](/repo/exports/results.json)',
+            '[演示站点](https://demo.example.test/overview)',
+            'https://docs.google.com/document/d/doc-1/edit'
+          ].join('\n')
+        },
+        toolPart('resource-tool', 'mcpToolCall', {
+          server: 'reports',
+          tool: 'publish',
+          result: { structuredContent: { url: 'https://reports.example.test/monthly' } }
+        })
+      ]
+    })
+
+    const resourcesUnit = model.units.find(
+      (unit) => unit.type === 'entry' && unit.itemType === 'endResources'
+    )
+    expect(resourcesUnit).toMatchObject({
+      item: {
+        resources: [
+          {
+            type: 'website',
+            url: 'https://demo.example.test/overview',
+            title: 'demo.example.test'
+          },
+          {
+            type: 'website',
+            url: 'https://reports.example.test/monthly',
+            title: 'reports.example.test'
+          },
+          { type: 'file', path: '/repo/exports/results.json', title: '结果数据' },
+          {
+            type: 'google-drive',
+            url: 'https://docs.google.com/document/d/doc-1/edit',
+            title: 'docs.google.com'
+          }
+        ]
+      }
+    })
+  })
+
+  it('does not derive resources from failed tool parts', () => {
+    const model = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      content: [
+        toolPart('failed-file', 'fileChange', {
+          status: { type: 'error' },
+          isError: true,
+          changes: [{ path: '/repo/failed.pdf', kind: { type: 'add' }, diff: '' }]
+        })
+      ]
+    })
+
+    expect(
+      model.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
+  })
+
+  it('derives completed artifact metadata and historical diff paths without file changes', () => {
+    const artifactModel = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      metadata: {
+        artifacts: {
+          editedFilePaths: ['/repo/notes.md'],
+          referencedFilePaths: ['/repo/data.csv']
+        }
+      },
+      content: []
+    })
+    const diffModel = buildAssistantRenderUnits({
+      status: { type: 'complete' },
+      workspaceCwd: '/repo',
+      content: [
+        toolPart('historic-diff', 'turnDiff', {
+          diff:
+            'diff --git a/.codex/visualizations/preview.html b/.codex/visualizations/preview.html\n' +
+            '--- a/.codex/visualizations/preview.html\n' +
+            '+++ b/.codex/visualizations/preview.html\n'
+        })
+      ]
+    })
+
+    expect(JSON.stringify(artifactModel.units)).toContain('/repo/data.csv')
+    expect(JSON.stringify(artifactModel.units)).toContain('/repo/notes.md')
+    expect(
+      diffModel.units.some((unit) => unit.type === 'entry' && unit.itemType === 'endResources')
+    ).toBe(false)
   })
 
   it('parses completed historical text without phase metadata', () => {

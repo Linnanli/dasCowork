@@ -470,6 +470,14 @@ export type CodexOpenLocalPathPayload = {
   cwd?: string
 }
 
+export type CodexExistingLocalPathsPayload = {
+  paths: CodexOpenLocalPathPayload[]
+}
+
+export type CodexExistingLocalPathsResult = {
+  existingPaths: CodexOpenLocalPathPayload[]
+}
+
 export type LocalContextReference =
   | {
       kind: 'file' | 'folder'
@@ -595,6 +603,12 @@ export const codexOpenLocalPathPayloadSchema = z
     }
   }) satisfies z.ZodType<CodexOpenLocalPathPayload>
 
+export const codexExistingLocalPathsPayloadSchema = z
+  .object({
+    paths: z.array(codexOpenLocalPathPayloadSchema).min(1).max(64)
+  })
+  .strict() satisfies z.ZodType<CodexExistingLocalPathsPayload>
+
 export const localContextPickerPayloadSchema = z.object({
   kind: z.literal('filesAndFolders')
 }) satisfies z.ZodType<LocalContextPickerPayload>
@@ -670,6 +684,10 @@ export type DesktopCodexApi = {
   snoozeApprovalAutoResolution?(requestId: string): Promise<boolean>
   openExternalHttpUrl(url: string): Promise<void>
   openLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
+  revealLocalPath(input: CodexOpenLocalPathPayload): Promise<void>
+  listExistingLocalPaths(
+    input: CodexExistingLocalPathsPayload
+  ): Promise<CodexExistingLocalPathsResult>
   pickLocalContext(kind: LocalContextPickerKind): Promise<LocalContextReference[]>
   onStatusChange(callback: (status: CodexStatus) => void): () => void
   onApprovalRequest(callback: (request: CodexApprovalRequest) => void): () => void

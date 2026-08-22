@@ -33,6 +33,7 @@ export type RightWorkspaceTab =
       title: string
       label?: string
       browserViewId?: string
+      initialUrl?: string
     }
 
 export type PersistedRightWorkspaceTab =

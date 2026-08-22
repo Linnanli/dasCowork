@@ -34,7 +34,8 @@ import { createNativeContextMenuHandler, installWindowContextMenu } from './cont
 import { createPickLocalContextHandler } from './localContextPicker'
 import { LocalImageCapabilityStore } from './localImageCapabilityStore'
 import { LocalPathCapabilityStore } from './localPathCapabilityStore'
-import { createOpenLocalPathHandler } from './localPathOpen'
+import { createListExistingLocalPathsHandler } from './localPathExistence'
+import { createOpenLocalPathHandler, createRevealLocalPathHandler } from './localPathOpen'
 import { sendToActiveRenderer } from './rendererIpc'
 import {
   createAppRendererUrl,
@@ -649,6 +650,11 @@ app.whenReady().then(() => {
     'codex:open-local-path',
     createOpenLocalPathHandler((path) => shell.openPath(path))
   )
+  ipcMain.handle(
+    'codex:reveal-local-path',
+    createRevealLocalPathHandler((path) => shell.showItemInFolder(path))
+  )
+  ipcMain.handle('codex:list-existing-local-paths', createListExistingLocalPathsHandler({ stat }))
   ipcMain.handle(
     'codex:pick-local-context',
     createPickLocalContextHandler({

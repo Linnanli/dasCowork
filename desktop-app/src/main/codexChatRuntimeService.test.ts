@@ -63,6 +63,7 @@ import {
 import type {
   CodexChatStreamEnvelope,
   CodexChatStreamEvent,
+  CodexChatRequest,
   CodexTurnLifecycleEvent
 } from '../shared/codexIpcApi'
 import type {
@@ -127,6 +128,7 @@ async function* emptyUiMessageStream(): AsyncGenerator<never, void, unknown> {
 }
 
 type RuntimeStreamTextInput = {
+  request: CodexChatRequest
   collaborationMode?: {
     mode: 'default' | 'plan'
     settings: {
@@ -166,16 +168,22 @@ type RuntimeStreamTextInput = {
   onProviderToolCall?: (toolName: string) => void
 }
 
-function streamTextWithStartedThread(
-  threadId = 'thread-prestarted'
-): NonNullable<CodexChatRuntimeServiceOptions['streamText']> {
+type RecordedStreamText = NonNullable<CodexChatRuntimeServiceOptions['streamText']> & {
+  mock: { calls: Array<[RuntimeStreamTextInput]> }
+}
+
+function streamTextWithStartedThread(threadId = 'thread-prestarted'): RecordedStreamText {
   return vi.fn(async (input: RuntimeStreamTextInput) => {
     await input.onThreadStarted?.({ threadId })
     await completeCanonicalTurn(input, threadId)
     return {
       toUIMessageStream: () => emptyUiMessageStream()
     }
-  }) as NonNullable<CodexChatRuntimeServiceOptions['streamText']>
+  }) as unknown as RecordedStreamText
+}
+
+function recordedStreamInput(streamText: RecordedStreamText): RuntimeStreamTextInput | undefined {
+  return streamText.mock.calls[0]?.[0]
 }
 
 function deferred<T = void>(): {
@@ -414,6 +422,102 @@ describe('CodexChatRuntimeService', () => {
         }
       })
     )
+  })
+
+  it('adds desktop instructions without changing normal user messages', async () => {
+    const port = new FakePort()
+    const streamText = streamTextWithStartedThread()
+    const messages = [
+      {
+        id: 'user-1',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'Review this change.' }]
+      }
+    ]
+    const projectService = {
+      resolveNewThreadTarget: vi.fn().mockResolvedValue({
+        hostId: 'local',
+        cwd: '/repo',
+        workspaceRoots: ['/repo'],
+        workspaceKind: 'project',
+        projectAssignment: {
+          projectKind: 'local',
+          projectId: 'project-1',
+          cwd: '/repo'
+        }
+      }),
+      resolveExistingThreadTarget: vi.fn()
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      projectService,
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-desktop-context',
+        trigger: 'submit-message',
+        messages,
+        modelId: 'gpt-test',
+        body: {
+          system: 'Preserve these existing instructions.',
+          projectSelection: { projectKind: 'local', projectId: 'project-1' }
+        }
+      },
+      port
+    )
+
+    const modelInput = recordedStreamInput(streamText)
+    expect(modelInput?.request.body?.system).toContain('Preserve these existing instructions.')
+    expect(modelInput?.request.body?.system).toContain('<app-context>')
+    expect(modelInput?.request.body?.system).toContain('# DasCowork desktop context')
+    expect(modelInput?.request.body?.system).toContain('### Inline Code Comments')
+    expect(modelInput?.request.body?.system).not.toContain('### Projectless Chat')
+    expect(modelInput?.request.body?.system).not.toContain('automation_update')
+    expect(modelInput?.request.messages).toEqual(messages)
+  })
+
+  it('adds verified projectless directories to developer instructions only for projectless threads', async () => {
+    const port = new FakePort()
+    const streamText = streamTextWithStartedThread()
+    const projectService = {
+      resolveNewThreadTarget: vi.fn().mockResolvedValue({
+        hostId: 'local',
+        cwd: '/tmp/dascowork/projectless/task-1',
+        workspaceRoots: ['/tmp/dascowork/projectless/task-1'],
+        workspaceKind: 'projectless',
+        projectAssignment: {
+          projectKind: 'projectless',
+          cwd: '/tmp/dascowork/projectless/task-1',
+          workspaceRoot: '/tmp/dascowork/projectless/task-1',
+          outputDirectory: '/tmp/dascowork/projectless/task-1/out'
+        }
+      }),
+      resolveExistingThreadTarget: vi.fn()
+    }
+    const service = new CodexChatRuntimeService({
+      cwd: '/repo',
+      projectService,
+      streamText
+    })
+
+    await service.startChatStream(
+      {
+        chatId: 'chat-projectless-context',
+        trigger: 'submit-message',
+        messages: [],
+        modelId: 'gpt-test',
+        body: { projectSelection: { projectKind: 'projectless' } }
+      },
+      port
+    )
+
+    const instructions = recordedStreamInput(streamText)?.request.body?.system
+    expect(instructions).toContain('### Projectless Chat')
+    expect(instructions).toContain('Workspace root: /tmp/dascowork/projectless/task-1.')
+    expect(instructions).toContain('Working directory: /tmp/dascowork/projectless/task-1.')
+    expect(instructions).toContain('deliverables directory: /tmp/dascowork/projectless/task-1/out.')
   })
 
   it('maps approval mode kinds into provider approval and sandbox settings', () => {

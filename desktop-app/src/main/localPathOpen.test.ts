@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createOpenLocalPathHandler, openLocalPath, resolveLocalOpenPath } from './localPathOpen'
+import {
+  createOpenLocalPathHandler,
+  createRevealLocalPathHandler,
+  openLocalPath,
+  resolveLocalOpenPath
+} from './localPathOpen'
 
 describe('localPathOpen', () => {
   it('opens only the validated path and keeps line as best-effort metadata', async () => {
@@ -11,6 +16,15 @@ describe('localPathOpen', () => {
 
     expect(shellOpenPath).toHaveBeenCalledWith('/tmp/report.md')
     expect(shellOpenPath).toHaveBeenCalledTimes(1)
+  })
+
+  it('reveals only a validated local path in the system file manager', async () => {
+    const shellRevealPath = vi.fn()
+    const handler = createRevealLocalPathHandler(shellRevealPath)
+
+    await handler(undefined, { path: 'reports/summary.pdf', cwd: '/tmp/dasCowork' })
+
+    expect(shellRevealPath).toHaveBeenCalledWith('/tmp/dasCowork/reports/summary.pdf')
   })
 
   it('rejects unsafe renderer payloads before opening a path', async () => {

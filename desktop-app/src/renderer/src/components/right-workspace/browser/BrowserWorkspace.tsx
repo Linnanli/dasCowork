@@ -26,9 +26,10 @@ type Props = {
 
 export function BrowserWorkspace({ tab, workspaceId, onRuntimeChange }: Props): React.JSX.Element {
   const [view, setView] = useState<BrowserWorkspaceViewSnapshot>()
-  const [draftUrl, setDraftUrl] = useState('')
+  const [draftUrl, setDraftUrl] = useState(tab.initialUrl ?? '')
   const [error, setError] = useState<string>()
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const openedInitialUrl = useRef<string | undefined>(undefined)
 
   const updateBounds = useCallback(async (): Promise<BrowserWorkspaceBounds | undefined> => {
     const viewId = tab.browserViewId
@@ -81,6 +82,29 @@ export function BrowserWorkspace({ tab, workspaceId, onRuntimeChange }: Props): 
     }
   }, [tab.browserViewId, updateBounds])
 
+  const createBrowserView = useCallback(
+    (url: string): void => {
+      const bounds = browserWorkspaceBounds(surfaceRef.current)
+      if (!bounds) return
+      void window.desktopApp.workspace.browser
+        .create({ version: BROWSER_WORKSPACE_API_VERSION, workspaceId, url, bounds })
+        .then((next) => {
+          setView(next)
+          onRuntimeChange({ browserViewId: next.viewId, title: next.title ?? 'Browser' })
+        })
+        .catch((cause) => setError(cause instanceof Error ? cause.message : '页面无法打开。'))
+    },
+    [onRuntimeChange, workspaceId]
+  )
+
+  useEffect(() => {
+    const url = normalizeHttpsUrl(tab.initialUrl ?? '')
+    if (!url || tab.browserViewId || openedInitialUrl.current === url) return
+    openedInitialUrl.current = url
+    setDraftUrl(url)
+    createBrowserView(url)
+  }, [createBrowserView, tab.browserViewId, tab.initialUrl])
+
   const navigate = (): void => {
     const url = normalizeHttpsUrl(draftUrl)
     if (!url) {
@@ -91,13 +115,7 @@ export function BrowserWorkspace({ tab, workspaceId, onRuntimeChange }: Props): 
     const bounds = browserWorkspaceBounds(surfaceRef.current)
     if (!bounds) return
     if (!tab.browserViewId) {
-      void window.desktopApp.workspace.browser
-        .create({ version: BROWSER_WORKSPACE_API_VERSION, workspaceId, url, bounds })
-        .then((next) => {
-          setView(next)
-          onRuntimeChange({ browserViewId: next.viewId, title: next.title ?? 'Browser' })
-        })
-        .catch((cause) => setError(cause instanceof Error ? cause.message : '页面无法打开。'))
+      createBrowserView(url)
       return
     }
     void window.desktopApp.workspace.browser

@@ -73,6 +73,7 @@ import type { LocalGitTarget } from '../shared/localGitApi'
 import { selectUniqueLegacyCandidate } from '../shared/uniqueLegacyCandidate'
 import { extractVisibleUserRequest } from '../shared/userRequestEnvelope'
 import { restoreLocalMediaFileUrlsForModel } from './conversations/localMediaUrls'
+import { composeCodexDesktopInstructions } from './developerInstructions/composeCodexDesktopInstructions'
 import type { TurnDiffStoreWriter } from './conversations/TurnDiffStore'
 import { validateLocalAttachmentsInLatestUserMessage } from './composerContext/localAttachmentValidation'
 import {
@@ -749,8 +750,20 @@ export class CodexChatRuntimeService {
                 }
               }
             }
+      const desktopInstructions = composeCodexDesktopInstructions({
+        system: effectiveRequest.body?.system,
+        projectAssignment: conversation.projectAssignment
+      })
       const modelInputRequest = {
         ...effectiveRequest,
+        ...(desktopInstructions.instructions
+          ? {
+              body: {
+                ...effectiveRequest.body,
+                system: desktopInstructions.instructions
+              }
+            }
+          : {}),
         messages: restoreLocalMediaFileUrlsForModel(effectiveRequest.messages)
       }
       const onTurnLifecycle = (event: ProviderTurnLifecycleEvent): Promise<void> => {

@@ -222,6 +222,7 @@ function asBrowserTab(
     id: tab.id,
     type: 'browser',
     title: tab.title,
+    initialUrl: typeof tab.props.url === 'string' ? tab.props.url : undefined,
     browserViewId: typeof runtime?.browserViewId === 'string' ? runtime.browserViewId : undefined
   }
 }

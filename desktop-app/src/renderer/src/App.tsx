@@ -1665,6 +1665,7 @@ function ChatThread({
       content: runningAssistantMessage.content,
       parts: runningAssistantMessage.parts,
       status: runningAssistantMessage.status,
+      metadata: runningAssistantMessage.metadata,
       hasBlockingRequest,
       workspaceCwd: activeConversation?.cwd ?? undefined,
       canOpenLocalPaths: activeConversation?.projectSelection?.projectKind !== 'remote'
@@ -2150,6 +2151,7 @@ function AssistantMessage({
         content: message.content,
         parts: message.parts,
         status: message.status,
+        metadata: message.metadata,
         textPhases: textPartMetadata.map((metadata) => metadata.phase),
         hasBlockingRequest,
         workspaceCwd,
@@ -2670,11 +2672,6 @@ function ReasoningGroupUnit({
   onOpenConversation: OpenSubagentConversation
 }): React.JSX.Element {
   const isActive = unit.active === true
-  const completedTurnDiffs = isActive ? [] : unit.children.filter(isCompletedTurnDiffEntry)
-  const processChildren =
-    completedTurnDiffs.length === 0
-      ? unit.children
-      : unit.children.filter((child) => !isCompletedTurnDiffEntry(child))
   const [completedProcessOpen, setCompletedProcessOpen] = useState(false)
   const measuredDurationMs = useReasoningElapsedDuration(isActive)
   let label = isActive
@@ -2715,26 +2712,15 @@ function ReasoningGroupUnit({
         className="overflow-hidden outline-none data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
       >
         <div className="min-w-0 space-y-4">
-          {processChildren.map((child) => (
+          {unit.children.map((child) => (
             <div key={child.key} data-slot="reasoning-process-item" className="min-w-0">
               <AssistantRenderUnitView unit={child} onOpenConversation={onOpenConversation} />
             </div>
           ))}
         </div>
       </CollapsibleContent>
-      {completedTurnDiffs.map((child) => (
-        <div key={child.key} data-slot="completed-turn-diff" className="min-w-0">
-          <AssistantRenderUnitView unit={child} onOpenConversation={onOpenConversation} />
-        </div>
-      ))}
     </Collapsible>
   )
-}
-
-function isCompletedTurnDiffEntry(
-  unit: AssistantRenderUnit
-): unit is Extract<AssistantRenderUnit, { type: 'entry' }> {
-  return unit.type === 'entry' && unit.itemType === 'turnDiff' && unit.item?.status === 'completed'
 }
 
 type ReasoningTimerState = {
@@ -2826,7 +2812,6 @@ function AssistantText({
     <div data-slot="assistant-render-text" {...renderUnitAttributes(unit)}>
       <Streamdown
         animated={streamdownAnimation}
-        caret="block"
         isAnimating={unit?.type === 'text' && unit.streaming === true}
         mode="streaming"
         plugins={streamdownPlugins}

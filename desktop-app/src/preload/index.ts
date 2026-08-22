@@ -134,6 +134,8 @@ const desktopCodex: DesktopCodexApi = {
   openExternalHttpUrl: (url: string) =>
     ipcRenderer.invoke('codex:open-external-http-url', { url }) as Promise<void>,
   openLocalPath: (input) => ipcRenderer.invoke('codex:open-local-path', input) as Promise<void>,
+  revealLocalPath: (input) => ipcRenderer.invoke('codex:reveal-local-path', input) as Promise<void>,
+  listExistingLocalPaths: (input) => ipcRenderer.invoke('codex:list-existing-local-paths', input),
   pickLocalContext: (kind: LocalContextPickerKind) =>
     ipcRenderer.invoke('codex:pick-local-context', { kind }) as Promise<LocalContextReference[]>,
   onStatusChange: (callback: (status: CodexStatus) => void) => {

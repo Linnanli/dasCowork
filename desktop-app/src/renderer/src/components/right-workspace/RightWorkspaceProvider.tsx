@@ -18,6 +18,7 @@ import {
 type RightWorkspaceContextValue = {
   state: RightWorkspaceState
   openTab(type: Exclude<RightWorkspaceTabType, 'review' | 'file'>): void
+  openBrowser(url?: string, title?: string): void
   openReview(source?: LocalGitReviewSource): void
   openFile(relativePath: string, title?: string): void
   activateTab(tabId: string): void
@@ -27,10 +28,7 @@ type RightWorkspaceContextValue = {
   toggleMaximized(): void
   setPanelWidth(width: number): void
   reorderTabs(tabIds: string[]): void
-  setTabRuntime(
-    tabId: string,
-    runtime: { browserViewId?: string; title?: string }
-  ): void
+  setTabRuntime(tabId: string, runtime: { browserViewId?: string; title?: string }): void
   activeTab?: RightWorkspaceTab
 }
 
@@ -83,6 +81,12 @@ function RightWorkspaceBridge({ children }: { children: ReactNode }): React.JSX.
           type: 'open-tab',
           panelId: 'right',
           tab: createWorkspaceDescriptor({ type })
+        }),
+      openBrowser: (url, title) =>
+        container.dispatch({
+          type: 'open-tab',
+          panelId: 'right',
+          tab: createWorkspaceDescriptor({ type: 'browser', url, title })
         }),
       openReview: (source) =>
         container.dispatch({
@@ -164,6 +168,7 @@ function toRightWorkspaceTab(
         id: tab.id,
         type: 'browser',
         title: tab.title,
+        initialUrl: typeof tab.props.url === 'string' ? tab.props.url : undefined,
         browserViewId:
           typeof runtime?.browserViewId === 'string' ? runtime.browserViewId : undefined
       }

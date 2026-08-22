@@ -224,3 +224,240 @@ function turnDiffUnit(): Extract<AssistantRenderUnit, { type: 'entry' }> {
     }
   }
 }
+
+describe('SpecialEntryRenderer resource availability', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+
+  it('renders only local resources confirmed by the host', async () => {
+    const listExistingLocalPaths = vi.fn(
+      async ({ paths }: { paths: { path: string; cwd?: string }[] }) => ({
+        existingPaths: paths.filter(
+          (path: { path: string }) => path.path === '/tmp/ai-agent-security-market.html'
+        )
+      })
+    )
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+
+    await renderResources()
+
+    expect(listExistingLocalPaths).toHaveBeenCalledWith({
+      paths: [{ path: '/tmp/ai-agent-security-market.html' }, { path: '/tmp/missing-report.pdf' }]
+    })
+    expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('AI Agent 安全市场')
+    expect(container.textContent).not.toContain('不存在的报告')
+  })
+
+  it('keeps local resources visible when the host cannot check them', async () => {
+    const listExistingLocalPaths = vi.fn(async () => {
+      throw new Error('IPC unavailable')
+    })
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+
+    await renderResources()
+
+    expect(container.querySelector('[data-slot="end-resource-cards-unit"]')).not.toBeNull()
+    expect(container.textContent).toContain('AI Agent 安全市场')
+    expect(container.textContent).toContain('暂时无法确认本地资源，仍可尝试打开。')
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="打开 AI Agent 安全市场"]')
+        ?.disabled
+    ).toBe(false)
+  })
+
+  it('renders each final resource as a separate completed-turn-diff-style card', async () => {
+    const listExistingLocalPaths = vi.fn(
+      async ({ paths }: { paths: { path: string; cwd?: string }[] }) => ({ existingPaths: paths })
+    )
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+
+    await renderResources(
+      resourcesUnit([
+        { type: 'file', path: '/tmp/market.csv', title: '市场数据' },
+        { type: 'file', path: '/tmp/market.docx', title: '市场报告' }
+      ])
+    )
+
+    const cards = container.querySelectorAll<HTMLElement>('[data-slot="end-resource-card-unit"]')
+    expect(cards).toHaveLength(2)
+    expect(cards[0]?.parentElement).toBe(cards[1]?.parentElement)
+    expect(cards[0]?.contains(cards[1] ?? null)).toBe(false)
+    expect(cards[0]?.className).toContain('rounded-2xl')
+    expect(cards[0]?.textContent).toContain('市场数据')
+    expect(cards[1]?.textContent).toContain('市场报告')
+    expect(cards[0]?.querySelector('[data-slot="card-header"]')).toBeNull()
+    expect(cards[0]?.querySelector('[data-slot="card-content"]')).toBeNull()
+    expect(cards[0]?.textContent).not.toContain('/tmp/market.csv')
+    expect(cards[1]?.textContent).not.toContain('/tmp/market.docx')
+    expect(
+      cards[0]?.querySelector('[data-slot="resource-file-icon"]')?.getAttribute('data-file-icon')
+    ).toBe('spreadsheet')
+    expect(
+      cards[1]?.querySelector('[data-slot="resource-file-icon"]')?.getAttribute('data-file-icon')
+    ).toBe('artifactDocument')
+  })
+
+  it('uses the reference file artwork for presentation and PDF resource cards', async () => {
+    const listExistingLocalPaths = vi.fn(
+      async ({ paths }: { paths: { path: string; cwd?: string }[] }) => ({ existingPaths: paths })
+    )
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+
+    await renderResources(
+      resourcesUnit([
+        { type: 'file', path: '/tmp/market-analysis.pptx', title: '市场分析' },
+        { type: 'file', path: '/tmp/market-analysis.pdf', title: '市场分析 PDF' },
+        { type: 'file', path: '/tmp/notes.txt', title: '备注' }
+      ])
+    )
+
+    const cards = container.querySelectorAll<HTMLElement>('[data-slot="end-resource-card-unit"]')
+    expect(
+      cards[0]?.querySelector('[data-slot="resource-file-icon"]')?.getAttribute('data-file-icon')
+    ).toBe('presentation')
+    expect(
+      cards[1]?.querySelector('[data-slot="resource-file-icon"]')?.getAttribute('data-file-icon')
+    ).toBe('pdf')
+    expect(
+      cards[2]?.querySelector('[data-slot="resource-file-icon"]')?.getAttribute('data-file-icon')
+    ).toBe('document')
+  })
+
+  it('uses the reference file-icon mapping for every remaining file category', async () => {
+    const listExistingLocalPaths = vi.fn(
+      async ({ paths }: { paths: { path: string; cwd?: string }[] }) => ({ existingPaths: paths })
+    )
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+    const cases = [
+      ['script.ts', 'typescript'],
+      ['component.tsx', 'react'],
+      ['service.js', 'javascript'],
+      ['main.py', 'python'],
+      ['server.java', 'java'],
+      ['lib.rs', 'rust'],
+      ['index.php', 'php'],
+      ['styles.scss', 'css'],
+      ['native.cpp', 'cplusplus'],
+      ['query.sql', 'code'],
+      ['config.json', 'json'],
+      ['guide.md', 'document'],
+      ['notes.txt', 'document'],
+      ['page.html', 'html'],
+      ['settings.yml', 'yaml'],
+      ['workspace.toml', 'toml'],
+      ['analysis.ipynb', 'notebook'],
+      ['deploy.sh', 'shell'],
+      ['Dockerfile', 'terminal'],
+      ['logo.png', 'image'],
+      ['build.gradle', 'build'],
+      ['release.sha256', 'hashes'],
+      ['bundle.tgz', 'folder'],
+      ['SKILL.md', 'skill'],
+      ['unknown.bin', 'file']
+    ] as const
+
+    await renderResources(
+      resourcesUnit([
+        ...cases.map(([name]) => ({ type: 'file', path: `/tmp/${name}`, title: name })),
+        {
+          type: 'file',
+          path: '/tmp/no-extension',
+          title: 'text MIME fallback',
+          mimeType: 'text/plain'
+        },
+        {
+          type: 'file',
+          path: '/tmp/no-extension',
+          title: 'image MIME fallback',
+          mimeType: 'image/png'
+        },
+        {
+          type: 'file',
+          path: '/tmp/no-extension',
+          title: 'archive MIME fallback',
+          mimeType: 'application/gzip'
+        }
+      ])
+    )
+
+    const icons = Array.from(container.querySelectorAll('[data-slot="resource-file-icon"]'))
+    expect(icons.map((icon) => icon.getAttribute('data-file-icon'))).toEqual([
+      ...cases.map(([, kind]) => kind),
+      'document',
+      'image',
+      'folder'
+    ])
+  })
+
+  it('checks more than 64 local resources in separate host requests', async () => {
+    const listExistingLocalPaths = vi.fn(
+      async ({ paths }: { paths: { path: string; cwd?: string }[] }) => ({ existingPaths: paths })
+    )
+    window.desktopApp = { codex: { listExistingLocalPaths } } as never
+    const resources = Array.from({ length: 65 }, (_, index) => ({
+      type: 'file',
+      path: `/tmp/report-${index}.pdf`,
+      title: `报告 ${index}`
+    }))
+
+    await renderResources(resourcesUnit(resources))
+
+    expect(listExistingLocalPaths).toHaveBeenCalledTimes(2)
+    expect(listExistingLocalPaths.mock.calls.map(([input]) => input.paths)).toHaveLength(2)
+    expect(listExistingLocalPaths.mock.calls[0]?.[0].paths).toHaveLength(64)
+    expect(listExistingLocalPaths.mock.calls[1]?.[0].paths).toHaveLength(1)
+  })
+
+  async function renderResources(unit = endResourcesUnit()): Promise<void> {
+    await act(async () => {
+      root.render(<SpecialEntryRenderer unit={unit} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+})
+
+function endResourcesUnit(): Extract<AssistantRenderUnit, { type: 'entry' }> {
+  return resourcesUnit([
+    {
+      type: 'website',
+      path: '/tmp/ai-agent-security-market.html',
+      line: 1,
+      title: 'AI Agent 安全市场'
+    },
+    { type: 'file', path: '/tmp/missing-report.pdf', title: '不存在的报告' }
+  ])
+}
+
+function resourcesUnit(
+  resources: readonly unknown[]
+): Extract<AssistantRenderUnit, { type: 'entry' }> {
+  return {
+    type: 'entry',
+    key: 'end-resources:generated-files',
+    target: { id: 'end-resources:generated-files', itemIds: ['generated-files'] },
+    partIndex: 0,
+    partIndices: [0],
+    part: { type: 'endResources' },
+    itemType: 'endResources',
+    renderMode: 'custom',
+    item: {
+      id: 'end-resources:generated-files',
+      type: 'endResources',
+      status: 'completed',
+      resources
+    }
+  }
+}

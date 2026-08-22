@@ -8,7 +8,7 @@ export type WorkspaceOpenTarget =
   | { type: 'file'; relativePath: string; title?: string }
   | { type: 'review'; source?: LocalGitReviewSource }
   | { type: 'terminal'; id?: string; title?: string }
-  | { type: 'browser'; id?: string; title?: string }
+  | { type: 'browser'; id?: string; title?: string; url?: string }
 
 export type WorkspaceOpenOptions = {
   panelId?: WorkspacePanelId
@@ -59,7 +59,7 @@ export function createWorkspaceDescriptor(
         id: target.id ?? `browser:${randomId()}`,
         kind: 'browser',
         title: target.title ?? 'New tab',
-        props: {},
+        props: target.url ? { url: target.url } : {},
         isPreview: false,
         isClosable: true
       }

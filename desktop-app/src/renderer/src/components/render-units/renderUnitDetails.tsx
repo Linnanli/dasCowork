@@ -1,16 +1,21 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
   ClockIcon,
   CombineIcon,
+  CopyIcon,
+  ExternalLinkIcon,
   FileIcon,
   FilePenIcon,
+  FolderOpenIcon,
   ImageIcon,
   LinkIcon,
   ListChecksIcon,
   MessageSquareMoreIcon,
+  MoreHorizontalIcon,
+  PanelRightOpenIcon,
   ShieldCheckIcon,
   ShieldXIcon,
   Undo2Icon,
@@ -19,6 +24,13 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import {
   Card,
   CardAction,
@@ -35,6 +47,7 @@ import {
   useLocalGitReview,
   type LocalGitReviewLastTurn
 } from '@/components/local-git-review/LocalGitReviewProvider'
+import { useOptionalRightWorkspace } from '@/components/right-workspace'
 import { toolGroupIconMap } from '@/components/assistant-ui/tool-group'
 import type { AssistantRenderUnit, McpSourceMetadata } from '@/lib/assistantRenderUnits'
 import type { CodeComment } from '@/lib/codeCommentDirectives'
@@ -53,6 +66,7 @@ import {
 } from '@/lib/toolGroupSummary'
 import { cn } from '@/lib/utils'
 import { renderUnitAttributes } from './renderUnitAttributes'
+import { ResourceFileIcon } from './resourceFileIcon'
 
 type AnyRecord = Record<string, unknown>
 type EntryUnit = Extract<AssistantRenderUnit, { type: 'entry' }>
@@ -62,6 +76,7 @@ const CODEX_PROVIDER_ID = '@janole/ai-sdk-provider-codex-asp'
 const MAX_VISIBLE_ROWS = 3
 const MAX_VISIBLE_DIFF_FILES = 3
 const LARGE_DIFF_TEXT_LENGTH = 50_000
+const MAX_LOCAL_PATH_CHECK_BATCH_SIZE = 64
 const WebSearchIcon = toolGroupIconMap['web-search']
 
 export function CollapsedActivityDetails({
@@ -795,30 +810,134 @@ function GeneratedImageFileUnit({
   )
 }
 
-function EndResourceCardsUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
-  const resources = arrayValue(unit.item?.resources ?? unit.item?.items).map(resourceCardData)
-  const [expanded, setExpanded] = useState(false)
-  const visible = expanded ? resources : resources.slice(0, MAX_VISIBLE_ROWS)
+function EndResourceCardsUnit({ unit }: { unit: EntryUnit }): React.JSX.Element | null {
+  const resources = useMemo(
+    () => arrayValue(unit.item?.resources ?? unit.item?.items).map(resourceCardData),
+    [unit.item]
+  )
+  const localPathCheck = useExistingLocalResourcePaths(resources)
+  const displayableResources = resources.filter(
+    (resource) =>
+      !resource.openPath ||
+      localPathCheck.status !== 'resolved' ||
+      localPathCheck.existingPaths.has(localResourceLookupKey(resource.openPath, resource.cwd))
+  )
+  const localPathCheckPending = localPathCheck.status === 'pending'
+  const localPathCheckFailed = localPathCheck.status === 'failed'
+
+  if (displayableResources.length === 0) return null
 
   return (
-    <RenderUnitCard unit={unit} slot="end-resource-cards-unit">
-      <p className="text-sm font-medium">最终资源</p>
-      {resources.length === 0 ? (
-        <p className="mt-1 text-xs text-muted-foreground">资源详情暂不可用</p>
-      ) : (
-        <div className="mt-2 space-y-2">
-          {visible.map((resource, index) => (
-            <ResourceCard key={`${resource.label}:${index}`} resource={resource} />
-          ))}
-          <ShowMoreButton
-            expanded={expanded}
-            hiddenCount={resources.length - visible.length}
-            onClick={() => setExpanded((value) => !value)}
-          />
-        </div>
-      )}
-    </RenderUnitCard>
+    <div
+      data-slot="end-resource-cards-unit"
+      className="mt-6 space-y-3"
+      {...renderUnitAttributes(unit)}
+    >
+      {localPathCheckPending ? (
+        <p className="mt-1 text-xs text-muted-foreground" role="status">
+          正在确认本地资源是否可用…
+        </p>
+      ) : null}
+      {localPathCheckFailed ? (
+        <p className="mt-1 text-xs text-muted-foreground" role="status">
+          暂时无法确认本地资源，仍可尝试打开。
+        </p>
+      ) : null}
+      {displayableResources.map((resource, index) => (
+        <ResourceCard
+          key={`${resource.type}:${resource.openPath ?? resource.openUrl ?? resource.label}:${index}`}
+          resource={resource}
+          actionsDisabled={localPathCheckPending && Boolean(resource.openPath)}
+        />
+      ))}
+    </div>
   )
+}
+
+function useExistingLocalResourcePaths(
+  resources: readonly ResourceCardData[]
+): LocalResourcePathCheck {
+  const candidates = useMemo(() => {
+    const candidatesByKey = new Map<string, { path: string; cwd?: string }>()
+    for (const resource of resources) {
+      if (!resource.openPath) continue
+      const candidate = {
+        path: resource.openPath,
+        ...(resource.cwd ? { cwd: resource.cwd } : {})
+      }
+      candidatesByKey.set(localResourceLookupKey(candidate.path, candidate.cwd), candidate)
+    }
+    return [...candidatesByKey.values()]
+  }, [resources])
+  const requestKey = useMemo(
+    () =>
+      candidates
+        .map((candidate) => localResourceLookupKey(candidate.path, candidate.cwd))
+        .sort()
+        .join('\n'),
+    [candidates]
+  )
+  const [result, setResult] = useState<LocalResourcePathCheckResult>()
+
+  useEffect(() => {
+    let cancelled = false
+    if (candidates.length === 0) return
+
+    const checkLocalResources = async (): Promise<void> => {
+      await Promise.resolve()
+      try {
+        const listExistingLocalPaths = window.desktopApp.codex.listExistingLocalPaths
+        if (typeof listExistingLocalPaths !== 'function') {
+          throw new Error('Local path availability is unavailable')
+        }
+        const checks = await Promise.allSettled(
+          chunkValues(candidates, MAX_LOCAL_PATH_CHECK_BATCH_SIZE).map((paths) =>
+            listExistingLocalPaths({ paths })
+          )
+        )
+        if (cancelled) return
+
+        const existingPaths = checks.flatMap((check) =>
+          check.status === 'fulfilled' ? check.value.existingPaths : []
+        )
+        setResult({
+          requestKey,
+          status: checks.some((check) => check.status === 'rejected') ? 'failed' : 'resolved',
+          existingPaths: new Set(
+            existingPaths.map((path) => localResourceLookupKey(path.path, path.cwd))
+          )
+        })
+      } catch {
+        if (!cancelled) {
+          setResult({ requestKey, status: 'failed', existingPaths: EMPTY_LOCAL_RESOURCE_PATHS })
+        }
+      }
+    }
+
+    void checkLocalResources()
+
+    return () => {
+      cancelled = true
+    }
+  }, [candidates, requestKey])
+
+  if (candidates.length === 0) {
+    return { status: 'resolved', existingPaths: EMPTY_LOCAL_RESOURCE_PATHS }
+  }
+  if (result?.requestKey === requestKey) return result
+  return { status: 'pending', existingPaths: EMPTY_LOCAL_RESOURCE_PATHS }
+}
+
+function localResourceLookupKey(path: string, cwd: string | undefined): string {
+  return `${cwd ?? ''}\u0000${path}`
+}
+
+function chunkValues<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size))
+  }
+  return chunks
 }
 
 function ReviewCommentsEntryUnit({ unit }: { unit: EntryUnit }): React.JSX.Element {
@@ -1027,45 +1146,149 @@ function ImageGallery({ images }: { images: readonly ImageEntry[] }): React.JSX.
   )
 }
 
-function ResourceCard({ resource }: { resource: ResourceCardData }): React.JSX.Element {
+function ResourceCard({
+  resource,
+  actionsDisabled = false
+}: {
+  resource: ResourceCardData
+  actionsDisabled?: boolean
+}): React.JSX.Element {
   const Icon = resource.icon
-  const handleOpen = (): void => {
-    if (resource.openUrl) {
-      void window.desktopApp.codex.openExternalHttpUrl(resource.openUrl).catch(() => undefined)
-      return
+  const workspace = useOptionalRightWorkspace()
+  const canOpenInApp = Boolean(workspace && (resource.workspacePath || resource.inAppUrl))
+
+  const openInApp = (): boolean => {
+    if (!workspace) return false
+    if (resource.workspacePath) {
+      workspace.openFile(resource.workspacePath, resource.label)
+      return true
     }
+    if (resource.inAppUrl) {
+      workspace.openBrowser(resource.inAppUrl, resource.label)
+      return true
+    }
+    return false
+  }
+  const openWithSystem = (): void => {
     if (resource.openPath) {
       void window.desktopApp.codex
-        .openLocalPath({ path: resource.openPath, line: resource.line })
+        .openLocalPath({
+          path: resource.openPath,
+          line: resource.line,
+          ...(resource.cwd ? { cwd: resource.cwd } : {})
+        })
         .catch(() => undefined)
+      return
+    }
+    if (resource.openUrl) {
+      void window.desktopApp.codex.openExternalHttpUrl(resource.openUrl).catch(() => undefined)
     }
   }
-  const canOpen = Boolean(resource.openUrl || resource.openPath)
+  const handleOpen = (): void => {
+    if (openInApp()) return
+    openWithSystem()
+  }
+  const revealInFileManager = (): void => {
+    if (!resource.openPath) return
+    void window.desktopApp.codex
+      .revealLocalPath({
+        path: resource.openPath,
+        ...(resource.cwd ? { cwd: resource.cwd } : {})
+      })
+      .catch(() => undefined)
+  }
+  const canOpen =
+    !actionsDisabled && (canOpenInApp || Boolean(resource.openUrl || resource.openPath))
+  const canCopyLink = Boolean(resource.openUrl && navigator.clipboard?.writeText)
 
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/50 px-2.5 py-2 text-sm">
-      <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-medium">{resource.label}</p>
-        {resource.detail ? (
-          <p className="truncate text-xs text-muted-foreground">{resource.detail}</p>
-        ) : null}
+    <CardHeader
+      data-slot="end-resource-card-unit"
+      data-resource-type={resource.type}
+      className="!grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 overflow-hidden rounded-2xl border bg-card px-3 py-3 text-card-foreground shadow-none sm:px-4"
+    >
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-background">
+        {resource.type === 'file' ? (
+          <ResourceFileIcon
+            aria-hidden
+            className="size-6"
+            mimeType={resource.mimeType}
+            path={resource.filePath}
+          />
+        ) : (
+          <Icon aria-hidden className="size-5 text-muted-foreground" strokeWidth={1.8} />
+        )}
       </div>
-      <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-        {resource.kind}
-      </span>
-      {canOpen ? (
+      <div className="min-w-0 flex-1">
+        <CardTitle className="truncate text-base tracking-tight sm:text-lg">
+          {resource.label}
+        </CardTitle>
+        <CardDescription className="mt-0.5 truncate text-sm">{resource.kind}</CardDescription>
+      </div>
+      <CardAction className="!col-start-3 !row-span-1 !row-start-1 flex shrink-0 items-center gap-1 self-center justify-self-end">
         <Button
-          aria-label={`打开 ${resource.label}`}
-          size="icon-xs"
-          variant="ghost"
+          aria-label={canOpen ? `打开 ${resource.label}` : `${resource.label} 无法打开`}
+          className="h-auto gap-1.5 px-0 py-1.5 text-sm font-semibold hover:bg-transparent"
+          disabled={!canOpen}
+          size="sm"
           type="button"
+          variant="ghost"
           onClick={handleOpen}
         >
-          <LinkIcon className="size-3.5" />
+          打开
+          <ExternalLinkIcon className="size-4" strokeWidth={1.8} />
         </Button>
-      ) : null}
-    </div>
+        {canOpen ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                aria-label={`${resource.label} 的更多操作`}
+                size="icon-xs"
+                type="button"
+                variant="ghost"
+              >
+                <MoreHorizontalIcon className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {canOpenInApp ? (
+                <DropdownMenuItem onSelect={() => openInApp()}>
+                  <PanelRightOpenIcon />
+                  在应用内打开
+                </DropdownMenuItem>
+              ) : null}
+              {resource.openUrl || resource.openPath ? (
+                <DropdownMenuItem onSelect={openWithSystem}>
+                  <ExternalLinkIcon />
+                  {resource.openPath ? '在默认应用中打开' : '在默认浏览器中打开'}
+                </DropdownMenuItem>
+              ) : null}
+              {resource.openPath ? (
+                <DropdownMenuItem onSelect={revealInFileManager}>
+                  <FolderOpenIcon />
+                  在文件夹中显示
+                </DropdownMenuItem>
+              ) : null}
+              {canCopyLink ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      void navigator.clipboard
+                        .writeText(resource.openUrl ?? '')
+                        .catch(() => undefined)
+                    }
+                  >
+                    <CopyIcon />
+                    复制链接
+                  </DropdownMenuItem>
+                </>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </CardAction>
+    </CardHeader>
   )
 }
 
@@ -1268,25 +1491,6 @@ function normalizeStructuredReviewComment(comment: AnyRecord): CodeComment | und
   }
 }
 
-function ShowMoreButton({
-  expanded,
-  hiddenCount,
-  onClick
-}: {
-  expanded: boolean
-  hiddenCount: number
-  onClick: () => void
-}): React.JSX.Element | null {
-  if (expanded || hiddenCount > 0) {
-    return (
-      <Button size="sm" variant="ghost" type="button" onClick={onClick}>
-        {expanded ? '收起' : `显示更多 ${hiddenCount} 条`}
-      </Button>
-    )
-  }
-  return null
-}
-
 function TurnDiffShowMoreButton({
   expanded,
   hiddenCount,
@@ -1364,14 +1568,32 @@ type ImageEntry = {
 }
 
 type ResourceCardData = {
+  type: string
   kind: string
   label: string
-  detail?: string
   openUrl?: string
+  inAppUrl?: string
   openPath?: string
+  workspacePath?: string
   line?: number
+  cwd?: string
   icon: LucideIcon
+  filePath?: string
+  mimeType?: string
 }
+
+type LocalResourcePathCheckStatus = 'pending' | 'resolved' | 'failed'
+
+type LocalResourcePathCheck = {
+  status: LocalResourcePathCheckStatus
+  existingPaths: ReadonlySet<string>
+}
+
+type LocalResourcePathCheckResult = LocalResourcePathCheck & {
+  requestKey: string
+}
+
+const EMPTY_LOCAL_RESOURCE_PATHS: ReadonlySet<string> = new Set()
 
 function isDiffTruncated(item: AnyRecord): boolean {
   return item.truncated === true || (numberValue(item.originalLength) ?? 0) > LARGE_DIFF_TEXT_LENGTH
@@ -1504,21 +1726,116 @@ function resourceCardData(value: unknown): ResourceCardData {
   const record = recordValue(value)
   const type = stringValue(record?.type) ?? stringValue(record?.kind) ?? 'unknown'
   const url = stringValue(record?.url)
-  const path = localFilePath(stringValue(record?.path) ?? stringValue(record?.file))
+  const rawPath = stringValue(record?.path) ?? stringValue(record?.file)
+  const mimeType =
+    stringValue(record?.mimeType) ??
+    stringValue(record?.mediaType) ??
+    stringValue(record?.contentType)
+  const cwd = localFilePath(stringValue(record?.cwd))
+  const path = resourceOpenPath(rawPath, cwd)
+  const workspacePath = resourceWorkspacePath(rawPath, cwd)
   const label =
     stringValue(record?.title) ??
     stringValue(record?.name) ??
     stringValue(record?.path) ??
     url ??
     '未命名资源'
-  const detail = stringValue(record?.path) ?? url ?? stringValue(record?.id)
   const openUrl = externalHttpUrl(url)
+  const inAppUrl = httpsUrl(openUrl)
 
-  if (type === 'google-drive') return { kind: 'Drive', label, detail, icon: LinkIcon, openUrl }
-  if (type === 'appgen-app') return { kind: 'App', label, detail, icon: WrenchIcon }
-  if (type === 'website') return { kind: 'Website', label, detail, icon: LinkIcon, openUrl }
-  if (type === 'file') return { kind: 'File', label, detail, icon: FileIcon, openPath: path }
-  return { kind: '未知', label, detail, icon: FileIcon }
+  if (type === 'google-drive') {
+    return {
+      type,
+      kind: googleDriveKind(openUrl),
+      label,
+      icon: LinkIcon,
+      openUrl,
+      inAppUrl
+    }
+  }
+  if (type === 'appgen-app') {
+    return { type, kind: 'Site', label, icon: WrenchIcon, openUrl, inAppUrl }
+  }
+  if (type === 'website') {
+    return {
+      type,
+      kind: 'Website',
+      label,
+      icon: LinkIcon,
+      openUrl,
+      inAppUrl,
+      openPath: path,
+      line: positiveInteger(record?.line),
+      cwd
+    }
+  }
+  if (type === 'file') {
+    return {
+      type,
+      kind: fileResourceKind(rawPath),
+      label,
+      icon: FileIcon,
+      filePath: rawPath,
+      mimeType,
+      openPath: path,
+      workspacePath,
+      line: positiveInteger(record?.line),
+      cwd
+    }
+  }
+  return { type, kind: '未知', label, icon: FileIcon }
+}
+
+function resourceOpenPath(path: string | undefined, cwd: string | undefined): string | undefined {
+  const absolutePath = localFilePath(path)
+  if (absolutePath) return absolutePath
+  return cwd && safeRelativeLocalPath(path ?? '') ? path : undefined
+}
+
+function resourceWorkspacePath(
+  path: string | undefined,
+  cwd: string | undefined
+): string | undefined {
+  const relativePath = safeRelativeLocalPath(path ?? '')
+  if (relativePath && !localFilePath(path)) return relativePath
+  if (!path || !cwd || !localFilePath(path)) return undefined
+
+  const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  const caseInsensitive = /^[A-Za-z]:\//.test(normalizedPath) || /^[A-Za-z]:\//.test(normalizedCwd)
+  const pathForComparison = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath
+  const cwdForComparison = caseInsensitive ? normalizedCwd.toLowerCase() : normalizedCwd
+  const prefix = `${cwdForComparison}/`
+  if (!pathForComparison.startsWith(prefix)) return undefined
+  return safeRelativeLocalPath(normalizedPath.slice(normalizedCwd.length + 1))
+}
+
+function httpsUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  try {
+    return new URL(url).protocol === 'https:' ? url : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function googleDriveKind(url: string | undefined): string {
+  if (!url) return 'Google Drive'
+  try {
+    const path = new URL(url).pathname
+    if (path.startsWith('/document/')) return 'Google Docs'
+    if (path.startsWith('/spreadsheets/')) return 'Google Sheets'
+    if (path.startsWith('/presentation/')) return 'Google Slides'
+  } catch {
+    // Keep the generic label for malformed legacy items.
+  }
+  return 'Google Drive'
+}
+
+function fileResourceKind(path: string | undefined): string {
+  const name = path?.replace(/\\/g, '/').split('/').at(-1) ?? ''
+  const extension = name.includes('.') ? name.split('.').at(-1)?.toUpperCase() : undefined
+  return extension && extension.length <= 8 ? extension : 'File'
 }
 
 function compactEntryContent(
@@ -1715,6 +2032,11 @@ function localFilePath(path: string | undefined): string | undefined {
   if (/^[A-Za-z]:[\\/]/.test(path)) return path
   if (hasUrlScheme(path)) return undefined
   return undefined
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const number = numberValue(value)
+  return number !== undefined && Number.isInteger(number) && number > 0 ? number : undefined
 }
 
 function errorText(error: unknown): string {

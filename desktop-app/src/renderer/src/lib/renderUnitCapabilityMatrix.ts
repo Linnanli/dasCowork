@@ -356,8 +356,8 @@ export const RENDER_UNIT_CAPABILITY_MATRIX: Record<string, RenderUnitCapability>
     renderer: 'EndResourceCardsUnit',
     fallbackLevel: 'none',
     reason:
-      'Client-derived endResources render-unit shape maps into safe resource cards; app-server protocol does not define this ThreadItem.',
-    testOwner: 'App.test.tsx'
+      'Client-derived endResources retains completed safe local artifacts plus website, Google Drive, and Sites links, then routes each card to its matching safe open action; app-server protocol does not define this ThreadItem.',
+    testOwner: 'assistantRenderUnits.test.ts'
   },
   reviewComments: {
     renderMode: 'custom',

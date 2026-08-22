@@ -7,6 +7,7 @@ import {
 } from '../shared/codexIpcApi'
 
 export type ShellOpenPath = (filePath: string) => Promise<string>
+export type ShellRevealPath = (filePath: string) => void
 
 export async function openLocalPath(
   request: CodexOpenLocalPathPayload,
@@ -22,6 +23,13 @@ export function createOpenLocalPathHandler(shellOpenPath: ShellOpenPath) {
   return async (_event: unknown, payload: unknown): Promise<void> => {
     const request = codexOpenLocalPathPayloadSchema.parse(payload)
     await openLocalPath(request, shellOpenPath)
+  }
+}
+
+export function createRevealLocalPathHandler(shellRevealPath: ShellRevealPath) {
+  return async (_event: unknown, payload: unknown): Promise<void> => {
+    const request = codexOpenLocalPathPayloadSchema.parse(payload)
+    shellRevealPath(resolveLocalOpenPath(request))
   }
 }
 

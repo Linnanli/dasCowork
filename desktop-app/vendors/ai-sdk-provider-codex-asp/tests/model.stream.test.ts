@@ -2655,6 +2655,55 @@ describe('CodexLanguageModel.doStream', () => {
     })
   })
 
+  it('passes a single desktop app-context unchanged to thread/start and thread/resume', async () => {
+    const transport = new ScriptedTransport()
+    const developerInstructions = [
+      'Preserve these existing instructions.',
+      '<app-context>\n# DasCowork desktop context\n\n### Inline Code Comments\n</app-context>'
+    ].join('\n\n')
+    const provider = createCodexAppServer({
+      transportFactory: () => transport,
+      clientInfo: { name: 'test-client', version: '1.0.0' },
+      experimentalApi: true
+    })
+    const model = provider.languageModel('gpt-5.5')
+
+    const first = await model.doStream({
+      prompt: [
+        { role: 'system', content: developerInstructions },
+        { role: 'user', content: [{ type: 'text', text: 'start' }] }
+      ]
+    })
+    await readAll(first.stream)
+
+    const resumed = await model.doStream({
+      prompt: [
+        { role: 'system', content: developerInstructions },
+        { role: 'user', content: [{ type: 'text', text: 'start' }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+          providerOptions: { [CODEX_PROVIDER_ID]: { threadId: 'thr_1' } }
+        },
+        { role: 'user', content: [{ type: 'text', text: 'continue' }] }
+      ]
+    })
+    await readAll(resumed.stream)
+
+    const threadStart = transport.sentMessages.find(
+      (message): message is { method: string; params?: { developerInstructions?: string } } =>
+        'method' in message && message.method === 'thread/start'
+    )
+    const threadResume = transport.sentMessages.find(
+      (message): message is { method: string; params?: { developerInstructions?: string } } =>
+        'method' in message && message.method === 'thread/resume'
+    )
+
+    expect(threadStart?.params?.developerInstructions).toBe(developerInstructions)
+    expect(threadResume?.params?.developerInstructions).toBe(developerInstructions)
+    expect(threadResume?.params?.developerInstructions?.match(/<app-context>/gu)).toHaveLength(1)
+  })
+
   it('passes defaultTurnSettings including rich sandboxPolicy on turn/start', async () => {
     const transport = new ScriptedTransport()
 

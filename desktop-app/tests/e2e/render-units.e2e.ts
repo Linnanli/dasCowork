@@ -234,9 +234,7 @@ test('renders live turn status and a completed turn-diff card through the deskto
     await expect(statusCard).toHaveCount(0)
     const completedDiff = page.locator('[data-slot="turn-diff-entry-unit"]')
     await expect(completedDiff).toBeVisible()
-    await expect(
-      page.locator('[data-slot="completed-turn-diff"] [data-slot="turn-diff-entry-unit"]')
-    ).toHaveCount(1)
+    await expect(page.locator('[data-slot="completed-turn-diff"]')).toHaveCount(0)
     await expect(
       page.locator('[data-slot="reasoning-group-content"] [data-slot="turn-diff-entry-unit"]')
     ).toHaveCount(0)
@@ -245,9 +243,23 @@ test('renders live turn status and a completed turn-diff card through the deskto
     await expect(
       completedDiff.getByRole('button', { name: '审核', exact: true }).first()
     ).toBeVisible()
-    await expect(
-      page.locator('[data-role="assistant"]').filter({ hasText: 'Turn diff render unit complete' })
-    ).toBeVisible()
+    const completedAssistant = page
+      .locator('[data-role="assistant"]')
+      .filter({ hasText: 'Turn diff render unit complete' })
+    await expect(completedAssistant).toBeVisible()
+    expect(
+      await completedAssistant.evaluate((assistant) => {
+        const finalAnswer = Array.from(
+          assistant.querySelectorAll<HTMLElement>('[data-slot="assistant-render-text"]')
+        ).find((element) => element.textContent?.includes('Turn diff render unit complete'))
+        const diff = assistant.querySelector('[data-slot="turn-diff-entry-unit"]')
+        return Boolean(
+          finalAnswer &&
+          diff &&
+          finalAnswer.compareDocumentPosition(diff) & Node.DOCUMENT_POSITION_FOLLOWING
+        )
+      })
+    ).toBe(true)
     await expect
       .poll(() => readFile(join(projectRoot, 'notes.txt'), 'utf8'))
       .toBe('after from e2e\n')
